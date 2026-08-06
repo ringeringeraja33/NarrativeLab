@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { StoryLineProject, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER } from '../models/StoryLineProject';
+import { StoryLineProject, ProjectDraft, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER } from '../models/StoryLineProject';
 import { MetadataParser, setWordcountLocale, setSceneTitleToStemMap } from './MetadataParser';
 import { normalizeStoryLineLocale, resolveLocale, DEFAULT_STORYLINE_LOCALE, AUTO_DETECT_LOCALE, type StoryLineLocale } from '../utils/locale';
 import { UndoManager } from './UndoManager';
@@ -14,6 +14,25 @@ import { BeatSheetTemplate, FilterPreset, Scene, SceneFilter, SceneStatus, SortC
  * number array. Accepts arrays, single numbers, or comma-separated strings
  * (which can appear after a sync conflict mangles the YAML). Issue #176.
  */
+function normalizeProjectDrafts(raw: unknown): ProjectDraft[] | undefined {
+    if (!Array.isArray(raw) || raw.length === 0) return undefined;
+    const drafts: ProjectDraft[] = [];
+    for (const entry of raw) {
+        if (!entry || typeof entry !== 'object') continue;
+        const obj = entry as Record<string, unknown>;
+        const id = typeof obj.id === 'string' && obj.id.trim() ? obj.id.trim() : `draft-${drafts.length + 1}`;
+        const title = typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : 'Draft';
+        const scenesRaw = obj.scenes ?? obj.scenePaths;
+        let scenePaths: string[] | undefined;
+        if (Array.isArray(scenesRaw)) {
+            scenePaths = scenesRaw.map(s => String(s)).filter(Boolean);
+            if (scenePaths.length === 0) scenePaths = undefined;
+        }
+        drafts.push({ id, title, scenePaths });
+    }
+    return drafts.length > 0 ? drafts : undefined;
+}
+
 function normalizeActChapterList(raw: unknown): number[] {
     if (raw == null) return [];
     let arr: unknown[] = [];
@@ -54,6 +73,8 @@ export class SceneManager implements ISceneStore {
     private projects: Map<string, StoryLineProject> = new Map();
     private initialized = false;
     private _activeProject: StoryLineProject | null = null;
+    /** Paths currently being adopted as Notes/ corkboard files (re-entrancy guard). */
+    private adoptingNotes = new Set<string>();
     public undoManager: UndoManager;
     /** Read-only query service for filtering, sorting, aggregation */
     public readonly queryService: SceneQueryService;
@@ -148,10 +169,10 @@ export class SceneManager implements ISceneStore {
         return this.plugin.settings.storyLineRoot || '';
     }
 
-    /** Computed Canvas (.ncanvas) folder for the active project */
+    /** Computed NCanvas (.ncanvas) folder for the active project */
     getCanvasFolder(): string {
         const base = this.getProjectBaseFolder();
-        return base ? `${base}/Canvas` : 'Canvas';
+        return base ? `${base}/NCanvas` : 'NCanvas';
     }
 
     /**
@@ -335,7 +356,7 @@ export class SceneManager implements ISceneStore {
                     // Skip internal folders that never contain project files
                     const folderName = sub.split('/').pop() ?? '';
                     if (folderName.startsWith('.')
-                        || ['System', 'Scenes', 'Characters', 'Locations', 'Library', 'Codex', 'Notes', 'Archive', 'Research', 'Canvas', 'Attachments'].includes(folderName)) continue;
+                        || ['System', 'Scenes', 'Characters', 'Locations', 'Library', 'Codex', 'Notes', 'Archive', 'Research', 'NCanvas', 'Canvas', 'Attachments'].includes(folderName)) continue;
                     await scanFolder(sub);
                 }
             } catch { /* folder unreadable — skip */ }
@@ -456,6 +477,8 @@ export class SceneManager implements ISceneStore {
             title,
             created: now,
             language: projectLocale,
+            drafts: [{ id: 'main', title: 'Primary draft' }],
+            activeDraft: 'main',
         };
         const content = `---\n${stringifyYaml(frontmatter)}---\n${description}\n`;
 
@@ -511,6 +534,8 @@ export class SceneManager implements ISceneStore {
                 chapterDescriptions: {},
                 filterPresets: [],
                 corkboardPositions: {},
+                drafts: [{ id: 'main', title: 'Primary draft' }],
+                activeDraftId: 'main',
             };
 
             this.projects.set(filePath, project);
@@ -788,6 +813,9 @@ export class SceneManager implements ISceneStore {
                 seriesId: fm.seriesId || undefined,
                 coverImage: fm.coverImage || undefined,
                 activeBeatSheet: fm.activeBeatSheet || undefined,
+                drafts: normalizeProjectDrafts(fm.drafts),
+                activeDraftId: typeof fm.activeDraft === 'string' ? fm.activeDraft
+                    : (typeof fm.activeDraftId === 'string' ? fm.activeDraftId : undefined),
             };
         } catch {
             return null;
@@ -853,6 +881,65 @@ export class SceneManager implements ISceneStore {
         return false;
     }
 
+    /** True when `filePath` is inside `folder` (normalized prefix match). */
+    private isPathUnderFolder(filePath: string, folder: string): boolean {
+        const root = normalizePath(folder);
+        const path = normalizePath(filePath);
+        return path === root || path.startsWith(`${root}/`);
+    }
+
+    /**
+     * Obsidian-native notes created under Notes/ have no `type: scene` frontmatter,
+     * so the board ignores them. Adopt those files as corkboard notes (write the
+     * required YAML once) so the Notes toggle can show them.
+     */
+    async ensureNotesFileIndexed(file: TFile): Promise<Scene | null> {
+        if (file.extension !== 'md') return null;
+        if (!this.isPathUnderFolder(file.path, this.getNotesFolder())) return null;
+        if (file.path.includes('/_snapshots/')) return null;
+
+        const path = normalizePath(file.path);
+        if (this.adoptingNotes.has(path)) {
+            return this.scenes.get(path) ?? null;
+        }
+
+        const content = await this.app.vault.read(file);
+        const fm = MetadataParser.extractFrontmatter(content);
+        // Don't hijack other entity types that happen to live under Notes/
+        if (fm?.type && fm.type !== 'scene') return null;
+
+        let scene = MetadataParser.parseContent(content, file.path);
+        if (scene?.corkboardNote) {
+            this.scenes.set(path, scene);
+            this.bumpVersion(path);
+            return scene;
+        }
+
+        this.adoptingNotes.add(path);
+        try {
+            const today = new Date().toISOString().split('T')[0];
+            if (scene) {
+                await MetadataParser.updateFrontmatter(this.app, file, { corkboardNote: true });
+            } else {
+                await MetadataParser.updateFrontmatter(this.app, file, {
+                    type: 'scene',
+                    title: String(fm?.title || file.basename),
+                    status: ((fm?.status as Scene['status']) || 'idea'),
+                    created: String(fm?.created || today),
+                    corkboardNote: true,
+                });
+            }
+            scene = await MetadataParser.parseFile(this.app, file);
+            if (scene) {
+                this.scenes.set(path, scene);
+                this.bumpVersion(path);
+            }
+            return scene;
+        } finally {
+            this.adoptingNotes.delete(path);
+        }
+    }
+
     /**
      * Recursively scan a folder for scene files using the adapter API.
      *
@@ -866,6 +953,7 @@ export class SceneManager implements ISceneStore {
         if (!await adapter.exists(folderPath)) return;
 
         const listing = await adapter.list(folderPath);
+        const scanningNotes = this.isPathUnderFolder(folderPath, this.getNotesFolder());
         for (const f of listing.files) {
             if (!f.endsWith('.md')) continue;
             if (f.includes('/_snapshots/')) continue; // issue #100 — skip snapshot files
@@ -874,6 +962,13 @@ export class SceneManager implements ISceneStore {
                 const scene = MetadataParser.parseContent(content, f);
                 if (scene) {
                     this.scenes.set(f, scene);
+                    if (scanningNotes && !scene.corkboardNote) {
+                        const af = this.app.vault.getAbstractFileByPath(f);
+                        if (af instanceof TFile) await this.ensureNotesFileIndexed(af);
+                    }
+                } else if (scanningNotes) {
+                    const af = this.app.vault.getAbstractFileByPath(f);
+                    if (af instanceof TFile) await this.ensureNotesFileIndexed(af);
                 }
             } catch { /* file unreadable — skip */ }
         }
@@ -1523,8 +1618,16 @@ export class SceneManager implements ISceneStore {
     async handleFileChange(file: TFile): Promise<void> {
         if (file.extension !== 'md') return;
 
-        // Check if file is in scene folder or notes folder
-        if (!file.path.startsWith(this.getSceneFolder()) && !file.path.startsWith(this.getNotesFolder())) return;
+        const inScenes = this.isPathUnderFolder(file.path, this.getSceneFolder());
+        const inNotes = this.isPathUnderFolder(file.path, this.getNotesFolder());
+        if (!inScenes && !inNotes) return;
+
+        // Native Obsidian notes under Notes/ need corkboard frontmatter before
+        // the board/corkboard can show them (even with the Notes toggle on).
+        if (inNotes) {
+            await this.ensureNotesFileIndexed(file);
+            return;
+        }
 
         const scene = await MetadataParser.parseFile(this.app, file);
         if (scene) {
@@ -1533,6 +1636,13 @@ export class SceneManager implements ISceneStore {
             this.scenes.delete(file.path);
         }
         this.bumpVersion(file.path);
+    }
+
+    /**
+     * Handle newly created files (Obsidian "New note" fires create, not always modify).
+     */
+    async handleFileCreate(file: TFile): Promise<void> {
+        await this.handleFileChange(file);
     }
 
     /**
@@ -1548,17 +1658,22 @@ export class SceneManager implements ISceneStore {
      */
     async handleFileRename(file: TFile, oldPath: string): Promise<void> {
         this.scenes.delete(oldPath);
-        if (file.extension === 'md' && (file.path.startsWith(this.getSceneFolder()) || file.path.startsWith(this.getNotesFolder()))) {
-            const scene = await MetadataParser.parseFile(this.app, file);
-            if (scene) {
-                this.scenes.set(file.path, scene);
-                const sceneFolder = normalizePath(this.getSceneFolder());
-                if (!scene.corkboardNote && normalizePath(file.path).startsWith(`${sceneFolder}/`)) {
-                    const titleFromFile = this.getTitleFromSceneFileName(file);
-                    if (titleFromFile && titleFromFile !== scene.title) {
-                        const oldTitle = scene.title;
-                        const newPath = await this.updateScene(file.path, { title: titleFromFile }) || file.path;
-                        if (oldTitle) await this.updateSceneTitleReferences(oldTitle, titleFromFile);
+        const inScenes = this.isPathUnderFolder(file.path, this.getSceneFolder());
+        const inNotes = this.isPathUnderFolder(file.path, this.getNotesFolder());
+        if (file.extension === 'md' && (inScenes || inNotes)) {
+            if (inNotes) {
+                await this.ensureNotesFileIndexed(file);
+            } else {
+                const scene = await MetadataParser.parseFile(this.app, file);
+                if (scene) {
+                    this.scenes.set(file.path, scene);
+                    if (!scene.corkboardNote) {
+                        const titleFromFile = this.getTitleFromSceneFileName(file);
+                        if (titleFromFile && titleFromFile !== scene.title) {
+                            const oldTitle = scene.title;
+                            await this.updateScene(file.path, { title: titleFromFile });
+                            if (oldTitle) await this.updateSceneTitleReferences(oldTitle, titleFromFile);
+                        }
                     }
                 }
             }
@@ -1614,6 +1729,42 @@ export class SceneManager implements ISceneStore {
     }
 
     /**
+     * Update only the tags field via Obsidian's processFrontmatter.
+     * Prefer this over updateScene for tag/plotline edits — full-file
+     * read/modify can hang indefinitely on cloud-synced vaults (OneDrive).
+     */
+    async updateSceneTags(filePath: string, tags: string[]): Promise<void> {
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (!file || !(file instanceof TFile)) {
+            new Notice('Scene file not found');
+            return;
+        }
+
+        const oldSnap = this.scenes.get(filePath);
+        const uniqueTags = [...new Set(tags.map(t => String(t)).filter(Boolean))];
+
+        if (oldSnap) {
+            this.undoManager.recordUpdate(
+                filePath,
+                oldSnap as unknown as Record<string, unknown>,
+                { tags: uniqueTags },
+                `Update tags of "${oldSnap.title}"`,
+            );
+        }
+
+        await this.app.fileManager.processFrontmatter(file, (fm) => {
+            if (uniqueTags.length > 0) fm.tags = uniqueTags;
+            else delete fm.tags;
+        });
+
+        const cached = this.scenes.get(filePath);
+        if (cached) {
+            cached.tags = uniqueTags;
+            this.bumpVersion(filePath);
+        }
+    }
+
+    /**
      * Rename a plotline tag across all scenes that use it.
      */
     async renameTag(oldTag: string, newTag: string): Promise<number> {
@@ -1621,7 +1772,7 @@ export class SceneManager implements ISceneStore {
         for (const scene of this.scenes.values()) {
             if (scene.tags && scene.tags.includes(oldTag)) {
                 const newTags = scene.tags.map(t => t === oldTag ? newTag : t);
-                await this.updateScene(scene.filePath, { tags: newTags });
+                await this.updateSceneTags(scene.filePath, newTags);
                 count++;
             }
         }
@@ -1636,7 +1787,7 @@ export class SceneManager implements ISceneStore {
         for (const scene of this.scenes.values()) {
             if (scene.tags && scene.tags.includes(tag)) {
                 const newTags = scene.tags.filter(t => t !== tag);
-                await this.updateScene(scene.filePath, { tags: newTags });
+                await this.updateSceneTags(scene.filePath, newTags);
                 count++;
             }
         }
@@ -2402,8 +2553,136 @@ export class SceneManager implements ISceneStore {
             delete existingFm.activeBeatSheet;
         }
 
+        // Drafts (Longform-style)
+        this.ensureProjectDrafts(project);
+        if (project.drafts && project.drafts.length > 0) {
+            existingFm.drafts = project.drafts.map(d => {
+                const entry: Record<string, unknown> = { id: d.id, title: d.title };
+                if (d.scenePaths && d.scenePaths.length > 0) entry.scenes = d.scenePaths;
+                return entry;
+            });
+        } else {
+            delete existingFm.drafts;
+        }
+        if (project.activeDraftId) {
+            existingFm.activeDraft = project.activeDraftId;
+        } else {
+            delete existingFm.activeDraft;
+        }
+        delete existingFm.activeDraftId;
+
         const newContent = `---\n${stringifyYaml(existingFm)}---${body}`;
         await this.app.vault.modify(file, newContent);
+    }
+
+    // ────────────────────────────────────
+    //  Drafts (Longform-style)
+    // ────────────────────────────────────
+
+    /** Ensure the project has at least one draft and a valid activeDraftId. */
+    ensureProjectDrafts(project: StoryLineProject): void {
+        if (!project.drafts || project.drafts.length === 0) {
+            project.drafts = [{ id: 'main', title: 'Primary draft' }];
+        }
+        if (!project.activeDraftId || !project.drafts.some(d => d.id === project.activeDraftId)) {
+            project.activeDraftId = project.drafts[0].id;
+        }
+    }
+
+    /** Display label for a draft — legacy "Main" is shown like any other draft name. */
+    draftDisplayTitle(draft: ProjectDraft): string {
+        if (draft.title === 'Main') return 'Primary draft';
+        return draft.title || 'Primary draft';
+    }
+
+    getDrafts(): ProjectDraft[] {
+        const project = this._activeProject;
+        if (!project) return [];
+        this.ensureProjectDrafts(project);
+        return project.drafts ?? [];
+    }
+
+    getActiveDraft(): ProjectDraft | null {
+        const project = this._activeProject;
+        if (!project) return null;
+        this.ensureProjectDrafts(project);
+        return project.drafts?.find(d => d.id === project.activeDraftId) ?? project.drafts?.[0] ?? null;
+    }
+
+    async setActiveDraft(draftId: string): Promise<void> {
+        if (!this._activeProject) return;
+        this.ensureProjectDrafts(this._activeProject);
+        if (!this._activeProject.drafts?.some(d => d.id === draftId)) return;
+        this._activeProject.activeDraftId = draftId;
+        await this.saveProjectFrontmatter(this._activeProject);
+    }
+
+    /**
+     * Create a new draft. By default snapshots the current reading-order
+     * scene paths so the draft can diverge from the primary set later.
+     */
+    async createDraft(title: string, snapshotScenes = true): Promise<ProjectDraft | null> {
+        if (!this._activeProject) return null;
+        this.ensureProjectDrafts(this._activeProject);
+        const id = `draft-${Date.now().toString(36)}`;
+        const draft: ProjectDraft = { id, title: title.trim() || 'Draft' };
+        if (snapshotScenes) {
+            draft.scenePaths = this.getAllScenes()
+                .filter(s => !s.corkboardNote && !s.inactive)
+                .sort((a, b) => {
+                    const actCmp = compareActChapter(a.act, b.act);
+                    if (actCmp !== 0) return actCmp;
+                    const chCmp = compareActChapter(a.chapter, b.chapter);
+                    if (chCmp !== 0) return chCmp;
+                    return (a.sequence ?? 9999) - (b.sequence ?? 9999);
+                })
+                .map(s => s.filePath);
+        }
+        this._activeProject.drafts = [...(this._activeProject.drafts ?? []), draft];
+        this._activeProject.activeDraftId = draft.id;
+        await this.saveProjectFrontmatter(this._activeProject);
+        return draft;
+    }
+
+    async renameDraft(draftId: string, title: string): Promise<void> {
+        if (!this._activeProject?.drafts) return;
+        const draft = this._activeProject.drafts.find(d => d.id === draftId);
+        if (!draft) return;
+        draft.title = title.trim() || draft.title;
+        await this.saveProjectFrontmatter(this._activeProject);
+    }
+
+    async deleteDraft(draftId: string): Promise<boolean> {
+        if (!this._activeProject?.drafts) return false;
+        this.ensureProjectDrafts(this._activeProject);
+        if ((this._activeProject.drafts?.length ?? 0) <= 1) return false;
+        this._activeProject.drafts = this._activeProject.drafts.filter(d => d.id !== draftId);
+        if (this._activeProject.activeDraftId === draftId) {
+            this._activeProject.activeDraftId = this._activeProject.drafts[0]?.id;
+        }
+        await this.saveProjectFrontmatter(this._activeProject);
+        return true;
+    }
+
+    /** Scenes belonging to a draft (or the active draft when omitted). */
+    getScenesForDraft(draftId?: string): Scene[] {
+        const project = this._activeProject;
+        if (!project) return [];
+        this.ensureProjectDrafts(project);
+        const draft = draftId
+            ? project.drafts?.find(d => d.id === draftId)
+            : this.getActiveDraft();
+        const all = this.getAllScenes().filter(s => !s.corkboardNote && !s.inactive);
+        if (!draft?.scenePaths || draft.scenePaths.length === 0) {
+            return all;
+        }
+        const byPath = new Map(all.map(s => [s.filePath, s]));
+        const ordered: Scene[] = [];
+        for (const path of draft.scenePaths) {
+            const scene = byPath.get(path);
+            if (scene) ordered.push(scene);
+        }
+        return ordered;
     }
 
     /**

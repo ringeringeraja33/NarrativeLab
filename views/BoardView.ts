@@ -242,7 +242,7 @@ export class BoardView extends ItemView {
         // View switcher tabs
         renderViewSwitcher(toolbar, BOARD_VIEW_TYPE, this.plugin, this.leaf);
 
-        const controls = toolbar.createDiv('story-line-toolbar-controls');
+        const controls = toolbar.createDiv('story-line-toolbar-controls is-board-controls');
 
         const modeToggle = controls.createDiv('story-line-board-mode-toggle');
         const corkboardBtn = modeToggle.createEl('button', {
@@ -301,7 +301,7 @@ export class BoardView extends ItemView {
         const isCorkboardMode = this.boardMode === 'corkboard';
         const addBtn = controls.createEl('button', {
             cls: 'mod-cta story-line-add-btn',
-            text: isCorkboardMode ? '+ New Note' : '+ New Scene'
+            text: isCorkboardMode ? t('+ New Note') : t('+ New Scene')
         });
         addBtn.addEventListener('click', () => {
             if (isCorkboardMode) {
@@ -1135,8 +1135,9 @@ export class BoardView extends ItemView {
             const target = this.corkboardZoomTarget!;
             const cur = this.corkboardCamera.zoom;
             // Exponential lerp — converges smoothly regardless of how
-            // many wheel ticks pile up.  0.25 gives a snappy yet fluid feel.
-            const lerpFactor = 0.25;
+            // many wheel ticks pile up. Slightly snappier so trackpad
+            // pinch/scroll zoom doesn't feel laggy behind the gesture.
+            const lerpFactor = 0.32;
             const newZoom = cur + (target - cur) * lerpFactor;
 
             // Keep the world point under the cursor stationary
@@ -1346,7 +1347,15 @@ export class BoardView extends ItemView {
         };
 
         const onWheel = (e: WheelEvent) => {
-            const zoomFactor = Math.exp((-e.deltaY) * 0.0012);
+            // Normalize delta across trackpad (pixel) vs mouse wheel (line/page).
+            let dy = e.deltaY;
+            if (e.deltaMode === WheelEvent.DOM_DELTA_LINE) dy *= 16;
+            else if (e.deltaMode === WheelEvent.DOM_DELTA_PAGE) dy *= 120;
+            // Trackpad pinches send many tiny pixel deltas — old 0.0012 felt
+            // sticky. 0.0020 is noticeably freer without jumping. Clamp so a
+            // single big flick can't explode the zoom.
+            const clamped = Math.max(-90, Math.min(90, dy));
+            const zoomFactor = Math.exp((-clamped) * 0.002);
             this.zoomCorkboardAt(canvas, viewport, e.clientX, e.clientY, this.corkboardCamera.zoom * zoomFactor);
             e.preventDefault();
         };
@@ -1474,7 +1483,7 @@ export class BoardView extends ItemView {
             .onClick(() => { this.openCorkboardNoteColorModal(scene); }));
 
         menu.addItem(item => item
-            .setTitle(t('Color: Default'))
+            .setTitle(t('Color: None'))
             .setIcon('rotate-ccw')
             .onClick(() => { void this.setCorkboardNoteColor(scene, undefined); }));
 
@@ -1598,15 +1607,24 @@ export class BoardView extends ItemView {
         return `#${toHex(nr)}${toHex(ng)}${toHex(nb)}`;
     }
     private applyCorkboardNoteColor(cardEl: HTMLElement, scene: Scene): void {
-        const presets = resolveStickyNoteColors(this.plugin.settings);
-        const defaultColor = presets.length > 0 ? presets[0].color : '#F6EDB4';
-        const base = cleanStickyNoteColor(this.normalizeHexColor(scene.corkboardNoteColor) ?? defaultColor);
-        const accentSoft = this.darkenHexColor(base, 0.24);
-        const accentStrong = this.darkenHexColor(base, 0.34);
-        cardEl.style.setProperty('--sl-note-bg', base);
+        const base = this.normalizeHexColor(scene.corkboardNoteColor);
+        if (!base) {
+            // Default: no fill — CSS border-only look.
+            cardEl.classList.remove('is-tinted');
+            cardEl.style.removeProperty('--sl-note-bg');
+            cardEl.style.removeProperty('--sl-note-accent');
+            cardEl.style.removeProperty('--sl-note-accent-strong');
+            cardEl.style.removeProperty('--sl-note-text');
+            return;
+        }
+        const cleaned = cleanStickyNoteColor(base);
+        const accentSoft = this.darkenHexColor(cleaned, 0.24);
+        const accentStrong = this.darkenHexColor(cleaned, 0.34);
+        cardEl.classList.add('is-tinted');
+        cardEl.style.setProperty('--sl-note-bg', cleaned);
         cardEl.style.setProperty('--sl-note-accent', accentSoft);
         cardEl.style.setProperty('--sl-note-accent-strong', accentStrong);
-        const fontColor = resolveStickyNoteFontColor(this.plugin.settings, base);
+        const fontColor = resolveStickyNoteFontColor(this.plugin.settings, cleaned);
         cardEl.style.setProperty('--sl-note-text', fontColor);
     }
 
@@ -1627,7 +1645,7 @@ export class BoardView extends ItemView {
         const modal = new Modal(this.app);
         modal.titleEl.setText(t('Custom note color'));
 
-        const current = this.normalizeHexColor(scene.corkboardNoteColor) ?? '#F6EDB4';
+        const current = this.normalizeHexColor(scene.corkboardNoteColor) ?? '#FFF8CC';
         const row = modal.contentEl.createDiv('story-line-note-color-modal-row');
         row.createEl('label', { text: t('Pick color') });
         const picker = row.createEl('input', {

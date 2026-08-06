@@ -7,7 +7,8 @@ const LEGACY_JSON_EXTENSION = "json";
 const DEFAULT_PROJECT_EXTENSION = "ncanvas";
 const DEFAULT_LIBRARY_FOLDER_NAME = "Library";
 const LEGACY_CODEX_FOLDER_NAME = "Codex";
-const DEFAULT_CANVAS_FOLDER_NAME = "Canvas";
+const DEFAULT_CANVAS_FOLDER_NAME = "NCanvas";
+const LEGACY_CANVAS_FOLDER_NAME = "Canvas";
 const DEFAULT_ATTACHMENT_FOLDER_NAME = "Attachments";
 const SAVED_STATE_VERSION = 1;
 const DEFAULT_FILENAME_TEMPLATE = "{{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas";
@@ -1863,6 +1864,45 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     return normalized;
   }
 
+  /** Write JSON to an exact vault path (create or overwrite), then open it. */
+  async writeAndOpenProjectAtPath(path, savedStateJson) {
+    const normalized = normalizeVaultPath(path);
+    if (!normalized || !isProjectFileExtension(getVaultPathExtension(normalized))) {
+      throw new Error("NarrativeLab requires an .ncanvas project path.");
+    }
+    const text = String(savedStateJson || "");
+    if (!text.trim()) throw new Error("Narrative Canvas project JSON is empty.");
+    const parent = getVaultParentPath(normalized);
+    await this.ensureFolder(parent);
+    this.projectWriteSuppressUntil = Date.now() + 1500;
+    await writeVaultText(this.app, normalized, text);
+    this.rememberProjectRevision(normalized, text);
+    await this.openProjectFile(normalized);
+    return normalized;
+  }
+
+  /**
+   * Create (or open existing) a language-specific sample .ncanvas at an exact path.
+   * Used by NarrativeLab's per-project NCanvas manager — does not use saveFolder layout.
+   */
+  async createSampleProjectAtPath(path, language = "en") {
+    const normalized = normalizeVaultPath(path);
+    if (!normalized || !isProjectFileExtension(getVaultPathExtension(normalized))) {
+      throw new Error("NarrativeLab requires an .ncanvas project path.");
+    }
+    if (vaultFileExists(this.app, normalized)) {
+      await this.openProjectFile(normalized);
+      return normalized;
+    }
+    await this.activateView(true, this.getProjectLeafForPath(normalized));
+    await wait(600);
+    const app = window.NarrativeCanvasApp;
+    if (!app?.createSampleProjectAtPath) {
+      throw new Error("Canvas app did not expose sample project creation at path.");
+    }
+    return app.createSampleProjectAtPath(normalized, language);
+  }
+
   async loadSavedState() {
     return this.sessionState;
   }
@@ -2014,6 +2054,7 @@ class NarrativeCanvasView extends ItemView {
         hasAiConfig: () => this.plugin.hasAiConfig(),
         ensureProjectFile: (savedStateJson, options) => this.plugin.ensureProjectFile(savedStateJson, options),
         createProjectFile: (savedStateJson, options) => this.plugin.createProjectFile(savedStateJson, options),
+        writeAndOpenProjectAtPath: (path, savedStateJson) => this.plugin.writeAndOpenProjectAtPath(path, savedStateJson),
         previewNewProjectFile: (savedStateJson, options) => this.plugin.previewNewProjectFile(savedStateJson, options),
         chooseProjectFile: () => this.plugin.chooseProjectFile(),
         searchVaultFiles: (query, limit, options) => this.plugin.searchVaultFiles(query, limit, options),
@@ -2716,7 +2757,9 @@ function getProjectRootFolder(projectPath) {
   if (!normalized) return "";
   let parent = getVaultParentPath(normalized);
   const leaf = parent.split("/").pop() || "";
-  if (leaf === DEFAULT_CANVAS_FOLDER_NAME) parent = getVaultParentPath(parent);
+  if (leaf === DEFAULT_CANVAS_FOLDER_NAME || leaf === LEGACY_CANVAS_FOLDER_NAME) {
+    parent = getVaultParentPath(parent);
+  }
   return parent;
 }
 
@@ -16498,6 +16541,7 @@ function installNarrativeCanvasApp() {
     setLanguage,
     getLanguage: () => state.language,
     createSampleProjectFile,
+    createSampleProjectAtPath,
     ensureVaultFile: ensureVaultProjectFile,
     loadVaultProject: loadCurrentVaultProject,
     handleExternalProjectChange,
@@ -36294,6 +36338,36 @@ function installNarrativeCanvasApp() {
       renderProjectFileStatus();
       return false;
     }
+  }
+
+  /** Write a CN/EN guide sample to an exact vault path (NarrativeLab project NCanvas/). */
+  async function createSampleProjectAtPath(targetPath, language = "en") {
+    const project = getSampleProject(language);
+    const saved = buildSavedStateForProject(project, {
+      selectedNodeId: project.nodes?.[0]?.id || null,
+      activeFileId: "adventure"
+    });
+    const text = JSON.stringify(saved, null, 2);
+    const host = window.NarrativeCanvasHost;
+    if (!host?.writeAndOpenProjectAtPath) {
+      throw new Error("Canvas host did not expose writeAndOpenProjectAtPath.");
+    }
+    setStatus("Creating sample project...");
+    const path = await host.writeAndOpenProjectAtPath(targetPath, text);
+    // Sync in-memory state with what we just wrote (open may race with loadVaultProject).
+    state.project = cloneProject(project);
+    markProjectStructureChanged({ nodeTypes: true });
+    state.selectedNodeId = state.project.nodes[0]?.id || null;
+    state.selectedLinkId = null;
+    state.panel = "project";
+    state.activeFileId = "adventure";
+    centerViewAtScale(DEFAULT_CANVAS_ZOOM, false);
+    resetHistory();
+    setProjectDirty(false);
+    renderAll();
+    renderProjectFileStatus();
+    setStatus(path ? `Sample project created at ${path}.` : "Sample project opened.");
+    return path || targetPath;
   }
 
   async function loadCurrentVaultProject() {

@@ -129,7 +129,7 @@ export class TimelineView extends ItemView {
             cls: `clickable-icon${this.swimlaneMode ? ' is-active' : ''}`,
         });
         obsidian.setIcon(swimToggle, 'columns-2');
-        attachTooltip(swimToggle, this.swimlaneMode ? 'Switch to linear' : 'Switch to swimlanes');
+        attachTooltip(swimToggle, this.swimlaneMode ? t('Switch to linear') : t('Switch to swimlanes'));
         swimToggle.addEventListener('click', () => {
             this.swimlaneMode = !this.swimlaneMode;
             this.plugin.settings.timelineSwimlaneMode = this.swimlaneMode;
@@ -144,8 +144,8 @@ export class TimelineView extends ItemView {
         });
         orderSelect.addEventListener('keydown', (e: KeyboardEvent) => e.stopPropagation());
         const orderOptions: { value: TimelineOrder; label: string }[] = [
-            { value: 'reading', label: 'Reading Order' },
-            { value: 'chronological', label: 'Chronological Order' },
+            { value: 'reading', label: t('Reading Order') },
+            { value: 'chronological', label: t('Chronological Order') },
         ];
         for (const opt of orderOptions) {
             const el = orderSelect.createEl('option', { text: opt.label });
@@ -167,11 +167,11 @@ export class TimelineView extends ItemView {
             });
             groupSelect.addEventListener('keydown', (e: KeyboardEvent) => e.stopPropagation());
             const options: { value: SwimlaneGroupBy; label: string }[] = [
-                { value: 'pov', label: 'By POV' },
-                { value: 'character', label: 'By Character' },
-                { value: 'location', label: 'By Location' },
-                { value: 'plotline', label: 'By Plotline' },
-                { value: 'tag', label: 'By Tag' },
+                { value: 'pov', label: t('By POV') },
+                { value: 'character', label: t('By Character') },
+                { value: 'location', label: t('By Location') },
+                { value: 'plotline', label: t('By Plotline') },
+                { value: 'tag', label: t('By Tag') },
             ];
             for (const opt of options) {
                 const el = groupSelect.createEl('option', { text: opt.label });

@@ -28,9 +28,19 @@ import type SceneCardsPlugin from '../main';
 import { CharacterManager } from '../services/CharacterManager';
 import { RenameConfirmModal } from '../components/RenameConfirmModal';
 
-import { applyMobileClass } from '../components/MobileAdapter';
+import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
+import {
+    collectDelimitedTags,
+    collectHashtagsFromText,
+    renderLibraryFilterChips,
+} from '../components/LibraryFilterChips';
+import {
+    getLibraryContentMode,
+    renderLibraryStoryGraph,
+} from '../components/LibraryModeBar';
+import type { StoryGraph } from '../components/StoryGraph';
 
 /**
  * Location View — hierarchical World → Location browser with inline editing.
@@ -44,6 +54,7 @@ export class LocationView extends ItemView {
     private locationManager: LocationManager;
     private selectedItem: string | null = null; // filePath of selected world/location
     private rootContainer: HTMLElement | null = null;
+    private storyGraph: StoryGraph | null = null;
     private collapsedSections: Set<string> = new Set();
     private collapsedTreeNodes: Set<string> = new Set();
     private autoSaveTimer: number | null = null;
@@ -59,6 +70,9 @@ export class LocationView extends ItemView {
     private originalItemType: 'world' | 'location' | null = null;
     /** Current search/filter text for overview tree */
     private searchText: string = '';
+    private _searchTimer: number | null = null;
+    /** Precomputed location-name → scene count for the current overview render */
+    private _locationSceneCounts: Map<string, number> | null = null;
     /** Current sort mode for the overview tree */
     private sortBy: 'name' | 'modified' | 'created' | 'type' = 'name';
     /** Active locationType tag filters (lowercased). Empty = no filter. */
@@ -104,7 +118,9 @@ export class LocationView extends ItemView {
         this.rootContainer = container;
 
         await this.sceneManager.initialize();
-        await this.plugin.reloadEntities();
+        if (!this.plugin.entitiesFresh()) {
+            await this.plugin.reloadEntities();
+        }
         this.renderView(container);
     }
 
@@ -130,11 +146,15 @@ export class LocationView extends ItemView {
 
         const controls = toolbar.createDiv('story-line-toolbar-controls');
 
-        // ── Codex category tabs ─────────────────────
+        // ── Codex category tabs + Browse / Story Graph ──
         renderCodexCategoryTabs(container, {
             activeId: 'locations-pseudo',
             leaf: this.leaf,
             plugin: this.plugin,
+            showModeToggle: !this.selectedItem,
+            onModeChange: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
         });
 
         // Add buttons
@@ -150,11 +170,39 @@ export class LocationView extends ItemView {
 
         const content = container.createDiv('story-line-location-content');
 
+        if (this.storyGraph) {
+            this.storyGraph.destroy();
+            this.storyGraph = null;
+        }
+
         if (this.selectedItem) {
             this.renderDetail(content);
+        } else if (getLibraryContentMode(this.plugin) === 'story-graph' && !isMobile) {
+            this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            });
         } else {
             this.renderOverview(content);
         }
+    }
+
+    /** True when item matches any active type/#tag filter (OR). */
+    private itemMatchesTagFilters(item: WorldOrLocation): boolean {
+        if (this.activeTagFilters.size === 0) return true;
+        if (item.type === 'location' && item.locationType) {
+            for (const part of String(item.locationType).split(',').map(s => s.trim().toLowerCase()).filter(Boolean)) {
+                if (this.activeTagFilters.has(part)) return true;
+            }
+        }
+        const rec = item as unknown as Record<string, unknown>;
+        for (const val of Object.values(rec)) {
+            if (typeof val !== 'string' || !val.includes('#')) continue;
+            const lower = val.toLowerCase();
+            for (const key of this.activeTagFilters) {
+                if (lower.includes(`#${key}`)) return true;
+            }
+        }
+        return false;
     }
 
     // ── Overview: tree hierarchy ───────────────────────
@@ -176,7 +224,11 @@ export class LocationView extends ItemView {
         const hadFocus = activeDocument.activeElement?.closest('.story-line-location-container') != null;
         searchInput.addEventListener('input', () => {
             this.searchText = searchInput.value;
-            this.renderOverview(container);
+            if (this._searchTimer !== null) window.clearTimeout(this._searchTimer);
+            this._searchTimer = window.setTimeout(() => {
+                this._searchTimer = null;
+                this.renderOverview(container);
+            }, 180);
         });
         if (hadFocus) {
             window.setTimeout(() => {
@@ -218,61 +270,39 @@ export class LocationView extends ItemView {
             });
         }
 
-        // Collect locationType tags for chip filter
+        // Collect locationType + #hashtag labels for chip filter
         const allWorldsForTags = this.locationManager.getAllWorlds();
         const allOrphansForTags = this.locationManager.getOrphanLocations();
         const tagLabels = new Map<string, string>();
-        const collectType = (item: { locationType?: string }) => {
-            const t = (item.locationType || '').trim();
-            if (!t) return;
-            for (const part of t.split(',').map(s => s.trim()).filter(Boolean)) {
-                const key = part.toLowerCase();
-                if (!tagLabels.has(key)) tagLabels.set(key, part);
+        const collectItemTags = (item: WorldOrLocation) => {
+            if (item.type === 'location') collectDelimitedTags(tagLabels, item.locationType);
+            const rec = item as unknown as Record<string, unknown>;
+            for (const val of Object.values(rec)) {
+                if (typeof val === 'string' && val.includes('#')) collectHashtagsFromText(tagLabels, val);
             }
         };
         for (const w of allWorldsForTags) {
-            collectType(w);
-            for (const loc of this.locationManager.getLocationsForWorld(w.name)) collectType(loc);
+            collectItemTags(w);
+            for (const loc of this.locationManager.getLocationsForWorld(w.name)) collectItemTags(loc);
         }
-        for (const loc of allOrphansForTags) collectType(loc);
-        for (const key of [...this.activeTagFilters]) {
-            if (!tagLabels.has(key)) this.activeTagFilters.delete(key);
-        }
-        if (tagLabels.size > 0) {
-            const chipRow = container.createDiv('story-line-filter-chips character-tag-filter-chips');
-            const sortedTags = [...tagLabels.entries()].sort((a, b) =>
-                a[1].localeCompare(b[1], undefined, { sensitivity: 'base' }));
-            for (const [key, label] of sortedTags) {
-                const chip = chipRow.createEl('button', {
-                    cls: `story-line-chip${this.activeTagFilters.has(key) ? ' active' : ''}`,
-                    text: label,
-                });
-                chip.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    if (this.activeTagFilters.has(key)) this.activeTagFilters.delete(key);
-                    else this.activeTagFilters.add(key);
-                    this.renderOverview(container);
-                });
-            }
-            if (this.activeTagFilters.size > 0) {
-                const clearBtn = chipRow.createEl('button', {
-                    cls: 'story-line-chip story-line-chip-clear',
-                    text: t('Clear'),
-                });
-                attachTooltip(clearBtn, t('Clear tag filters'));
-                clearBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    this.activeTagFilters.clear();
-                    this.renderOverview(container);
-                });
-            }
-        }
+        for (const loc of allOrphansForTags) collectItemTags(loc);
+        const chipHost = container.createDiv('story-line-filter-chips character-tag-filter-chips library-filter-chips');
+        renderLibraryFilterChips(chipHost, tagLabels, this.activeTagFilters, () => {
+            this.renderOverview(container);
+        });
 
         const q = this.searchText.toLowerCase();
 
         const allWorlds = this.locationManager.getAllWorlds();
         const allOrphans = this.locationManager.getOrphanLocations();
         const scenes = this.sceneManager.getAllScenes().filter(scene => !scene.inactive);
+        // One pass for scene counts — avoid O(locations × scenes) per tree node.
+        this._locationSceneCounts = new Map<string, number>();
+        for (const scene of scenes) {
+            const loc = scene.location?.toLowerCase();
+            if (!loc) continue;
+            this._locationSceneCounts.set(loc, (this._locationSceneCounts.get(loc) ?? 0) + 1);
+        }
 
         // Filter worlds: show a world if its name OR any child location name matches
         let worlds = q ? allWorlds.filter(w => {
@@ -302,15 +332,10 @@ export class LocationView extends ItemView {
 
         // Type/tag filter (OR) — keep world if it or any child matches
         if (this.activeTagFilters.size > 0) {
-            const matchesType = (item: { locationType?: string }) => {
-                const t = (item.locationType || '').trim();
-                if (!t) return false;
-                return t.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
-                    .some(part => this.activeTagFilters.has(part));
-            };
             worlds = worlds.filter(w =>
-                matchesType(w) || this.locationManager.getLocationsForWorld(w.name).some(matchesType));
-            orphanLocations = orphanLocations.filter(matchesType);
+                this.itemMatchesTagFilters(w)
+                || this.locationManager.getLocationsForWorld(w.name).some(loc => this.itemMatchesTagFilters(loc)));
+            orphanLocations = orphanLocations.filter(loc => this.itemMatchesTagFilters(loc));
         }
 
         // Apply sort
@@ -338,7 +363,18 @@ export class LocationView extends ItemView {
             const emptyIcon = empty.createDiv('location-empty-icon');
             obsidian.setIcon(emptyIcon, 'map');
             empty.createEl('h4', { text: t('No worlds or locations yet') });
-            empty.createEl('p', { text: t('Click "+ World" to create a worldbuilding profile, or "+ Location" to add a specific place.') });
+            empty.createEl('p', { text: t('Create a world or a location to get started.') });
+            const actions = empty.createDiv('location-empty-actions');
+            const createWorldBtn = actions.createEl('button', {
+                cls: 'mod-cta',
+                text: t('Create first world'),
+            });
+            createWorldBtn.addEventListener('click', () => this.promptNewWorld());
+            const createLocBtn = actions.createEl('button', {
+                cls: 'mod-cta',
+                text: t('Create first location'),
+            });
+            createLocBtn.addEventListener('click', () => this.promptNewLocation());
             return;
         }
 
@@ -449,15 +485,10 @@ export class LocationView extends ItemView {
             const children = node.createDiv('location-tree-children');
             let topLevel = this.locationManager.getTopLevelLocations(world.name);
             if (this.activeTagFilters.size > 0) {
-                const matchesType = (item: { locationType?: string }) => {
-                    const t = (item.locationType || '').trim();
-                    if (!t) return false;
-                    return t.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
-                        .some(part => this.activeTagFilters.has(part));
-                };
-                // Keep locations that match, or whose descendants match (handled by still listing parents of matches)
+                // Keep locations that match, or whose descendants match
                 topLevel = topLevel.filter(loc =>
-                    matchesType(loc) || this.locationManager.getChildLocations(loc.name).some(matchesType));
+                    this.itemMatchesTagFilters(loc)
+                    || this.locationManager.getChildLocations(loc.name).some(c => this.itemMatchesTagFilters(c)));
             }
             for (const loc of topLevel) {
                 this.renderLocationNode(children, loc, scenes, 1);
@@ -513,9 +544,10 @@ export class LocationView extends ItemView {
 
         header.createSpan({ cls: 'location-tree-name', text: loc.name });
 
-        // Scene count for this location
+        // Scene count for this location (precomputed map when available)
         const locLower = loc.name.toLowerCase();
-        const sceneCount = scenes.filter(s => s.location?.toLowerCase() === locLower).length;
+        const sceneCount = (this._locationSceneCounts?.get(locLower)
+            ?? scenes.filter(s => s.location?.toLowerCase() === locLower).length);
         if (sceneCount > 0) {
             header.createSpan({ cls: 'location-tree-count', text: `${sceneCount} sc` });
         }
@@ -553,7 +585,8 @@ export class LocationView extends ItemView {
         header.createSpan({ cls: 'location-tree-name', text: name });
 
         const locLower = name.toLowerCase();
-        const sceneCount = scenes.filter(s => s.location?.toLowerCase() === locLower).length;
+        const sceneCount = this._locationSceneCounts?.get(locLower)
+            ?? scenes.filter(s => s.location?.toLowerCase() === locLower).length;
         if (sceneCount > 0) {
             header.createSpan({ cls: 'location-tree-count', text: `${sceneCount} sc` });
         }
@@ -1984,8 +2017,11 @@ export class LocationView extends ItemView {
      * Navigate directly to a location/world detail view by file path.
      */
     async navigateToItem(filePath: string): Promise<void> {
-        await this.plugin.reloadEntities();
-        const item = this.locationManager.getItem(filePath);
+        let item = this.locationManager.getItem(filePath);
+        if (!item) {
+            await this.plugin.reloadEntities();
+            item = this.locationManager.getItem(filePath);
+        }
         if (!item) {
             new Notice(t('Location not found in the active project.'));
             return;
@@ -1997,14 +2033,13 @@ export class LocationView extends ItemView {
     }
 
     async refresh(): Promise<void> {
+        // refreshOpenViews already reloaded entities — only re-render here.
         if (
             this.selectedItem &&
             Date.now() - this._lastSaveTime < LocationView.SAVE_REFRESH_GRACE_MS
         ) {
-            await this.plugin.reloadEntities();
             return;
         }
-        await this.plugin.reloadEntities();
         if (this.rootContainer) {
             this.renderView(this.rootContainer);
         }

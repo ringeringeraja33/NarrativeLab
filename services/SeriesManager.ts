@@ -317,7 +317,7 @@ export class SeriesManager {
                 // Hidden/system folders (especially Obsidian's `.trash`) are
                 // not live series sources and may contain deleted series.json files.
                 if (!name.startsWith('.')
-                    && !['Library', 'Codex', 'Scenes', 'System', 'Attachments', 'Canvas'].includes(name)) {
+                    && !['Library', 'Codex', 'Scenes', 'System', 'Attachments', 'NCanvas', 'Canvas'].includes(name)) {
                     await scan(normalizePath(subfolder));
                 }
             }

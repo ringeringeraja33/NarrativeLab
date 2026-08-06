@@ -2,7 +2,7 @@
 import * as obsidian from 'obsidian';
 import { Modal, App } from 'obsidian';
 import type SceneCardsPlugin from '../main';
-import { resolveTagColor, getPlotlineHSL, resolveStickyNoteColors, resolveStickyNoteFontColor } from '../settings';
+import { resolveTagColor, getPlotlineHSL, resolveStickyNoteFontColor } from '../settings';
 import type { SceneManager } from '../services/SceneManager';
 import { formatActChapterPrefix } from '../utils/actChapter';
 import { ColorCodingMode, Scene, SceneStatus, TIMELINE_MODE_ICONS, TIMELINE_MODE_LABELS, formatSceneLength, getStatusOrder, resolveStatusCfg } from '../models/Scene';
@@ -461,15 +461,22 @@ export class SceneCardComponent {
      * Apply sticky-note background color to a kanban note card
      */
     private applyNoteColor(card: HTMLElement, scene: Scene): void {
-        const presets = resolveStickyNoteColors(this.plugin.settings);
-        const defaultColor = presets.length > 0 ? presets[0].color : '#F6EDB4';
         const raw = scene.corkboardNoteColor?.trim();
-        const base = (raw && /^#[0-9a-fA-F]{6}$/.test(raw)) ? raw.toUpperCase() : defaultColor;
+        const base = (raw && /^#[0-9a-fA-F]{6}$/.test(raw)) ? raw.toUpperCase() : undefined;
+        if (!base) {
+            // Default: no fill — outline only (see CSS).
+            card.classList.remove('is-tinted');
+            card.style.removeProperty('--sl-note-bg');
+            card.style.removeProperty('--sl-note-accent');
+            card.style.removeProperty('--sl-note-accent-strong');
+            card.style.removeProperty('--sl-note-text');
+            return;
+        }
+        card.classList.add('is-tinted');
         card.style.setProperty('--sl-note-bg', base);
         card.style.setProperty('--sl-note-accent', this.darken(base, 0.24));
         card.style.setProperty('--sl-note-accent-strong', this.darken(base, 0.34));
         // Issue #205 — optional custom font colour overrides the auto-derived accent.
-        // Two buckets (light/dark backgrounds) keep text readable across both.
         const fontColor = resolveStickyNoteFontColor(this.plugin.settings, base);
         if (fontColor) {
             card.style.setProperty('--sl-note-text', fontColor);

@@ -6,6 +6,7 @@
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE } from '../constants';
+import { renderLibraryModeToggle } from './LibraryModeBar';
 import { t } from '../utils/i18n';
 
 export interface CodexTabsOptions {
@@ -15,14 +16,19 @@ export interface CodexTabsOptions {
     leaf: obsidian.WorkspaceLeaf;
     /** Plugin instance */
     plugin: SceneCardsPlugin;
+    /** Show Browse / Story Graph toggle on the right of the tab bar */
+    showModeToggle?: boolean;
+    /** Called when Browse / Story Graph mode changes */
+    onModeChange?: () => void;
 }
 
 /**
  * Render the Codex category tab bar into `parent`.
  * Includes Characters, Locations, and all user-defined codex categories.
+ * Optionally appends the Library Browse / Story Graph mode toggle.
  */
 export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOptions): HTMLElement {
-    const { activeId, leaf, plugin } = opts;
+    const { activeId, leaf, plugin, showModeToggle, onModeChange } = opts;
 
     const tabs = parent.createDiv('codex-category-tabs');
 
@@ -64,6 +70,12 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
 
         if (!isActive) {
             tab.addEventListener('click', () => {
+                // Already on CodexView — switch category without remounting the leaf
+                if (leaf.view?.getViewType?.() === CODEX_VIEW_TYPE) {
+                    const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
+                    view.setActiveCategory?.(cat.id);
+                    return;
+                }
                 // Navigate to CodexView with this category active
                 try {
                     void leaf.setViewState({ type: CODEX_VIEW_TYPE, active: true, state: {} });
@@ -80,6 +92,11 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
                 }
             });
         }
+    }
+
+    // Browse / Story Graph — always available across Library category pages
+    if (showModeToggle !== false && onModeChange) {
+        renderLibraryModeToggle(tabs, plugin, onModeChange);
     }
 
     return tabs;

@@ -697,41 +697,48 @@ export class InspectorComponent {
         // Setup / Payoff tracking
         this.renderSetupPayoff(scene);
 
-        // Editorial Notes / Revision Comments
-        this.renderNotes(scene);
+        const isNote = !!scene.corkboardNote;
 
-        // Snapshots / Version History
-        this.renderSnapshots(scene);
+        // Editorial notes / snapshots are scene workflow — skip for corkboard sticky notes
+        // (the note body itself is the content; a second "笔记/评论" block feels redundant).
+        if (!isNote) {
+            this.renderNotes(scene);
+            this.renderSnapshots(scene);
+        }
 
         // Action buttons
         const actions = this.container.createDiv('inspector-actions');
 
         const editBtn = actions.createEl('button', {
             cls: 'mod-cta',
-            text: t('Edit Scene')
+            text: isNote ? t('Open Note') : t('Edit Scene'),
         });
         editBtn.addEventListener('click', () => this.onEdit(scene));
 
-        const splitBtn = actions.createEl('button', {
-            text: t('Split Scene')
-        });
-        splitBtn.addEventListener('click', () => {
-            new SplitSceneModal(this.plugin, scene, () => {
-                // After split, hide inspector and refresh the board
-                this.hide();
-                this.onRefresh();
-            }).open();
-        });
+        if (!isNote) {
+            const splitBtn = actions.createEl('button', {
+                text: t('Split Scene'),
+            });
+            splitBtn.addEventListener('click', () => {
+                new SplitSceneModal(this.plugin, scene, () => {
+                    // After split, hide inspector and refresh the board
+                    this.hide();
+                    this.onRefresh();
+                }).open();
+            });
+        }
 
         const deleteBtn = actions.createEl('button', {
             cls: 'mod-warning',
-            text: t('Delete')
+            text: isNote ? t('Delete Note') : t('Delete'),
         });
         deleteBtn.addEventListener('click', () => {
             openConfirmModal(this.plugin.app, {
-                title: t('Delete Scene'),
-                message: `Delete scene "${scene.title || 'Untitled'}"?`,
-                confirmLabel: 'Delete',
+                title: isNote ? t('Delete Note') : t('Delete Scene'),
+                message: isNote
+                    ? t('Delete note "{title}"?', { title: scene.title || t('Note') })
+                    : `Delete scene "${scene.title || 'Untitled'}"?`,
+                confirmLabel: t('Delete'),
                 onConfirm: () => {
                     this.onDelete(scene);
                     this.hide();

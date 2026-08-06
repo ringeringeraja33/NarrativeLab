@@ -40,6 +40,37 @@ function normalizeImagePath(imagePath: string): string {
     return normalized;
 }
 
+/** Short-lived vault image index — avoids per-card `getFiles()` on Library overviews. */
+let _imageIndexAt = 0;
+let _imageByPath: Map<string, TFile> | null = null;
+let _imageByBasename: Map<string, TFile[]> | null = null;
+const IMAGE_INDEX_TTL_MS = 30_000;
+
+function ensureImageIndex(app: App): void {
+    if (_imageByPath && _imageByBasename && (Date.now() - _imageIndexAt) < IMAGE_INDEX_TTL_MS) {
+        return;
+    }
+    const byPath = new Map<string, TFile>();
+    const byBasename = new Map<string, TFile[]>();
+    for (const file of app.vault.getFiles()) {
+        byPath.set(file.path.toLowerCase(), file);
+        const key = file.name.toLowerCase();
+        const list = byBasename.get(key);
+        if (list) list.push(file);
+        else byBasename.set(key, [file]);
+    }
+    _imageByPath = byPath;
+    _imageByBasename = byBasename;
+    _imageIndexAt = Date.now();
+}
+
+/** Drop cached image index (e.g. after bulk vault moves). */
+export function invalidateImagePathCache(): void {
+    _imageIndexAt = 0;
+    _imageByPath = null;
+    _imageByBasename = null;
+}
+
 /**
  * Helper function to resolve an image path to a valid resource URL
  * Tries multiple approaches to handle different image storage methods
@@ -70,22 +101,20 @@ export function resolveImagePath(app: App, imagePath: string): string {
         }
     } catch { /* fall through */ }
 
-    // Fallback: match by basename when only filename was stored in frontmatter
+    // Fallback: match by basename when only filename was stored in frontmatter.
+    // Uses a TTL-cached vault index so overview grids don't call getFiles() per card.
     try {
+        ensureImageIndex(app);
         const lower = normalizedPath.toLowerCase();
-        const allFiles = app.vault.getFiles();
-        const byExactPath = allFiles.find(f => f.path.toLowerCase() === lower);
+        const byExactPath = _imageByPath?.get(lower);
         if (byExactPath) return app.vault.getResourcePath(byExactPath);
-
-        const byTail = allFiles.find(f => f.path.toLowerCase().endsWith(`/${lower}`));
-        if (byTail) return app.vault.getResourcePath(byTail);
 
         // Project folders may be renamed outside NarrativeLab while older
         // frontmatter keeps the previous full path. Recover an unambiguous
         // image by filename instead of permanently losing the portrait.
         const basename = lower.split('/').pop() ?? '';
         if (basename) {
-            const basenameMatches = allFiles.filter(f => f.name.toLowerCase() === basename);
+            const basenameMatches = _imageByBasename?.get(basename) ?? [];
             if (basenameMatches.length === 1) {
                 return app.vault.getResourcePath(basenameMatches[0]);
             }

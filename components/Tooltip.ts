@@ -31,15 +31,27 @@ export function attachTooltip(el: HTMLElement, text: string): void {
         // Remove any stale tooltips (e.g. from toolbar re-renders)
         activeDocument.querySelectorAll(`.${TOOLTIP_CLASS}`).forEach(t => t.remove());
 
+        // Skip when the same label is already visible inside the control
+        // (avoids a floating "白板" sitting between toolbar rows).
+        const visibleLabel = el.querySelector('.view-tab-label') as HTMLElement | null;
+        if (visibleLabel && visibleLabel.offsetParent !== null) {
+            const style = getComputedStyle(visibleLabel);
+            if (style.display !== 'none' && style.visibility !== 'hidden') return;
+        }
+
         tip = activeDocument.createElement('div');
         tip.className = TOOLTIP_CLASS;
         tip.textContent = text;
         activeDocument.body.appendChild(tip);
 
         const rect = el.getBoundingClientRect();
+        // Prefer above for top toolbars so the tip doesn't look like a misaligned label.
+        const inToolbar = !!el.closest('.story-line-toolbar, .annotation-ea-toolbar');
+        const showAbove = inToolbar || rect.bottom + 28 > window.innerHeight;
+        tip.classList.toggle('is-above', showAbove);
         tip.setCssStyles({
             left: `${rect.left + rect.width / 2}px`,
-            top: `${rect.bottom + 4}px`,
+            top: showAbove ? `${rect.top - 4}px` : `${rect.bottom + 4}px`,
         });
     });
 

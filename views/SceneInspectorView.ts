@@ -5,7 +5,6 @@ import { SceneManager } from '../services/SceneManager';
 import { InspectorComponent } from '../components/Inspector';
 import { InfoPanelComponent } from '../components/InfoPanel';
 import { ResearchView } from './ResearchView';
-import { HelpView } from './HelpView';
 import { ManuscriptView } from './ManuscriptView';
 import { attachTooltip } from '../components/Tooltip';
 import { t } from '../utils/i18n';
@@ -13,30 +12,24 @@ import {
     SCENE_INSPECTOR_VIEW_TYPE,
     MANUSCRIPT_VIEW_TYPE,
     RESEARCH_VIEW_TYPE,
-    HELP_VIEW_TYPE,
     SYNOPSIS_VIEW_TYPE,
     DETAILS_VIEW_TYPE,
     NOTES_VIEW_TYPE,
 } from '../constants';
 
-type InspectorTab = 'synopsis' | 'notes' | 'details' | 'research' | 'help';
+type InspectorTab = 'synopsis' | 'notes' | 'details' | 'research';
 
 const TAB_DEFS: { id: InspectorTab; label: string; icon: string; popOutType?: string }[] = [
     { id: 'details',  label: 'Details',  icon: 'list',         popOutType: DETAILS_VIEW_TYPE },
     { id: 'synopsis', label: 'Synopsis', icon: 'scroll-text',  popOutType: SYNOPSIS_VIEW_TYPE },
     { id: 'notes',    label: 'Notes',    icon: 'sticky-note',  popOutType: NOTES_VIEW_TYPE },
     { id: 'research', label: 'Research', icon: 'library-big',  popOutType: RESEARCH_VIEW_TYPE },
-    { id: 'help',     label: 'Help',     icon: 'help-circle',  popOutType: HELP_VIEW_TYPE },
 ];
 
 /**
  * Standalone Scene Inspector sidebar view.
  *
- * Hosts four tabs:
- *  - Info     — lightweight planning panel (synopsis, POV, status, location, notes)
- *  - Details  — the full Inspector (all scene metadata)
- *  - Research — shortcut to open the Research view
- *  - Help     — shortcut to open the Help view
+ * Hosts tabs for Details, Synopsis, Notes, and Research.
  */
 export class SceneInspectorView extends ItemView {
     private plugin: SceneCardsPlugin;
@@ -46,7 +39,6 @@ export class SceneInspectorView extends ItemView {
     private notesPanel: InfoPanelComponent | null = null;
     private inspectorComponent: InspectorComponent | null = null;
     private researchView: ResearchView | null = null;
-    private helpView: HelpView | null = null;
 
     private tabBarEl: HTMLElement | null = null;
     private tabPanels: Record<InspectorTab, HTMLElement | null> = {
@@ -54,7 +46,6 @@ export class SceneInspectorView extends ItemView {
         notes: null,
         details: null,
         research: null,
-        help: null,
     };
     private emptyEl: HTMLElement | null = null;
     private activeTab: InspectorTab = 'details';
@@ -86,10 +77,9 @@ export class SceneInspectorView extends ItemView {
         viewContent.addClass('sl-scene-inspector-host');
         this.containerEl.closest('.workspace-leaf')?.classList.add('sl-scene-inspector-leaf');
 
-        // Research and Help are embedded as tabs here, so any standalone
-        // leaves of those types in the same sidebar root are redundant and
-        // steal vertical space. Detach them now (and again on workspace
-        // layout changes) so the inspector can claim the full sidebar.
+        // Research is embedded as a tab here, so any standalone Research
+        // leaves in the same sidebar root are redundant and steal vertical
+        // space. Detach them now (and again on workspace layout changes).
         this.detachRedundantSidebarLeaves();
         this.registerEvent(
             this.app.workspace.on('layout-change', () => this.detachRedundantSidebarLeaves())
@@ -133,12 +123,6 @@ export class SceneInspectorView extends ItemView {
         this.tabPanels.research = researchPanelEl;
         this.researchView = new ResearchView(this.leaf, this.plugin, this.plugin.researchManager);
         void this.researchView.mountInto(researchPanelEl);
-
-        // Help tab — embed the full Help view
-        const helpPanelEl = panelsHost.createDiv('sl-inspector-panel sl-inspector-embed');
-        this.tabPanels.help = helpPanelEl;
-        this.helpView = new HelpView(this.leaf, this.plugin);
-        void this.helpView.mountInto(helpPanelEl);
 
         this.inspectorComponent = new InspectorComponent(
             inspectorHost,
@@ -225,16 +209,14 @@ export class SceneInspectorView extends ItemView {
     async onClose(): Promise<void> {
         this.containerEl.closest('.workspace-leaf')?.classList.remove('sl-scene-inspector-leaf');
         try { await this.researchView?.onClose(); } catch { /* ignore */ }
-        try { await this.helpView?.onClose(); } catch { /* ignore */ }
         this.researchView = null;
-        this.helpView = null;
         this.inspectorComponent = null;
         this.synopsisPanel = null;
         this.notesPanel = null;
     }
 
     /**
-     * Detach any standalone Research/Help leaves that live in the same
+     * Detach any standalone Research leaves that live in the same
      * sidebar root as this inspector — they're now embedded as tabs and
      * compete with us for vertical space.
      */
@@ -243,7 +225,6 @@ export class SceneInspectorView extends ItemView {
             const ourRoot = this.leaf.getRoot();
             const redundant = [
                 ...this.app.workspace.getLeavesOfType(RESEARCH_VIEW_TYPE),
-                ...this.app.workspace.getLeavesOfType(HELP_VIEW_TYPE),
             ];
             for (const leaf of redundant) {
                 if (leaf === this.leaf) continue;
@@ -321,12 +302,10 @@ export class SceneInspectorView extends ItemView {
             panel.style.display = isActive ? '' : 'none';
             panel.toggleClass('is-active', isActive);
         }
-        // Toggle padding-collapse on the panels host when an embedded
-        // full-view is active (Research / Help fill edge-to-edge).
+        // Toggle padding-collapse on the panels host when Research fills edge-to-edge.
         const panelsHost = this.tabPanels[id]?.parentElement as HTMLElement | null;
         if (panelsHost) {
-            const isEmbed = id === 'research' || id === 'help';
-            panelsHost.toggleClass('is-embed-active', isEmbed);
+            panelsHost.toggleClass('is-embed-active', id === 'research');
         }
         if (id === 'notes') {
             void this.notesPanel?.refreshNotesFromDisk();

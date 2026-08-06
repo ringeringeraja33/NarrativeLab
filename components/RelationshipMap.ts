@@ -4,6 +4,11 @@
  *
  * Parses allies / enemies / family fields and renders
  * a force-directed-style graph using simple spring physics.
+ *
+ * Performance notes (large Libraries):
+ * - Only characters with ≥1 relationship are shown by default
+ * - Node count is capped
+ * - Physics uses an index map; SVG is updated in place (no full rebuild each frame)
  */
 
 import type { Character } from '../models/Character';
@@ -34,9 +39,37 @@ interface GraphNode {
 interface GraphEdge {
     source: string;
     target: string;
+    /** Display names (preserve original casing for character lookup). */
+    sourceLabel: string;
+    targetLabel: string;
     type: RelationshipType;
     label?: string;
 }
+
+export interface RelationshipEdgeInfo {
+    from: string;
+    to: string;
+    type: RelationshipType;
+}
+
+interface NodeDom {
+    circle: SVGCircleElement;
+    label: SVGTextElement;
+    role?: SVGTextElement;
+}
+
+interface EdgeDom {
+    type: RelationshipType;
+    line: SVGLineElement;
+    hit: SVGLineElement;
+    edge: GraphEdge;
+    label?: SVGTextElement;
+}
+
+/** Soft cap — beyond this the map becomes unusable in SVG + JS physics. */
+const MAX_NODES = 80;
+/** When node count exceeds this, hide per-node labels until zoomed in. */
+const LABEL_HIDE_AT = 40;
 
 /** Read a CSS custom property from the body, falling back to the provided default */
 function resolveThemeColor(varName: string, fallback: string): string {
@@ -64,6 +97,15 @@ const EDGE_DASHES: Record<RelationshipType, string> = {
     other: '4,4',
 };
 
+const TYPE_LABELS: Record<RelationshipType, string> = {
+    ally: 'Ally',
+    enemy: 'Hostile',
+    romantic: 'Romance',
+    family: 'Family',
+    mentor: 'Mentor',
+    other: 'Other',
+};
+
 /**
  * Renders an interactive relationship map inside the given container.
  */
@@ -72,7 +114,9 @@ export class RelationshipMap {
     private characters: Character[];
     private nodes: GraphNode[] = [];
     private edges: GraphEdge[] = [];
+    private nodeById = new Map<string, GraphNode>();
     private svg: SVGSVGElement | null = null;
+    private layer: SVGGElement | null = null;
     private wrapper: HTMLElement | null = null;
     private width = 800;
     private height = 500;
@@ -84,31 +128,51 @@ export class RelationshipMap {
     private panStart = { x: 0, y: 0 };
     private zoom = 1;
     private onSelectCharacter?: (name: string) => void;
+    private onEdgeContextMenu?: (edge: RelationshipEdgeInfo, event: MouseEvent) => void;
     private resizeObserver: ResizeObserver | null = null;
     /** Issue #222 — relationship types currently hidden by the user. */
     private hiddenTypes: Set<RelationshipType> = new Set();
+    private nodeDom = new Map<string, NodeDom>();
+    private edgeDom: EdgeDom[] = [];
+    private svgBuilt = false;
+    private truncated = false;
+    private totalRelated = 0;
+    private onPanMove: ((e: MouseEvent) => void) | null = null;
+    private onPanUp: (() => void) | null = null;
+    private statusEl: HTMLElement | null = null;
 
     constructor(
         container: HTMLElement,
         characters: Character[],
         onSelectCharacter?: (name: string) => void,
+        onEdgeContextMenu?: (edge: RelationshipEdgeInfo, event: MouseEvent) => void,
     ) {
         this.container = container;
         this.characters = characters;
         this.onSelectCharacter = onSelectCharacter;
+        this.onEdgeContextMenu = onEdgeContextMenu;
     }
 
     render(): void {
+        this.destroy();
         this.container.empty();
+        this.svgBuilt = false;
+        this.nodeDom.clear();
+        this.edgeDom = [];
 
         // Build graph data
         this.buildGraph();
 
         if (this.nodes.length === 0) {
             const empty = this.container.createDiv('relationship-map-empty');
-            empty.createEl('p', { text: t('No relationships to display. Add allies, enemies, or romantic history to your characters.') });
+            empty.createEl('p', {
+                text: t('No relationships to display.'),
+            });
             return;
         }
+
+        this.statusEl = this.container.createDiv('relationship-map-status');
+        this.updateStatusText();
 
         // Legend — Issue #222: each item is a toggle that shows/hides that
         // relationship type. Clicking re-renders the SVG immediately.
@@ -123,14 +187,16 @@ export class RelationshipMap {
             swatch.setCssStyles({ backgroundColor: color });
             if (type === 'enemy') swatch.setCssStyles({ borderStyle: 'dashed' });
             if (type === 'romantic') swatch.setCssStyles({ borderRadius: '50%' });
-            item.createEl('span', { text: type.charAt(0).toUpperCase() + type.slice(1) });
+            item.createEl('span', { text: t(TYPE_LABELS[type]) });
             item.addEventListener('click', () => {
                 if (this.hiddenTypes.has(type)) {
                     this.hiddenTypes.delete(type);
                 } else {
                     this.hiddenTypes.add(type);
                 }
-                this.render();
+                // Only rebuild visibility — avoid tearing down physics mid-run
+                this.applyVisibility();
+                item.classList.toggle('is-off', this.hiddenTypes.has(type));
             });
         }
 
@@ -150,6 +216,7 @@ export class RelationshipMap {
         wrapper.appendChild(this.svg);
 
         // Resize observer — update dimensions when container changes
+        let resizeTimer = 0;
         this.resizeObserver = new ResizeObserver((entries) => {
             for (const entry of entries) {
                 const cr = entry.contentRect;
@@ -159,44 +226,46 @@ export class RelationshipMap {
                     if (this.svg) {
                         this.svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
                     }
-                    this.renderSVG();
+                    if (resizeTimer) window.clearTimeout(resizeTimer);
+                    resizeTimer = window.setTimeout(() => this.updatePositions(), 80);
                 }
             }
         });
         this.resizeObserver.observe(wrapper);
 
-        // Pan support
+        // Pan support — only update transform, never rebuild SVG
         this.svg.addEventListener('mousedown', (e) => {
-            if (e.target === this.svg) {
+            if (e.target === this.svg || e.target === this.layer) {
                 this.isPanning = true;
                 this.panStart = { x: e.clientX - this.panX, y: e.clientY - this.panY };
             }
         });
-        window.addEventListener('mousemove', (e) => {
-            if (this.isPanning) {
-                this.panX = e.clientX - this.panStart.x;
-                this.panY = e.clientY - this.panStart.y;
-                this.renderSVG();
-            }
-        });
-        window.addEventListener('mouseup', () => { this.isPanning = false; });
+        this.onPanMove = (e: MouseEvent) => {
+            if (!this.isPanning) return;
+            this.panX = e.clientX - this.panStart.x;
+            this.panY = e.clientY - this.panStart.y;
+            this.updateTransform();
+        };
+        this.onPanUp = () => { this.isPanning = false; };
+        window.addEventListener('mousemove', this.onPanMove);
+        window.addEventListener('mouseup', this.onPanUp);
 
         // Zoom support (mouse wheel)
         this.svg.addEventListener('wheel', (e) => {
             e.preventDefault();
             const factor = e.deltaY < 0 ? 1.1 : 0.9;
             const newZoom = Math.min(5, Math.max(0.2, this.zoom * factor));
-            // Zoom toward cursor position
             const svgRect = this.svg!.getBoundingClientRect();
             const mx = e.clientX - svgRect.left;
             const my = e.clientY - svgRect.top;
             this.panX = mx - (mx - this.panX) * (newZoom / this.zoom);
             this.panY = my - (my - this.panY) * (newZoom / this.zoom);
             this.zoom = newZoom;
-            this.renderSVG();
+            this.updateTransform();
+            this.applyLabelVisibility();
         }, { passive: false });
 
-        // Start simulation
+        this.buildSVG();
         this.runSimulation();
     }
 
@@ -207,6 +276,14 @@ export class RelationshipMap {
             this.resizeObserver.disconnect();
             this.resizeObserver = null;
         }
+        if (this.onPanMove) {
+            window.removeEventListener('mousemove', this.onPanMove);
+            this.onPanMove = null;
+        }
+        if (this.onPanUp) {
+            window.removeEventListener('mouseup', this.onPanUp);
+            this.onPanUp = null;
+        }
     }
 
     // ── Graph building ─────────────────────────────────
@@ -214,25 +291,9 @@ export class RelationshipMap {
     private buildGraph(): void {
         const nodeMap = new Map<string, GraphNode>();
         const edgeList: GraphEdge[] = [];
+        const profileKeys = new Set(this.characters.map(c => c.name.toLowerCase()));
 
-        // Create nodes for all characters with profiles
-        for (const char of this.characters) {
-            const key = char.name.toLowerCase();
-            if (!nodeMap.has(key)) {
-                nodeMap.set(key, {
-                    id: key,
-                    label: char.name,
-                    role: getRoleDisplay(char.role) || undefined,
-                    x: this.width / 2 + (Math.random() - 0.5) * this.width * 0.6,
-                    y: this.height / 2 + (Math.random() - 0.5) * this.height * 0.6,
-                    vx: 0,
-                    vy: 0,
-                    hasProfile: true,
-                });
-            }
-        }
-
-        // Parse relationships from structured rows
+        // Parse relationships first — only create nodes that participate in an edge.
         for (const char of this.characters) {
             const fromKey = char.name.toLowerCase();
             if (Array.isArray(char.relations)) {
@@ -240,16 +301,30 @@ export class RelationshipMap {
                     const baseType = RELATION_BASE_TYPE_BY_CATEGORY[relation.category] || 'other';
                     const name = relation.target?.trim();
                     if (!name) continue;
-                    this.ensureNode(nodeMap, name);
-                    edgeList.push({ source: fromKey, target: name.toLowerCase(), type: baseType });
+                    this.ensureNode(nodeMap, char.name, true, getRoleDisplay(char.role) || undefined);
+                    this.ensureNode(nodeMap, name, profileKeys.has(name.toLowerCase()));
+                    edgeList.push({
+                        source: fromKey,
+                        target: name.toLowerCase(),
+                        sourceLabel: char.name,
+                        targetLabel: name,
+                        type: baseType,
+                    });
                 }
             }
 
             // Legacy free-text family/background field may contain relatives by name.
             if (char.family) {
                 for (const name of this.parseNames(char.family)) {
-                    this.ensureNode(nodeMap, name);
-                    edgeList.push({ source: fromKey, target: name.toLowerCase(), type: 'family' });
+                    this.ensureNode(nodeMap, char.name, true, getRoleDisplay(char.role) || undefined);
+                    this.ensureNode(nodeMap, name, profileKeys.has(name.toLowerCase()));
+                    edgeList.push({
+                        source: fromKey,
+                        target: name.toLowerCase(),
+                        sourceLabel: char.name,
+                        targetLabel: name,
+                        type: 'family',
+                    });
                 }
             }
         }
@@ -266,23 +341,67 @@ export class RelationshipMap {
             }
         }
 
-        this.nodes = Array.from(nodeMap.values());
-        this.edges = deduped;
+        // Prefer connected profile characters; drop orphans (no edges).
+        const connected = new Set<string>();
+        for (const e of deduped) {
+            connected.add(e.source);
+            connected.add(e.target);
+        }
+        let nodes = Array.from(nodeMap.values()).filter(n => connected.has(n.id));
+        this.totalRelated = nodes.length;
+        this.truncated = false;
+
+        if (nodes.length > MAX_NODES) {
+            // Keep highest-degree nodes so the map stays readable.
+            const degree = new Map<string, number>();
+            for (const e of deduped) {
+                degree.set(e.source, (degree.get(e.source) ?? 0) + 1);
+                degree.set(e.target, (degree.get(e.target) ?? 0) + 1);
+            }
+            nodes.sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0));
+            nodes = nodes.slice(0, MAX_NODES);
+            const keep = new Set(nodes.map(n => n.id));
+            this.edges = deduped.filter(e => keep.has(e.source) && keep.has(e.target));
+            this.truncated = true;
+        } else {
+            this.edges = deduped.filter(e => connected.has(e.source) && connected.has(e.target));
+        }
+
+        // Seed positions once we know canvas size (updated again in buildSVG if needed)
+        for (const node of nodes) {
+            node.x = this.width / 2 + (Math.random() - 0.5) * this.width * 0.6;
+            node.y = this.height / 2 + (Math.random() - 0.5) * this.height * 0.6;
+            node.vx = 0;
+            node.vy = 0;
+        }
+
+        this.nodes = nodes;
+        this.nodeById = new Map(nodes.map(n => [n.id, n]));
     }
 
-    private ensureNode(map: Map<string, GraphNode>, name: string): void {
+    private ensureNode(
+        map: Map<string, GraphNode>,
+        name: string,
+        hasProfile: boolean,
+        role?: string,
+    ): void {
         const key = name.toLowerCase();
-        if (!map.has(key)) {
-            map.set(key, {
-                id: key,
-                label: name,
-                x: this.width / 2 + (Math.random() - 0.5) * this.width * 0.6,
-                y: this.height / 2 + (Math.random() - 0.5) * this.height * 0.6,
-                vx: 0,
-                vy: 0,
-                hasProfile: false,
-            });
+        const existing = map.get(key);
+        if (existing) {
+            if (hasProfile) existing.hasProfile = true;
+            if (role) existing.role = role;
+            return;
         }
+        map.set(key, {
+            id: key,
+            label: name,
+            role,
+            x: 0,
+            y: 0,
+            vx: 0,
+            vy: 0,
+            hasProfile,
+        });
     }
 
     /**
@@ -291,7 +410,7 @@ export class RelationshipMap {
      */
     private parseNames(text: string): string[] {
         // Strip wikilinks
-        let cleaned = text.replace(/\[\[([^\]]+)\]\]/g, '$1');
+        const cleaned = text.replace(/\[\[([^\]]+)\]\]/g, '$1');
         // Split on commas, semicolons, newlines, "and"
         const parts = cleaned.split(/[,;\n]|\band\b/i);
         return parts
@@ -299,32 +418,46 @@ export class RelationshipMap {
             .filter(p => p.length > 0 && p.length < 60);
     }
 
+    private updateStatusText(): void {
+        if (!this.statusEl) return;
+        const parts = [
+            t('{n} characters with relationships', { n: this.totalRelated }),
+        ];
+        if (this.truncated) {
+            parts.push(t('Showing top {n} by connections', { n: this.nodes.length }));
+        }
+        this.statusEl.setText(parts.join(' · '));
+    }
+
     // ── Simulation & rendering ─────────────────────────
 
     private runSimulation(): void {
         let iterations = 0;
-        const maxIterations = 300;
+        const n = this.nodes.length;
+        // Large graphs: fewer ticks; small graphs keep smoother settle.
+        const maxIterations = n > 50 ? 90 : n > 25 ? 160 : 240;
+        let frame = 0;
 
         const tick = () => {
             if (!this.svg) return;
             iterations++;
-
-            // Physics step
             this.applyForces();
 
-            // Update node positions
             for (const node of this.nodes) {
                 if (node === this.dragging) continue;
                 node.x += node.vx;
                 node.y += node.vy;
-                node.vx *= 0.85; // damping
+                node.vx *= 0.85;
                 node.vy *= 0.85;
-                // Keep in bounds
                 node.x = Math.max(40, Math.min(this.width - 40, node.x));
                 node.y = Math.max(40, Math.min(this.height - 40, node.y));
             }
 
-            this.renderSVG();
+            // Throttle DOM writes — every other frame is enough visually.
+            frame++;
+            if (frame % 2 === 0 || iterations >= maxIterations) {
+                this.updatePositions();
+            }
 
             if (iterations < maxIterations) {
                 this.animFrame = window.requestAnimationFrame(tick);
@@ -335,33 +468,37 @@ export class RelationshipMap {
     }
 
     private applyForces(): void {
-        const repulsion = 3000;
-        const springLength = 120;
+        const n = this.nodes.length;
+        const repulsion = n > 50 ? 1800 : 3000;
+        const springLength = n > 50 ? 90 : 120;
         const springK = 0.02;
         const centerGravity = 0.001;
 
-        // Repulsion between all nodes
-        for (let i = 0; i < this.nodes.length; i++) {
-            for (let j = i + 1; j < this.nodes.length; j++) {
+        // Repulsion — full O(n²) only for modest graphs; sample for larger ones.
+        if (n <= 60) {
+            for (let i = 0; i < n; i++) {
+                for (let j = i + 1; j < n; j++) {
+                    this.repulsePair(this.nodes[i], this.nodes[j], repulsion);
+                }
+            }
+        } else {
+            // Approximate: each node only repels a random subset + nearby index neighbors.
+            const samples = 12;
+            for (let i = 0; i < n; i++) {
                 const a = this.nodes[i];
-                const b = this.nodes[j];
-                const dx = b.x - a.x;
-                const dy = b.y - a.y;
-                const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-                const force = repulsion / (dist * dist);
-                const fx = (dx / dist) * force;
-                const fy = (dy / dist) * force;
-                a.vx -= fx;
-                a.vy -= fy;
-                b.vx += fx;
-                b.vy += fy;
+                for (let s = 0; s < samples; s++) {
+                    const j = (i + 1 + ((s * 37 + iterationsSalt(i, s)) % (n - 1))) % n;
+                    if (j === i) continue;
+                    this.repulsePair(a, this.nodes[j], repulsion);
+                }
             }
         }
 
         // Spring forces along edges
         for (const edge of this.edges) {
-            const a = this.nodes.find(n => n.id === edge.source);
-            const b = this.nodes.find(n => n.id === edge.target);
+            if (this.hiddenTypes.has(edge.type)) continue;
+            const a = this.nodeById.get(edge.source);
+            const b = this.nodeById.get(edge.target);
             if (!a || !b) continue;
             const dx = b.x - a.x;
             const dy = b.y - a.y;
@@ -383,59 +520,84 @@ export class RelationshipMap {
         }
     }
 
-    private renderSVG(): void {
+    private repulsePair(a: GraphNode, b: GraphNode, repulsion: number): void {
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        const force = repulsion / (dist * dist);
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        a.vx -= fx;
+        a.vy -= fy;
+        b.vx += fx;
+        b.vy += fy;
+    }
+
+    private buildSVG(): void {
         if (!this.svg) return;
         const svgNS = 'http://www.w3.org/2000/svg';
-
-        // Clear and re-draw (simple approach — works fine for < 100 nodes)
         while (this.svg.firstChild) this.svg.removeChild(this.svg.firstChild);
 
         const edgeColors = getEdgeColors();
-
-        // Transform group for panning + zoom
         const g = activeDocument.createElementNS(svgNS, 'g');
-        g.setAttribute('transform', `translate(${this.panX},${this.panY}) scale(${this.zoom})`);
+        this.layer = g;
         this.svg.appendChild(g);
+        this.updateTransform();
 
-        // Draw edges
+        this.edgeDom = [];
         for (const edge of this.edges) {
-            // Issue #222 — skip edges whose type the user has toggled off.
-            if (this.hiddenTypes.has(edge.type)) continue;
-            const a = this.nodes.find(n => n.id === edge.source);
-            const b = this.nodes.find(n => n.id === edge.target);
+            const a = this.nodeById.get(edge.source);
+            const b = this.nodeById.get(edge.target);
             if (!a || !b) continue;
 
+            // Invisible wide stroke for easier right-click / hover targeting
+            const hit = activeDocument.createElementNS(svgNS, 'line');
+            hit.setAttribute('stroke', 'transparent');
+            hit.setAttribute('stroke-width', '14');
+            hit.style.cursor = 'pointer';
+            hit.classList.add('relationship-map-edge-hit');
+            g.appendChild(hit);
+
             const line = activeDocument.createElementNS(svgNS, 'line');
-            line.setAttribute('x1', String(a.x));
-            line.setAttribute('y1', String(a.y));
-            line.setAttribute('x2', String(b.x));
-            line.setAttribute('y2', String(b.y));
             line.setAttribute('stroke', edgeColors[edge.type]);
             line.setAttribute('stroke-width', '2');
+            line.style.pointerEvents = 'none';
             if (EDGE_DASHES[edge.type]) {
                 line.setAttribute('stroke-dasharray', EDGE_DASHES[edge.type]);
             }
             g.appendChild(line);
 
-            // Edge label at midpoint
+            const openEdgeMenu = (e: MouseEvent) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.onEdgeContextMenu?.(
+                    { from: edge.sourceLabel, to: edge.targetLabel, type: edge.type },
+                    e,
+                );
+            };
+            hit.addEventListener('contextmenu', openEdgeMenu);
+            hit.addEventListener('click', (e) => {
+                // Secondary-click equivalents on some trackpads fire click + button===2
+                if (e.button === 2) openEdgeMenu(e);
+            });
+
+            let labelEl: SVGTextElement | undefined;
             if (edge.label) {
-                const text = activeDocument.createElementNS(svgNS, 'text');
-                text.setAttribute('x', String((a.x + b.x) / 2));
-                text.setAttribute('y', String((a.y + b.y) / 2 - 6));
-                text.setAttribute('text-anchor', 'middle');
-                text.setAttribute('fill', edgeColors[edge.type]);
-                text.setAttribute('font-size', '10');
-                text.textContent = edge.label;
-                g.appendChild(text);
+                labelEl = activeDocument.createElementNS(svgNS, 'text');
+                labelEl.setAttribute('text-anchor', 'middle');
+                labelEl.setAttribute('fill', edgeColors[edge.type]);
+                labelEl.setAttribute('font-size', '10');
+                labelEl.textContent = edge.label;
+                labelEl.style.cursor = 'pointer';
+                labelEl.addEventListener('contextmenu', openEdgeMenu);
+                g.appendChild(labelEl);
             }
+            this.edgeDom.push({ type: edge.type, line, hit, edge, label: labelEl });
         }
 
-        // Draw nodes
+        this.nodeDom.clear();
         for (const node of this.nodes) {
-            // Circle
             const circle = activeDocument.createElementNS(svgNS, 'circle');
-            circle.setAttribute('cx', String(node.x));
-            circle.setAttribute('cy', String(node.y));
             circle.setAttribute('r', node.hasProfile ? '18' : '12');
             circle.setAttribute('fill', node.hasProfile
                 ? 'var(--interactive-accent)'
@@ -443,8 +605,8 @@ export class RelationshipMap {
             circle.setAttribute('stroke', 'var(--background-primary)');
             circle.setAttribute('stroke-width', '2');
             circle.classList.add('relationship-map-node');
+            circle.style.cursor = 'pointer';
 
-            // Drag support
             circle.addEventListener('mousedown', (e) => {
                 e.stopPropagation();
                 this.dragging = node;
@@ -453,7 +615,7 @@ export class RelationshipMap {
                     const svgRect = this.svg.getBoundingClientRect();
                     node.x = (me.clientX - svgRect.left - this.panX) / this.zoom;
                     node.y = (me.clientY - svgRect.top - this.panY) / this.zoom;
-                    this.renderSVG();
+                    this.updatePositions();
                 };
                 const onUp = () => {
                     this.dragging = null;
@@ -464,7 +626,6 @@ export class RelationshipMap {
                 window.addEventListener('mouseup', onUp);
             });
 
-            // Click to select
             circle.addEventListener('dblclick', () => {
                 if (this.onSelectCharacter && node.hasProfile) {
                     this.onSelectCharacter(node.label);
@@ -473,29 +634,98 @@ export class RelationshipMap {
 
             g.appendChild(circle);
 
-            // Label
-            const text = activeDocument.createElementNS(svgNS, 'text');
-            text.setAttribute('x', String(node.x));
-            text.setAttribute('y', String(node.y + (node.hasProfile ? 30 : 24)));
-            text.setAttribute('text-anchor', 'middle');
-            text.setAttribute('fill', 'var(--text-normal)');
-            text.setAttribute('font-size', node.hasProfile ? '12' : '10');
-            text.setAttribute('font-weight', node.hasProfile ? '600' : '400');
-            text.textContent = node.label;
-            g.appendChild(text);
+            const label = activeDocument.createElementNS(svgNS, 'text');
+            label.setAttribute('text-anchor', 'middle');
+            label.setAttribute('fill', 'var(--text-normal)');
+            label.setAttribute('font-size', node.hasProfile ? '12' : '10');
+            label.setAttribute('font-weight', node.hasProfile ? '600' : '400');
+            label.textContent = node.label;
+            g.appendChild(label);
 
-            // Role badge
+            let roleEl: SVGTextElement | undefined;
             if (node.role && node.hasProfile) {
-                const badge = activeDocument.createElementNS(svgNS, 'text');
-                badge.setAttribute('x', String(node.x));
-                badge.setAttribute('y', String(node.y - 24));
-                badge.setAttribute('text-anchor', 'middle');
-                badge.setAttribute('fill', 'var(--text-muted)');
-                badge.setAttribute('font-size', '9');
-                badge.textContent = node.role;
-                g.appendChild(badge);
+                roleEl = activeDocument.createElementNS(svgNS, 'text');
+                roleEl.setAttribute('text-anchor', 'middle');
+                roleEl.setAttribute('fill', 'var(--text-muted)');
+                roleEl.setAttribute('font-size', '9');
+                roleEl.textContent = node.role;
+                g.appendChild(roleEl);
+            }
+
+            this.nodeDom.set(node.id, { circle, label, role: roleEl });
+        }
+
+        this.svgBuilt = true;
+        this.applyVisibility();
+        this.updatePositions();
+        this.applyLabelVisibility();
+    }
+
+    private updateTransform(): void {
+        if (!this.layer) return;
+        this.layer.setAttribute('transform', `translate(${this.panX},${this.panY}) scale(${this.zoom})`);
+    }
+
+    private updatePositions(): void {
+        if (!this.svgBuilt) return;
+        // edgeDom is built in the same order as drawable edges (both endpoints present).
+        let di = 0;
+        for (const edge of this.edges) {
+            const a = this.nodeById.get(edge.source);
+            const b = this.nodeById.get(edge.target);
+            if (!a || !b) continue;
+            const dom = this.edgeDom[di++];
+            if (!dom) continue;
+            dom.line.setAttribute('x1', String(a.x));
+            dom.line.setAttribute('y1', String(a.y));
+            dom.line.setAttribute('x2', String(b.x));
+            dom.line.setAttribute('y2', String(b.y));
+            dom.hit.setAttribute('x1', String(a.x));
+            dom.hit.setAttribute('y1', String(a.y));
+            dom.hit.setAttribute('x2', String(b.x));
+            dom.hit.setAttribute('y2', String(b.y));
+            if (dom.label) {
+                dom.label.setAttribute('x', String((a.x + b.x) / 2));
+                dom.label.setAttribute('y', String((a.y + b.y) / 2 - 6));
+            }
+        }
+
+        for (const node of this.nodes) {
+            const dom = this.nodeDom.get(node.id);
+            if (!dom) continue;
+            dom.circle.setAttribute('cx', String(node.x));
+            dom.circle.setAttribute('cy', String(node.y));
+            dom.label.setAttribute('x', String(node.x));
+            dom.label.setAttribute('y', String(node.y + (node.hasProfile ? 30 : 24)));
+            if (dom.role) {
+                dom.role.setAttribute('x', String(node.x));
+                dom.role.setAttribute('y', String(node.y - 24));
             }
         }
     }
+
+    private applyVisibility(): void {
+        for (const dom of this.edgeDom) {
+            const hide = this.hiddenTypes.has(dom.type);
+            dom.line.style.display = hide ? 'none' : '';
+            dom.hit.style.display = hide ? 'none' : '';
+            if (dom.label) dom.label.style.display = hide ? 'none' : '';
+        }
+    }
+
+    private applyLabelVisibility(): void {
+        const showLabels = this.nodes.length < LABEL_HIDE_AT || this.zoom >= 1.15;
+        for (const node of this.nodes) {
+            const dom = this.nodeDom.get(node.id);
+            if (!dom) continue;
+            dom.label.style.display = showLabels ? '' : 'none';
+            if (dom.role) dom.role.style.display = showLabels ? '' : 'none';
+        }
+    }
+}
+
+/** Deterministic-ish salt for sampled repulsion without Math.random each frame. */
+function iterationsSalt(i: number, s: number): number {
+    return ((i + 1) * (s + 3) * 2654435761) >>> 0;
 }
 /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

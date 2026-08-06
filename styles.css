@@ -207,14 +207,16 @@ body.theme-dark {
 .story-line-toolbar {
     display: flex;
     align-items: center;
-    padding: 8px 16px;
+    padding: 6px 12px;
     border-bottom: 1px solid var(--sc-card-border);
     background: var(--background-primary);
     position: sticky;
     top: 0;
     z-index: 10;
-    gap: 8px;
+    gap: 6px 8px;
     flex-wrap: wrap;
+    min-height: 40px;
+    overflow: visible;
 }
 
 /* Issue #98 ??when the toolbar is sticky inside a scroll container that has
@@ -237,6 +239,12 @@ body.theme-dark {
     font-size: 1.1em;
     font-weight: 600;
     white-space: nowrap;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding-top: 1px;
+    box-sizing: border-box;
 }
 
 /* Title + project selector row */
@@ -244,6 +252,8 @@ body.theme-dark {
     display: flex;
     align-items: center;
     gap: 8px;
+    height: 28px;
+    flex-shrink: 0;
 }
 /* Always hide Obsidian's redundant leaf view-header above NarrativeLab toolbars ?
    the project name is already shown in the in-view title row. */
@@ -462,23 +472,64 @@ body.theme-dark {
     background-position: right 8px center;
 }
 
-/* Push controls to the right */
+/* Push controls to the right; wrap as a unit when the row is too narrow
+   (inspector open, long project title, etc.) instead of stacking on top. */
 .story-line-toolbar-controls {
     display: flex;
     align-items: center;
     gap: 6px;
     margin-left: auto;
-    flex-shrink: 0;
-    flex-wrap: nowrap;
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    min-width: 0;
+    min-height: 28px;
+    max-width: 100%;
+    justify-content: flex-end;
+}
+
+/* Board: mode / toggles / CTA always get their own row so they never
+   collide with the view switcher when the scene inspector is open. */
+.story-line-toolbar-controls.is-board-controls {
+    flex: 1 1 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+    align-items: center;
+}
+
+/* Kill Obsidian/theme button padding so CJK labels sit on the true
+   vertical center of fixed-height toolbar controls. */
+.story-line-toolbar button.mod-cta.story-line-add-btn,
+.story-line-toolbar-controls button.story-line-add-btn,
+.story-line-toolbar-controls .story-line-add-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    height: 28px !important;
+    min-height: 28px !important;
+    max-height: 28px !important;
+    padding: 0 12px !important;
+    margin: 0 !important;
+    line-height: 1 !important;
+    box-sizing: border-box !important;
+    /* CJK em-box sits slightly high; nudge down optically */
+    padding-top: 1px !important;
+    padding-bottom: 0 !important;
 }
 
 .story-line-icon-group {
     display: inline-flex;
     align-items: center;
     gap: 2px;
+    height: 28px;
 }
 .story-line-icon-group .clickable-icon {
-    padding: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    box-sizing: border-box;
 }
 
 /* --- View Switcher Tabs --- */
@@ -486,13 +537,18 @@ body.theme-dark {
     display: flex;
     align-items: center;
     gap: 0;
+    height: 28px;
+    flex-shrink: 1;
+    min-width: 0;
 }
 
 .story-line-view-tab.story-line-view-tab {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 4px;
-    padding: 2px 8px 4px;
+    height: 28px;
+    padding: 0 8px;
     margin: 0;
     border: none;
     border-bottom: 2px solid transparent;
@@ -506,7 +562,8 @@ body.theme-dark {
     cursor: pointer;
     transition: color 0.15s, border-color 0.15s;
     white-space: nowrap;
-    line-height: 1.2;
+    line-height: 1;
+    box-sizing: border-box;
 }
 
 .story-line-view-tab.story-line-view-tab:hover {
@@ -543,54 +600,35 @@ body.theme-dark {
     line-height: 1;
 }
 
-/* Visual break before the Playmode action */
-.story-line-view-tab-divider {
-    flex: 0 0 auto;
-    width: 1px;
-    height: 16px;
-    margin: 0 8px;
-    background: var(--background-modifier-border);
-    align-self: center;
-}
-
-/* Playmode in Canvas — emphasized standalone action */
-.story-line-playmode-btn.story-line-playmode-btn {
+/* Trailing Stats / Export / Playmode group in the top view switcher */
+.story-line-view-actions {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    margin: 0 4px 0 0;
-    padding: 3px 10px;
-    border: 1px solid color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+    gap: 0;
+    margin-left: 8px;
+    padding-left: 8px;
+    border-left: 1px solid var(--background-modifier-border);
+}
+.story-line-view-tab.story-line-view-tab-playmode {
+    border: 1px solid color-mix(in srgb, var(--interactive-accent) 45%, transparent);
     border-radius: 999px;
-    background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
-    box-shadow: none;
-    outline: none;
+    border-bottom-width: 1px;
+    margin-left: 4px;
+    padding: 2px 10px;
+    background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
     color: var(--interactive-accent);
-    font-size: 0.82em;
     font-weight: 600;
-    cursor: pointer;
-    white-space: nowrap;
-    line-height: 1.2;
-    transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.story-line-playmode-btn.story-line-playmode-btn:hover {
-    background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
-    border-color: var(--interactive-accent);
+.story-line-view-tab.story-line-view-tab-playmode:hover {
+    background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
     color: var(--interactive-accent);
+    border-color: var(--interactive-accent);
 }
-.story-line-playmode-btn.story-line-playmode-btn:focus,
-.story-line-playmode-btn.story-line-playmode-btn:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 35%, transparent);
-}
-.story-line-playmode-btn.story-line-playmode-btn.is-active {
+.story-line-view-tab.story-line-view-tab-playmode.active {
     background: var(--interactive-accent);
     border-color: var(--interactive-accent);
     color: var(--text-on-accent);
-}
-.story-line-playmode-btn .view-tab-icon svg {
-    width: 14px;
-    height: 14px;
+    border-bottom-color: var(--interactive-accent);
 }
 
 /* Auto-hide view-tab labels when the toolbar is too narrow to fit them
@@ -606,10 +644,6 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     padding-left: 6px;
     padding-right: 6px;
 }
-/* Keep a short cue on the playmode pill even when labels collapse */
-body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-playmode-btn .view-tab-label {
-    display: inline;
-}
 
 .story-line-group-control {
     display: flex;
@@ -619,8 +653,18 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 }
 
 .story-line-add-btn {
-    font-size: 0.85em;
-    padding: 4px 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    font-size: 0.82em;
+    font-weight: 600;
+    padding: 0 12px;
+    line-height: 1;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    white-space: nowrap;
+    vertical-align: middle;
 }
 
 /* --- Main Area --- */
@@ -642,7 +686,9 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 16px;
+    padding: 6px 16px;
+    min-height: 40px;
+    box-sizing: border-box;
 }
 
 .story-line-filter-spacer {
@@ -657,28 +703,36 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     flex: 1;
     min-width: 0;
     max-width: 360px;
+    height: 28px;
 }
 
 .story-line-search {
     flex: 1;
     min-width: 0;
-    padding: 4px 8px;
+    height: 28px;
+    padding: 0 8px;
     border: 1px solid var(--sc-card-border);
     border-radius: var(--sc-radius);
     background: var(--background-primary);
     color: var(--sc-text);
     font-size: 0.85em;
+    line-height: 28px;
+    box-sizing: border-box;
 }
 
 .story-line-filter-toggle {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
+    height: 28px;
     font-size: 0.85em;
-    padding: 4px 10px;
+    padding: 1px 10px 0;
     border-radius: var(--sc-radius);
     color: var(--text-muted);
     flex-shrink: 0;
+    line-height: 1;
+    box-sizing: border-box;
 }
 
 .story-line-filter-toggle:hover,
@@ -710,12 +764,17 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     line-height: 1;
 }
 
-.story-line-filter-more {
+.story-line-filter-more,
+.story-line-sort.story-line-filter-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     flex-shrink: 0;
     color: var(--text-muted);
 }
 
-.story-line-filter-more:hover {
+.story-line-filter-more:hover,
+.story-line-sort.story-line-filter-toggle:hover {
     color: var(--text-normal);
 }
 
@@ -821,6 +880,8 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     padding: 10px 16px 14px;
     border-top: 1px solid var(--sc-card-border);
     background: var(--background-primary-alt);
+    max-height: min(55vh, 420px);
+    overflow-y: auto;
 }
 
 .story-line-filter-section {
@@ -893,9 +954,28 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     opacity: 0.85;
 }
 
-.character-tag-filter-chips {
-    margin-top: -4px;
-    margin-bottom: 14px;
+.character-tag-filter-chips,
+.library-filter-chips {
+    margin-top: 0;
+    margin-bottom: 8px;
+    max-height: 88px; /* ~3 compact rows; scroll instead of eating the card area */
+    overflow-x: hidden;
+    overflow-y: auto;
+    gap: 4px;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    flex-shrink: 0;
+}
+
+.library-filter-empty-hint {
+    font-size: 0.78em;
+    color: var(--text-faint);
+}
+
+.story-line-character-content .story-line-filter-chips.character-tag-filter-chips .story-line-chip {
+    padding: 1px 7px;
+    font-size: 0.75em;
+    line-height: 1.35;
 }
 
 .story-line-preset-header {
@@ -924,68 +1004,89 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 }
 
 /* --- Board View --- */
+/* Segmented control — distinct from view-switcher underlines so heights/baselines match */
 .story-line-board-mode-toggle.story-line-board-mode-toggle {
     display: inline-flex;
     align-items: center;
     gap: 0;
-    padding: 0;
-    border: none;
-    border-radius: 0;
-    background: transparent;
+    height: 28px;
+    padding: 2px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 7px;
+    background: var(--background-secondary);
     box-shadow: none;
+    box-sizing: border-box;
+    flex-shrink: 0;
 }
 
 .story-line-board-mode-btn.story-line-board-mode-btn {
-    border: none;
-    border-bottom: 2px solid transparent;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    height: 24px !important;
+    min-height: 24px !important;
+    border: none !important;
+    border-bottom: none !important;
     background: transparent;
     color: var(--text-muted);
-    border-radius: 0;
-    padding: 4px 8px;
+    border-radius: 5px;
+    padding: 1px 10px 0 !important;
+    margin: 0 !important;
     font-size: 0.8em;
+    font-weight: 500;
+    line-height: 1 !important;
     cursor: pointer;
     outline: none;
     box-shadow: none;
-    transition: color 0.15s, border-color 0.15s;
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+    box-sizing: border-box !important;
 }
 
 .story-line-board-mode-btn.story-line-board-mode-btn:focus,
 .story-line-board-mode-btn.story-line-board-mode-btn:active {
     outline: none;
     box-shadow: none;
-    border: none;
-    border-bottom: 2px solid transparent;
+    border: none !important;
 }
 
 .story-line-board-mode-btn.story-line-board-mode-btn:hover {
-    background: transparent;
+    background: var(--background-modifier-hover);
     color: var(--text-normal);
 }
 
 .story-line-board-mode-btn.story-line-board-mode-btn.active {
-    background: transparent;
-    color: var(--interactive-accent);
+    background: var(--background-primary);
+    color: var(--text-normal);
     font-weight: 600;
-    border: none;
-    border-bottom: 2px solid var(--interactive-accent);
+    border: none !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
 .story-line-board-mode-btn.story-line-board-mode-btn.active:focus {
-    border: none;
-    border-bottom: 2px solid var(--interactive-accent);
+    border: none !important;
 }
 
 /* --- Toggle switch --- */
 .sl-toggle-wrap {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    height: 28px;
     cursor: pointer;
     user-select: none;
+    flex-shrink: 0;
 }
 .sl-toggle-label {
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
     font-size: 0.8em;
     color: var(--text-muted);
+    line-height: 1;
+    /* Match optical center of the 20px track for CJK glyphs */
+    padding-top: 1px;
+    box-sizing: border-box;
 }
 .sl-toggle-wrap input[type="checkbox"] {
     display: none;
@@ -1111,13 +1212,16 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 
 /* ?? Kanban note cards ? sticky-note look in column view ?? */
 .scene-card.scene-card.story-line-kanban-note {
+    --sl-note-bg: transparent;
+    --sl-note-text: var(--text-normal);
+    --sl-note-accent: var(--text-muted);
     border-left: 0;
     border: 1px solid var(--background-modifier-border);
-    background: var(--sl-note-bg, #fff8cc);
+    background: var(--sl-note-bg);
     border-radius: var(--sc-radius);
 }
 .scene-card.scene-card.story-line-kanban-note:hover {
-    background: var(--sl-note-bg, #fff8cc);
+    background: var(--sl-note-bg);
 }
 .scene-card.story-line-kanban-note::after {
     content: none;
@@ -1133,21 +1237,22 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     display: none;
 }
 .scene-card.story-line-kanban-note .scene-card-title {
-    color: #111;
+    color: var(--sl-note-text, var(--text-normal));
     font-style: inherit;
 }
 
 .scene-card.scene-card.story-line-corkboard-note-card {
-    --sl-note-bg: #fff8cc;
-    --sl-note-text: #111;
-    --sl-note-accent: rgba(122, 112, 84, 0.4);
-    --sl-note-accent-strong: rgba(122, 112, 84, 0.78);
-    --sl-note-accent-ui: color-mix(in srgb, var(--sl-note-accent) 75%, white 25%);
+    /* Default: no fill — outline only. Tint via right-click color menu. */
+    --sl-note-bg: transparent;
+    --sl-note-text: var(--text-normal);
+    --sl-note-accent: var(--text-muted);
+    --sl-note-accent-strong: var(--text-muted);
+    --sl-note-accent-ui: color-mix(in srgb, var(--sl-note-accent) 55%, transparent 45%);
     border-left: 0;
     border: 1px solid var(--background-modifier-border);
     background: var(--sl-note-bg);
     border-radius: 8px;
-    box-shadow: var(--sl-shadow-sm);
+    box-shadow: none;
     resize: none;
     overflow: hidden;
     min-width: 240px;
@@ -1158,8 +1263,16 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     position: relative;
 }
 
+.scene-card.scene-card.story-line-corkboard-note-card.is-tinted {
+    box-shadow: var(--sl-shadow-sm);
+}
+
 .scene-card.scene-card.story-line-corkboard-note-card:hover {
     background: var(--sl-note-bg);
+    box-shadow: none;
+}
+
+.scene-card.scene-card.story-line-corkboard-note-card.is-tinted:hover {
     box-shadow: var(--sl-shadow-sm);
 }
 
@@ -1221,8 +1334,8 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     padding: 8px 10px;
     font-size: 1em;
     line-height: 1.45;
-    background: var(--sl-note-bg);
-    color: #111;
+    background: transparent;
+    color: var(--sl-note-text, var(--text-normal));
     box-sizing: border-box;
     overflow: hidden;
     box-shadow: none;
@@ -1238,8 +1351,8 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     padding: 8px 10px;
     font-size: 1em;
     line-height: 1.45;
-    background: var(--sl-note-bg);
-    color: #111;
+    background: transparent;
+    color: var(--sl-note-text, var(--text-normal));
     box-sizing: border-box;
     overflow: hidden;
     cursor: text;
@@ -1251,7 +1364,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .story-line-corkboard-note-preview * {
     overflow-wrap: anywhere;
     word-break: break-word;
-    color: #111;
+    color: inherit;
 }
 
 .story-line-corkboard-note-preview strong,
@@ -1273,14 +1386,14 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 }
 
 .story-line-corkboard-note-preview-empty.story-line-corkboard-note-preview-empty {
-    color: #111;
+    color: var(--sl-note-text, var(--text-muted));
     opacity: 0.6;
 }
 
 .story-line-corkboard-note-text.story-line-corkboard-note-text:focus {
     outline: none;
     border: none;
-    background: var(--sl-note-bg);
+    background: transparent;
     box-shadow: none;
 }
 
@@ -1364,7 +1477,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     padding: 6px 10px 2px;
     font-size: 0.85em;
     line-height: 1.35;
-    color: #111;
+    color: var(--sl-note-text, var(--text-normal));
     cursor: text;
     min-height: 1.5em;
     overflow-wrap: anywhere;
@@ -1374,11 +1487,11 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .story-line-corkboard-note-caption * {
     overflow-wrap: anywhere;
     word-break: break-word;
-    color: #111;
+    color: inherit;
 }
 
 .story-line-corkboard-note-caption-empty.story-line-corkboard-note-caption-empty {
-    color: #111;
+    color: var(--sl-note-text, var(--text-muted));
     opacity: 0.5;
     font-style: italic;
 }
@@ -1391,8 +1504,8 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     padding: 6px 10px 2px;
     font-size: 0.85em;
     line-height: 1.35;
-    background: var(--sl-note-bg);
-    color: #111;
+    background: transparent;
+    color: var(--sl-note-text, var(--text-normal));
     box-sizing: border-box;
     overflow: hidden;
     box-shadow: none;
@@ -1401,7 +1514,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .story-line-corkboard-note-caption-input.story-line-corkboard-note-caption-input:focus {
     outline: none;
     border: none;
-    background: var(--sl-note-bg);
+    background: transparent;
     box-shadow: none;
 }
 
@@ -1957,6 +2070,93 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     line-height: 1;
     padding: 2px 6px;
     cursor: pointer;
+}
+
+/* Per-project NCanvas manager */
+.narrative-lab-ncanvas-modal {
+    width: min(560px, calc(100vw - 48px));
+    max-width: 100%;
+}
+.narrative-lab-ncanvas-modal .ncanvas-modal-hint {
+    margin: 0 0 12px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+.narrative-lab-ncanvas-modal h3 {
+    margin: 16px 0 8px;
+    font-size: var(--font-ui-medium);
+}
+.ncanvas-file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: min(280px, 40vh);
+    overflow-y: auto;
+    margin-bottom: 8px;
+}
+.ncanvas-empty {
+    padding: 16px;
+    text-align: center;
+    color: var(--text-muted);
+    border: 1px dashed var(--background-modifier-border);
+    border-radius: 8px;
+}
+.ncanvas-file-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+}
+.ncanvas-file-row.is-current {
+    border-color: var(--interactive-accent);
+}
+.ncanvas-file-info {
+    flex: 1;
+    min-width: 0;
+}
+.ncanvas-file-name {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ncanvas-file-path {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ncanvas-file-badge {
+    display: inline-block;
+    margin-top: 2px;
+    font-size: var(--font-ui-smaller);
+    color: var(--text-on-accent);
+    background: var(--interactive-accent);
+    border-radius: 4px;
+    padding: 0 6px;
+}
+.ncanvas-file-row button {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+.ncanvas-sample-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.ncanvas-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 12px;
+    border-top: 1px solid var(--background-modifier-border);
+    margin-top: 8px;
 }
 
 /* Project select modal tweaks */
@@ -3276,10 +3476,29 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 }
 
 /* --- Character View --- */
+.story-line-character-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+}
+
 .story-line-character-content {
-    padding: 16px;
+    padding: 12px;
     overflow-y: auto;
     flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.story-line-character-content > .codex-search-row {
+    margin-bottom: 6px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--background-primary);
+    padding-bottom: 4px;
 }
 
 .character-scene-section {
@@ -3479,20 +3698,66 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     color: var(--sc-text-faint);
 }
 
+.character-overview-progress-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 2px 0 6px;
+    flex-shrink: 0;
+}
+.character-overview-progress {
+    font-size: 0.78em;
+    color: var(--text-muted);
+}
+.character-overview-load-more {
+    font-size: 0.78em;
+    padding: 2px 10px;
+    border-radius: var(--radius-s);
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.character-overview-load-more:hover {
+    color: var(--text-normal);
+    border-color: var(--interactive-accent);
+}
+.character-overview-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    min-height: 0;
+}
+.character-overview-sentinel {
+    width: 100%;
+    height: 24px;
+    flex-shrink: 0;
+    pointer-events: none;
+}
 .character-overview-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 12px;
-    margin-top: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+    gap: 10px;
+    margin-top: 4px;
+    align-content: start;
+}
+.character-overview-card.is-lite {
+    padding: 8px;
+}
+.character-overview-card.is-lite .character-card-portrait {
+    max-height: 72px;
 }
 
 .character-overview-card {
-    padding: 16px;
+    padding: 10px;
     background: var(--sc-card-bg);
     border: 1px solid var(--sc-card-border);
     border-radius: var(--sc-radius);
     cursor: pointer;
     transition: background 0.15s, transform 0.1s;
+    min-width: 0;
+    text-align: center;
 }
 
 .character-overview-card:hover {
@@ -3502,8 +3767,11 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 }
 
 .character-overview-card h4 {
-    margin: 0 0 8px;
-    font-size: 1em;
+    margin: 0 0 4px;
+    font-size: 0.92em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .character-overview-card p {
@@ -3537,8 +3805,8 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .character-role-badge.role-minor { background: var(--sl-role-minor); }
 
 .character-card-snippet {
-    margin: 4px 0 8px;
-    font-size: 0.82em;
+    margin: 2px 0 4px;
+    font-size: 0.78em;
     color: var(--sc-text-muted);
     font-style: italic;
     white-space: nowrap;
@@ -3549,10 +3817,12 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .character-card-stats {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 0.78em;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    font-size: 0.72em;
     color: var(--sc-text-muted);
-    margin-bottom: 8px;
+    margin-bottom: 4px;
 }
 .character-stat-sep { opacity: 0.5; }
 .character-stat-none { font-style: italic; opacity: 0.6; }
@@ -3777,6 +4047,21 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     padding: 40px;
     text-align: center;
     color: var(--sc-text-muted);
+}
+
+.relationship-map-status {
+    font-size: 0.8em;
+    color: var(--sc-text-muted);
+    margin: 0 0 8px;
+}
+
+.relationship-map-perf-tip {
+    font-size: 0.85em;
+    color: var(--sc-text-muted);
+    margin: 0 0 10px;
+    padding: 8px 10px;
+    border-radius: var(--sc-radius);
+    background: var(--background-modifier-hover);
 }
 
 .relationship-map-legend {
@@ -4915,9 +5200,12 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 }
 
 .story-line-location-content {
-    padding: 16px;
+    padding: 12px;
     overflow-y: auto;
     flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
 }
 
 .story-line-location-content > h3 {
@@ -5063,6 +5351,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     flex-direction: column;
     align-items: center;
     justify-content: center;
+    flex: 1;
     padding: 48px 16px;
     text-align: center;
     color: var(--text-muted);
@@ -5074,14 +5363,26 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     opacity: 0.4;
 }
 
+.location-empty-icon svg {
+    width: 40px;
+    height: 40px;
+}
+
 .location-empty-state h4 {
     margin: 0 0 6px 0;
 }
 
 .location-empty-state p {
-    margin: 0;
+    margin: 0 0 16px;
     font-size: 0.9em;
     max-width: 340px;
+}
+
+.location-empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
 }
 
 /* ?? Detail view ??????????????????????? */
@@ -6884,11 +7185,6 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .plot-grid-toolbar-left { display:flex; align-items:center; gap:8px; }
 .plot-grid-toolbar-actions { display:flex; align-items:center; gap:6px; margin-left:auto; }
 
-.plot-grid-formatting-group { display:flex; gap:6px; align-items:center; }
-.plot-grid-formatting-group button { padding:6px 8px; border-radius:6px; border:1px solid transparent; background:transparent; cursor:pointer; }
-.plot-grid-formatting-group button:hover { background:var(--background-modifier-hover); }
-.plot-grid-formatting-group select { padding:6px; border-radius:6px; }
-
 .plot-grid-scroll-area { flex:1 1 auto; overflow:auto; position:relative; }
 
 .plot-grid-canvas {
@@ -7015,13 +7311,14 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     display: flex;
     align-items: flex-end;
     gap: 2px;
-    padding: 0 8px;
-    min-height: 32px;
+    padding: 0 10px;
+    min-height: 34px;
     border-top: 1px solid var(--background-modifier-border);
     background: var(--background-secondary);
     box-sizing: border-box;
     overflow: hidden;
     z-index: 6;
+    position: relative;
 }
 .concept-grid-page-list {
     display: flex;
@@ -7053,7 +7350,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     text-align: center;
     font: inherit;
     font-size: 12px;
-    line-height: 1;
+    line-height: 1.2;
     white-space: nowrap;
     transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
@@ -7076,8 +7373,11 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .concept-grid-add-page-btn {
     flex: 0 0 auto;
     align-self: center;
-    margin: 2px 0 2px 2px;
+    margin: 2px 4px 2px 4px;
+    padding: 4px;
     color: var(--text-muted);
+    position: relative;
+    z-index: 7;
 }
 .concept-grid-add-page-btn:hover {
     color: var(--text-normal);
@@ -7106,6 +7406,27 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 }
 .plot-grid-cell .plot-grid-cell-content.markdown-rendered a {
     pointer-events: auto;
+}
+/* Ensure inline Markdown styles are visible (CJK fonts often ignore bold weight alone). */
+.plot-grid-cell .plot-grid-cell-content.markdown-rendered strong,
+.plot-grid-cell .plot-grid-cell-content.markdown-rendered b {
+    font-weight: var(--bold-weight, 700);
+    -webkit-text-stroke: 0.25px currentColor;
+}
+.plot-grid-cell .plot-grid-cell-content.markdown-rendered em,
+.plot-grid-cell .plot-grid-cell-content.markdown-rendered i {
+    font-style: italic;
+}
+.plot-grid-cell .plot-grid-cell-content.markdown-rendered code {
+    font-family: var(--font-monospace);
+    font-size: 0.9em;
+    padding: 0.05em 0.3em;
+    border-radius: 3px;
+    background: var(--code-background, var(--background-modifier-hover));
+}
+.plot-grid-cell .plot-grid-cell-content.markdown-rendered del {
+    text-decoration: line-through;
+    opacity: 0.85;
 }
 .plot-grid-cell.editing textarea {
     font-family: var(--font-text, var(--font-interface));
@@ -7187,6 +7508,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 /* Sticky-note styled cell in plotgrid */
 .pg-cell-note.pg-cell-note {
     justify-content: flex-start;
+    background: transparent;
 }
 .pg-cell-note-label {
     display: flex;
@@ -7211,7 +7533,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .pg-cell-note-body {
     font-size: 13px;
     line-height: 1.4;
-    color: #2b2510;
+    color: inherit;
     white-space: pre-wrap;
     overflow: hidden;
     display: -webkit-box;
@@ -7363,6 +7685,24 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     top: 0;
     bottom: 0;
     z-index: 20;
+}
+
+/* Cell inspector CTAs — override theme button padding so CJK labels center */
+.pg-cell-link-actions button.mod-cta.pg-cell-cta-btn,
+.pg-cell-link-actions button.mod-cta,
+.story-line-inspector-panel button.mod-cta {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    height: 28px !important;
+    min-height: 28px !important;
+    padding: 1px 14px 0 !important;
+    margin: 0 !important;
+    line-height: 1 !important;
+    box-sizing: border-box !important;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 600;
 }
 
 /* ??? Export Modal ???????????????????????????????????????????? */
@@ -7788,6 +8128,53 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 }
 
 /* ============================================
+   Settings — horizontal tabs (Annotation-style)
+   ============================================ */
+.narrative-lab-settings .nl-settings-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0 0 16px;
+}
+.narrative-lab-settings .nl-settings-tab {
+    appearance: none;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+    transition: background 0.12s ease, color 0.12s ease;
+}
+.narrative-lab-settings .nl-settings-tab:hover {
+    background: var(--background-modifier-border);
+}
+.narrative-lab-settings .nl-settings-tab.is-active {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent, #fff);
+}
+.narrative-lab-settings .nl-settings-panel {
+    min-width: 0;
+}
+.narrative-lab-settings .nl-settings-panel .setting-item {
+    border-radius: 8px;
+    background: var(--background-secondary);
+    border: none;
+    padding-left: 14px;
+    padding-right: 14px;
+    margin-bottom: 8px;
+}
+.narrative-lab-settings .nl-settings-panel .setting-item-heading {
+    background: transparent;
+    padding-left: 0;
+    padding-right: 0;
+    margin-top: 12px;
+    margin-bottom: 4px;
+}
+
+/* ============================================
    Settings ??Collapsible Color Section
    ============================================ */
 .story-line-color-section {
@@ -7900,9 +8287,9 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 
 /* ?? Character Overview Card Portrait ?? */
 .character-card-portrait {
-    width: 64px;
-    height: 64px;
-    margin: 0 auto 8px;
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 6px;
     border-radius: 50%;
     overflow: hidden;
     display: flex;
@@ -7926,8 +8313,30 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     justify-content: center;
 }
 .character-portrait-placeholder svg {
-    width: 32px;
-    height: 32px;
+    width: 24px;
+    height: 24px;
+}
+
+.character-overview-card .character-role-badges {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 3px;
+    margin-bottom: 4px;
+}
+
+.character-overview-card .character-role-badge {
+    margin-bottom: 0;
+    font-size: 0.65em;
+    padding: 1px 6px;
+}
+
+.character-overview-card .character-card-completeness {
+    margin-top: 2px;
+}
+
+.character-overview-card .character-card-props {
+    display: none; /* overview stays compact; full tags live in detail */
 }
 
 /* ?? Character Detail Portrait ?? */
@@ -8409,8 +8818,8 @@ body /* Clamp title on mobile too, in case it's very long */
 }
 
 /* Hide map/story-graph toggle buttons on mobile */
-.sl-mobile .character-mode-btn[data-mode="map"],
-.sl-mobile .character-mode-btn[data-mode="story-graph"] {
+.sl-mobile .character-mode-btn[data-mode="story-graph"],
+.sl-mobile .library-mode-toggle {
     display: none;
 }
 
@@ -8726,9 +9135,9 @@ body /* Clamp title on mobile too, in case it's very long */
     padding-bottom: 40dvh;
 }
 
-/* ????????????????????????????????????????????????????????????
-   Story Navigator ??compact sidebar panel
-   ????????????????????????????????????????????????????????????*/
+/* ============================================================
+   Story Navigator — dense binder (aligned gutters / indent)
+   ============================================================ */
 
 .sl-navigator {
     display: flex;
@@ -8736,46 +9145,22 @@ body /* Clamp title on mobile too, in case it's very long */
     height: 100%;
     overflow: hidden;
     font-size: 13px;
+    --sl-nav-row-h: 22px;
+    --sl-nav-pad-x: 6px;
+    /* Keep in sync with NavigatorView.NAV_INDENT_STEP */
+    --sl-nav-indent-step: 12px;
+    --sl-nav-toggle-w: 14px;
+    --sl-nav-icon-w: 16px;
+    --sl-nav-seq-w: 16px;
+    --sl-nav-depth: 0;
 }
 
-/* ?? Scene Details button ?? */
-.sl-nav-details-row {
-    display: flex;
-    gap: 4px;
-    flex-shrink: 0;
-    padding: 4px 8px 0;
-    justify-content: flex-end;
-}
-
-.sl-nav-details-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    cursor: pointer;
-    color: var(--text-muted);
-    border: none;
-    background: transparent;
-    border-radius: var(--radius-s);
-}
-
-.sl-nav-details-btn:hover {
-    color: var(--text-normal);
-    background: var(--background-modifier-hover);
-}
-
-.sl-nav-details-btn .svg-icon {
-    width: 18px;
-    height: 18px;
-}
-
-/* ?? Toolbar ?? */
+/* Toolbar: search + icon buttons on one row */
 .sl-nav-toolbar {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 6px 8px;
+    gap: 2px;
+    padding: 6px;
     border-bottom: 1px solid var(--background-modifier-border);
     flex-shrink: 0;
 }
@@ -8786,10 +9171,11 @@ body /* Clamp title on mobile too, in case it's very long */
     gap: 4px;
     flex: 1;
     min-width: 0;
+    height: 26px;
     background: var(--background-modifier-form-field);
     border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    padding: 2px 6px;
+    border-radius: 5px;
+    padding: 0 6px;
 }
 
 .sl-nav-search-icon {
@@ -8799,8 +9185,8 @@ body /* Clamp title on mobile too, in case it's very long */
     align-items: center;
 }
 .sl-nav-search-icon svg {
-    width: 14px;
-    height: 14px;
+    width: 13px;
+    height: 13px;
 }
 
 .sl-nav-search {
@@ -8810,80 +9196,66 @@ body /* Clamp title on mobile too, in case it's very long */
     font-size: 12px;
     color: var(--text-normal);
     width: 100%;
-    padding: 2px 0;
+    padding: 0;
+    line-height: 1;
 }
 
-.sl-nav-sort-btn {
+.sl-nav-icon-btn,
+.sl-nav-sort-btn,
+.sl-nav-details-btn {
     flex-shrink: 0;
     cursor: pointer;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
+    width: 26px;
+    height: 26px;
+    border-radius: 5px;
     color: var(--text-muted);
-    transition: background 0.15s, color 0.15s;
+    border: none;
+    background: transparent;
 }
-.sl-nav-sort-btn:hover {
+.sl-nav-icon-btn:hover,
+.sl-nav-sort-btn:hover,
+.sl-nav-details-btn:hover {
     background: var(--background-modifier-hover);
     color: var(--text-normal);
 }
-.sl-nav-sort-btn svg {
-    width: 16px;
-    height: 16px;
+.sl-nav-icon-btn svg,
+.sl-nav-sort-btn svg,
+.sl-nav-details-btn svg,
+.sl-nav-icon-btn .svg-icon,
+.sl-nav-sort-btn .svg-icon,
+.sl-nav-details-btn .svg-icon {
+    width: 15px;
+    height: 15px;
 }
 
-/* ?? Plotline filter (collapsible list) ?? */
-.sl-nav-chip-section {
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--background-modifier-border);
-    padding: 4px 0;
+/* Legacy details row — hidden if an old build still emits it */
+.sl-nav-details-row {
+    display: none;
 }
 
-.sl-nav-chip-toggle {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 10px;
-    cursor: pointer;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--text-faint);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    user-select: none;
-    transition: color 0.15s;
-}
-.sl-nav-chip-toggle:hover {
-    color: var(--text-muted);
-}
-.sl-nav-chip-toggle.has-filter .sl-nav-chip-toggle-label {
+/* Plotline filter (nested under active project) */
+.sl-nav-plotlines-folder.has-filter .sl-nav-folder-label {
     color: var(--interactive-accent);
 }
-.sl-nav-chip-toggle-icon {
-    font-size: 9px;
-    width: 10px;
-    text-align: center;
-}
-
 .sl-nav-plotline-list {
-    padding: 2px 0 4px;
-    max-height: 200px;
+    padding: 0 0 2px;
+    max-height: 180px;
     overflow-y: auto;
 }
-
 .sl-nav-plotline-item {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 2px 14px;
+    gap: 4px;
+    padding: 0 var(--sl-nav-pad-x);
+    padding-left: calc(var(--sl-nav-pad-x) + (var(--sl-nav-depth, 0) * var(--sl-nav-indent-step)));
+    min-height: var(--sl-nav-row-h);
     cursor: pointer;
-    font-size: 11.5px;
+    font-size: 12px;
     color: var(--text-muted);
-    border-radius: 4px;
-    margin: 0 4px;
-    transition: background 0.1s, color 0.1s;
+    box-sizing: border-box;
 }
 .sl-nav-plotline-item:hover {
     background: var(--background-modifier-hover);
@@ -8894,14 +9266,12 @@ body /* Clamp title on mobile too, in case it's very long */
     color: var(--text-normal);
     font-weight: 600;
 }
-
 .sl-nav-plotline-dot {
     flex-shrink: 0;
     width: 7px;
     height: 7px;
     border-radius: 50%;
 }
-
 .sl-nav-plotline-name {
     flex: 1;
     min-width: 0;
@@ -8909,7 +9279,6 @@ body /* Clamp title on mobile too, in case it's very long */
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-
 .sl-nav-plotline-count {
     flex-shrink: 0;
     font-size: 10px;
@@ -8917,82 +9286,230 @@ body /* Clamp title on mobile too, in case it's very long */
     font-variant-numeric: tabular-nums;
 }
 
-/* ?? Scene list ?? */
+/* Binder tree */
 .sl-nav-list {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 2px 0;
+    padding: 2px 0 4px;
 }
-
 .sl-nav-empty {
-    padding: 20px 12px;
+    padding: 16px 10px;
     text-align: center;
     color: var(--text-faint);
     font-size: 12px;
 }
 
-/* Act group header */
-.sl-nav-act-header {
+.sl-nav-folder {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 10px;
+    padding: 0 var(--sl-nav-pad-x);
+    padding-left: calc(var(--sl-nav-pad-x) + (var(--sl-nav-depth, 0) * var(--sl-nav-indent-step)));
+    min-height: var(--sl-nav-row-h);
     cursor: pointer;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
     user-select: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+    border-radius: 0;
+    box-sizing: border-box;
 }
-.sl-nav-act-header:hover {
+.sl-nav-folder:hover {
+    background: var(--background-modifier-hover);
     color: var(--text-normal);
 }
-.sl-nav-act-toggle {
+.sl-nav-project-root {
+    color: var(--text-normal);
+    font-size: 12.5px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin-bottom: 1px;
+    min-height: 26px;
+}
+.sl-nav-project-root.is-inactive-project {
+    color: var(--text-muted);
+    font-weight: 500;
+    border-bottom: none;
+    margin-bottom: 0;
+    opacity: 0.85;
+}
+.sl-nav-project-root.is-inactive-project:hover {
+    color: var(--text-normal);
+    opacity: 1;
+}
+.sl-nav-project-root.is-active-project {
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+/* Primary binder sections: Notes / Scenes / Research */
+.sl-nav-primary-folder {
+    font-weight: 600;
+    color: var(--text-normal);
+    min-height: 24px;
+}
+.sl-nav-plotlines-folder {
+    font-weight: 500;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+/* Shared leading gutters: toggle | icon | seq → title column aligns per depth */
+.sl-nav-gutter-toggle {
+    width: var(--sl-nav-toggle-w);
+    flex-shrink: 0;
     font-size: 10px;
+    line-height: 1;
+    text-align: center;
+    color: var(--text-faint);
+}
+.sl-nav-gutter-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--sl-nav-icon-w);
+    height: var(--sl-nav-icon-w);
+    flex-shrink: 0;
+    color: var(--text-muted);
+    opacity: 0.85;
+}
+.sl-nav-gutter-icon.has-icon svg {
+    width: 14px;
+    height: 14px;
+}
+.sl-nav-gutter-seq {
+    flex-shrink: 0;
+    width: var(--sl-nav-seq-w);
+    min-width: var(--sl-nav-seq-w);
+    font-size: 10px;
+    line-height: 1;
+    color: var(--text-faint);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.sl-nav-folder-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sl-nav-folder-count,
+.sl-nav-act-count,
+.sl-nav-chapter-count,
+.sl-nav-wc {
+    flex: 0 0 auto;
+    margin-left: 6px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+    opacity: 0.85;
+}
+.sl-nav-folder-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    color: var(--text-muted);
+    opacity: 0;
+    flex-shrink: 0;
+}
+.sl-nav-folder-action.is-always {
+    opacity: 0.55;
+}
+.sl-nav-folder:hover .sl-nav-folder-action,
+.sl-nav-folder-action.is-always:hover {
+    opacity: 1;
+}
+.sl-nav-folder-action:hover {
+    background: var(--background-modifier-border);
+    color: var(--text-normal);
+}
+.sl-nav-folder-action svg {
+    width: 13px;
+    height: 13px;
+}
+.sl-nav-empty-action {
+    display: block;
+    margin: 8px auto 0;
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 5px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+}
+.sl-nav-empty-action:hover {
+    background: var(--background-modifier-hover);
+    border-color: var(--interactive-accent);
+    color: var(--interactive-accent);
+}
+
+.sl-nav-draft-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 var(--sl-nav-pad-x);
+    min-height: var(--sl-nav-row-h);
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+.sl-nav-draft-row:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+.sl-nav-draft-row.is-active {
+    color: var(--interactive-accent);
+    font-weight: 600;
+    background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+}
+.sl-nav-draft-mark {
     width: 12px;
     text-align: center;
     flex-shrink: 0;
+    font-size: 9px;
+    line-height: 1;
 }
-.sl-nav-act-label {
+.sl-nav-draft-title {
     flex: 1;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.sl-nav-act-count {
-    font-size: 10px;
-    color: var(--text-faint);
-    font-weight: 400;
+.sl-nav-draft-scope {
+    display: none;
 }
 
-/* Issue #113 ??Chapter sub-group header. Same uppercase, weighted style as
-   act headers so the navigator looks consistent when grouping by chapter. */
+/* Act / chapter group headers */
+.sl-nav-act-header,
 .sl-nav-chapter-header {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 10px;
+    padding: 0 var(--sl-nav-pad-x);
+    padding-left: calc(var(--sl-nav-pad-x) + (var(--sl-nav-depth, 0) * var(--sl-nav-indent-step)));
+    min-height: 20px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10.5px;
     font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: var(--text-faint);
+    text-transform: none;
+    letter-spacing: 0;
     user-select: none;
+    box-sizing: border-box;
 }
+.sl-nav-act-header:hover,
 .sl-nav-chapter-header:hover {
-    color: var(--text-normal);
+    color: var(--text-muted);
+    background: var(--background-modifier-hover);
 }
-.sl-nav-chapter-toggle {
-    font-size: 10px;
-    width: 12px;
-    text-align: center;
-    flex-shrink: 0;
-}
+.sl-nav-act-label,
 .sl-nav-chapter-label {
     flex: 1;
     min-width: 0;
@@ -9000,32 +9517,30 @@ body /* Clamp title on mobile too, in case it's very long */
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.sl-nav-chapter-count {
-    font-size: 10px;
-    color: var(--text-faint);
-    font-weight: 400;
-}
-/* Scenes wrapper ??visually nests rows under their chapter header. */
+
+/* Indent comes from --sl-nav-depth on rows — don't double-shift here */
 .sl-nav-chapter-body {
-    padding-left: 14px;
-    border-left: 1px solid var(--background-modifier-border);
-    margin: 0 6px 4px 14px;
+    margin: 0;
+    padding: 0;
+    border: none;
 }
 .sl-nav-chapter-body .sl-nav-row {
     margin: 0;
 }
 
-/* Scene row */
+/* Scene / note / research rows */
 .sl-nav-row {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
+    gap: 4px;
+    padding: 0 var(--sl-nav-pad-x);
+    padding-left: calc(var(--sl-nav-pad-x) + (var(--sl-nav-depth, 0) * var(--sl-nav-indent-step)));
+    margin: 0;
     cursor: pointer;
-    border-radius: 4px;
-    margin: 0 4px;
-    transition: background 0.1s;
-    min-height: 26px;
+    border-radius: 0;
+    min-height: var(--sl-nav-row-h);
+    transition: background 0.08s;
+    box-sizing: border-box;
 }
 .sl-nav-row:hover {
     background: var(--background-modifier-hover);
@@ -9033,59 +9548,77 @@ body /* Clamp title on mobile too, in case it's very long */
 .sl-nav-row:active {
     background: var(--background-modifier-active-hover, var(--background-modifier-hover));
 }
+.sl-nav-row.is-selected {
+    background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+}
+.sl-nav-row.is-selected .sl-nav-title {
+    font-weight: 600;
+    color: var(--text-normal);
+}
 .sl-nav-row.is-pinned {
-    border-left: 2px solid var(--interactive-accent);
-    padding-left: 8px;
+    box-shadow: inset 2px 0 0 var(--interactive-accent);
 }
 
 .sl-nav-status-dot {
     flex-shrink: 0;
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
 }
-
+/* Legacy class kept if any leftover markup references it */
 .sl-nav-seq {
     flex-shrink: 0;
+    width: var(--sl-nav-seq-w);
+    min-width: var(--sl-nav-seq-w);
     font-size: 10px;
     color: var(--text-faint);
-    min-width: 18px;
     text-align: right;
     font-variant-numeric: tabular-nums;
 }
-
+.sl-nav-row-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--sl-nav-icon-w);
+    height: var(--sl-nav-icon-w);
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+.sl-nav-row-icon svg {
+    width: 13px;
+    height: 13px;
+}
 .sl-nav-title {
-    flex: 1;
+    flex: 1 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--text-normal);
-    font-size: 12.5px;
+    font-size: 12px;
+    line-height: 1.2;
 }
-
 .sl-nav-wc {
-    flex-shrink: 0;
-    font-size: 10px;
-    color: var(--text-faint);
-    font-variant-numeric: tabular-nums;
+    opacity: 0;
+}
+.sl-nav-row:hover .sl-nav-wc,
+.sl-nav-row.is-selected .sl-nav-wc {
+    opacity: 0.85;
 }
 
-/* ?? Bottom progress bar ?? */
+/* Bottom progress */
 .sl-nav-bottom {
     flex-shrink: 0;
-    padding: 6px 10px 8px;
+    padding: 5px 8px 6px;
     border-top: 1px solid var(--background-modifier-border);
 }
-
 .sl-nav-progress-bar {
-    height: 4px;
+    height: 3px;
     background: var(--background-modifier-border);
     border-radius: 2px;
     overflow: hidden;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
 }
-
 .sl-nav-progress-fill {
     height: 100%;
     background: var(--interactive-accent);
@@ -9093,7 +9626,6 @@ body /* Clamp title on mobile too, in case it's very long */
     transition: width 0.3s ease;
     width: 0%;
 }
-
 .sl-nav-progress-label {
     font-size: 10px;
     color: var(--text-faint);
@@ -9288,7 +9820,13 @@ body /* Clamp title on mobile too, in case it's very long */
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    padding: 12px 16px;
+    padding: 12px;
+}
+
+.story-line-codex-content > .codex-overview-heading,
+.story-line-codex-content > h3 {
+    margin: 0 0 12px 0;
+    font-size: 1.15em;
 }
 
 /* Detail editor still needs the content pane to scroll */
@@ -9319,19 +9857,29 @@ body /* Clamp title on mobile too, in case it's very long */
 .codex-category-tabs {
     display: flex;
     flex-wrap: wrap;
-    gap: 0;
-    padding: 4px 0 0;
-    border-bottom: none;
-    margin-bottom: 8px;
-    align-items: center;
+    flex-shrink: 0;
+    gap: 2px;
+    padding: 2px 12px 0;
+    border-bottom: 1px solid var(--background-modifier-border);
+    margin: 0;
+    align-items: stretch;
+    box-sizing: border-box;
+}
+
+/* Browse / Story Graph sits on the right of the Library category tab bar */
+.codex-category-tabs .library-mode-toggle {
+    margin-left: auto;
+    align-self: stretch;
 }
 
 .codex-tab.codex-tab {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 8px 4px;
-    margin: 0;
+    justify-content: center;
+    gap: 5px;
+    min-height: 30px;
+    padding: 4px 10px;
+    margin: 0 0 -1px;
     border: none;
     border-bottom: 2px solid transparent;
     border-radius: 0;
@@ -9344,7 +9892,8 @@ body /* Clamp title on mobile too, in case it's very long */
     cursor: pointer;
     transition: color 0.15s, border-color 0.15s;
     white-space: nowrap;
-    line-height: 1.2;
+    line-height: 1;
+    vertical-align: middle;
 }
 .codex-tab.codex-tab:hover {
     background: none;
@@ -9362,12 +9911,25 @@ body /* Clamp title on mobile too, in case it's very long */
     box-shadow: none;
 }
 .codex-tab-icon {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    line-height: 1;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    line-height: 0;
 }
-.codex-tab-icon svg { width: 14px; height: 14px; }
-.codex-tab-label { white-space: nowrap; line-height: 1; }
+.codex-tab-icon svg {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+.codex-tab-label {
+    white-space: nowrap;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+}
 .codex-tab-badge {
     display: none;
 }
@@ -9480,11 +10042,19 @@ body /* Clamp title on mobile too, in case it's very long */
 /* ?? Empty state ?????????????????????????????????????? */
 
 .codex-empty-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
     text-align: center;
-    padding: 40px 20px;
+    padding: 48px 16px;
     color: var(--text-muted);
 }
-.codex-empty-state p { margin-bottom: 12px; }
+.codex-empty-state p {
+    margin: 0 0 16px;
+    max-width: 340px;
+}
 
 /* ?? Detail view ?????????????????????????????????????? */
 
@@ -10312,7 +10882,7 @@ body.theme-dark .location-field-input.dropdown {
 .sl-instant-tooltip {
     position: fixed;
     transform: translateX(-50%);
-    padding: 4px 8px;
+    padding: 3px 8px;
     background: var(--background-secondary);
     color: var(--text-normal);
     font-size: 11px;
@@ -10323,6 +10893,9 @@ body.theme-dark .location-field-input.dropdown {
     z-index: 10000;
     box-shadow: 0 2px 8px rgba(0,0,0,0.18);
     border: 1px solid var(--background-modifier-border);
+}
+.sl-instant-tooltip.is-above {
+    transform: translate(-50%, -100%);
 }
 
 /* ?? Scene Inspector Sidebar ?? */
@@ -10406,6 +10979,12 @@ body.theme-dark .location-field-input.dropdown {
     margin-bottom: 32px;
     padding-bottom: 32px;
     border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+
+.sl-manuscript-scene-block.is-nav-target {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 4px;
+    border-radius: 4px;
 }
 
 .sl-manuscript-scene-block:last-child {
@@ -10542,9 +11121,15 @@ body.theme-dark .location-field-input.dropdown {
     display: none;
 }
 
-/* Hide frontmatter / properties ??gated on the Hide-Frontmatter setting via
-   the body-level class so toggling the setting OFF restores frontmatter
-   inside Manuscript-embedded scenes too. */
+/* Collapse mode: hide the field list on first paint (keep 「属性」 heading).
+   Once folded (.sl-fm-ready) or user expands, native toggle wins. */
+body.sl-collapse-frontmatter-global .sl-manuscript-embedded-split .metadata-container:not(.is-collapsed):not(.sl-fm-ready) .metadata-content,
+body.sl-collapse-frontmatter-global .workspace-leaf-content[data-type^="narrative-lab-"] .metadata-container:not(.is-collapsed):not(.sl-fm-ready) .metadata-content {
+    display: none !important;
+}
+
+/* Hide frontmatter / properties — gated on Hide mode via body class so
+   toggling OFF restores frontmatter inside Manuscript-embedded scenes too. */
 body.sl-hide-frontmatter-global .sl-manuscript-embedded-split.sl-manuscript-embedded-split .metadata-container,
 body.sl-hide-frontmatter-global .sl-manuscript-embedded-split.sl-manuscript-embedded-split .metadata-properties-container,
 body.sl-hide-frontmatter-global .sl-manuscript-embedded-split.sl-manuscript-embedded-split .metadata-properties-heading {
@@ -11976,6 +12561,47 @@ body.sl-focus-active-global .titlebar {
 }
 
 
+
+/* Flash a workspace tab when a sidebar view is opened / re-focused */
+@keyframes sl-tab-flash-pulse {
+    0% {
+        box-shadow: inset 0 0 0 0 transparent;
+        background-color: transparent;
+    }
+    25%,
+    55% {
+        box-shadow: inset 0 0 0 1.5px var(--interactive-accent);
+        background-color: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+    }
+    100% {
+        box-shadow: inset 0 0 0 0 transparent;
+        background-color: transparent;
+    }
+}
+.workspace-tab-header.sl-tab-flash {
+    animation: sl-tab-flash-pulse 0.95s ease;
+    border-radius: var(--radius-s, 4px);
+}
+
+/* Keep icon-only right-sidebar tabs on one baseline (Tags + Scene Details, etc.) */
+.mod-right-split .workspace-tab-header-container .workspace-tab-header {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+}
+.mod-right-split .workspace-tab-header-container .workspace-tab-header-inner {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+}
+.mod-right-split .workspace-tab-header-container .workspace-tab-header-inner-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 0;
+}
 
 /* --- Scene Inspector tabs + Info panel (right sidebar) --- */
 /* The view marks its Obsidian leaf wrapper with `.sl-scene-inspector-leaf`

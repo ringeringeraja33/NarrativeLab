@@ -192,7 +192,7 @@ export class StorylineView extends ItemView {
             });
             const tagIcon = tagToggle.createSpan();
             obsidian.setIcon(tagIcon, 'tags');
-            attachTooltip(tagToggle, this.showSubwayTagPills ? 'Hide scene tags' : 'Show scene tags');
+            attachTooltip(tagToggle, this.showSubwayTagPills ? t('Hide scene tags') : t('Show scene tags'));
             tagToggle.addEventListener('click', () => {
                 this.showSubwayTagPills = !this.showSubwayTagPills;
                 this.plugin.settings.lastStorylineShowTagPills = this.showSubwayTagPills;
@@ -1070,6 +1070,30 @@ export class StorylineView extends ItemView {
 
     // ── Create new plotline for a scene ────────────────────
 
+    /**
+     * Normalize a plotline name into a tag slug.
+     * Keeps CJK / letters / numbers / `_` / `-` / `/`; strips YAML/tag-breaking
+     * chars like `?` `#` `[` which otherwise make Obsidian frontmatter throw
+     * (e.g. typing "哦?" used to fail create with no useful explanation).
+     */
+    private toPlotlineSlug(raw: string): string {
+        return raw
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[#[\]|\\^?!,;:<>{}'"*`~@&%]+/g, '')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '');
+    }
+
+    /** Read the plotline name from the modal input (avoids IME/onChange races). */
+    private readPlotlineNameInput(modal: Modal, fallback: string): string {
+        const input = modal.contentEl.querySelector(
+            '.setting-item input[type="text"]',
+        ) as HTMLInputElement | null;
+        return (input?.value ?? fallback).trim();
+    }
+
     private openNewPlotlineForScene(scene: Scene): void {
         const modal = new Modal(this.app);
         modal.titleEl.setText(t('New Plotline'));
@@ -1086,12 +1110,30 @@ export class StorylineView extends ItemView {
         new Setting(modal.contentEl)
             .addButton((btn: ButtonComponent) => {
                 btn.setButtonText(t('Create & Assign')).setCta().onClick(async () => {
-                    if (!tagName.trim()) return;
-                    const slug = tagName.trim().toLowerCase().replace(/\s+/g, '-');
-                    const newTags = [...(scene.tags || []), slug];
-                    await this.sceneManager.updateScene(scene.filePath, { tags: newTags });
-                    this.refresh();
-                    modal.close();
+                    const raw = this.readPlotlineNameInput(modal, tagName);
+                    const slug = this.toPlotlineSlug(raw);
+                    if (!raw) {
+                        new Notice(t('Please enter a plotline name.'));
+                        return;
+                    }
+                    if (!slug) {
+                        new Notice(t('Plotline name has no valid characters. Avoid ? # [ ] and similar symbols.'));
+                        return;
+                    }
+                    const newTags = [...new Set([...(scene.tags || []), slug])];
+                    btn.setDisabled(true);
+                    try {
+                        await this.sceneManager.updateSceneTags(scene.filePath, newTags);
+                        modal.close();
+                        this.refresh();
+                        new Notice(t('Plotline created'));
+                    } catch (err) {
+                        console.error('[NarrativeLab] create plotline failed', err);
+                        btn.setDisabled(false);
+                        new Notice(t('Failed to create plotline: {err}', {
+                            err: err instanceof Error ? err.message : String(err),
+                        }));
+                    }
                 });
             });
         modal.open();
@@ -1118,14 +1160,21 @@ export class StorylineView extends ItemView {
             text: t('Select scenes to include (optional):')
         });
 
-        const scenes = this.sceneManager.queryService.getFilteredScenes(undefined, { field: 'sequence', direction: 'asc' });
+        const scenes = this.sceneManager.queryService.getFilteredScenes(undefined, { field: 'sequence', direction: 'asc' })
+            .filter(s => !this.isCorkboardNoteScene(s));
         const selectedPaths = new Set<string>();
 
         const sceneList = scenePicker.createDiv('storyline-scene-picker-list');
         scenes.forEach(scene => {
             const row = sceneList.createDiv('storyline-scene-picker-row');
             const cb = row.createEl('input', { type: 'checkbox' });
-            row.createSpan({ text: `[${String(scene.act ?? '?').toString().padStart(2, '0')}-${String(scene.sequence ?? '?').toString().padStart(2, '0')}] ${scene.title || 'Untitled'}` });
+            const act = scene.act !== undefined && scene.act !== null && scene.act !== ''
+                ? String(scene.act).padStart(2, '0')
+                : '--';
+            const seq = scene.sequence !== undefined
+                ? String(scene.sequence).padStart(2, '0')
+                : '--';
+            row.createSpan({ text: `[${act}-${seq}] ${scene.title || t('Untitled')}` });
             cb.addEventListener('change', () => {
                 if (cb.checked) selectedPaths.add(scene.filePath);
                 else selectedPaths.delete(scene.filePath);
@@ -1135,17 +1184,57 @@ export class StorylineView extends ItemView {
         new Setting(modal.contentEl)
             .addButton((btn: ButtonComponent) => {
                 btn.setButtonText(t('Create Plotline')).setCta().onClick(async () => {
-                    if (!tagName.trim()) return;
-                    const slug = tagName.trim().toLowerCase().replace(/\s+/g, '-');
-                    for (const path of selectedPaths) {
-                        const scene = this.sceneManager.getScene(path);
-                        if (scene) {
-                            const newTags = [...(scene.tags || []), slug];
-                            await this.sceneManager.updateScene(path, { tags: newTags });
-                        }
+                    const raw = this.readPlotlineNameInput(modal, tagName);
+                    const slug = this.toPlotlineSlug(raw);
+                    if (!raw) {
+                        new Notice(t('Please enter a plotline name.'));
+                        return;
                     }
-                    this.refresh();
-                    modal.close();
+                    if (!slug) {
+                        new Notice(t('Plotline name has no valid characters. Avoid ? # [ ] and similar symbols.'));
+                        return;
+                    }
+                    const paths = [...selectedPaths];
+                    if (paths.length === 0) {
+                        new Notice(t('Select at least one scene, or create the plotline from a scene’s menu.'));
+                        return;
+                    }
+                    btn.setDisabled(true);
+                    try {
+                        let assigned = 0;
+                        const errors: string[] = [];
+                        for (const path of paths) {
+                            const scene = this.sceneManager.getScene(path);
+                            if (!scene) continue;
+                            const newTags = [...new Set([...(scene.tags || []), slug])];
+                            try {
+                                await this.sceneManager.updateSceneTags(path, newTags);
+                                assigned++;
+                            } catch (e) {
+                                errors.push(path.split('/').pop() || path);
+                                console.error('[NarrativeLab] updateSceneTags failed', path, e);
+                            }
+                        }
+                        if (assigned === 0) {
+                            btn.setDisabled(false);
+                            new Notice(t('Failed to create plotline: {err}', {
+                                err: errors.join(', ') || t('Unknown error'),
+                            }));
+                            return;
+                        }
+                        modal.close();
+                        this.refresh();
+                        new Notice(t('Plotline created on {count} scene(s)', { count: assigned }));
+                        if (errors.length > 0) {
+                            new Notice(t('Some scenes failed: {list}', { list: errors.join(', ') }));
+                        }
+                    } catch (err) {
+                        console.error('[NarrativeLab] create plotline failed', err);
+                        btn.setDisabled(false);
+                        new Notice(t('Failed to create plotline: {err}', {
+                            err: err instanceof Error ? err.message : String(err),
+                        }));
+                    }
                 });
             });
         modal.open();
@@ -1183,15 +1272,21 @@ export class StorylineView extends ItemView {
         new Setting(modal.contentEl)
             .addButton((btn: ButtonComponent) => {
                 btn.setButtonText(t('Add to Plotline')).setCta().onClick(async () => {
-                    for (const path of selectedPaths) {
-                        const scene = this.sceneManager.getScene(path);
-                        if (scene) {
-                            const newTags = [...(scene.tags || []), plotline];
-                            await this.sceneManager.updateScene(path, { tags: newTags });
-                        }
-                    }
-                    this.refresh();
+                    const paths = [...selectedPaths];
                     modal.close();
+                    try {
+                        for (const path of paths) {
+                            const scene = this.sceneManager.getScene(path);
+                            if (!scene) continue;
+                            const newTags = [...new Set([...(scene.tags || []), plotline])];
+                            await this.sceneManager.updateSceneTags(path, newTags);
+                        }
+                        this.refresh();
+                        new Notice(t('Added {count} scene(s) to plotline', { count: paths.length }));
+                    } catch (err) {
+                        console.error('[NarrativeLab] add to plotline failed', err);
+                        new Notice(t('Failed to create plotline'));
+                    }
                 });
             });
         modal.open();

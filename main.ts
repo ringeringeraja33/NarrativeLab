@@ -25,7 +25,6 @@ import {
     STATS_VIEW_TYPE,
     PLOTGRID_VIEW_TYPE,
     LOCATION_VIEW_TYPE,
-    HELP_VIEW_TYPE,
     NAVIGATOR_VIEW_TYPE,
     CODEX_VIEW_TYPE,
     SCENE_INSPECTOR_VIEW_TYPE,
@@ -50,7 +49,6 @@ import { StorylineView } from './views/StorylineView';
 import { CharacterView } from './views/CharacterView';
 import { StatsView } from './views/StatsView';
 import { LocationView } from './views/LocationView';
-import { HelpView } from './views/HelpView';
 import { NavigatorView } from './views/NavigatorView';
 import { CodexView } from './views/CodexView';
 import { SceneInspectorView } from './views/SceneInspectorView';
@@ -66,6 +64,11 @@ import { CodexManager } from './services/CodexManager';
 import { makeCustomCodexCategory } from './models/Codex';
 import { QuickAddModal } from './components/QuickAddModal';
 import { ExportModal } from './components/ExportModal';
+import {
+    NCanvasManagerModal,
+    SAMPLE_NCANVAS_FILENAMES,
+    type SampleNcanvasLanguage,
+} from './components/NCanvasManagerModal';
 import { WritingTracker } from './services/WritingTracker';
 import { SnapshotManager } from './services/SnapshotManager';
 import { ViewSnapshotService } from './services/ViewSnapshotService';
@@ -83,6 +86,8 @@ type EmbeddedCanvasModule = Plugin & {
     openProjectFile?: (path: string) => Promise<void>;
     openCanvas?: () => Promise<void>;
     openOrCreateProjectAtPath?: (path: string, title: string) => Promise<string>;
+    writeAndOpenProjectAtPath?: (path: string, savedStateJson: string) => Promise<string>;
+    createSampleProjectAtPath?: (path: string, language?: string) => Promise<string>;
     loadData: () => Promise<Record<string, unknown>>;
     saveData: (data: Record<string, unknown>) => Promise<void>;
     addSettingTab: (...args: unknown[]) => void;
@@ -121,6 +126,10 @@ export default class SceneCardsPlugin extends Plugin {
     seriesManager!: SeriesManager;
     researchManager!: ResearchManager;
     private canvasModule: EmbeddedCanvasModule | null = null;
+    /** Coalesce concurrent Library/entity reloads (Codex + Characters + Locations). */
+    private _reloadEntitiesPromise: Promise<void> | null = null;
+    /** Timestamp of the last completed reloadEntities() pass. */
+    private _lastEntitiesReloadAt = 0;
     /** The leaf currently hosting a NarrativeLab view */
     storyLeaf: WorkspaceLeaf | null = null;
     /** Removes native browser tooltips (`title`) inside NarrativeLab UI */
@@ -237,9 +246,6 @@ export default class SceneCardsPlugin extends Plugin {
         this.registerView(LOCATION_VIEW_TYPE, (leaf) =>
             new LocationView(leaf, this, this.sceneManager)
         );
-        this.registerView(HELP_VIEW_TYPE, (leaf) =>
-            new HelpView(leaf, this)
-        );
         this.registerView(NAVIGATOR_VIEW_TYPE, (leaf) =>
             new NavigatorView(leaf, this, this.sceneManager)
         );
@@ -271,8 +277,15 @@ export default class SceneCardsPlugin extends Plugin {
         // Wait for the workspace layout to be ready, then bootstrap projects
         this.app.workspace.onLayoutReady(async () => {
             try {
+            // Drop obsolete Help panes left in saved workspace layouts.
+            for (const leaf of this.app.workspace.getLeavesOfType('narrative-lab-help')) {
+                try { leaf.detach(); } catch { /* ignore */ }
+            }
             // Apply frontmatter visibility (scoped to NarrativeLab files only — issue #104)
-            this.updateFrontmatterVisibility();
+            this.updateFrontmatterVisibility({ collapseOpenFiles: true });
+            window.setTimeout(() => {
+                this.updateFrontmatterVisibility({ collapseOpenFiles: true });
+            }, 200);
             // Apply toolbar visibility settings (v1.10.17) — hide the
             // Auto-collapse view-tab labels when the toolbar is narrow
             // when the toolbar is narrow.
@@ -315,6 +328,16 @@ export default class SceneCardsPlugin extends Plugin {
             // PlotGrid and other views that opened before bootstrapProjects reload
             // their data from the correct project folder.
             this.refreshOpenViews();
+
+            // Auto-open the left Story Navigator when the plugin starts
+            // (same flag used after creating/selecting a project).
+            if (this.settings.autoOpenNavigator !== false) {
+                try {
+                    await this.openNavigator();
+                } catch (navErr) {
+                    console.warn('[NarrativeLab] Could not open navigator:', navErr);
+                }
+            }
             } catch (startupErr) {
                 console.error('[NarrativeLab] Startup error:', startupErr);
             }
@@ -404,6 +427,20 @@ export default class SceneCardsPlugin extends Plugin {
         });
 
         this.addCommand({
+            id: 'manage-ncanvas-files',
+            name: t('Manage NCanvas files'),
+            callback: () => this.openNCanvasManager(),
+        });
+
+        this.addCommand({
+            id: 'open-narrative-canvas',
+            name: t('Open Narrative Canvas (last used)'),
+            callback: () => {
+                void this.openNarrativeCanvas();
+            },
+        });
+
+        this.addCommand({
             id: 'fork-project',
             name: t('Fork current project'),
             callback: () => this.openForkProjectModal(),
@@ -458,7 +495,7 @@ export default class SceneCardsPlugin extends Plugin {
                 STORYLINE_VIEW_TYPE, CHARACTER_VIEW_TYPE, STATS_VIEW_TYPE,
                 LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE, SCENE_INSPECTOR_VIEW_TYPE,
                 NOTES_VIEW_TYPE, SYNOPSIS_VIEW_TYPE, DETAILS_VIEW_TYPE,
-                MANUSCRIPT_VIEW_TYPE, RESEARCH_VIEW_TYPE, HELP_VIEW_TYPE,
+                MANUSCRIPT_VIEW_TYPE, RESEARCH_VIEW_TYPE,
                 NAVIGATOR_VIEW_TYPE,
             ];
             if (!slViewTypes.includes(viewType)) return;
@@ -477,12 +514,6 @@ export default class SceneCardsPlugin extends Plugin {
             name: t('Export project'),            callback: () => {
                 new ExportModal(this).open();
             },
-        });
-
-        this.addCommand({
-            id: 'open-help',
-            name: t('Open help'),
-            callback: () => this.openHelp(),
         });
 
         this.addCommand({
@@ -676,6 +707,16 @@ export default class SceneCardsPlugin extends Plugin {
             })
         );
 
+        // Obsidian "New note" under Notes/ often fires create without an immediate
+        // modify — adopt those files so they appear on the board with Notes ON.
+        this.registerEvent(
+            this.app.vault.on('create', (file) => {
+                if (file instanceof TFile) {
+                    this.sceneManager.handleFileCreate(file).then(() => debouncedRefresh());
+                }
+            })
+        );
+
         this.registerEvent(
             this.app.vault.on('delete', (file) => {
                 if (file instanceof TFile) {
@@ -765,36 +806,51 @@ export default class SceneCardsPlugin extends Plugin {
             })
         );
 
-        // Re-apply scoped frontmatter hiding when layout changes or files open
+        // Re-apply scoped frontmatter visibility when layout changes or files open
         this.registerEvent(
             this.app.workspace.on('layout-change', () => {
+                // CSS hide/show only — do not re-fold (would fight user expanding Properties).
                 this.updateFrontmatterVisibility();
             })
         );
         this.registerEvent(
             this.app.workspace.on('file-open', () => {
-                this.updateFrontmatterVisibility();
+                this.updateFrontmatterVisibility({ collapseOpenFiles: true });
+                // Metadata editor mounts slightly after file-open; fold again once ready.
+                window.setTimeout(() => {
+                    this.updateFrontmatterVisibility({ collapseOpenFiles: true });
+                }, 120);
             })
         );
     }
 
+    /** Resolved Properties display mode for NarrativeLab notes. */
+    private getFrontmatterDisplayMode(): 'collapse' | 'hide' | 'visible' {
+        const mode = this.settings.frontmatterDisplay;
+        if (mode === 'hide' || mode === 'visible' || mode === 'collapse') return mode;
+        // Legacy boolean
+        if (this.settings.hideFrontmatter === false) return 'visible';
+        return 'collapse';
+    }
+
     /**
-     * Issue #104 — Apply the "Hide frontmatter" preference by toggling a CSS
-     * class on individual markdown leaves whose file lives inside the NarrativeLab
-     * root folder, instead of overriding Obsidian's global
-     * "Properties in document" editor setting. This keeps the user's global
-     * Obsidian preference intact across vaults.
+     * Issue #104 — Apply the frontmatter display preference by toggling CSS
+     * (hide) and/or folding the Properties widget (collapse) on markdown leaves
+     * whose file lives inside a NarrativeLab project. Does not change Obsidian's
+     * global "Properties in document" setting.
      */
-    public updateFrontmatterVisibility(): void {
-        const hide = !!this.settings.hideFrontmatter;
+    public updateFrontmatterVisibility(opts?: { collapseOpenFiles?: boolean }): void {
+        const mode = this.getFrontmatterDisplayMode();
+        const hide = mode === 'hide';
+        const collapse = mode === 'collapse';
         const projectRoots = this.sceneManager?.getProjects().map(project =>
             deriveProjectFoldersFromFilePath(project.filePath).baseFolder,
         ) ?? [];
 
         const body = activeDocument.body;
         if (body) {
-            if (hide) body.classList.add('sl-hide-frontmatter-global');
-            else body.classList.remove('sl-hide-frontmatter-global');
+            body.classList.toggle('sl-hide-frontmatter-global', hide);
+            body.classList.toggle('sl-collapse-frontmatter-global', collapse);
         }
 
         const leaves: WorkspaceLeaf[] = [];
@@ -811,7 +867,86 @@ export default class SceneCardsPlugin extends Plugin {
             } else {
                 target.classList.remove('sl-hide-frontmatter');
             }
+            if (collapse && inStoryLine && opts?.collapseOpenFiles) {
+                this.collapsePropertiesInView(leaf.view);
+            }
         }
+
+        // Manuscript embeds / NL custom views — only on explicit open/settings,
+        // never from per-scene mount (that was O(n²) and made large manuscripts crawl).
+        if (collapse && opts?.collapseOpenFiles && body) {
+            body.querySelectorAll(
+                '.sl-manuscript-embedded-split .metadata-container, .workspace-leaf-content[data-type^="narrative-lab-"] .metadata-container',
+            ).forEach((el) => {
+                this.collapsePropertiesContainer(el as HTMLElement);
+            });
+        }
+    }
+
+    /** Fold Properties inside one DOM subtree (e.g. a newly mounted manuscript embed). */
+    public collapsePropertiesInElement(root: HTMLElement | null | undefined): void {
+        if (!root || this.getFrontmatterDisplayMode() !== 'collapse') return;
+        root.querySelectorAll('.metadata-container').forEach((el) => {
+            this.collapsePropertiesContainer(el as HTMLElement);
+        });
+    }
+
+    /** Fold Obsidian Properties via MetadataEditor when available. */
+    private collapsePropertiesInView(view: unknown): void {
+        const v = view as {
+            metadataEditor?: { collapsed?: boolean; setCollapse?: (c: boolean, persist?: boolean) => void };
+            editMode?: { metadataEditor?: { collapsed?: boolean; setCollapse?: (c: boolean, persist?: boolean) => void } };
+            previewMode?: { metadataEditor?: { collapsed?: boolean; setCollapse?: (c: boolean, persist?: boolean) => void } };
+            containerEl?: HTMLElement;
+            contentEl?: HTMLElement;
+        };
+        const editors = [v?.metadataEditor, v?.editMode?.metadataEditor, v?.previewMode?.metadataEditor];
+        let folded = false;
+        for (const ed of editors) {
+            if (!ed?.setCollapse) continue;
+            try {
+                if (ed.collapsed !== true) ed.setCollapse(true, true);
+                folded = true;
+            } catch {
+                // Internal API — ignore version skew.
+            }
+        }
+        if (folded) return;
+        const root = v?.containerEl ?? v?.contentEl;
+        if (root) {
+            root.querySelectorAll('.metadata-container').forEach((el) => {
+                this.collapsePropertiesContainer(el as HTMLElement);
+            });
+        }
+    }
+
+    /** Best-effort fold when MetadataEditor isn't reachable. */
+    private collapsePropertiesContainer(container: HTMLElement): void {
+        // Mark ready so first-paint CSS stops fighting the user's expand/collapse.
+        const markReady = () => container.classList.add('sl-fm-ready');
+        if (container.classList.contains('is-collapsed')) {
+            markReady();
+            return;
+        }
+        // Prefer the editor instance Obsidian attaches on the element when present.
+        // persist=false — don't write Obsidian local-storage; we re-fold on open.
+        const ed = (container as unknown as {
+            metadataEditor?: { setCollapse?: (c: boolean, persist?: boolean) => void; collapsed?: boolean };
+        }).metadataEditor;
+        if (ed?.setCollapse) {
+            try {
+                if (ed.collapsed !== true) ed.setCollapse(true, false);
+                markReady();
+                return;
+            } catch { /* fall through */ }
+        }
+        container.classList.add('is-collapsed');
+        container.setAttribute('data-sl-collapsed', '1');
+        const content = container.querySelector('.metadata-content') as HTMLElement | null;
+        if (content) content.hide();
+        const heading = container.querySelector('.metadata-properties-heading') as HTMLElement | null;
+        if (heading) heading.setAttribute('aria-expanded', 'false');
+        markReady();
     }
 
     /**
@@ -1125,8 +1260,22 @@ export default class SceneCardsPlugin extends Plugin {
             );
         }
 
+        // Migrate legacy hideFrontmatter boolean → frontmatterDisplay tri-state.
+        // Old "hide off" meant "don't fully hide" — that maps to folded-with-header,
+        // not always-expanded. Users who want expanded pick it in Settings.
+        if (migratedData.frontmatterDisplay === undefined) {
+            migratedData.frontmatterDisplay = migratedData.hideFrontmatter === true
+                ? 'hide'
+                : 'collapse';
+        }
+
         this.settings = Object.assign({}, DEFAULT_SETTINGS, migratedData);
         this.settings.interfaceLanguage = normalizeUiLanguageSetting(this.settings.interfaceLanguage);
+        if (this.settings.frontmatterDisplay !== 'hide'
+            && this.settings.frontmatterDisplay !== 'visible'
+            && this.settings.frontmatterDisplay !== 'collapse') {
+            this.settings.frontmatterDisplay = 'collapse';
+        }
         if (importedLegacySettings) await this.saveData(migratedData);
         // Issue #73 — propagate the wikilink-writer toggle to MetadataParser
         setWriteSceneFieldsAsWikilinks(this.settings.writeFieldsAsWikilinks !== false);
@@ -1804,24 +1953,6 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
-     * Open the Help pane in the right split.
-     * If already open, just reveal it.
-     */
-    async openHelp(): Promise<void> {
-        const { workspace } = this.app;
-        const existing = workspace.getLeavesOfType(HELP_VIEW_TYPE);
-        if (existing.length > 0) {
-            workspace.revealLeaf(existing[0]);
-            return;
-        }
-        const leaf = workspace.getRightLeaf(false);
-        if (leaf) {
-            await leaf.setViewState({ type: HELP_VIEW_TYPE, active: true });
-            workspace.revealLeaf(leaf);
-        }
-    }
-
-    /**
      * Open the Story Navigator in the left sidebar.
      * If already open, just reveal it.
      */
@@ -1830,9 +1961,25 @@ export default class SceneCardsPlugin extends Plugin {
         const existing = workspace.getLeavesOfType(NAVIGATOR_VIEW_TYPE);
         if (existing.length > 0) {
             workspace.revealLeaf(existing[0]);
+            // Ensure the left split is expanded if Obsidian collapsed it
+            try {
+                const leftSplit = (workspace as unknown as { leftSplit?: { expand?: () => void } }).leftSplit;
+                leftSplit?.expand?.();
+            } catch { /* older Obsidian */ }
             return;
         }
-        const leaf = workspace.getLeftLeaf(false);
+
+        // Prefer ensureSideLeaf when available (creates + activates reliably)
+        const ensureSideLeaf = (workspace as unknown as {
+            ensureSideLeaf?: (type: string, side: 'left' | 'right', opts?: { active?: boolean }) => Promise<WorkspaceLeaf>;
+        }).ensureSideLeaf;
+        if (typeof ensureSideLeaf === 'function') {
+            const leaf = await ensureSideLeaf.call(workspace, NAVIGATOR_VIEW_TYPE, 'left', { active: true });
+            if (leaf) workspace.revealLeaf(leaf);
+            return;
+        }
+
+        const leaf = workspace.getLeftLeaf(false) ?? workspace.getLeftLeaf(true);
         if (leaf) {
             await leaf.setViewState({ type: NAVIGATOR_VIEW_TYPE, active: true });
             workspace.revealLeaf(leaf);
@@ -1840,38 +1987,68 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
+     * Open a view in the right sidebar (creating it if needed), expand the
+     * sidebar, focus the leaf, and flash its workspace tab so the user can
+     * see which tab responded.
+     */
+    private async revealOrOpenRightSidebarView(viewType: string): Promise<WorkspaceLeaf | null> {
+        const { workspace } = this.app;
+
+        const rightSplit = workspace.rightSplit as { collapsed?: boolean; expand?: () => void } | null;
+        if (rightSplit?.collapsed && typeof rightSplit.expand === 'function') {
+            rightSplit.expand();
+        }
+
+        let leaf = workspace.getLeavesOfType(viewType)[0] ?? null;
+        if (!leaf) {
+            leaf = workspace.getRightLeaf(false);
+            if (!leaf) return null;
+            await leaf.setViewState({ type: viewType, active: true });
+        }
+
+        workspace.revealLeaf(leaf);
+        workspace.setActiveLeaf(leaf, { focus: true });
+        // Wait a frame so Obsidian finishes painting the tab header after reveal
+        window.requestAnimationFrame(() => this.flashWorkspaceTab(leaf!));
+        return leaf;
+    }
+
+    /** Brief accent pulse on a leaf's workspace tab header. */
+    private flashWorkspaceTab(leaf: WorkspaceLeaf): void {
+        const withTab = leaf as unknown as { tabHeaderEl?: HTMLElement };
+        let tabHeader = withTab.tabHeaderEl ?? null;
+        if (!tabHeader) {
+            const leafEl = leaf.containerEl?.closest('.workspace-leaf') as HTMLElement | null;
+            const tabs = leafEl?.parentElement?.parentElement;
+            const headers = tabs?.querySelectorAll('.workspace-tab-header');
+            if (headers && leafEl?.parentElement) {
+                const children = Array.from(leafEl.parentElement.children);
+                const idx = children.indexOf(leafEl);
+                if (idx >= 0 && headers[idx]) tabHeader = headers[idx] as HTMLElement;
+            }
+        }
+        if (!tabHeader) return;
+
+        tabHeader.classList.remove('sl-tab-flash');
+        // Restart CSS animation if already flashing
+        void tabHeader.offsetWidth;
+        tabHeader.classList.add('sl-tab-flash');
+        window.setTimeout(() => tabHeader?.classList.remove('sl-tab-flash'), 1100);
+    }
+
+    /**
      * Open the Scene Details inspector in the right sidebar.
-     * If already open, just reveal it.
+     * If already open, focus it and flash the tab.
      */
     async openSceneInspector(): Promise<void> {
-        const { workspace } = this.app;
-        const existing = workspace.getLeavesOfType(SCENE_INSPECTOR_VIEW_TYPE);
-        if (existing.length > 0) {
-            workspace.revealLeaf(existing[0]);
-            return;
-        }
-        const leaf = workspace.getRightLeaf(false);
-        if (leaf) {
-            await leaf.setViewState({ type: SCENE_INSPECTOR_VIEW_TYPE, active: true });
-            workspace.revealLeaf(leaf);
-        }
+        await this.revealOrOpenRightSidebarView(SCENE_INSPECTOR_VIEW_TYPE);
     }
 
     /**
      * Open (or reveal) the standalone Notes sidebar view.
      */
     async openNotesView(): Promise<void> {
-        const { workspace } = this.app;
-        const existing = workspace.getLeavesOfType(NOTES_VIEW_TYPE);
-        if (existing.length > 0) {
-            workspace.revealLeaf(existing[0]);
-            return;
-        }
-        const leaf = workspace.getRightLeaf(false);
-        if (leaf) {
-            await leaf.setViewState({ type: NOTES_VIEW_TYPE, active: true });
-            workspace.revealLeaf(leaf);
-        }
+        await this.revealOrOpenRightSidebarView(NOTES_VIEW_TYPE);
     }
 
     /**
@@ -1879,17 +2056,7 @@ export default class SceneCardsPlugin extends Plugin {
      * dragged to dock above/below/beside any other pane.
      */
     async openSynopsisView(): Promise<void> {
-        const { workspace } = this.app;
-        const existing = workspace.getLeavesOfType(SYNOPSIS_VIEW_TYPE);
-        if (existing.length > 0) {
-            workspace.revealLeaf(existing[0]);
-            return;
-        }
-        const leaf = workspace.getRightLeaf(false);
-        if (leaf) {
-            await leaf.setViewState({ type: SYNOPSIS_VIEW_TYPE, active: true });
-            workspace.revealLeaf(leaf);
-        }
+        await this.revealOrOpenRightSidebarView(SYNOPSIS_VIEW_TYPE);
     }
 
     /**
@@ -1897,17 +2064,7 @@ export default class SceneCardsPlugin extends Plugin {
      * inside its own dockable leaf).
      */
     async openSceneDetailsLeaf(): Promise<void> {
-        const { workspace } = this.app;
-        const existing = workspace.getLeavesOfType(DETAILS_VIEW_TYPE);
-        if (existing.length > 0) {
-            workspace.revealLeaf(existing[0]);
-            return;
-        }
-        const leaf = workspace.getRightLeaf(false);
-        if (leaf) {
-            await leaf.setViewState({ type: DETAILS_VIEW_TYPE, active: true });
-            workspace.revealLeaf(leaf);
-        }
+        await this.revealOrOpenRightSidebarView(DETAILS_VIEW_TYPE);
     }
 
     /** Returns true when the Scene Inspector sidebar is open and visible. */
@@ -1933,17 +2090,7 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     async openResearch(): Promise<void> {
-        const { workspace } = this.app;
-        const existing = workspace.getLeavesOfType(RESEARCH_VIEW_TYPE);
-        if (existing.length > 0) {
-            workspace.revealLeaf(existing[0]);
-            return;
-        }
-        const leaf = workspace.getRightLeaf(false);
-        if (leaf) {
-            await leaf.setViewState({ type: RESEARCH_VIEW_TYPE, active: true });
-            workspace.revealLeaf(leaf);
-        }
+        await this.revealOrOpenRightSidebarView(RESEARCH_VIEW_TYPE);
     }
 
     /**
@@ -1998,11 +2145,30 @@ export default class SceneCardsPlugin extends Plugin {
      * the project folders; `scanExtraFolders()` then re-adds entries from
      * user-configured external folders. Calling both keeps the two in sync.
      */
+    /** True when entity managers were reloaded within `maxAgeMs`. */
+    entitiesFresh(maxAgeMs = 60_000): boolean {
+        return this._lastEntitiesReloadAt > 0 && (Date.now() - this._lastEntitiesReloadAt) < maxAgeMs;
+    }
+
     async reloadEntities(): Promise<void> {
+        // Multiple views (Library / Characters / Locations) used to each call
+        // this from refresh(), stacking 2–3 full vault re-reads. Coalesce.
+        if (this._reloadEntitiesPromise) return this._reloadEntitiesPromise;
+        this._reloadEntitiesPromise = this.reloadEntitiesUncoalesced()
+            .then(() => {
+                this._lastEntitiesReloadAt = Date.now();
+            })
+            .finally(() => {
+                this._reloadEntitiesPromise = null;
+            });
+        return this._reloadEntitiesPromise;
+    }
+
+    private async reloadEntitiesUncoalesced(): Promise<void> {
         await this.loadActiveProjectEntities();
-        await this.scanExtraFolders();
-        // Re-load codex entries from the project Codex folder, then re-apply
-        // external folders so codex-type entries are included.
+        // Re-load codex entries from the project Library folder, then pick up
+        // any remaining notes (root / misc folders) without re-reading files
+        // already loaded by category scans. External folders are scanned once.
         const codexFolder = this.sceneManager.getCodexFolder();
         if (codexFolder) {
             const customDefs = (this.settings.codexCustomCategories || []).map(
@@ -2010,9 +2176,9 @@ export default class SceneCardsPlugin extends Plugin {
             );
             this.codexManager.initCategories(this.settings.codexEnabledCategories || [], customDefs);
             await this.codexManager.loadAll(codexFolder);
-            await this.scanLibraryFolder(codexFolder);
-            await this.scanExtraFolders();
+            await this.scanLibraryFolder(codexFolder, { skipLoaded: true });
         }
+        await this.scanExtraFolders();
     }
 
     /**
@@ -2056,28 +2222,30 @@ export default class SceneCardsPlugin extends Plugin {
         this.canvasModule = canvas;
     }
 
-    /** Resolve .ncanvas paths for the active NarrativeLab project (Canvas/ subfolder, with legacy fallback). */
-    private resolveNcanvasPathsForProject(project: StoryLineProject): { canvasFolder: string; candidates: string[] } {
+    /** Resolve .ncanvas paths for a NarrativeLab project (NCanvas/ subfolder, with legacy Canvas/ fallback). */
+    getNcanvasPathsForProject(project: StoryLineProject): { canvasFolder: string; candidates: string[] } {
         const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const canvasFolder = normalizePath(folders.canvasFolder);
+        const legacyCanvasFolder = normalizePath(`${folders.baseFolder}/Canvas`);
         const baseFolder = normalizePath(folders.baseFolder);
         const isNcanvas = (file: TFile) => ['ncanvas', 'narrativecanvas'].includes(file.extension.toLowerCase());
         const belongsToProject = (path: string): boolean => {
             const normalized = normalizePath(path);
             const slash = normalized.lastIndexOf('/');
             const parent = slash >= 0 ? normalized.slice(0, slash) : '';
-            return parent === canvasFolder || parent === baseFolder;
+            return parent === canvasFolder || parent === legacyCanvasFolder || parent === baseFolder;
         };
-
-        const inCanvasFolder = this.app.vault.getFiles()
+        const filesInFolder = (folder: string) => this.app.vault.getFiles()
             .filter(file => {
                 const slash = file.path.lastIndexOf('/');
                 const parent = slash >= 0 ? file.path.slice(0, slash) : '';
-                return parent === canvasFolder && isNcanvas(file);
+                return parent === folder && isNcanvas(file);
             })
             .map(file => file.path)
             .sort((a, b) => a.localeCompare(b));
 
+        const inCanvasFolder = filesInFolder(canvasFolder);
+        const inLegacyCanvasFolder = canvasFolder !== legacyCanvasFolder ? filesInFolder(legacyCanvasFolder) : [];
         const legacyInBase = this.app.vault.getFiles()
             .filter(file => {
                 const slash = file.path.lastIndexOf('/');
@@ -2098,10 +2266,113 @@ export default class SceneCardsPlugin extends Plugin {
             ...(remembered && belongsToProject(remembered)
                 && this.app.vault.getAbstractFileByPath(remembered) ? [remembered] : []),
             ...inCanvasFolder,
+            ...inLegacyCanvasFolder,
             ...legacyInBase,
         ])];
 
         return { canvasFolder, candidates: ordered };
+    }
+
+    /** Open the per-project NCanvas manager (list / new / CN·EN samples). */
+    openNCanvasManager(): void {
+        if (!this.sceneManager.activeProject) {
+            new Notice(t('No active project. Open a project first.'));
+            return;
+        }
+        new NCanvasManagerModal(this.app, this).open();
+    }
+
+    private async ensureCanvasModuleReady(): Promise<EmbeddedCanvasModule | null> {
+        if (!this.canvasModule) {
+            try {
+                await this.loadEmbeddedCanvas();
+            } catch (err) {
+                console.error('NarrativeLab: canvas load failed', err);
+                new Notice(t('Failed to open Narrative Canvas: {err}', { err: String(err) }));
+                return null;
+            }
+        }
+        if (!this.canvasModule) {
+            new Notice(t('Narrative Canvas is still loading.'));
+            return null;
+        }
+        return this.canvasModule;
+    }
+
+    private async uniqueNcanvasPath(folder: string, filename: string): Promise<string> {
+        const adapter = this.app.vault.adapter;
+        const safeName = filename.replace(/[\\/:*?"<>|]/g, '-');
+        let path = normalizePath(`${folder}/${safeName}`);
+        if (!await adapter.exists(path)) return path;
+        const match = safeName.match(/^(.*?)(\.[^.]+)$/);
+        const base = match?.[1] || safeName;
+        const ext = match?.[2] || '';
+        let index = 2;
+        while (await adapter.exists(normalizePath(`${folder}/${base}-${index}${ext}`))) {
+            index += 1;
+        }
+        return normalizePath(`${folder}/${base}-${index}${ext}`);
+    }
+
+    private async rememberNcanvasPath(project: StoryLineProject, path: string): Promise<void> {
+        this.settings.narrativeCanvasPathByProject = {
+            ...(this.settings.narrativeCanvasPathByProject || {}),
+            [project.filePath]: path,
+        };
+        await this.saveSettings();
+    }
+
+    /** Create a blank .ncanvas in the active project's NCanvas folder and open it. */
+    async createBlankNcanvasInActiveProject(name?: string): Promise<string | null> {
+        const project = this.sceneManager.activeProject;
+        if (!project) {
+            new Notice(t('No active project. Open a project first.'));
+            return null;
+        }
+        const canvas = await this.ensureCanvasModuleReady();
+        if (!canvas?.openOrCreateProjectAtPath) {
+            new Notice(t('Narrative Canvas is still loading.'));
+            return null;
+        }
+        const { canvasFolder } = this.getNcanvasPathsForProject(project);
+        const adapter = this.app.vault.adapter;
+        if (!await adapter.exists(canvasFolder)) {
+            await this.app.vault.createFolder(canvasFolder);
+        }
+        const title = String(name || '').trim() || t('Untitled Canvas');
+        const safeTitle = title.replace(/[\\/:*?"<>|]/g, '-');
+        const path = await this.uniqueNcanvasPath(canvasFolder, `${safeTitle}.ncanvas`);
+        await canvas.openOrCreateProjectAtPath(path, title);
+        await this.rememberNcanvasPath(project, path);
+        new Notice(t('Created ncanvas: {name}', { name: path.split('/').pop() || path }));
+        return path;
+    }
+
+    /** Create or open the built-in guide sample (.ncanvas) in the active project's NCanvas folder. */
+    async createSampleNcanvasInActiveProject(language: SampleNcanvasLanguage): Promise<string | null> {
+        const project = this.sceneManager.activeProject;
+        if (!project) {
+            new Notice(t('No active project. Open a project first.'));
+            return null;
+        }
+        const canvas = await this.ensureCanvasModuleReady();
+        if (!canvas?.createSampleProjectAtPath) {
+            new Notice(t('Narrative Canvas is still loading.'));
+            return null;
+        }
+        const { canvasFolder } = this.getNcanvasPathsForProject(project);
+        const adapter = this.app.vault.adapter;
+        if (!await adapter.exists(canvasFolder)) {
+            await this.app.vault.createFolder(canvasFolder);
+        }
+        const filename = SAMPLE_NCANVAS_FILENAMES[language];
+        const path = normalizePath(`${canvasFolder}/${filename}`);
+        const created = await canvas.createSampleProjectAtPath(path, language);
+        await this.rememberNcanvasPath(project, created || path);
+        new Notice(t('Opened sample ncanvas: {name}', {
+            name: (created || path).split('/').pop() || path,
+        }));
+        return created || path;
     }
 
     async openNarrativeCanvas(preferredPath?: string): Promise<void> {
@@ -2111,7 +2382,7 @@ export default class SceneCardsPlugin extends Plugin {
         }
         const project = this.sceneManager.activeProject;
         if (project && this.canvasModule.openOrCreateProjectAtPath) {
-            const { canvasFolder, candidates } = this.resolveNcanvasPathsForProject(project);
+            const { canvasFolder, candidates } = this.getNcanvasPathsForProject(project);
             const adapter = this.app.vault.adapter;
             if (!await adapter.exists(canvasFolder)) {
                 await this.app.vault.createFolder(canvasFolder);
@@ -2124,37 +2395,23 @@ export default class SceneCardsPlugin extends Plugin {
             const preferredParent = normalizedPreferred.includes('/')
                 ? normalizedPreferred.slice(0, normalizedPreferred.lastIndexOf('/'))
                 : '';
+            const projectBase = deriveProjectFoldersFromFilePath(project.filePath).baseFolder;
             const preferredBelongsToProject = preferredParent === canvasFolder
-                || preferredParent === deriveProjectFoldersFromFilePath(project.filePath).baseFolder;
+                || preferredParent === normalizePath(`${projectBase}/Canvas`)
+                || preferredParent === projectBase;
             const path = (normalizedPreferred && preferredBelongsToProject && await adapter.exists(normalizedPreferred))
                 ? normalizedPreferred
                 : candidates[0] ?? normalizePath(`${canvasFolder}/${safeTitle}.ncanvas`);
             await this.canvasModule.openOrCreateProjectAtPath(path, project.title);
-            this.settings.narrativeCanvasPathByProject = {
-                ...(this.settings.narrativeCanvasPathByProject || {}),
-                [project.filePath]: path,
-            };
-            await this.saveSettings();
+            await this.rememberNcanvasPath(project, path);
             return;
         }
         await this.canvasModule.openCanvas?.();
     }
 
-    /** Open the embedded Canvas file picker, including standalone ncanvas files. */
+    /** Open the per-project NCanvas manager (preferred over the vault-wide canvas picker). */
     async openNarrativeCanvasPicker(): Promise<void> {
-        try {
-            if (!this.canvasModule) {
-                await this.loadEmbeddedCanvas();
-            }
-            if (!this.canvasModule?.openCanvas) {
-                new Notice(t('Narrative Canvas is still loading.'));
-                return;
-            }
-            await this.canvasModule.openCanvas();
-        } catch (err) {
-            console.error('NarrativeLab: open ncanvas failed', err);
-            new Notice(t('Failed to open Narrative Canvas: {err}', { err: String(err) }));
-        }
+        this.openNCanvasManager();
     }
 
     /** If Canvas is already visible, follow a NarrativeLab project switch automatically. */
@@ -2183,8 +2440,16 @@ export default class SceneCardsPlugin extends Plugin {
      * frontmatter type. Category folders are conventions, not read barriers:
      * entries may live at the Library root or in any depth of subfolder.
      */
-    private async scanLibraryFolder(folderPath: string): Promise<void> {
+    private async scanLibraryFolder(
+        folderPath: string,
+        options: { skipLoaded?: boolean } = {},
+    ): Promise<void> {
         const adapter = this.app.vault.adapter;
+        const skipLoaded = options.skipLoaded === true;
+        const alreadyLoaded = (filePath: string): boolean =>
+            !!this.codexManager.getEntry(filePath)
+            || !!this.characterManager.getCharacter(filePath)
+            || !!this.locationManager.getItem(filePath);
         const scan = async (folder: string): Promise<void> => {
             if (!folder || !await adapter.exists(folder)) return;
             const listing = await adapter.list(folder);
@@ -2192,6 +2457,9 @@ export default class SceneCardsPlugin extends Plugin {
                 if (!path.endsWith('.md')) continue;
                 try {
                     const filePath = normalizePath(path);
+                    // After loadAll / loadCharacters / loadAll locations, category
+                    // folders were already read — skip those files to cut I/O ~2×.
+                    if (skipLoaded && alreadyLoaded(filePath)) continue;
                     const content = await adapter.read(filePath);
                     const type = this.extractFrontmatterType(content);
                     if (!type) continue;
@@ -2416,20 +2684,9 @@ export default class SceneCardsPlugin extends Plugin {
      * Refresh all open Scene Cards views
      */
     async refreshOpenViews(): Promise<void> {
-        // Keep LocationManager, CharacterManager, and CodexManager in sync
+        // Single entity reload — views must not call reloadEntities() again in refresh().
         try {
-            await this.loadActiveProjectEntities();
-            await this.scanExtraFolders();
-            const codexFolder = this.sceneManager.getCodexFolder();
-            if (codexFolder) {
-                const customDefs = (this.settings.codexCustomCategories || []).map(
-                    (cc: { id: string; label: string; icon: string }) => makeCustomCodexCategory(cc.id, cc.label, cc.icon)
-                );
-                this.codexManager.initCategories(this.settings.codexEnabledCategories || [], customDefs);
-                await this.codexManager.loadAll(codexFolder);
-                await this.scanLibraryFolder(codexFolder);
-                await this.scanExtraFolders();
-            }
+            await this.reloadEntities();
         } catch { /* project may not be set yet */ }
 
         // Re-scan wikilinks after entity data is loaded
@@ -3250,8 +3507,12 @@ class ProjectSelectModal extends Modal {
                 await this.plugin.sceneManager.setActiveProject(selected);
                 this.plugin.refreshOpenViews();
                 if (this.plugin.settings.autoOpenNavigator) this.plugin.openNavigator();
-                if (destination === 'canvas') await this.plugin.openNarrativeCanvas();
-                else await this.plugin.activateView(BOARD_VIEW_TYPE);
+                if (destination === 'canvas') {
+                    this.close();
+                    this.plugin.openNCanvasManager();
+                    return;
+                }
+                await this.plugin.activateView(BOARD_VIEW_TYPE);
                 this.close();
             } catch (err) {
                 new Notice(t('Failed to open project: ') + String(err));
@@ -3264,8 +3525,9 @@ class ProjectSelectModal extends Modal {
             void openSelected('board');
         });
 
-        const canvasBtn = actions.createEl('button', { text: t('Open Canvas') });
+        const canvasBtn = actions.createEl('button', { text: t('Open Canvas'), cls: 'mod-cta' });
         canvasBtn.setAttr('type', 'button');
+        canvasBtn.setAttr('title', t('Choose, create, or open an ncanvas for this project'));
         canvasBtn.addEventListener('click', () => {
             void openSelected('canvas');
         });
@@ -3304,7 +3566,7 @@ class ProjectSelectModal extends Modal {
         cancel.setAttr('type', 'button');
         cancel.addEventListener('click', () => this.close());
 
-        const seriesBtn = managementActions.createEl('button', { text: t('Manage Series…') });
+        const seriesBtn = managementActions.createEl('button', { text: t('Manage Series…'), cls: 'mod-cta' });
         seriesBtn.setAttr('type', 'button');
         seriesBtn.addEventListener('click', async () => {
             const seriesModal = new SeriesManagementModal(this.app, this.plugin);
@@ -3312,7 +3574,7 @@ class ProjectSelectModal extends Modal {
         });
 
         // "Browse" button — manually pick a .md file as a NarrativeLab project
-        const browseBtn = managementActions.createEl('button', { text: t('Browse Project…') });
+        const browseBtn = managementActions.createEl('button', { text: t('Browse Project…'), cls: 'mod-cta' });
         browseBtn.setAttr('type', 'button');
         browseBtn.addEventListener('click', async () => {
             // Build a list of all .md files in the vault for the user to pick from

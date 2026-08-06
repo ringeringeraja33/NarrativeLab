@@ -15,6 +15,18 @@ import { FilterPreset } from './Scene';
  * Legacy projects may have Characters/ and Locations/ at the project root;
  * the runtime detects this and uses the old paths transparently.
  */
+/**
+ * A manuscript draft within a project (Longform-style).
+ * When `scenePaths` is omitted/empty the draft includes every project scene
+ * in reading order. When set, only those scenes (in list order) belong to it.
+ */
+export interface ProjectDraft {
+    id: string;
+    title: string;
+    /** Optional ordered list of scene file paths belonging to this draft */
+    scenePaths?: string[];
+}
+
 export interface StoryLineProject {
     /** Vault-relative path of the project .md file */
     filePath: string;
@@ -72,6 +84,12 @@ export interface StoryLineProject {
     coverImage?: string;
     /** Name of the last applied beat sheet template */
     activeBeatSheet?: string;
+
+    // ── Drafts (Longform-style alternate manuscripts) ──
+    /** Named drafts for this project; always at least one primary draft at runtime */
+    drafts?: ProjectDraft[];
+    /** Id of the draft currently used for Navigator / Manuscript order */
+    activeDraftId?: string;
 }
 
 // ── Series metadata ────────────────────────────────
@@ -120,7 +138,9 @@ export function deriveProjectFolders(
  *  - Legacy:      `Any/Path/MyNovel.md`           → base = `Any/Path/MyNovel`
  */
 /** Subfolder inside each project that stores .ncanvas files */
-export const DEFAULT_CANVAS_FOLDER = 'Canvas';
+export const DEFAULT_CANVAS_FOLDER = 'NCanvas';
+/** Legacy canvas folder name — still resolved for existing projects */
+export const LEGACY_CANVAS_FOLDER = 'Canvas';
 /** Default attachment folder name inside each project root */
 export const DEFAULT_ATTACHMENT_FOLDER = 'Attachments';
 

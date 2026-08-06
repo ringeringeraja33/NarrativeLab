@@ -33,10 +33,16 @@ export const VIEW_ENTRIES: ViewSwitcherEntry[] = [
     { type: TIMELINE_VIEW_TYPE, label: 'Timeline', icon: 'clock' },
     { type: MANUSCRIPT_VIEW_TYPE, label: 'Manuscript', icon: 'book-open-text' },
     { type: CODEX_VIEW_TYPE, label: 'Library', icon: 'library-big' },
-    { type: STATS_VIEW_TYPE, label: 'Stats', icon: 'bar-chart-2' },
 ];
 
-/** Standalone playmode entry — not a peer of the planning/writing tabs. */
+/** Stats sits with the other top-toolbar actions (not a primary planning tab). */
+const STATS_ENTRY: ViewSwitcherEntry = {
+    type: STATS_VIEW_TYPE,
+    label: 'Stats',
+    icon: 'bar-chart-2',
+};
+
+/** Playmode opens the NCanvas manager — kept after Export in the top toolbar. */
 const PLAYMODE_ENTRY: ViewSwitcherEntry = {
     type: NARRATIVE_CANVAS_VIEW_TYPE,
     label: 'Playmode in Canvas',
@@ -115,33 +121,62 @@ export function renderViewSwitcher(
         }
     }
 
-    // Playmode — visually separated action, not a peer planning/writing tab
-    switcher.createDiv('story-line-view-tab-divider');
-    const playmodeActive = activeViewType === NARRATIVE_CANVAS_VIEW_TYPE;
-    const playmodeBtn = switcher.createEl('button', {
-        cls: `story-line-playmode-btn${playmodeActive ? ' is-active' : ''}`,
+    // Strip any leftover bottom-right dock from older builds.
+    const host = container.closest('.view-content')
+        || container.closest('.story-line-board-container, .codex-view, .character-view, .location-view, .plot-grid-root, .story-line-manuscript-root')
+        || container.parentElement;
+    host?.querySelectorAll('.nl-corner-actions').forEach((el) => el.remove());
+    host?.removeClass('nl-has-corner-actions');
+
+    // Stats / Export / Playmode — trailing group in the top toolbar.
+    const actions = switcher.createDiv('story-line-view-actions');
+
+    const statsActive = activeViewType === STATS_VIEW_TYPE;
+    const statsTab = actions.createEl('button', {
+        cls: `story-line-view-tab${statsActive ? ' active' : ''}`,
         attr: { type: 'button' },
     });
-    attachTooltip(playmodeBtn, t(PLAYMODE_ENTRY.label));
-    const playIcon = playmodeBtn.createSpan({ cls: 'view-tab-icon' });
-    obsidian.setIcon(playIcon, PLAYMODE_ENTRY.icon);
-    playmodeBtn.createSpan({ cls: 'view-tab-label', text: t(PLAYMODE_ENTRY.label) });
-    playmodeBtn.addEventListener('click', async (e) => {
-        e.preventDefault();
-        await plugin.openNarrativeCanvas();
-    });
+    attachTooltip(statsTab, t(STATS_ENTRY.label));
+    const statsIcon = statsTab.createSpan({ cls: 'view-tab-icon' });
+    obsidian.setIcon(statsIcon, STATS_ENTRY.icon);
+    statsTab.createSpan({ cls: 'view-tab-label', text: t(STATS_ENTRY.label) });
+    if (!statsActive) {
+        statsTab.addEventListener('click', async (e) => {
+            e.preventDefault();
+            try {
+                await leaf.setViewState({ type: STATS_VIEW_TYPE, active: true, state: {} });
+                plugin.app.workspace.revealLeaf(leaf);
+            } catch {
+                plugin.activateView(STATS_VIEW_TYPE);
+            }
+        });
+    }
 
-    // Export button (after all view tabs)
-    const exportBtn = switcher.createEl('button', {
-        cls: 'story-line-view-tab story-line-export-btn',
+    const exportTab = actions.createEl('button', {
+        cls: 'story-line-view-tab',
+        attr: { type: 'button' },
     });
-    const exportIcon = exportBtn.createSpan({ cls: 'view-tab-icon' });
+    attachTooltip(exportTab, t('Export'));
+    const exportIcon = exportTab.createSpan({ cls: 'view-tab-icon' });
     obsidian.setIcon(exportIcon, 'download');
-    exportBtn.createSpan({ cls: 'view-tab-label', text: t('Export') });
-    attachTooltip(exportBtn, t('Export'));
-    exportBtn.addEventListener('click', (e) => {
+    exportTab.createSpan({ cls: 'view-tab-label', text: t('Export') });
+    exportTab.addEventListener('click', (e) => {
         e.preventDefault();
         new ExportModal(plugin).open();
+    });
+
+    const playmodeActive = activeViewType === NARRATIVE_CANVAS_VIEW_TYPE;
+    const playmodeTab = actions.createEl('button', {
+        cls: `story-line-view-tab story-line-view-tab-playmode${playmodeActive ? ' active' : ''}`,
+        attr: { type: 'button' },
+    });
+    attachTooltip(playmodeTab, t('Choose, create, or open an ncanvas for this project'));
+    const playIcon = playmodeTab.createSpan({ cls: 'view-tab-icon' });
+    obsidian.setIcon(playIcon, PLAYMODE_ENTRY.icon);
+    playmodeTab.createSpan({ cls: 'view-tab-label', text: t(PLAYMODE_ENTRY.label) });
+    playmodeTab.addEventListener('click', (e) => {
+        e.preventDefault();
+        plugin.openNCanvasManager();
     });
 
     // v1.10.17 — collapse view-tab labels when the toolbar is too narrow

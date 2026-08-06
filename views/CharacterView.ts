@@ -3,10 +3,13 @@ import * as obsidian from 'obsidian';
 import { SceneManager } from '../services/SceneManager';
 import { CharacterManager } from '../services/CharacterManager';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { RelationshipMap } from '../components/RelationshipMap';
-import { StoryGraph } from '../components/StoryGraph';
 import { pickImage as pickImageModal, resolveImagePath } from '../components/ImagePicker';
-import { isMobile, DESKTOP_ONLY_CHARACTER_MODES, applyMobileClass } from '../components/MobileAdapter';
+import { isMobile, applyMobileClass } from '../components/MobileAdapter';
+import {
+    getLibraryContentMode,
+    renderLibraryStoryGraph,
+} from '../components/LibraryModeBar';
+import type { StoryGraph } from '../components/StoryGraph';
 import { RenameConfirmModal } from '../components/RenameConfirmModal';
 import { AddFieldModal } from '../components/AddFieldModal';
 import {
@@ -22,12 +25,15 @@ import type SceneCardsPlugin from '../main';
 
 import { attachTooltip } from '../components/Tooltip';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
+import { renderLibraryFilterChips } from '../components/LibraryFilterChips';
 import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf } from 'obsidian';
 import { CHARACTER_CATEGORIES, CHARACTER_ROLES, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations } from '../models/Character';
 import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { t } from '../utils/i18n';
+
+type ScenePresenceStats = { pov: number; present: number };
 
 /**
  * Character View - rich character cards with full profile editing.
@@ -50,10 +56,6 @@ export class CharacterView extends ItemView {
     /** Timestamp of last self-initiated save; used to suppress external refresh that would steal focus */
     private _lastSaveTime = 0;
     private static readonly SAVE_REFRESH_GRACE_MS = 2000;
-    /** Current sub-mode: 'grid' (default), 'map' (relationship map), or 'story-graph' */
-    private viewMode: 'grid' | 'map' | 'story-graph' = 'grid';
-    /** Active RelationshipMap instance (cleaned up on re-render) */
-    private relationshipMap: RelationshipMap | null = null;
     /** Active StoryGraph instance (cleaned up on re-render) */
     private storyGraph: StoryGraph | null = null;
     /** Original name when the detail view was opened — used for cascade rename detection */
@@ -64,6 +66,7 @@ export class CharacterView extends ItemView {
     private _skipReciprocalSync = false;
     /** Current search/filter text for overview grid */
     private searchText: string = '';
+    private _searchTimer: number | null = null;
     /** Current sort mode for the overview grid */
     private sortBy: 'name' | 'modified' | 'created' | 'role' = 'name';
     /**
@@ -85,6 +88,13 @@ export class CharacterView extends ItemView {
         for (const el of this._portaledDropdowns) { try { el.remove(); } catch { /* noop */ } }
         this._portaledDropdowns = [];
     }
+
+    /** Invalidate in-flight overview batch renders when the grid re-renders. */
+    private _overviewGen = 0;
+    private _overviewObserver: IntersectionObserver | null = null;
+    private _overviewScrollHandler: (() => void) | null = null;
+    private static readonly OVERVIEW_BATCH = 36;
+    private static readonly OVERVIEW_LITE_THRESHOLD = 36;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -120,13 +130,26 @@ export class CharacterView extends ItemView {
         this.rootContainer = container;
 
         await this.sceneManager.initialize();
-        // Load project characters, then re-apply external source folders so
-        // entries stored outside the project Codex are included.
-        await this.plugin.reloadEntities();
+        // Skip reload when refreshOpenViews (or another Library tab) just loaded.
+        if (!this.plugin.entitiesFresh()) {
+            await this.plugin.reloadEntities();
+        }
         this.renderView(container);
     }
 
     async onClose(): Promise<void> {
+        this._overviewGen++;
+        this._overviewObserver?.disconnect();
+        this._overviewObserver = null;
+        if (this._overviewScrollHandler && this.rootContainer) {
+            const content = this.rootContainer.querySelector('.story-line-character-content');
+            if (content) content.removeEventListener('scroll', this._overviewScrollHandler);
+            this._overviewScrollHandler = null;
+        }
+        if (this._searchTimer !== null) {
+            window.clearTimeout(this._searchTimer);
+            this._searchTimer = null;
+        }
         // Flush any pending auto-save so edits are not lost
         await this.flushPendingSave();
         // Remove any floating lightbox windows from activeDocument.body
@@ -149,63 +172,16 @@ export class CharacterView extends ItemView {
 
         const controls = toolbar.createDiv('story-line-toolbar-controls');
 
-        // ── Codex category tabs ─────────────────────
+        // ── Codex category tabs + Browse / Story Graph ──
         renderCodexCategoryTabs(container, {
             activeId: 'characters-pseudo',
             leaf: this.leaf,
             plugin: this.plugin,
+            showModeToggle: !this.selectedCharacter,
+            onModeChange: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
         });
-
-        // View mode toggle (Grid / Map) — only shown in overview
-        if (!this.selectedCharacter) {
-            const modeToggle = controls.createDiv('character-mode-toggle');
-            const gridBtn = modeToggle.createEl('button', {
-                cls: `character-mode-btn ${this.viewMode === 'grid' ? 'active' : ''}`,
-            });
-            const gridIcon = gridBtn.createSpan();
-            obsidian.setIcon(gridIcon, 'layout-grid');
-            gridBtn.createSpan({ text: t(' Grid') });
-            gridBtn.addEventListener('click', () => {
-                if (this.viewMode !== 'grid') {
-                    this.viewMode = 'grid';
-                    if (this.rootContainer) this.renderView(this.rootContainer);
-                }
-            });
-
-            // Map and StoryGraph modes — desktop only
-            if (!isMobile) {
-            const mapBtn = modeToggle.createEl('button', {
-                cls: `character-mode-btn ${this.viewMode === 'map' ? 'active' : ''}`,
-            });
-            const mapIcon = mapBtn.createSpan();
-            obsidian.setIcon(mapIcon, 'waypoints');
-            mapBtn.createSpan({ text: t(' Map') });
-            mapBtn.addEventListener('click', () => {
-                if (this.viewMode !== 'map') {
-                    this.viewMode = 'map';
-                    if (this.rootContainer) this.renderView(this.rootContainer);
-                }
-            });
-
-            const graphBtn = modeToggle.createEl('button', {
-                cls: `character-mode-btn ${this.viewMode === 'story-graph' ? 'active' : ''}`,
-            });
-            const graphIcon = graphBtn.createSpan();
-            obsidian.setIcon(graphIcon, 'share-2');
-            graphBtn.createSpan({ text: t(' Story Graph') });
-            graphBtn.addEventListener('click', () => {
-                if (this.viewMode !== 'story-graph') {
-                    this.viewMode = 'story-graph';
-                    if (this.rootContainer) this.renderView(this.rootContainer);
-                }
-            });
-            } // end if (!isMobile)
-        }
-
-        // Force grid mode on mobile if user was in a desktop-only mode
-        if (isMobile && DESKTOP_ONLY_CHARACTER_MODES.has(this.viewMode)) {
-            this.viewMode = 'grid';
-        }
 
         // New character button
         const addBtn = controls.createEl('button', { cls: 'clickable-icon' });
@@ -215,11 +191,6 @@ export class CharacterView extends ItemView {
 
         const content = container.createDiv('story-line-character-content');
 
-        // Clean up previous map / graph if any
-        if (this.relationshipMap) {
-            this.relationshipMap.destroy();
-            this.relationshipMap = null;
-        }
         if (this.storyGraph) {
             this.storyGraph.destroy();
             this.storyGraph = null;
@@ -227,10 +198,10 @@ export class CharacterView extends ItemView {
 
         if (this.selectedCharacter) {
             this.renderCharacterDetail(content);
-        } else if (this.viewMode === 'map') {
-            this.renderRelationshipMap(content);
-        } else if (this.viewMode === 'story-graph') {
-            this.renderStoryGraph(content);
+        } else if (getLibraryContentMode(this.plugin) === 'story-graph' && !isMobile) {
+            this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            });
         } else {
             this.renderCharacterOverview(content);
         }
@@ -240,7 +211,7 @@ export class CharacterView extends ItemView {
 
     private renderCharacterOverview(container: HTMLElement): void {
         container.empty();
-        container.createEl('h3', { text: t('Characters') });
+        // Tab already says “角色” — skip a redundant page title to free vertical space.
 
         // Search + Sort
         const searchRow = container.createDiv('codex-search-row');
@@ -256,7 +227,11 @@ export class CharacterView extends ItemView {
         const hadFocus = activeDocument.activeElement?.closest('.story-line-character-container') != null;
         searchInput.addEventListener('input', () => {
             this.searchText = searchInput.value;
-            this.renderCharacterOverview(container);
+            if (this._searchTimer !== null) window.clearTimeout(this._searchTimer);
+            this._searchTimer = window.setTimeout(() => {
+                this._searchTimer = null;
+                this.renderCharacterOverview(container);
+            }, 180);
         });
         if (hadFocus) {
             // Re-focus the search field and restore cursor position
@@ -321,53 +296,36 @@ export class CharacterView extends ItemView {
             }).catch(() => { /* non-fatal */ });
         }
 
-        // Collect unique role tags (preserve first-seen casing) for the chip bar.
+        // Collect role + #prop + location tags once (also used for filtering / search).
+        const overrides = this.plugin.settings.tagTypeOverrides;
         const tagLabels = new Map<string, string>();
+        const charFilterKeys = new Map<string, string[]>();
         for (const c of fileCharacters) {
-            for (const role of getRoleList(c)) {
-                const key = role.toLowerCase();
-                if (!tagLabels.has(key)) tagLabels.set(key, role);
-            }
+            const keys: string[] = [];
+            const add = (label: string) => {
+                const trimmed = label.trim();
+                if (!trimmed) return;
+                const key = trimmed.toLowerCase();
+                keys.push(key);
+                if (!tagLabels.has(key)) tagLabels.set(key, trimmed);
+            };
+            for (const role of getRoleList(c)) add(role);
+            for (const p of extractCharacterProps(c, overrides)) add(p);
+            for (const p of extractCharacterLocationTags(c, overrides)) add(p);
+            charFilterKeys.set(c.filePath, keys);
         }
-        // Drop stale selections that no longer exist among characters.
-        for (const key of [...this.activeTagFilters]) {
-            if (!tagLabels.has(key)) this.activeTagFilters.delete(key);
-        }
-        if (tagLabels.size > 0) {
-            const chipRow = container.createDiv('story-line-filter-chips character-tag-filter-chips');
-            const sortedTags = [...tagLabels.entries()].sort((a, b) =>
-                a[1].localeCompare(b[1], undefined, { sensitivity: 'base' }));
-            for (const [key, label] of sortedTags) {
-                const chip = chipRow.createEl('button', {
-                    cls: `story-line-chip${this.activeTagFilters.has(key) ? ' active' : ''}`,
-                    text: label,
-                });
-                chip.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    if (this.activeTagFilters.has(key)) this.activeTagFilters.delete(key);
-                    else this.activeTagFilters.add(key);
-                    this.renderCharacterOverview(container);
-                });
-            }
-            if (this.activeTagFilters.size > 0) {
-                const clearBtn = chipRow.createEl('button', {
-                    cls: 'story-line-chip story-line-chip-clear',
-                    text: t('Clear'),
-                });
-                attachTooltip(clearBtn, t('Clear tag filters'));
-                clearBtn.addEventListener('click', (e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    this.activeTagFilters.clear();
-                    this.renderCharacterOverview(container);
-                });
-            }
-        }
+        const chipHost = container.createDiv('story-line-filter-chips character-tag-filter-chips library-filter-chips');
+        renderLibraryFilterChips(chipHost, tagLabels, this.activeTagFilters, () => {
+            this.renderCharacterOverview(container);
+        });
 
-        // Apply search filter to file-backed characters
+        // Apply search filter to file-backed characters (name + tags)
         if (q) {
-            fileCharacters = fileCharacters.filter(c => c.name.toLowerCase().includes(q));
+            fileCharacters = fileCharacters.filter(c => {
+                if (c.name.toLowerCase().includes(q)) return true;
+                const keys = charFilterKeys.get(c.filePath) ?? [];
+                return keys.some(k => k.includes(q) || (tagLabels.get(k) ?? '').toLowerCase().includes(q));
+            });
         }
 
         // Apply book-membership filter (series mode only).
@@ -381,10 +339,12 @@ export class CharacterView extends ItemView {
             });
         }
 
-        // Apply role/tag filter (OR): keep characters that have any selected role.
+        // Apply role/prop/location tag filter (OR).
         if (this.activeTagFilters.size > 0) {
-            fileCharacters = fileCharacters.filter(c =>
-                getRoleList(c).some(r => this.activeTagFilters.has(r.toLowerCase())));
+            fileCharacters = fileCharacters.filter(c => {
+                const keys = charFilterKeys.get(c.filePath) ?? [];
+                return keys.some(k => this.activeTagFilters.has(k));
+            });
         }
 
         // Apply sort
@@ -405,68 +365,237 @@ export class CharacterView extends ItemView {
 
         // Characters with files
         const showUnlinkedCandidates = this.activeTagFilters.size === 0 && sceneCharNames.length > 0;
-        if (fileCharacters.length > 0 || showUnlinkedCandidates) {
-            const grid = container.createDiv('character-overview-grid');
+        // Find characters from scenes that don't have files yet
+        // Skip when a role/tag filter is active — unlinked cards have no roles.
+        const allFileNames = new Set(
+            this.characterManager.getAllCharacters().map(c => c.name.toLowerCase()),
+        );
+        const ignoredSet = new Set(this.plugin.settings.ignoredCharacters.map((n: string) => n.toLowerCase()));
+        const manualAliases = this.plugin.settings.characterAliases;
+        const unlinked = !showUnlinkedCandidates ? [] : sceneCharNames.filter(n => {
+            const lower = n.toLowerCase();
+            if (ignoredSet.has(lower)) return false;
+            if (manualAliases[lower]) return false;
+            if (allFileNames.has(lower)) return false;
+            const canonical = aliasMap.get(lower);
+            if (canonical && allFileNames.has(canonical.toLowerCase())) return false;
+            return true;
+        });
 
-            // Render characters that have dedicated files
-            for (const char of fileCharacters) {
-                this.renderOverviewCard(grid, char, scenes, aliasMap);
-            }
+        // Deduplicate unlinked names: if "Micke" and "Micke Barr" both
+        // appear, merge the short (first-name-only) form into the longer
+        // full name so only "Micke Barr" is shown.
+        let deduped = this.deduplicateUnlinked(unlinked);
+        if (q) {
+            deduped = deduped.filter(n => n.toLowerCase().includes(q));
+        }
 
-            // Find characters from scenes that don't have files yet
-            // Skip when a role/tag filter is active — unlinked cards have no roles.
-            // A scene character is "linked" if any alias resolves to a known profile name
-            const fileNames = new Set(fileCharacters.map(c => c.name.toLowerCase()));
-            const ignoredSet = new Set(this.plugin.settings.ignoredCharacters.map((n: string) => n.toLowerCase()));
-            const manualAliases = this.plugin.settings.characterAliases;
-            const unlinked = !showUnlinkedCandidates ? [] : sceneCharNames.filter(n => {
-                const lower = n.toLowerCase();
-                // Ignored?
-                if (ignoredSet.has(lower)) return false;
-                // Manual alias?
-                if (manualAliases[lower]) return false;
-                // Direct match
-                if (fileNames.has(lower)) return false;
-                // Auto-alias match (nickname or first name)
-                const canonical = aliasMap.get(lower);
-                if (canonical && fileNames.has(canonical.toLowerCase())) return false;
-                return true;
-            });
-
-            // Deduplicate unlinked names: if "Micke" and "Micke Barr" both
-            // appear, merge the short (first-name-only) form into the longer
-            // full name so only "Micke Barr" is shown.
-            let deduped = this.deduplicateUnlinked(unlinked);
-            if (q) {
-                deduped = deduped.filter(n => n.toLowerCase().includes(q));
-            }
-
-            if (fileCharacters.length === 0 && deduped.length === 0) {
-                const empty = container.createDiv('character-empty-state');
+        if (fileCharacters.length === 0 && deduped.length === 0) {
+            const empty = container.createDiv('character-empty-state');
+            if (q || this.activeTagFilters.size > 0 || this.bookFilterActive) {
                 empty.createEl('h4', { text: t('No matching characters') });
                 empty.createEl('p', { text: t('Try clearing search or tag filters.') });
-            } else if (deduped.length > 0) {
-                // Divider
-                if (fileCharacters.length > 0) {
-                    const divider = container.createDiv('character-unlinked-divider');
-                    divider.createEl('span', { text: t('Characters from scenes (no profile yet)') });
-                }
-                const ugrid = container.createDiv('character-overview-grid');
-                for (const name of deduped) {
-                    this.renderUnlinkedCard(ugrid, name, scenes, aliasMap);
-                }
+            } else {
+                const emptyIcon = empty.createDiv('character-empty-icon');
+                obsidian.setIcon(emptyIcon, 'user-plus');
+                empty.createEl('h4', { text: t('No characters yet') });
+                empty.createEl('p', { text: t('Click "+ New Character" to create your first character profile, or add characters to your scene frontmatter.') });
             }
-        } else if (q || this.activeTagFilters.size > 0 || this.bookFilterActive) {
-            const empty = container.createDiv('character-empty-state');
-            empty.createEl('h4', { text: t('No matching characters') });
-            empty.createEl('p', { text: t('Try clearing search or tag filters.') });
-        } else {
-            const empty = container.createDiv('character-empty-state');
-            const emptyIcon = empty.createDiv('character-empty-icon');
-            obsidian.setIcon(emptyIcon, 'user-plus');
-            empty.createEl('h4', { text: t('No characters yet') });
-            empty.createEl('p', { text: t('Click "+ New Character" to create your first character profile, or add characters to your scene frontmatter.') });
+            return;
         }
+
+        // One O(scenes) pass — never O(characters × scenes) per card.
+        // Frontmatter / POV only — body link-scan is too expensive for large projects.
+        const sceneStats = this.precomputeScenePresenceStats(scenes, aliasMap);
+
+        const gen = ++this._overviewGen;
+        this._overviewObserver?.disconnect();
+        this._overviewObserver = null;
+        if (this._overviewScrollHandler) {
+            container.removeEventListener('scroll', this._overviewScrollHandler);
+            this._overviewScrollHandler = null;
+        }
+
+        const totalCards = fileCharacters.length + deduped.length;
+        const lite = totalCards >= CharacterView.OVERVIEW_LITE_THRESHOLD;
+        const progressRow = container.createDiv('character-overview-progress-row');
+        const hint = progressRow.createDiv('character-overview-progress');
+        const loadMoreBtn = progressRow.createEl('button', {
+            cls: 'character-overview-load-more',
+            text: t('Load more'),
+            attr: { type: 'button' },
+        });
+        loadMoreBtn.hide();
+        if (totalCards > CharacterView.OVERVIEW_BATCH) {
+            hint.setText(t('Showing {shown} of {total}…', {
+                shown: Math.min(CharacterView.OVERVIEW_BATCH, totalCards),
+                total: totalCards,
+            }));
+        } else {
+            progressRow.hide();
+        }
+
+        type OverviewItem =
+            | { kind: 'file'; char: Character }
+            | { kind: 'unlinked'; name: string };
+
+        const items: OverviewItem[] = [
+            ...fileCharacters.map((char): OverviewItem => ({ kind: 'file', char })),
+            ...deduped.map((name): OverviewItem => ({ kind: 'unlinked', name })),
+        ];
+
+        // Keep grids + sentinel in a dedicated host so load-more never inserts
+        // new sections after the sentinel (which broke IntersectionObserver).
+        const listHost = container.createDiv('character-overview-list');
+        let grid = listHost.createDiv('character-overview-grid');
+        const sentinel = listHost.createDiv('character-overview-sentinel');
+        let unlinkedStarted = false;
+        let index = 0;
+        let painting = false;
+
+        const finishLoading = () => {
+            this._overviewObserver?.disconnect();
+            this._overviewObserver = null;
+            if (this._overviewScrollHandler) {
+                container.removeEventListener('scroll', this._overviewScrollHandler);
+                this._overviewScrollHandler = null;
+            }
+            sentinel.remove();
+            loadMoreBtn.hide();
+            progressRow.hide();
+        };
+
+        const updateProgress = () => {
+            if (index >= items.length) {
+                finishLoading();
+                return;
+            }
+            progressRow.show();
+            hint.setText(t('Showing {shown} of {total}…', { shown: index, total: items.length }));
+            loadMoreBtn.show();
+        };
+
+        const appendItem = (item: OverviewItem) => {
+            if (item.kind === 'unlinked' && !unlinkedStarted) {
+                unlinkedStarted = true;
+                if (fileCharacters.length > 0) {
+                    const divider = listHost.createDiv('character-unlinked-divider');
+                    divider.createEl('span', { text: t('Characters from scenes (no profile yet)') });
+                    listHost.insertBefore(divider, sentinel);
+                }
+                grid = listHost.createDiv('character-overview-grid');
+                listHost.insertBefore(grid, sentinel);
+            }
+            if (item.kind === 'file') {
+                this.renderOverviewCard(grid, item.char, sceneStats, aliasMap, { lite });
+            } else {
+                this.renderUnlinkedCard(grid, item.name, sceneStats, aliasMap);
+            }
+        };
+
+        const paintBatch = (): boolean => {
+            if (gen !== this._overviewGen || painting) return index < items.length;
+            painting = true;
+            try {
+                const end = Math.min(index + CharacterView.OVERVIEW_BATCH, items.length);
+                for (; index < end; index++) appendItem(items[index]);
+                updateProgress();
+                return index < items.length;
+            } finally {
+                painting = false;
+            }
+        };
+
+        // First paint immediately (keeps UI responsive).
+        const hasMore = paintBatch();
+        if (!hasMore) return;
+
+        const tryLoadMore = () => {
+            if (gen !== this._overviewGen) return;
+            if (!sentinel.isConnected) return;
+            const rootRect = container.getBoundingClientRect();
+            const sentRect = sentinel.getBoundingClientRect();
+            const nearBottom =
+                container.scrollTop + container.clientHeight >= container.scrollHeight - 420
+                || sentRect.top <= rootRect.bottom + 420;
+            if (!nearBottom) return;
+            if (paintBatch()) {
+                // Keep filling while the sentinel stays in range (short viewports).
+                requestAnimationFrame(tryLoadMore);
+            }
+        };
+
+        loadMoreBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            paintBatch();
+            requestAnimationFrame(tryLoadMore);
+        });
+
+        this._overviewScrollHandler = () => tryLoadMore();
+        container.addEventListener('scroll', this._overviewScrollHandler, { passive: true });
+
+        this._overviewObserver = new IntersectionObserver(
+            (entries) => {
+                if (gen !== this._overviewGen) {
+                    this._overviewObserver?.disconnect();
+                    return;
+                }
+                if (!entries.some((e) => e.isIntersecting)) return;
+                tryLoadMore();
+            },
+            // Prefer viewport root — nested flex scroll roots are unreliable in Obsidian panes.
+            { root: null, rootMargin: '400px 0px' },
+        );
+        this._overviewObserver.observe(sentinel);
+        requestAnimationFrame(tryLoadMore);
+    }
+
+    /**
+     * Build POV/presence counts keyed by canonical character name (lowercase).
+     * Single pass over scenes instead of scanning every scene per card.
+     */
+    private precomputeScenePresenceStats(
+        scenes: Scene[],
+        aliasMap: Map<string, string>,
+    ): Map<string, ScenePresenceStats> {
+        const stats = new Map<string, ScenePresenceStats>();
+        const bump = (rawName: string, asPov: boolean) => {
+            if (!rawName) return;
+            const lower = rawName.toLowerCase();
+            const canonical = (aliasMap.get(lower) ?? lower).toLowerCase();
+            let entry = stats.get(canonical);
+            if (!entry) {
+                entry = { pov: 0, present: 0 };
+                stats.set(canonical, entry);
+            }
+            if (asPov) entry.pov++;
+            else entry.present++;
+        };
+
+        for (const scene of scenes) {
+            const povLower = scene.pov?.toLowerCase() ?? '';
+            if (povLower) bump(povLower, true);
+
+            // Overview counts use frontmatter only. Scanning every scene body via
+            // linkScanner here froze large projects on open.
+            for (const c of scene.characters ?? []) {
+                if (!c) continue;
+                const lower = c.toLowerCase();
+                if (lower === povLower) continue;
+                bump(lower, false);
+            }
+        }
+        return stats;
+    }
+
+    private lookupSceneStats(
+        name: string,
+        sceneStats: Map<string, ScenePresenceStats>,
+        aliasMap?: Map<string, string>,
+    ): ScenePresenceStats {
+        const lower = name.toLowerCase();
+        const canonical = (aliasMap?.get(lower) ?? lower).toLowerCase();
+        return sceneStats.get(canonical) ?? { pov: 0, present: 0 };
     }
 
     /**
@@ -511,11 +640,19 @@ export class CharacterView extends ItemView {
         });
     }
 
-    private renderOverviewCard(grid: HTMLElement, char: Character, scenes: Scene[], aliasMap?: Map<string, string>): void {
+    private renderOverviewCard(
+        grid: HTMLElement,
+        char: Character,
+        sceneStats: Map<string, ScenePresenceStats>,
+        aliasMap?: Map<string, string>,
+        opts?: { lite?: boolean },
+    ): HTMLElement {
+        const lite = !!opts?.lite;
         const card = grid.createDiv('character-overview-card');
+        if (lite) card.addClass('is-lite');
 
-        // Role badges — supports string or string[] (issue #72 Tier 1)
-        const roleList = getRoleList(char.role);
+        // Role badges — supports string / string[] / roles[] (issue #72)
+        const roleList = getRoleList(char);
         if (roleList.length) {
             const wrap = card.createDiv('character-role-badges');
             for (const r of roleList) {
@@ -532,7 +669,7 @@ export class CharacterView extends ItemView {
             if (imgSrc) {
                 const img = portrait.createEl('img', {
                     cls: 'character-portrait-img',
-                    attr: { src: imgSrc, alt: char.name }
+                    attr: { src: imgSrc, alt: char.name, loading: 'lazy', decoding: 'async' },
                 });
                 img.onerror = () => {
                     img.remove();
@@ -559,25 +696,7 @@ export class CharacterView extends ItemView {
             card.createEl('p', { cls: 'character-card-snippet', text: snippet });
         }
 
-        // Build the set of all lowercased names that resolve to this character
-        const charAliases = new Set<string>();
-        charAliases.add(char.name.toLowerCase());
-        if (aliasMap) {
-            for (const [alias, canonical] of aliasMap) {
-                if (canonical.toLowerCase() === char.name.toLowerCase()) {
-                    charAliases.add(alias);
-                }
-            }
-        }
-
-        // Scene stats — match against all aliases (frontmatter + LinkScanner)
-        let povCount = 0;
-        let presentCount = 0;
-        for (const s of scenes) {
-            const { isPov, isPresent } = this.isCharInScene(s, charAliases);
-            if (isPov) povCount++;
-            else if (isPresent) presentCount++;
-        }
+        const { pov: povCount, present: presentCount } = this.lookupSceneStats(char.name, sceneStats, aliasMap);
         const total = povCount + presentCount;
 
         const stats = card.createDiv('character-card-stats');
@@ -589,39 +708,41 @@ export class CharacterView extends ItemView {
             stats.createSpan({ cls: 'character-stat-none', text: t('No scenes yet') });
         }
 
-        // Completeness indicator
-        const filled = CHARACTER_CATEGORIES.reduce((acc, cat) =>
-            acc + cat.fields.filter(f => {
-                const val = char[f.key];
-                return val !== undefined && val !== null && val !== '';
-            }).length, 0);
-        const totalFields = CHARACTER_CATEGORIES.reduce((acc, cat) => acc + cat.fields.length, 0);
-        const pct = Math.round((filled / totalFields) * 100);
-        const completeness = card.createDiv('character-card-completeness');
-        const bar = completeness.createDiv('character-completeness-bar');
-        const fill = bar.createDiv('character-completeness-fill');
-        fill.setCssStyles({ width: `${pct}%` });
-        completeness.createSpan({ cls: 'character-completeness-label', text: t('{pct}% complete', { pct }) });
+        // Completeness + tag chips are expensive at scale — skip in lite mode
+        // (detail view still shows them).
+        if (!lite) {
+            const filled = CHARACTER_CATEGORIES.reduce((acc, cat) =>
+                acc + cat.fields.filter(f => {
+                    const val = char[f.key];
+                    return val !== undefined && val !== null && val !== '';
+                }).length, 0);
+            const totalFields = CHARACTER_CATEGORIES.reduce((acc, cat) => acc + cat.fields.length, 0);
+            const pct = Math.round((filled / totalFields) * 100);
+            const completeness = card.createDiv('character-card-completeness');
+            const bar = completeness.createDiv('character-completeness-bar');
+            const fill = bar.createDiv('character-completeness-fill');
+            fill.setCssStyles({ width: `${pct}%` });
+            completeness.createSpan({ cls: 'character-completeness-label', text: t('{pct}% complete', { pct }) });
 
-        // Prop & location tags extracted from character fields
-        const overrides = this.plugin.settings.tagTypeOverrides;
-        const charProps = extractCharacterProps(char, overrides);
-        const charLocTags = extractCharacterLocationTags(char, overrides);
-        if (charLocTags.length > 0 || charProps.length > 0) {
-            const propsRow = card.createDiv('character-card-props');
-            charLocTags.forEach(p => {
-                const span = propsRow.createSpan({ cls: 'character-prop-tag character-loc-tag', text: `#${p}` });
-                if (overrides[p.toLowerCase()]) span.addClass('tag-overridden');
-                this.addTagContextMenu(span, p);
-            });
-            charProps.slice(0, 5).forEach(p => {
-                const span = propsRow.createSpan({ cls: 'character-prop-tag', text: `#${p}` });
-                if (overrides[p.toLowerCase()]) span.addClass('tag-overridden');
-                this.addTagContextMenu(span, p);
-            });
-            const totalTags = charLocTags.length + charProps.length;
-            if (totalTags > 5 + charLocTags.length) {
-                propsRow.createSpan({ cls: 'character-prop-more', text: `+${charProps.length - 5}` });
+            const overrides = this.plugin.settings.tagTypeOverrides;
+            const charProps = extractCharacterProps(char, overrides);
+            const charLocTags = extractCharacterLocationTags(char, overrides);
+            if (charLocTags.length > 0 || charProps.length > 0) {
+                const propsRow = card.createDiv('character-card-props');
+                charLocTags.forEach(p => {
+                    const span = propsRow.createSpan({ cls: 'character-prop-tag character-loc-tag', text: `#${p}` });
+                    if (overrides[p.toLowerCase()]) span.addClass('tag-overridden');
+                    this.addTagContextMenu(span, p);
+                });
+                charProps.slice(0, 5).forEach(p => {
+                    const span = propsRow.createSpan({ cls: 'character-prop-tag', text: `#${p}` });
+                    if (overrides[p.toLowerCase()]) span.addClass('tag-overridden');
+                    this.addTagContextMenu(span, p);
+                });
+                const totalTags = charLocTags.length + charProps.length;
+                if (totalTags > 5 + charLocTags.length) {
+                    propsRow.createSpan({ cls: 'character-prop-more', text: `+${charProps.length - 5}` });
+                }
             }
         }
 
@@ -636,40 +757,21 @@ export class CharacterView extends ItemView {
             e.preventDefault();
             this.showCharacterContextMenu(char, e);
         });
+
+        return card;
     }
 
-    private renderUnlinkedCard(grid: HTMLElement, name: string, scenes: Scene[], aliasMap?: Map<string, string>): void {
+    private renderUnlinkedCard(
+        grid: HTMLElement,
+        name: string,
+        sceneStats: Map<string, ScenePresenceStats>,
+        aliasMap?: Map<string, string>,
+    ): HTMLElement {
         const card = grid.createDiv('character-overview-card character-unlinked');
 
         card.createEl('h4', { text: name });
 
-        // Build set of all name variants that belong to this character
-        // (the canonical name + any aliases that map to it)
-        const nameAliases = new Set<string>();
-        nameAliases.add(name.toLowerCase());
-        if (aliasMap) {
-            // Find all aliases that resolve to this name
-            for (const [alias, canonical] of aliasMap) {
-                if (canonical.toLowerCase() === name.toLowerCase()) {
-                    nameAliases.add(alias);
-                }
-            }
-            // Also check if this name itself maps to something (shouldn't happen
-            // after dedup, but be safe)
-            const mapped = aliasMap.get(name.toLowerCase());
-            if (mapped) {
-                nameAliases.add(mapped.toLowerCase());
-            }
-        }
-
-        // Scene stats — count across all aliases (frontmatter + LinkScanner)
-        let povCount = 0;
-        let presentCount = 0;
-        for (const s of scenes) {
-            const { isPov, isPresent } = this.isCharInScene(s, nameAliases);
-            if (isPov) povCount++;
-            else if (isPresent) presentCount++;
-        }
+        const { pov: povCount, present: presentCount } = this.lookupSceneStats(name, sceneStats, aliasMap);
 
         const stats = card.createDiv('character-card-stats');
         stats.createSpan({ text: `${povCount} ${t('POV')} \u00b7 ${t('{count} scenes', { count: povCount + presentCount })}` });
@@ -693,6 +795,8 @@ export class CharacterView extends ItemView {
             e.stopPropagation();
             await this.ignoreCharacter(name);
         });
+
+        return card;
     }
 
     /**
@@ -773,31 +877,6 @@ export class CharacterView extends ItemView {
         return names.filter(n => !toRemove.has(n.toLowerCase()));
     }
 
-    // ── Relationship Map ────────────────────────────────
-
-    private renderRelationshipMap(container: HTMLElement): void {
-        container.empty();
-        container.createEl('h3', { text: t('Relationship Map') });
-
-        const characters = this.characterManager.getAllCharacters();
-        const mapContainer = container.createDiv('relationship-map-container');
-
-        this.relationshipMap = new RelationshipMap(
-            mapContainer,
-            characters,
-            (name: string) => {
-                // Double-click a node → open that character's detail view
-                const char = characters.find(c => c.name === name);
-                if (char) {
-                    this.selectedCharacter = char.filePath;
-                    this.viewMode = 'grid'; // switch back to grid for detail
-                    if (this.rootContainer) this.renderView(this.rootContainer);
-                }
-            },
-        );
-        this.relationshipMap.render();
-    }
-
     // ── Scene presence helper (frontmatter + LinkScanner) ──
 
     /**
@@ -819,38 +898,6 @@ export class CharacterView extends ItemView {
         } catch { /* scanner not ready */ }
 
         return { isPov, isPresent: isPov || fmPresent || scanPresent };
-    }
-
-    // ── Story Graph ────────────────────────────────────
-
-    private renderStoryGraph(container: HTMLElement): void {
-        container.empty();
-        container.createEl('h3', { text: t('Story Graph') });
-
-        const scenes = this.sceneManager.getAllScenes().filter(scene => !scene.inactive);
-        const characters = this.characterManager.getAllCharacters();
-        const scanner = this.plugin.linkScanner;
-        // Ensure scan results are up to date
-        scanner.rebuildLookups(this.plugin.settings.characterAliases);
-        const scanResults = scanner.scanAll(scenes);
-
-        const graphContainer = container.createDiv('story-graph-container');
-
-        this.storyGraph = new StoryGraph(
-            graphContainer,
-            scenes,
-            characters,
-            scanResults,
-            (filePath: string) => {
-                // Double-click a scene node → open the file
-                const file = this.app.vault.getAbstractFileByPath(filePath);
-                if (file) {
-                    this.app.workspace.openLinkText(filePath, '', true);
-                }
-            },
-            this.plugin.settings.tagTypeOverrides,
-        );
-        this.storyGraph.render();
     }
 
     // ── Character Detail ───────────────────────────────
@@ -2890,8 +2937,11 @@ export class CharacterView extends ItemView {
      * jump from the character's freeform note back to the details panel.
      */
     async navigateToCharacter(filePath: string): Promise<void> {
-        await this.plugin.reloadEntities();
-        const char = this.characterManager.getCharacter(filePath);
+        let char = this.characterManager.getCharacter(filePath);
+        if (!char) {
+            await this.plugin.reloadEntities();
+            char = this.characterManager.getCharacter(filePath);
+        }
         if (!char) {
             new Notice(t('Character not found in the active project.'));
             return;
@@ -2908,15 +2958,13 @@ export class CharacterView extends ItemView {
      * save (within the grace window), skip the re-render to avoid stealing focus.
      */
     async refresh(): Promise<void> {
+        // refreshOpenViews already reloaded entities — only re-render here.
         if (
             this.selectedCharacter &&
             Date.now() - this._lastSaveTime < CharacterView.SAVE_REFRESH_GRACE_MS
         ) {
-            // Our own save triggered this — silently reload data but don't re-render
-            await this.plugin.reloadEntities();
             return;
         }
-        await this.plugin.reloadEntities();
         if (this.rootContainer) {
             this.renderView(this.rootContainer);
         }

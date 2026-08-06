@@ -12,7 +12,6 @@ export const CHARACTER_VIEW_TYPE = 'narrative-lab-character';
 export const STATS_VIEW_TYPE = 'narrative-lab-stats';
 export const PLOTGRID_VIEW_TYPE = 'narrative-lab-plotgrid';
 export const LOCATION_VIEW_TYPE = 'narrative-lab-location';
-export const HELP_VIEW_TYPE = 'narrative-lab-help';
 export const NAVIGATOR_VIEW_TYPE = 'narrative-lab-navigator';
 export const CODEX_VIEW_TYPE = 'narrative-lab-library';
 export const SCENE_INSPECTOR_VIEW_TYPE = 'narrative-lab-scene-inspector';

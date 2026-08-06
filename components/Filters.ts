@@ -13,6 +13,12 @@ type FocusModeCallback = (active: boolean) => void;
 export interface FiltersComponentOptions {
     /** Show sort controls in the overflow menu. Default true; Concept Grid passes false. */
     showSort?: boolean;
+    /** Override search input placeholder (default: "Search scenes..."). */
+    searchPlaceholder?: string;
+    /** Override filter button label (default: "Filter scenes"). */
+    filterLabel?: string;
+    /** Override filter button tooltip (default: scene-oriented help text). */
+    filterTooltip?: string;
 }
 
 /**
@@ -37,6 +43,9 @@ export class FiltersComponent {
     private onFocusModeChange?: FocusModeCallback;
     private visible = false;
     private showSort: boolean;
+    private searchPlaceholder: string;
+    private filterLabel: string;
+    private filterTooltip: string;
     private outsideClickHandler: ((e: MouseEvent) => void) | null = null;
 
     private filterBtn: HTMLElement | null = null;
@@ -57,6 +66,9 @@ export class FiltersComponent {
         this.plugin = plugin ?? null;
         this.onFocusModeChange = onFocusModeChange;
         this.showSort = options?.showSort !== false;
+        this.searchPlaceholder = options?.searchPlaceholder ?? t('Search scenes...');
+        this.filterLabel = options?.filterLabel ?? t('Filter scenes');
+        this.filterTooltip = options?.filterTooltip ?? t('Filter scenes by act, chapter, status, and more');
     }
 
     /**
@@ -80,7 +92,7 @@ export class FiltersComponent {
             cls: 'story-line-search',
             attr: {
                 type: 'text',
-                placeholder: t('Search scenes...'),
+                placeholder: this.searchPlaceholder,
             }
         });
         if (this.currentFilter.searchText) {
@@ -95,11 +107,11 @@ export class FiltersComponent {
 
         this.filterBtn = topBar.createEl('button', {
             cls: 'story-line-filter-toggle clickable-icon',
-            attr: { title: t('Filter scenes by act, chapter, status, and more'), 'aria-expanded': 'false' },
+            attr: { title: this.filterTooltip, 'aria-expanded': 'false' },
         });
         const filterIcon = this.filterBtn.createSpan();
         obsidian.setIcon(filterIcon, 'list-filter');
-        this.filterBtn.createSpan({ cls: 'story-line-filter-toggle-label', text: t('Filter scenes') });
+        this.filterBtn.createSpan({ cls: 'story-line-filter-toggle-label', text: this.filterLabel });
         this.filterBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             this.togglePanel();
@@ -107,12 +119,12 @@ export class FiltersComponent {
 
         if (this.showSort) {
             const sortBtn = topBar.createEl('button', {
-                cls: 'story-line-filter-more clickable-icon story-line-sort',
+                cls: 'story-line-filter-toggle clickable-icon story-line-sort',
                 attr: { title: t('Change scene sort order') },
             });
             const sortIcon = sortBtn.createSpan();
             obsidian.setIcon(sortIcon, 'arrow-up-down');
-            sortBtn.createSpan({ cls: 'story-line-filter-toggle-label', text: t('Sort') });
+            sortBtn.createSpan({ cls: 'story-line-filter-toggle-label', text: t('Sort scenes') });
             sortBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.openSortMenu(sortBtn);
@@ -287,6 +299,28 @@ export class FiltersComponent {
             });
         }
 
+        for (const chapter of f.chapter ?? []) {
+            const ch = chapter;
+            chips.push({
+                label: `${t('Chapter')}: ${ch}`,
+                clear: () => {
+                    this.currentFilter.chapter = (this.currentFilter.chapter ?? []).filter(x => String(x) !== String(ch));
+                    if (!this.currentFilter.chapter?.length) delete this.currentFilter.chapter;
+                },
+            });
+        }
+
+        for (const tag of f.tags ?? []) {
+            const tg = tag;
+            chips.push({
+                label: `#${tg}`,
+                clear: () => {
+                    this.currentFilter.tags = (this.currentFilter.tags ?? []).filter(x => x !== tg);
+                    if (!this.currentFilter.tags?.length) delete this.currentFilter.tags;
+                },
+            });
+        }
+
         for (const pov of f.pov ?? []) {
             const p = pov;
             chips.push({
@@ -316,17 +350,6 @@ export class FiltersComponent {
                 clear: () => {
                     this.currentFilter.locations = (this.currentFilter.locations ?? []).filter(x => x !== l);
                     if (!this.currentFilter.locations?.length) delete this.currentFilter.locations;
-                },
-            });
-        }
-
-        for (const tag of f.tags ?? []) {
-            const tg = tag;
-            chips.push({
-                label: `#${tg}`,
-                clear: () => {
-                    this.currentFilter.tags = (this.currentFilter.tags ?? []).filter(x => x !== tg);
-                    if (!this.currentFilter.tags?.length) delete this.currentFilter.tags;
                 },
             });
         }
@@ -401,6 +424,40 @@ export class FiltersComponent {
         return n;
     }
 
+    private renderChipSection(
+        panel: HTMLElement,
+        title: string,
+        values: string[],
+        isActive: (value: string) => boolean,
+        onToggle: (value: string) => void,
+        labelFor?: (value: string) => string,
+    ): void {
+        if (values.length === 0) return;
+        const section = panel.createDiv('story-line-filter-section');
+        section.createDiv({ cls: 'story-line-filter-section-title', text: title });
+        const container = section.createDiv('story-line-filter-chips');
+        for (const value of values) {
+            const chip = container.createEl('button', {
+                cls: `story-line-chip${isActive(value) ? ' active' : ''}`,
+                text: labelFor ? labelFor(value) : value,
+            });
+            chip.addEventListener('click', () => onToggle(value));
+        }
+    }
+
+    private toggleListFilter<K extends 'status' | 'act' | 'chapter' | 'pov' | 'characters' | 'locations' | 'tags'>(
+        key: K,
+        value: NonNullable<SceneFilter[K]>[number],
+    ): void {
+        const current = (this.currentFilter[key] ?? []) as Array<typeof value>;
+        const idx = current.map(String).indexOf(String(value));
+        if (idx >= 0) current.splice(idx, 1);
+        else current.push(value);
+        if (current.length === 0) delete this.currentFilter[key];
+        else (this.currentFilter as Record<string, unknown>)[key] = current;
+        this.afterFilterChange();
+    }
+
     private renderFilterPanel(panel: HTMLElement): void {
         // ── Visibility ──
         const visSection = panel.createDiv('story-line-filter-section');
@@ -417,155 +474,73 @@ export class FiltersComponent {
             this.afterFilterChange();
         });
 
-        // ── Status ──
-        const statusValues = this.sceneManager.queryService.getUniqueValues('status');
-        if (statusValues.length > 0) {
-            const statusSection = panel.createDiv('story-line-filter-section');
-            statusSection.createDiv({ cls: 'story-line-filter-section-title', text: t('Status') });
-            const statusContainer = statusSection.createDiv('story-line-filter-chips');
-            for (const status of getStatusOrder()) {
-                const chip = statusContainer.createEl('button', {
-                    cls: `story-line-chip${this.currentFilter.status?.includes(status) ? ' active' : ''}`,
-                    text: status.charAt(0).toUpperCase() + status.slice(1),
-                });
-                chip.addEventListener('click', () => {
-                    if (!this.currentFilter.status) this.currentFilter.status = [];
-                    const idx = this.currentFilter.status.indexOf(status);
-                    if (idx >= 0) {
-                        this.currentFilter.status.splice(idx, 1);
-                        if (this.currentFilter.status.length === 0) delete this.currentFilter.status;
-                    } else {
-                        this.currentFilter.status.push(status);
-                    }
-                    this.afterFilterChange();
-                });
-            }
-        }
+        // High-frequency dimensions first (status / tags / structure)
+        this.renderChipSection(
+            panel,
+            t('Status'),
+            getStatusOrder().map(String),
+            (status) => !!this.currentFilter.status?.includes(status as never),
+            (status) => this.toggleListFilter('status', status as never),
+            (status) => status.charAt(0).toUpperCase() + status.slice(1),
+        );
 
-        // Act
-        const actValues = this.sceneManager.queryService.getUniqueValues('act');
-        if (actValues.length > 0) {
-            const actSection = panel.createDiv('story-line-filter-section');
-            actSection.createDiv({ cls: 'story-line-filter-section-title', text: t('Act') });
-            const actContainer = actSection.createDiv('story-line-filter-chips');
-            actValues.forEach(act => {
-                const chip = actContainer.createEl('button', {
-                    cls: `story-line-chip${this.currentFilter.act?.map(String).includes(act) ? ' active' : ''}`,
-                    text: t(getActDisplayLabel(act)),
-                });
-                chip.addEventListener('click', () => {
-                    if (!this.currentFilter.act) this.currentFilter.act = [];
-                    const idx = this.currentFilter.act.map(String).indexOf(act);
-                    if (idx >= 0) {
-                        this.currentFilter.act.splice(idx, 1);
-                        if (this.currentFilter.act.length === 0) delete this.currentFilter.act;
-                    } else {
-                        this.currentFilter.act.push(act);
-                    }
-                    this.afterFilterChange();
-                });
-            });
-        }
-
-        // POV
-        const povValues = this.sceneManager.queryService.getUniqueValues('pov');
-        if (povValues.length > 0) {
-            const povSection = panel.createDiv('story-line-filter-section');
-            povSection.createDiv({ cls: 'story-line-filter-section-title', text: t('POV') });
-            const povContainer = povSection.createDiv('story-line-filter-chips');
-            povValues.forEach(pov => {
-                const chip = povContainer.createEl('button', {
-                    cls: `story-line-chip${this.currentFilter.pov?.includes(pov) ? ' active' : ''}`,
-                    text: pov,
-                });
-                chip.addEventListener('click', () => {
-                    if (!this.currentFilter.pov) this.currentFilter.pov = [];
-                    const idx = this.currentFilter.pov.indexOf(pov);
-                    if (idx >= 0) {
-                        this.currentFilter.pov.splice(idx, 1);
-                        if (this.currentFilter.pov.length === 0) delete this.currentFilter.pov;
-                    } else {
-                        this.currentFilter.pov.push(pov);
-                    }
-                    this.afterFilterChange();
-                });
-            });
-        }
-
-        // Characters
-        const charValues = this.sceneManager.queryService.getAllCharacters();
-        if (charValues.length > 0) {
-            const charSection = panel.createDiv('story-line-filter-section');
-            charSection.createDiv({ cls: 'story-line-filter-section-title', text: t('Characters') });
-            const charContainer = charSection.createDiv('story-line-filter-chips');
-            charValues.forEach(char => {
-                const chip = charContainer.createEl('button', {
-                    cls: `story-line-chip${this.currentFilter.characters?.includes(char) ? ' active' : ''}`,
-                    text: char.replace(/\[\[|\]\]/g, ''),
-                });
-                chip.addEventListener('click', () => {
-                    if (!this.currentFilter.characters) this.currentFilter.characters = [];
-                    const idx = this.currentFilter.characters.indexOf(char);
-                    if (idx >= 0) {
-                        this.currentFilter.characters.splice(idx, 1);
-                        if (this.currentFilter.characters.length === 0) delete this.currentFilter.characters;
-                    } else {
-                        this.currentFilter.characters.push(char);
-                    }
-                    this.afterFilterChange();
-                });
-            });
-        }
-
-        // Location
-        const locValues = this.sceneManager.queryService.getUniqueValues('location');
-        if (locValues.length > 0) {
-            const locSection = panel.createDiv('story-line-filter-section');
-            locSection.createDiv({ cls: 'story-line-filter-section-title', text: t('Location') });
-            const locContainer = locSection.createDiv('story-line-filter-chips');
-            locValues.forEach(loc => {
-                const chip = locContainer.createEl('button', {
-                    cls: `story-line-chip${this.currentFilter.locations?.includes(loc) ? ' active' : ''}`,
-                    text: loc.replace(/\[\[|\]\]/g, ''),
-                });
-                chip.addEventListener('click', () => {
-                    if (!this.currentFilter.locations) this.currentFilter.locations = [];
-                    const idx = this.currentFilter.locations.indexOf(loc);
-                    if (idx >= 0) {
-                        this.currentFilter.locations.splice(idx, 1);
-                        if (this.currentFilter.locations.length === 0) delete this.currentFilter.locations;
-                    } else {
-                        this.currentFilter.locations.push(loc);
-                    }
-                    this.afterFilterChange();
-                });
-            });
-        }
-
-        // Tags
         const tagValues = this.sceneManager.queryService.getAllTags();
-        if (tagValues.length > 0) {
-            const tagSection = panel.createDiv('story-line-filter-section');
-            tagSection.createDiv({ cls: 'story-line-filter-section-title', text: t('Tags') });
-            const tagContainer = tagSection.createDiv('story-line-filter-chips');
-            tagValues.forEach(tag => {
-                const chip = tagContainer.createEl('button', {
-                    cls: `story-line-chip${this.currentFilter.tags?.includes(tag) ? ' active' : ''}`,
-                    text: tag,
-                });
-                chip.addEventListener('click', () => {
-                    if (!this.currentFilter.tags) this.currentFilter.tags = [];
-                    const idx = this.currentFilter.tags.indexOf(tag);
-                    if (idx >= 0) {
-                        this.currentFilter.tags.splice(idx, 1);
-                        if (this.currentFilter.tags.length === 0) delete this.currentFilter.tags;
-                    } else {
-                        this.currentFilter.tags.push(tag);
-                    }
-                    this.afterFilterChange();
-                });
-            });
-        }
+        this.renderChipSection(
+            panel,
+            t('Tags'),
+            tagValues,
+            (tag) => !!this.currentFilter.tags?.includes(tag),
+            (tag) => this.toggleListFilter('tags', tag),
+            (tag) => `#${tag}`,
+        );
+
+        const actValues = this.sceneManager.queryService.getUniqueValues('act');
+        this.renderChipSection(
+            panel,
+            t('Act'),
+            actValues,
+            (act) => !!this.currentFilter.act?.map(String).includes(act),
+            (act) => this.toggleListFilter('act', act),
+            (act) => t(getActDisplayLabel(act)),
+        );
+
+        const chapterValues = this.sceneManager.queryService.getUniqueValues('chapter');
+        this.renderChipSection(
+            panel,
+            t('Chapter'),
+            chapterValues,
+            (ch) => !!this.currentFilter.chapter?.map(String).includes(ch),
+            (ch) => this.toggleListFilter('chapter', ch),
+        );
+
+        const povValues = this.sceneManager.queryService.getUniqueValues('pov');
+        this.renderChipSection(
+            panel,
+            t('POV'),
+            povValues,
+            (pov) => !!this.currentFilter.pov?.includes(pov),
+            (pov) => this.toggleListFilter('pov', pov),
+        );
+
+        const charValues = this.sceneManager.queryService.getAllCharacters();
+        this.renderChipSection(
+            panel,
+            t('Characters'),
+            charValues,
+            (char) => !!this.currentFilter.characters?.includes(char),
+            (char) => this.toggleListFilter('characters', char),
+            (char) => char.replace(/\[\[|\]\]/g, ''),
+        );
+
+        const locValues = this.sceneManager.queryService.getUniqueValues('location');
+        this.renderChipSection(
+            panel,
+            t('Location'),
+            locValues,
+            (loc) => !!this.currentFilter.locations?.includes(loc),
+            (loc) => this.toggleListFilter('locations', loc),
+            (loc) => loc.replace(/\[\[|\]\]/g, ''),
+        );
 
         // Custom scene fields
         if (this.plugin?.fieldTemplates) {

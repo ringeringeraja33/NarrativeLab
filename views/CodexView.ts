@@ -7,11 +7,22 @@ import { CodexManager } from '../services/CodexManager';
 import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, makeCustomCodexCategory, CODEX_ICON_OPTIONS } from '../models/Codex';
 import { CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE } from '../constants';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { applyMobileClass } from '../components/MobileAdapter';
+import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
+import { applyMobileClass, isMobile } from '../components/MobileAdapter';
+import {
+    getLibraryContentMode,
+    renderLibraryStoryGraph,
+} from '../components/LibraryModeBar';
+import type { StoryGraph } from '../components/StoryGraph';
 import { pickImage as pickImageModal, resolveImagePath } from '../components/ImagePicker';
 import { AddFieldModal } from '../components/AddFieldModal';
 import { attachTooltip } from '../components/Tooltip';
 import { openConfirmModal } from '../components/ConfirmModal';
+import {
+    collectDelimitedTags,
+    collectHashtagsFromText,
+    renderLibraryFilterChips,
+} from '../components/LibraryFilterChips';
 import {
     CUSTOM_SECTION_KEY_SEP,
     renderCustomSectionsAtSlot,
@@ -42,6 +53,7 @@ export class CodexView extends ItemView {
     private sceneManager: SceneManager;
     private codexManager: CodexManager;
     private rootContainer: HTMLElement | null = null;
+    private storyGraph: StoryGraph | null = null;
 
     /** File path of the currently-selected entry, or null for overview */
     private selectedEntry: string | null = null;
@@ -54,6 +66,8 @@ export class CodexView extends ItemView {
     private collapsedSections: Set<string> = new Set();
     /** Search filter text */
     private searchText: string = '';
+    /** Debounce handle for Library search typing */
+    private _searchTimer: number | null = null;
     /** Windowed list scroller for large Library overviews */
     private listScroller: VirtualScroller<CodexListRow> | null = null;
 
@@ -97,12 +111,14 @@ export class CodexView extends ItemView {
 
         await this.sceneManager.initialize();
 
-        // Load codex data (project folder + external source folders)
+        // Load Library data once — skip if a recent refreshOpenViews already did.
         this.codexManager.initCategories(
             this.plugin.settings.codexEnabledCategories,
             this.resolveCustomDefs(),
         );
-        await this.plugin.reloadEntities();
+        if (!this.plugin.entitiesFresh()) {
+            await this.plugin.reloadEntities();
+        }
 
         // Reset to hub state — no category pre-selected
         this.activeCategory = '';
@@ -112,6 +128,10 @@ export class CodexView extends ItemView {
     }
 
     async onClose(): Promise<void> {
+        if (this._searchTimer !== null) {
+            window.clearTimeout(this._searchTimer);
+            this._searchTimer = null;
+        }
         this.destroyListScroller();
         await this.flushPendingSave();
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(w => w.remove());
@@ -130,6 +150,7 @@ export class CodexView extends ItemView {
     setActiveCategory(categoryId: string): void {
         this.activeCategory = categoryId;
         this.selectedEntry = null;
+        this.activeTagFilters.clear();
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 
@@ -141,8 +162,11 @@ export class CodexView extends ItemView {
             this.plugin.settings.codexEnabledCategories,
             this.resolveCustomDefs(),
         );
-        await this.plugin.reloadEntities();
-        const entry = this.codexManager.getEntry(filePath);
+        let entry = this.codexManager.getEntry(filePath);
+        if (!entry) {
+            await this.plugin.reloadEntities();
+            entry = this.codexManager.getEntry(filePath);
+        }
         if (!entry) {
             new Notice(t('Library entry not found in the active project.'));
             return;
@@ -154,22 +178,12 @@ export class CodexView extends ItemView {
         }
     }
 
-    /** Called by refreshOpenViews */
+    /** Called by refreshOpenViews after entities are already reloaded. */
     async refresh(): Promise<void> {
         // Grace period — skip re-render if we just saved ourselves
         if (this.selectedEntry && (Date.now() - this._lastSaveTime) < CodexView.SAVE_REFRESH_GRACE_MS) {
-            this.codexManager.initCategories(
-                this.plugin.settings.codexEnabledCategories,
-                this.resolveCustomDefs(),
-            );
-            await this.plugin.reloadEntities();
             return;
         }
-        this.codexManager.initCategories(
-            this.plugin.settings.codexEnabledCategories,
-            this.resolveCustomDefs(),
-        );
-        await this.plugin.reloadEntities();
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 
@@ -207,59 +221,48 @@ export class CodexView extends ItemView {
         attachTooltip(addBtn, t('New entry'));
         addBtn.addEventListener('click', () => this.promptNewEntry());
 
+        // Same tab bar placement as CharacterView / LocationView (outside content)
+        renderCodexCategoryTabs(container, {
+            activeId: this.activeCategory || '',
+            leaf: this.leaf,
+            plugin: this.plugin,
+            showModeToggle: !this.selectedEntry,
+            onModeChange: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+        });
+
         // ── Content area ───────────────────────────────
         const content = container.createDiv('story-line-codex-content');
 
+        if (this.storyGraph) {
+            this.storyGraph.destroy();
+            this.storyGraph = null;
+        }
+
         if (this.selectedEntry) {
             this.renderDetail(content);
+        } else if (getLibraryContentMode(this.plugin) === 'story-graph' && !isMobile) {
+            this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            });
         } else {
             this.renderOverview(content);
         }
     }
 
     // ══════════════════════════════════════════════════
-    //  Overview — category tabs + card grid
+    //  Overview — heading + search + card grid
     // ══════════════════════════════════════════════════
 
     private renderOverview(container: HTMLElement): void {
         container.empty();
 
-        // ── Category tabs ──────────────────────────────
-        const tabs = container.createDiv('codex-category-tabs');
-
-        // Built-in "Characters" pseudo-tab → switches to CharacterView
-        this.renderPseudoTab(tabs, 'Characters', 'users', () => {
-            this.switchToView(CHARACTER_VIEW_TYPE);
-        });
-
-        // Built-in "Locations" pseudo-tab → switches to LocationView
-        this.renderPseudoTab(tabs, 'Locations', 'map-pin', () => {
-            this.switchToView(LOCATION_VIEW_TYPE);
-        });
-
-        // Codex category tabs
-        const cats = this.codexManager.getCategories();
-        for (const cat of cats) {
-            const tab = tabs.createEl('button', {
-                cls: `codex-tab ${cat.id === this.activeCategory ? 'active' : ''}`,
-                attr: { 'aria-label': cat.label },
-            });
-            const icon = tab.createSpan({ cls: 'codex-tab-icon' });
-            obsidian.setIcon(icon, cat.icon);
-            tab.createSpan({ cls: 'codex-tab-label', text: cat.label });
-
-            tab.addEventListener('click', () => {
-                this.activeCategory = cat.id;
-                this.activeTagFilters.clear();
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            });
-        }
-
         // ── Category heading (when a specific category is selected) ──
         if (this.activeCategory) {
             const catDef = this.codexManager.getCategoryDef(this.activeCategory);
             if (catDef) {
-                container.createEl('h3', { text: catDef.label });
+                container.createEl('h3', { cls: 'codex-overview-heading', text: catDef.label });
             }
         }
 
@@ -272,7 +275,11 @@ export class CodexView extends ItemView {
         searchInput.value = this.searchText;
         searchInput.addEventListener('input', () => {
             this.searchText = searchInput.value;
-            this.renderList(listContainer);
+            if (this._searchTimer !== null) window.clearTimeout(this._searchTimer);
+            this._searchTimer = window.setTimeout(() => {
+                this._searchTimer = null;
+                this.renderList(listContainer);
+            }, 180);
         });
 
         searchRow.createSpan({ cls: 'codex-sort-label', text: t('Sort by') });
@@ -293,14 +300,20 @@ export class CodexView extends ItemView {
         });
 
         // Tag / type filter chips (built from current category entries)
-        const chipHost = container.createDiv('story-line-filter-chips character-tag-filter-chips');
-        this.renderTagFilterChips(chipHost, () => this.renderList(listContainer));
+        const chipHost = container.createDiv('story-line-filter-chips character-tag-filter-chips library-filter-chips');
+        renderLibraryFilterChips(
+            chipHost,
+            this.collectTypeTagsForFilter(),
+            this.activeTagFilters,
+            () => this.renderList(listContainer),
+        );
 
         // ── List ───────────────────────────────────────
         const listContainer = container.createDiv('codex-list-container');
         this.renderList(listContainer);
     }
 
+    /** Type field values + #hashtags from entry text fields. */
     private collectTypeTagsForFilter(): Map<string, string> {
         const isHub = !this.activeCategory;
         const catDef = isHub ? undefined : this.codexManager.getCategoryDef(this.activeCategory);
@@ -311,56 +324,39 @@ export class CodexView extends ItemView {
         for (const entry of entries) {
             const def = isHub ? this.codexManager.getCategoryDef(entry.type) : catDef;
             if (!def) continue;
-            const typeVal = this.getTypeField(entry, def);
-            if (!typeVal) continue;
-            // Split comma-separated multi-tags the same way roles work
-            for (const part of String(typeVal).split(',').map(s => s.trim()).filter(Boolean)) {
-                const key = part.toLowerCase();
-                if (!tags.has(key)) tags.set(key, part);
+            collectDelimitedTags(tags, this.getTypeField(entry, def));
+            for (const fieldKey of def.fieldKeys) {
+                const val = entry[fieldKey];
+                if (typeof val === 'string') collectHashtagsFromText(tags, val);
             }
+            if (typeof entry.description === 'string') collectHashtagsFromText(tags, entry.description);
+            if (typeof entry.notes === 'string') collectHashtagsFromText(tags, entry.notes);
         }
         return tags;
     }
 
-    private renderTagFilterChips(host: HTMLElement, onChange: () => void): void {
-        host.empty();
-        const tagLabels = this.collectTypeTagsForFilter();
-        for (const key of [...this.activeTagFilters]) {
-            if (!tagLabels.has(key)) this.activeTagFilters.delete(key);
+    private collectEntryFilterKeys(entry: CodexEntry, def: CodexCategoryDef | undefined): string[] {
+        const keys: string[] = [];
+        const pushHashtags = (text: string) => {
+            const re = /#([A-Za-z\u00C0-\u024F\u0400-\u04FF\u4E00-\u9FFF][\w\u00C0-\u024F\u0400-\u04FF\u4E00-\u9FFF-]*)/g;
+            let m: RegExpExecArray | null;
+            while ((m = re.exec(text)) !== null) keys.push(m[1].toLowerCase());
+        };
+        if (def) {
+            const typeVal = this.getTypeField(entry, def);
+            if (typeVal) {
+                for (const part of String(typeVal).split(',').map(s => s.trim()).filter(Boolean)) {
+                    keys.push(part.toLowerCase());
+                }
+            }
+            for (const fieldKey of def.fieldKeys) {
+                const val = entry[fieldKey];
+                if (typeof val === 'string' && val.includes('#')) pushHashtags(val);
+            }
         }
-        if (tagLabels.size === 0) {
-            host.hide();
-            return;
-        }
-        host.show();
-        const sorted = [...tagLabels.entries()].sort((a, b) =>
-            a[1].localeCompare(b[1], undefined, { sensitivity: 'base' }));
-        for (const [key, label] of sorted) {
-            const chip = host.createEl('button', {
-                cls: `story-line-chip${this.activeTagFilters.has(key) ? ' active' : ''}`,
-                text: label,
-            });
-            chip.addEventListener('click', (e) => {
-                e.preventDefault();
-                if (this.activeTagFilters.has(key)) this.activeTagFilters.delete(key);
-                else this.activeTagFilters.add(key);
-                this.renderTagFilterChips(host, onChange);
-                onChange();
-            });
-        }
-        if (this.activeTagFilters.size > 0) {
-            const clearBtn = host.createEl('button', {
-                cls: 'story-line-chip story-line-chip-clear',
-                text: t('Clear'),
-            });
-            attachTooltip(clearBtn, t('Clear tag filters'));
-            clearBtn.addEventListener('click', (e) => {
-                e.preventDefault();
-                this.activeTagFilters.clear();
-                this.renderTagFilterChips(host, onChange);
-                onChange();
-            });
-        }
+        if (typeof entry.description === 'string') pushHashtags(entry.description);
+        if (typeof entry.notes === 'string') pushHashtags(entry.notes);
+        return keys;
     }
 
     private renderList(container: HTMLElement): void {
@@ -374,26 +370,24 @@ export class CodexView extends ItemView {
             ? this.codexManager.getAllEntries()
             : (catDef ? this.codexManager.getEntries(this.activeCategory) : []);
 
-        // Filter by search query
-        if (this.searchText) {
-            const q = this.searchText.toLowerCase();
-            entries = entries.filter(e => e.name.toLowerCase().includes(q));
-        }
-
         // Resolve catDef per-entry helper for hub mode
         const getCatDef = (entry: CodexEntry) =>
             isHub ? this.codexManager.getCategoryDef(entry.type) : catDef;
 
-        // Filter by type/tag chips (OR)
+        // Filter by search query (name + type/tags)
+        if (this.searchText) {
+            const q = this.searchText.toLowerCase();
+            entries = entries.filter(e => {
+                if (e.name.toLowerCase().includes(q)) return true;
+                return this.collectEntryFilterKeys(e, getCatDef(e)).some(k => k.includes(q));
+            });
+        }
+
+        // Filter by type/tag chips (OR) — type field + #hashtags
         if (this.activeTagFilters.size > 0) {
             entries = entries.filter(e => {
                 const def = getCatDef(e);
-                if (!def) return false;
-                const typeVal = this.getTypeField(e, def);
-                if (!typeVal) return false;
-                return String(typeVal).split(',')
-                    .map(s => s.trim().toLowerCase())
-                    .filter(Boolean)
+                return this.collectEntryFilterKeys(e, def)
                     .some(tag => this.activeTagFilters.has(tag));
             });
         }
@@ -417,37 +411,64 @@ export class CodexView extends ItemView {
             }
         });
 
-        // Hub mode also lists Characters and Locations (filtered when searching)
+        // Hub mode: never mount every character/location row up front — that
+        // froze large Libraries. Show aggregate shortcuts; expand individuals
+        // only while the user is actively searching.
         const hubExtras: Extract<CodexListRow, { kind: 'hub' }>[] = [];
         if (isHub) {
             const q = this.searchText.trim().toLowerCase();
-            if (this.plugin.characterManager) {
-                for (const ch of this.plugin.characterManager.getAllCharacters()) {
-                    if (!q || ch.name.toLowerCase().includes(q)) {
-                        hubExtras.push({
-                            kind: 'hub',
-                            name: ch.name,
-                            icon: 'users',
-                            badge: t('Character'),
-                            onClick: () => this.switchToView(CHARACTER_VIEW_TYPE),
-                        });
+            const charCount = this.plugin.characterManager?.getAllCharacters().length ?? 0;
+            const locCount = this.plugin.locationManager?.getAllLocations().length ?? 0;
+
+            if (!q) {
+                if (charCount > 0) {
+                    hubExtras.push({
+                        kind: 'hub',
+                        name: t('Characters'),
+                        icon: 'users',
+                        badge: String(charCount),
+                        onClick: () => this.switchToView(CHARACTER_VIEW_TYPE),
+                    });
+                }
+                if (locCount > 0) {
+                    hubExtras.push({
+                        kind: 'hub',
+                        name: t('Locations'),
+                        icon: 'map-pin',
+                        badge: String(locCount),
+                        onClick: () => this.switchToView(LOCATION_VIEW_TYPE),
+                    });
+                }
+            } else {
+                // Search: list matches (VirtualScroller windows the DOM).
+                if (this.plugin.characterManager) {
+                    for (const ch of this.plugin.characterManager.getAllCharacters()) {
+                        if (ch.name.toLowerCase().includes(q)) {
+                            hubExtras.push({
+                                kind: 'hub',
+                                name: ch.name,
+                                icon: 'users',
+                                badge: t('Character'),
+                                onClick: () => this.switchToView(CHARACTER_VIEW_TYPE),
+                            });
+                        }
                     }
                 }
-            }
-            if (this.plugin.locationManager) {
-                for (const loc of this.plugin.locationManager.getAllLocations()) {
-                    if (!q || loc.name.toLowerCase().includes(q)) {
-                        hubExtras.push({
-                            kind: 'hub',
-                            name: loc.name,
-                            icon: 'map-pin',
-                            badge: t('Location'),
-                            onClick: () => this.switchToView(LOCATION_VIEW_TYPE),
-                        });
+                if (this.plugin.locationManager) {
+                    for (const loc of this.plugin.locationManager.getAllLocations()) {
+                        if (loc.name.toLowerCase().includes(q)) {
+                            hubExtras.push({
+                                kind: 'hub',
+                                name: loc.name,
+                                icon: 'map-pin',
+                                badge: t('Location'),
+                                onClick: () => this.switchToView(LOCATION_VIEW_TYPE),
+                            });
+                        }
                     }
                 }
+                hubExtras.sort((a, b) => a.name.localeCompare(b.name));
             }
-            hubExtras.sort((a, b) => a.name.localeCompare(b.name));
         }
 
         if (entries.length === 0 && hubExtras.length === 0) {
@@ -482,7 +503,7 @@ export class CodexView extends ItemView {
             items: rows,
             overscan: 8,
             // Start windowing early — large Libraries stall hard when every row is mounted.
-            threshold: 40,
+            threshold: 20,
             renderItem: (row, _index, parent) => {
                 if (row.kind === 'entry') {
                     return this.renderListItem(parent, row.entry, row.catDef);
@@ -1749,10 +1770,12 @@ export class CodexView extends ItemView {
         el.addClass('codex-category-manager');
 
         el.createEl('h4', { text: t('Enabled Categories') });
-        el.createEl('p', { cls: 'setting-item-description', text: t('Toggle categories to show in the Library. Use the sidebar toggle to also show them in the Scene Inspector.') });
+        el.createEl('p', {
+            cls: 'setting-item-description',
+            text: t('Toggle categories to show in the Library.'),
+        });
 
         const enabled = new Set(this.plugin.settings.codexEnabledCategories);
-        const sidebarSet = new Set(this.plugin.settings.codexSidebarCategories || []);
 
         // Built-in categories
         for (const cat of BUILTIN_CODEX_CATEGORIES) {
@@ -1763,32 +1786,9 @@ export class CodexView extends ItemView {
             obsidian.setIcon(iconSpan, cat.icon);
             row.createSpan({ text: cat.label });
 
-            // Sidebar toggle
-            const sidebarLabel = row.createEl('label', { cls: 'codex-sidebar-toggle' });
-            sidebarLabel.setCssStyles({
-                marginLeft: 'auto',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                fontSize: '11px',
-                opacity: '0.7',
-            });
-            const sidebarCheck = sidebarLabel.createEl('input', { attr: { type: 'checkbox' } }) as HTMLInputElement;
-            sidebarCheck.checked = sidebarSet.has(cat.id);
-            sidebarLabel.createSpan({ text: t('Inspector') });
-            sidebarCheck.addEventListener('change', () => {
-                if (sidebarCheck.checked) sidebarSet.add(cat.id);
-                else sidebarSet.delete(cat.id);
-            });
-
             toggle.addEventListener('change', () => {
-                if (toggle.checked) {
-                    enabled.add(cat.id);
-                } else {
-                    enabled.delete(cat.id);
-                    sidebarSet.delete(cat.id);
-                    sidebarCheck.checked = false;
-                }
+                if (toggle.checked) enabled.add(cat.id);
+                else enabled.delete(cat.id);
             });
         }
 
@@ -1804,32 +1804,9 @@ export class CodexView extends ItemView {
                 obsidian.setIcon(iconSpan, cc.icon);
                 row.createSpan({ text: cc.label });
 
-                // Sidebar toggle
-                const sidebarLabel = row.createEl('label', { cls: 'codex-sidebar-toggle' });
-                sidebarLabel.setCssStyles({
-                    marginLeft: 'auto',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    fontSize: '11px',
-                    opacity: '0.7',
-                });
-                const sidebarCheck = sidebarLabel.createEl('input', { attr: { type: 'checkbox' } }) as HTMLInputElement;
-                sidebarCheck.checked = sidebarSet.has(cc.id);
-                sidebarLabel.createSpan({ text: t('Inspector') });
-                sidebarCheck.addEventListener('change', () => {
-                    if (sidebarCheck.checked) sidebarSet.add(cc.id);
-                    else sidebarSet.delete(cc.id);
-                });
-
                 toggle.addEventListener('change', () => {
-                    if (toggle.checked) {
-                        enabled.add(cc.id);
-                    } else {
-                        enabled.delete(cc.id);
-                        sidebarSet.delete(cc.id);
-                        sidebarCheck.checked = false;
-                    }
+                    if (toggle.checked) enabled.add(cc.id);
+                    else enabled.delete(cc.id);
                 });
 
                 // Delete custom category
@@ -1911,7 +1888,6 @@ export class CodexView extends ItemView {
                 .setCta()
                 .onClick(async () => {
                     this.plugin.settings.codexEnabledCategories = Array.from(enabled);
-                    this.plugin.settings.codexSidebarCategories = Array.from(sidebarSet);
                     await this.plugin.saveSettings();
                     // Reinitialise codex manager with new categories
                     this.codexManager.initCategories(
@@ -1972,22 +1948,6 @@ export class CodexView extends ItemView {
             }
         }
         return count;
-    }
-
-    private renderPseudoTab(
-        tabs: HTMLElement,
-        label: string,
-        icon: string,
-        onClick: () => void,
-    ): void {
-        const tab = tabs.createEl('button', {
-            cls: 'codex-tab codex-pseudo-tab',
-            attr: { 'aria-label': label },
-        });
-        const iconSpan = tab.createSpan({ cls: 'codex-tab-icon' });
-        obsidian.setIcon(iconSpan, icon);
-        tab.createSpan({ cls: 'codex-tab-label', text: label });
-        tab.addEventListener('click', onClick);
     }
 
     // ── Auto-save ──────────────────────────────────────

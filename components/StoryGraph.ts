@@ -20,6 +20,7 @@ import type { Scene } from '../models/Scene';
 import type { Character } from '../models/Character';
 import { RELATION_BASE_TYPE_BY_CATEGORY, extractCharacterProps, extractCharacterLocationTags } from '../models/Character';
 import type { LinkScanResult } from '../services/LinkScanner';
+import type { RelationshipEdgeInfo, RelationshipType } from './RelationshipMap';
 import { t } from '../utils/i18n';
 
 // ── Types ─────────────────────────────────────────────
@@ -27,7 +28,28 @@ import { t } from '../utils/i18n';
 type EntityType = 'scene' | 'character' | 'location' | 'other' | 'prop';
 
 /** Edge subtypes — character-to-character relationships */
-type EdgeKind = EntityType | 'ally' | 'enemy' | 'family' | 'romantic' | 'mentor' | 'other-rel';
+type RelEdgeKind = 'ally' | 'enemy' | 'family' | 'romantic' | 'mentor' | 'other-rel';
+type EdgeKind = EntityType | RelEdgeKind;
+
+const REL_EDGE_KINDS = new Set<string>(['ally', 'enemy', 'family', 'romantic', 'mentor', 'other-rel']);
+
+function isRelEdgeKind(kind: EdgeKind): kind is RelEdgeKind {
+    return REL_EDGE_KINDS.has(kind);
+}
+
+function relKindToRelationshipType(kind: RelEdgeKind): RelationshipType {
+    return kind === 'other-rel' ? 'other' : kind;
+}
+
+/** Visibility toggles for the Story Graph filter bar. */
+export interface StoryGraphFilterState {
+    showScenes: boolean;
+    showCharacters: boolean;
+    showLocations: boolean;
+    showRelationships: boolean;
+    showProps: boolean;
+    showOther: boolean;
+}
 
 interface StoryGraphNode {
     id: string;
@@ -87,6 +109,24 @@ const EDGE_DASH: Record<string, string> = {
 
 // ── Component ─────────────────────────────────────────
 
+const MAX_STORY_NODES = 120;
+
+interface StoryEdgeDom {
+    line: SVGLineElement;
+    hit?: SVGLineElement;
+    source: string;
+    target: string;
+    kind: EdgeKind;
+    edge: StoryGraphEdge;
+}
+
+interface StoryNodeDom {
+    shape: SVGElement;
+    label: SVGTextElement;
+    entityType: EntityType;
+    radius: number;
+}
+
 export class StoryGraph {
     private container: HTMLElement;
     private scenes: Scene[];
@@ -94,7 +134,9 @@ export class StoryGraph {
     private scanResults: Map<string, LinkScanResult>;
     private nodes: StoryGraphNode[] = [];
     private edges: StoryGraphEdge[] = [];
+    private nodeById = new Map<string, StoryGraphNode>();
     private svg: SVGSVGElement | null = null;
+    private layer: SVGGElement | null = null;
     private wrapper: HTMLElement | null = null;
     private width = 900;
     private height = 600;
@@ -106,8 +148,14 @@ export class StoryGraph {
     private panStart = { x: 0, y: 0 };
     private zoom = 1;
     private resizeObserver: ResizeObserver | null = null;
+    private edgeDom: StoryEdgeDom[] = [];
+    private nodeDom = new Map<string, StoryNodeDom>();
+    private svgBuilt = false;
+    private onPanMove: ((e: MouseEvent) => void) | null = null;
+    private onPanUp: (() => void) | null = null;
 
     /** Visibility filters — toggled by the toolbar */
+    private showScenes = true;
     private showCharacters = true;
     private showLocations = true;
     private showOther = true;
@@ -116,6 +164,12 @@ export class StoryGraph {
 
     /** Optional callback when a scene node is double-clicked */
     private onSelectScene?: (filePath: string) => void;
+
+    /** Right-click a character↔character relationship edge */
+    private onRelationEdgeContextMenu?: (edge: RelationshipEdgeInfo, event: MouseEvent) => void;
+
+    /** Persist filter changes (e.g. onto the plugin session state) */
+    private onFiltersChange?: (filters: StoryGraphFilterState) => void;
 
     /** Manual tag-type overrides from plugin settings */
     private tagTypeOverrides: Record<string, string>;
@@ -127,6 +181,9 @@ export class StoryGraph {
         scanResults: Map<string, LinkScanResult>,
         onSelectScene?: (filePath: string) => void,
         tagTypeOverrides?: Record<string, string>,
+        onRelationEdgeContextMenu?: (edge: RelationshipEdgeInfo, event: MouseEvent) => void,
+        filters?: Partial<StoryGraphFilterState>,
+        onFiltersChange?: (filters: StoryGraphFilterState) => void,
     ) {
         this.container = container;
         this.scenes = scenes;
@@ -134,12 +191,40 @@ export class StoryGraph {
         this.scanResults = scanResults;
         this.onSelectScene = onSelectScene;
         this.tagTypeOverrides = tagTypeOverrides || {};
+        this.onRelationEdgeContextMenu = onRelationEdgeContextMenu;
+        this.onFiltersChange = onFiltersChange;
+        if (filters) {
+            if (filters.showScenes !== undefined) this.showScenes = filters.showScenes;
+            if (filters.showCharacters !== undefined) this.showCharacters = filters.showCharacters;
+            if (filters.showLocations !== undefined) this.showLocations = filters.showLocations;
+            if (filters.showRelationships !== undefined) this.showRelationships = filters.showRelationships;
+            if (filters.showProps !== undefined) this.showProps = filters.showProps;
+            if (filters.showOther !== undefined) this.showOther = filters.showOther;
+        }
+    }
+
+    private emitFilters(): void {
+        this.onFiltersChange?.({
+            showScenes: this.showScenes,
+            showCharacters: this.showCharacters,
+            showLocations: this.showLocations,
+            showRelationships: this.showRelationships,
+            showProps: this.showProps,
+            showOther: this.showOther,
+        });
     }
 
     // ── Public API ─────────────────────────────────────
 
     render(): void {
+        this.destroy();
         this.container.empty();
+        this.svgBuilt = false;
+        this.edgeDom = [];
+        this.nodeDom.clear();
+        this.panX = 0;
+        this.panY = 0;
+        this.zoom = 1;
         this.buildGraph();
 
         if (this.nodes.length === 0) {
@@ -170,6 +255,7 @@ export class StoryGraph {
         wrapper.appendChild(this.svg);
 
         // Resize observer — update dimensions when container changes
+        let resizeTimer = 0;
         this.resizeObserver = new ResizeObserver((entries) => {
             for (const entry of entries) {
                 const cr = entry.contentRect;
@@ -179,43 +265,45 @@ export class StoryGraph {
                     if (this.svg) {
                         this.svg.setAttribute('viewBox', `0 0 ${this.width} ${this.height}`);
                     }
-                    this.renderSVG();
+                    if (resizeTimer) window.clearTimeout(resizeTimer);
+                    resizeTimer = window.setTimeout(() => this.updatePositions(), 80);
                 }
             }
         });
         this.resizeObserver.observe(wrapper);
 
-        // Pan support
+        // Pan support — transform only
         this.svg.addEventListener('mousedown', (e) => {
-            if (e.target === this.svg) {
+            if (e.target === this.svg || e.target === this.layer) {
                 this.isPanning = true;
                 this.panStart = { x: e.clientX - this.panX, y: e.clientY - this.panY };
             }
         });
-        window.addEventListener('mousemove', (e) => {
-            if (this.isPanning) {
-                this.panX = e.clientX - this.panStart.x;
-                this.panY = e.clientY - this.panStart.y;
-                this.renderSVG();
-            }
-        });
-        window.addEventListener('mouseup', () => { this.isPanning = false; });
+        this.onPanMove = (e: MouseEvent) => {
+            if (!this.isPanning) return;
+            this.panX = e.clientX - this.panStart.x;
+            this.panY = e.clientY - this.panStart.y;
+            this.updateTransform();
+        };
+        this.onPanUp = () => { this.isPanning = false; };
+        window.addEventListener('mousemove', this.onPanMove);
+        window.addEventListener('mouseup', this.onPanUp);
 
         // Zoom support (mouse wheel)
         this.svg.addEventListener('wheel', (e) => {
             e.preventDefault();
             const factor = e.deltaY < 0 ? 1.1 : 0.9;
             const newZoom = Math.min(5, Math.max(0.2, this.zoom * factor));
-            // Zoom toward cursor position
             const svgRect = this.svg!.getBoundingClientRect();
             const mx = e.clientX - svgRect.left;
             const my = e.clientY - svgRect.top;
             this.panX = mx - (mx - this.panX) * (newZoom / this.zoom);
             this.panY = my - (my - this.panY) * (newZoom / this.zoom);
             this.zoom = newZoom;
-            this.renderSVG();
+            this.updateTransform();
         }, { passive: false });
 
+        this.buildSVG();
         this.runSimulation();
     }
 
@@ -225,6 +313,14 @@ export class StoryGraph {
         if (this.resizeObserver) {
             this.resizeObserver.disconnect();
             this.resizeObserver = null;
+        }
+        if (this.onPanMove) {
+            window.removeEventListener('mousemove', this.onPanMove);
+            this.onPanMove = null;
+        }
+        if (this.onPanUp) {
+            window.removeEventListener('mouseup', this.onPanUp);
+            this.onPanUp = null;
         }
     }
 
@@ -236,6 +332,7 @@ export class StoryGraph {
         const makeToggle = (label: string, icon: string, active: boolean, onToggle: (v: boolean) => void) => {
             const btn = bar.createEl('button', {
                 cls: `story-graph-filter-btn ${active ? 'active' : ''}`,
+                attr: { 'aria-label': label },
             });
             const ic = btn.createSpan();
             obsidian.setIcon(ic, icon);
@@ -244,18 +341,18 @@ export class StoryGraph {
                 const next = !btn.hasClass('active');
                 btn.toggleClass('active', next);
                 onToggle(next);
-                // Rebuild and re-render
-                this.destroy();
-                this.buildGraph();
-                if (this.nodes.length > 0) this.runSimulation();
+                this.emitFilters();
+                // Full remount with new filters
+                this.render();
             });
         };
 
-        makeToggle('Characters', 'user', this.showCharacters, v => { this.showCharacters = v; });
-        makeToggle('Locations', 'map-pin', this.showLocations, v => { this.showLocations = v; });
-        makeToggle('Relationships', 'heart-handshake', this.showRelationships, v => { this.showRelationships = v; });
-        makeToggle('Props', 'tag', this.showProps, v => { this.showProps = v; });
-        makeToggle('Other', 'file-text', this.showOther, v => { this.showOther = v; });
+        makeToggle(t('Scenes'), 'clapperboard', this.showScenes, v => { this.showScenes = v; });
+        makeToggle(t('Characters'), 'user', this.showCharacters, v => { this.showCharacters = v; });
+        makeToggle(t('Locations'), 'map-pin', this.showLocations, v => { this.showLocations = v; });
+        makeToggle(t('Relationships'), 'heart-handshake', this.showRelationships, v => { this.showRelationships = v; });
+        makeToggle(t('Props'), 'tag', this.showProps, v => { this.showProps = v; });
+        makeToggle(t('Other'), 'file-text', this.showOther, v => { this.showOther = v; });
     }
 
     // ── Legend ──────────────────────────────────────────
@@ -313,26 +410,28 @@ export class StoryGraph {
 
         // ── 1. Scene → entity edges (from LinkScanner) ─────────
 
-        for (const scene of this.scenes) {
-            const result = this.scanResults.get(scene.filePath);
-            if (!result || result.links.length === 0) continue;
+        if (this.showScenes) {
+            for (const scene of this.scenes) {
+                const result = this.scanResults.get(scene.filePath);
+                if (!result || result.links.length === 0) continue;
 
-            const sceneId = `scene::${scene.filePath}`;
-            ensureNode(sceneId, scene.title || 'Untitled', 'scene');
+                const sceneId = `scene::${scene.filePath}`;
+                ensureNode(sceneId, scene.title || 'Untitled', 'scene');
 
-            for (const link of result.links) {
-                const resolvedType = (this.tagTypeOverrides[link.name.toLowerCase()] || link.type) as EntityType;
-                if (resolvedType === 'character' && !this.showCharacters) continue;
-                if (resolvedType === 'location' && !this.showLocations) continue;
-                if (resolvedType === 'other' && !this.showOther) continue;
-                if (resolvedType === 'prop' && !this.showProps) continue;
+                for (const link of result.links) {
+                    const resolvedType = (this.tagTypeOverrides[link.name.toLowerCase()] || link.type) as EntityType;
+                    if (resolvedType === 'character' && !this.showCharacters) continue;
+                    if (resolvedType === 'location' && !this.showLocations) continue;
+                    if (resolvedType === 'other' && !this.showOther) continue;
+                    if (resolvedType === 'prop' && !this.showProps) continue;
 
-                const entityId = `${resolvedType}::${link.name.toLowerCase()}`;
-                const node = ensureNode(entityId, link.name, resolvedType);
-                nodeMap.get(sceneId)!.weight++;
-                node.weight++;
+                    const entityId = `${resolvedType}::${link.name.toLowerCase()}`;
+                    const node = ensureNode(entityId, link.name, resolvedType);
+                    nodeMap.get(sceneId)!.weight++;
+                    node.weight++;
 
-                edgeList.push({ source: sceneId, target: entityId, kind: resolvedType });
+                    edgeList.push({ source: sceneId, target: entityId, kind: resolvedType });
+                }
             }
         }
 
@@ -454,15 +553,27 @@ export class StoryGraph {
             }
         }
 
-        this.nodes = Array.from(nodeMap.values());
-        this.edges = edgeList;
+        // Cap node count for SVG + JS physics (keep highest-weight nodes).
+        let nodes = Array.from(nodeMap.values());
+        if (nodes.length > MAX_STORY_NODES) {
+            nodes.sort((a, b) => b.weight - a.weight);
+            nodes = nodes.slice(0, MAX_STORY_NODES);
+            const keep = new Set(nodes.map(n => n.id));
+            this.edges = edgeList.filter(e => keep.has(e.source) && keep.has(e.target));
+        } else {
+            this.edges = edgeList;
+        }
+        this.nodes = nodes;
+        this.nodeById = new Map(nodes.map(n => [n.id, n]));
     }
 
     // ── Simulation ─────────────────────────────────────
 
     private runSimulation(): void {
         let iterations = 0;
-        const maxIterations = 350;
+        const maxIterations = this.nodes.length > 60 ? 180 : 280;
+        // Throttle SVG attribute writes on large graphs.
+        const paintEvery = this.nodes.length > 80 ? 2 : 1;
 
         const tick = () => {
             if (!this.svg) return;
@@ -480,7 +591,9 @@ export class StoryGraph {
                 node.y = Math.max(50, Math.min(this.height - 50, node.y));
             }
 
-            this.renderSVG();
+            if (iterations % paintEvery === 0 || iterations >= maxIterations) {
+                this.updatePositions();
+            }
 
             if (iterations < maxIterations) {
                 this.animFrame = window.requestAnimationFrame(tick);
@@ -491,33 +604,34 @@ export class StoryGraph {
     }
 
     private applyForces(): void {
+        const n = this.nodes.length;
         const repulsion = 4000;
         const springLength = 100;
         const springK = 0.025;
         const centerGravity = 0.0012;
 
-        // Repulsion between all nodes
-        for (let i = 0; i < this.nodes.length; i++) {
-            for (let j = i + 1; j < this.nodes.length; j++) {
+        // Full O(n²) only for small graphs; sample neighbors otherwise.
+        if (n <= 50) {
+            for (let i = 0; i < n; i++) {
+                for (let j = i + 1; j < n; j++) {
+                    this.repulsePair(this.nodes[i], this.nodes[j], repulsion);
+                }
+            }
+        } else {
+            const samples = Math.min(18, n - 1);
+            for (let i = 0; i < n; i++) {
                 const a = this.nodes[i];
-                const b = this.nodes[j];
-                const dx = b.x - a.x;
-                const dy = b.y - a.y;
-                const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
-                const force = repulsion / (dist * dist);
-                const fx = (dx / dist) * force;
-                const fy = (dy / dist) * force;
-                a.vx -= fx;
-                a.vy -= fy;
-                b.vx += fx;
-                b.vy += fy;
+                for (let s = 0; s < samples; s++) {
+                    const j = (i + 1 + ((s * 37 + iterationsSalt(i)) % (n - 1))) % n;
+                    if (j === i) continue;
+                    this.repulsePair(a, this.nodes[j], repulsion);
+                }
             }
         }
 
-        // Spring forces along edges
         for (const edge of this.edges) {
-            const a = this.nodes.find(n => n.id === edge.source);
-            const b = this.nodes.find(n => n.id === edge.target);
+            const a = this.nodeById.get(edge.source);
+            const b = this.nodeById.get(edge.target);
             if (!a || !b) continue;
             const dx = b.x - a.x;
             const dy = b.y - a.y;
@@ -532,32 +646,83 @@ export class StoryGraph {
             b.vy -= fy;
         }
 
-        // Center gravity
         for (const node of this.nodes) {
             node.vx += (this.width / 2 - node.x) * centerGravity;
             node.vy += (this.height / 2 - node.y) * centerGravity;
         }
     }
 
+    private repulsePair(a: StoryGraphNode, b: StoryGraphNode, repulsion: number): void {
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
+        const force = repulsion / (dist * dist);
+        const fx = (dx / dist) * force;
+        const fy = (dy / dist) * force;
+        a.vx -= fx;
+        a.vy -= fy;
+        b.vx += fx;
+        b.vy += fy;
+    }
+
     // ── SVG rendering ──────────────────────────────────
 
-    private renderSVG(): void {
+    private updateTransform(): void {
+        if (!this.layer) return;
+        this.layer.setAttribute('transform', `translate(${this.panX},${this.panY}) scale(${this.zoom})`);
+    }
+
+    private buildSVG(): void {
         if (!this.svg) return;
         const svgNS = 'http://www.w3.org/2000/svg';
-
         while (this.svg.firstChild) this.svg.removeChild(this.svg.firstChild);
+        this.edgeDom = [];
+        this.nodeDom.clear();
 
         const colors = getEntityColors();
-
         const g = activeDocument.createElementNS(svgNS, 'g');
-        g.setAttribute('transform', `translate(${this.panX},${this.panY}) scale(${this.zoom})`);
+        this.layer = g;
         this.svg.appendChild(g);
+        this.updateTransform();
 
-        // Draw edges
         for (const edge of this.edges) {
-            const a = this.nodes.find(n => n.id === edge.source);
-            const b = this.nodes.find(n => n.id === edge.target);
+            const a = this.nodeById.get(edge.source);
+            const b = this.nodeById.get(edge.target);
             if (!a || !b) continue;
+
+            const isRelEdge = isRelEdgeKind(edge.kind);
+            let hit: SVGLineElement | undefined;
+
+            // Wide invisible hit target so relationship edges are easy to right-click
+            if (isRelEdge && this.onRelationEdgeContextMenu) {
+                hit = activeDocument.createElementNS(svgNS, 'line');
+                hit.setAttribute('x1', String(a.x));
+                hit.setAttribute('y1', String(a.y));
+                hit.setAttribute('x2', String(b.x));
+                hit.setAttribute('y2', String(b.y));
+                hit.setAttribute('stroke', 'transparent');
+                hit.setAttribute('stroke-width', '14');
+                hit.style.cursor = 'pointer';
+                hit.classList.add('story-graph-edge-hit');
+                g.appendChild(hit);
+
+                const openMenu = (e: MouseEvent) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.onRelationEdgeContextMenu?.(
+                        {
+                            from: a.label,
+                            to: b.label,
+                            type: relKindToRelationshipType(edge.kind),
+                        },
+                        e,
+                    );
+                };
+                hit.addEventListener('contextmenu', openMenu);
+                hit.addEventListener('click', (e) => {
+                    if (e.button === 2) openMenu(e);
+                });
+            }
 
             const line = activeDocument.createElementNS(svgNS, 'line');
             line.setAttribute('x1', String(a.x));
@@ -565,22 +730,22 @@ export class StoryGraph {
             line.setAttribute('x2', String(b.x));
             line.setAttribute('y2', String(b.y));
             line.setAttribute('stroke', getEdgeColor(edge.kind));
-            const isRelEdge = edge.kind === 'ally' || edge.kind === 'enemy' || edge.kind === 'family';
             line.setAttribute('stroke-width', isRelEdge ? '2' : '1.5');
             line.setAttribute('stroke-opacity', isRelEdge ? '0.65' : '0.45');
+            line.style.pointerEvents = isRelEdge && hit ? 'none' : '';
             if (EDGE_DASH[edge.kind]) {
                 line.setAttribute('stroke-dasharray', EDGE_DASH[edge.kind]);
             }
             g.appendChild(line);
+            this.edgeDom.push({ line, hit, source: edge.source, target: edge.target, kind: edge.kind, edge });
         }
 
-        // Draw nodes
         for (const node of this.nodes) {
             const color = colors[node.entityType];
             const radius = this.nodeRadius(node);
+            let shape: SVGElement;
 
             if (node.entityType === 'scene') {
-                // Rectangle for scenes
                 const rect = activeDocument.createElementNS(svgNS, 'rect');
                 const rw = radius * 2.4;
                 const rh = radius * 1.6;
@@ -594,10 +759,8 @@ export class StoryGraph {
                 rect.setAttribute('stroke', 'var(--background-primary)');
                 rect.setAttribute('stroke-width', '2');
                 rect.classList.add('story-graph-node', 'story-graph-node-scene');
-                this.wireNodeEvents(rect, node);
-                g.appendChild(rect);
+                shape = rect;
             } else if (node.entityType === 'location') {
-                // Diamond for locations
                 const r = radius;
                 const diamond = activeDocument.createElementNS(svgNS, 'polygon');
                 diamond.setAttribute('points', [
@@ -611,10 +774,8 @@ export class StoryGraph {
                 diamond.setAttribute('stroke', 'var(--background-primary)');
                 diamond.setAttribute('stroke-width', '2');
                 diamond.classList.add('story-graph-node', 'story-graph-node-location');
-                this.wireNodeEvents(diamond, node);
-                g.appendChild(diamond);
+                shape = diamond;
             } else if (node.entityType === 'prop') {
-                // Hexagon for props
                 const r = radius * 0.9;
                 const hex = activeDocument.createElementNS(svgNS, 'polygon');
                 const pts: string[] = [];
@@ -628,10 +789,8 @@ export class StoryGraph {
                 hex.setAttribute('stroke', 'var(--background-primary)');
                 hex.setAttribute('stroke-width', '2');
                 hex.classList.add('story-graph-node', 'story-graph-node-prop');
-                this.wireNodeEvents(hex, node);
-                g.appendChild(hex);
+                shape = hex;
             } else {
-                // Circle for characters and other
                 const circle = activeDocument.createElementNS(svgNS, 'circle');
                 circle.setAttribute('cx', String(node.x));
                 circle.setAttribute('cy', String(node.y));
@@ -641,27 +800,93 @@ export class StoryGraph {
                 circle.setAttribute('stroke', 'var(--background-primary)');
                 circle.setAttribute('stroke-width', '2');
                 circle.classList.add('story-graph-node', `story-graph-node-${node.entityType}`);
-                this.wireNodeEvents(circle, node);
-                g.appendChild(circle);
+                shape = circle;
             }
 
-            // Label
+            this.wireNodeEvents(shape, node);
+            g.appendChild(shape);
+
             const text = activeDocument.createElementNS(svgNS, 'text');
             const labelY = node.entityType === 'scene'
-                ? node.y + this.nodeRadius(node) * 1.6 / 2 + 14
-                : node.y + this.nodeRadius(node) + 14;
+                ? node.y + radius * 1.6 / 2 + 14
+                : node.y + radius + 14;
             text.setAttribute('x', String(node.x));
             text.setAttribute('y', String(labelY));
             text.setAttribute('text-anchor', 'middle');
             text.setAttribute('fill', 'var(--text-normal)');
             text.setAttribute('font-size', node.entityType === 'scene' ? '10' : '11');
             text.setAttribute('font-weight', node.entityType === 'scene' ? '400' : '600');
-            // Truncate long labels
             const maxLen = node.entityType === 'scene' ? 18 : 16;
             text.textContent = node.label.length > maxLen
                 ? node.label.substring(0, maxLen - 1) + '…'
                 : node.label;
+            // Hide labels when very dense — reduces paint cost
+            if (this.nodes.length > 70) text.setAttribute('display', 'none');
             g.appendChild(text);
+
+            this.nodeDom.set(node.id, { shape, label: text, entityType: node.entityType, radius });
+        }
+
+        this.svgBuilt = true;
+    }
+
+    private updatePositions(): void {
+        if (!this.svgBuilt) return;
+
+        for (const ed of this.edgeDom) {
+            const a = this.nodeById.get(ed.source);
+            const b = this.nodeById.get(ed.target);
+            if (!a || !b) continue;
+            ed.line.setAttribute('x1', String(a.x));
+            ed.line.setAttribute('y1', String(a.y));
+            ed.line.setAttribute('x2', String(b.x));
+            ed.line.setAttribute('y2', String(b.y));
+            if (ed.hit) {
+                ed.hit.setAttribute('x1', String(a.x));
+                ed.hit.setAttribute('y1', String(a.y));
+                ed.hit.setAttribute('x2', String(b.x));
+                ed.hit.setAttribute('y2', String(b.y));
+            }
+        }
+
+        for (const node of this.nodes) {
+            const dom = this.nodeDom.get(node.id);
+            if (!dom) continue;
+            const r = dom.radius;
+            const shape = dom.shape;
+
+            if (dom.entityType === 'scene') {
+                const rw = r * 2.4;
+                const rh = r * 1.6;
+                shape.setAttribute('x', String(node.x - rw / 2));
+                shape.setAttribute('y', String(node.y - rh / 2));
+                dom.label.setAttribute('x', String(node.x));
+                dom.label.setAttribute('y', String(node.y + rh / 2 + 14));
+            } else if (dom.entityType === 'location') {
+                shape.setAttribute('points', [
+                    `${node.x},${node.y - r}`,
+                    `${node.x + r},${node.y}`,
+                    `${node.x},${node.y + r}`,
+                    `${node.x - r},${node.y}`,
+                ].join(' '));
+                dom.label.setAttribute('x', String(node.x));
+                dom.label.setAttribute('y', String(node.y + r + 14));
+            } else if (dom.entityType === 'prop') {
+                const hr = r * 0.9;
+                const pts: string[] = [];
+                for (let i = 0; i < 6; i++) {
+                    const angle = (Math.PI / 3) * i - Math.PI / 6;
+                    pts.push(`${node.x + hr * Math.cos(angle)},${node.y + hr * Math.sin(angle)}`);
+                }
+                shape.setAttribute('points', pts.join(' '));
+                dom.label.setAttribute('x', String(node.x));
+                dom.label.setAttribute('y', String(node.y + r + 14));
+            } else {
+                shape.setAttribute('cx', String(node.x));
+                shape.setAttribute('cy', String(node.y));
+                dom.label.setAttribute('x', String(node.x));
+                dom.label.setAttribute('y', String(node.y + r + 14));
+            }
         }
     }
 
@@ -671,7 +896,6 @@ export class StoryGraph {
     }
 
     private wireNodeEvents(el: SVGElement, node: StoryGraphNode): void {
-        // Drag support
         el.addEventListener('mousedown', (e) => {
             e.stopPropagation();
             this.dragging = node;
@@ -680,7 +904,7 @@ export class StoryGraph {
                 const svgRect = this.svg.getBoundingClientRect();
                 node.x = (me.clientX - svgRect.left - this.panX) / this.zoom;
                 node.y = (me.clientY - svgRect.top - this.panY) / this.zoom;
-                this.renderSVG();
+                this.updatePositions();
             };
             const onUp = () => {
                 this.dragging = null;
@@ -691,7 +915,6 @@ export class StoryGraph {
             window.addEventListener('mouseup', onUp);
         });
 
-        // Double-click on scene → navigate
         if (node.entityType === 'scene' && this.onSelectScene) {
             el.addEventListener('dblclick', () => {
                 const filePath = node.id.replace('scene::', '');
@@ -701,5 +924,10 @@ export class StoryGraph {
 
         el.setCssStyles({ cursor: 'grab' });
     }
+}
+
+/** Deterministic-ish salt so sampled repulsion isn't always the same neighbors. */
+function iterationsSalt(i: number): number {
+    return (i * 2654435761) >>> 0;
 }
 /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

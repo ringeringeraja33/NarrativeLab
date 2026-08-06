@@ -65,6 +65,8 @@ export class ManuscriptView extends ItemView {
     private _lastScenes: Scene[] = [];
     /** Filter/sort key for the cached scene list */
     private _lastFilterKey = '';
+    /** Debounce filter-driven remounts so chip clicks stay responsive */
+    private _filterRenderTimer: number | null = null;
     /** CM6 compartment for toggling atomic-link extension */
     private atomicCompartment = new Compartment();
     /** Whether focus mode is active (hides non-writing UI, dims inactive scenes) */
@@ -220,7 +222,11 @@ export class ManuscriptView extends ItemView {
             (filter, sort) => {
                 this.currentFilter = filter;
                 this.currentSort = sort;
-                this.renderManuscript();
+                if (this._filterRenderTimer != null) window.clearTimeout(this._filterRenderTimer);
+                this._filterRenderTimer = window.setTimeout(() => {
+                    this._filterRenderTimer = null;
+                    void this.renderManuscript();
+                }, 80);
             },
             this.plugin
         );
@@ -563,6 +569,17 @@ export class ManuscriptView extends ItemView {
 
             this.embeddedLeaves.set(filePath, leaf);
             this.mountingPaths.delete(filePath);
+
+            // Fold Properties only in this embed (cheap). CSS covers first paint.
+            const foldHere = () => this.plugin.collapsePropertiesInElement(splitEl);
+            foldHere();
+            window.setTimeout(foldHere, 80);
+            // If the user expands before our fold runs, release the first-paint CSS lock.
+            splitEl.addEventListener('click', (e) => {
+                const heading = (e.target as HTMLElement | null)?.closest?.('.metadata-properties-heading');
+                if (!heading) return;
+                heading.closest('.metadata-container')?.classList.add('sl-fm-ready');
+            }, true);
 
             // Inject the atomic-links extension into the CM6 editor
             this.injectAtomicExtension(leaf);
@@ -1286,15 +1303,18 @@ export class ManuscriptView extends ItemView {
     /**
      * Scroll the manuscript to bring the given scene into view.
      * Called by the Navigator when a scene is clicked while Manuscript is active.
+     * @returns true if the scene block was found and scrolled into view.
      */
-    scrollToScene(filePath: string): void {
-        if (!this.scrollArea) return;
+    scrollToScene(filePath: string): boolean {
+        if (!this.scrollArea) return false;
         const block = this.scrollArea.querySelector(
             `[data-scene-path="${CSS.escape(filePath)}"]`
         ) as HTMLElement | null;
-        if (block) {
-            block.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
+        if (!block) return false;
+        block.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        block.classList.add('is-nav-target');
+        window.setTimeout(() => block.classList.remove('is-nav-target'), 1200);
+        return true;
     }
 
     // ── Discussion #183 — cursor / scroll position resume ────────────
