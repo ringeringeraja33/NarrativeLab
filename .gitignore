@@ -1,0 +1,18 @@
+# Dependencies (~18k small files; regenerate with npm install)
+node_modules/
+
+# Build / tooling
+*.log
+.cache/
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Lockfiles from alternate package managers
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Local scratch
+*.local.md

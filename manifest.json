@@ -1,0 +1,9 @@
+{
+  "id": "narrative-lab",
+  "name": "NarrativeLab",
+  "version": "0.1.1",
+  "minAppVersion": "1.12.7",
+  "description": "A unified narrative workspace with a recursive Library database and Narrative Canvas.",
+  "author": "ringeringeraja33",
+  "isDesktopOnly": false
+}

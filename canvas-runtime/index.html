@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#101010">
+    <meta name="apple-mobile-web-app-title" content="Narrative Canvas">
+    <title>Narrative Canvas</title>
+    <link rel="icon" type="image/svg+xml" href="./assets/icons/favicon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="./assets/icons/favicon-32x32.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="./assets/icons/apple-touch-icon.png">
+    <link rel="manifest" href="./site.webmanifest">
+    <link rel="stylesheet" href="./canvas.css?v=1.4.1-5f4d7811">
+  </head>
+  <body>
+    <div class="app-shell" spellcheck="false">
+      <aside class="sidebar sidebar-left" data-sidebar="left">
+        <header class="pane-header">
+          <div class="pane-title">
+            <span class="pane-kicker">Narrative Canvas</span>
+            <h1 id="vaultProjectTitle">Sample</h1>
+          </div>
+          <div class="header-actions">
+            <button class="icon-button sidebar-toggle-button" title="Collapse left sidebar" aria-label="Collapse left sidebar" data-sidebar-toggle="left" type="button">
+              <span class="sidebar-toggle-icon sidebar-toggle-icon-left" aria-hidden="true"></span>
+            </button>
+          </div>
+        </header>
+
+        <section class="nav-section project-file-section">
+          <h2>Project File</h2>
+          <div class="project-file-card" aria-live="polite">
+            <div class="project-file-main">
+              <span id="projectFileName">Browser storage</span>
+              <span id="projectDirtyIndicator" class="project-save-indicator" data-save-state="saved" aria-live="polite">
+                <span class="project-save-spinner" aria-hidden="true"></span>
+                <span data-save-label>Saved</span>
+              </span>
+            </div>
+            <small id="projectFilePath">Saved in this browser</small>
+          </div>
+          <div class="project-file-actions">
+            <button class="small-button" data-action="open-project-file" type="button">Open</button>
+            <button class="small-button" data-action="reload-project-file" type="button">Reload</button>
+            <button class="small-button" data-action="clear-browser-storage" data-web-only type="button">Clear storage</button>
+            <button class="small-button project-file-sample-button" data-action="open-sample-project" data-web-only type="button">Open sample file</button>
+            <button class="small-button save-project-button" title="Save project state" data-action="save-project" type="button">Save</button>
+            <button class="small-button new-project-button" title="New project" data-action="new-project" type="button">New</button>
+          </div>
+        </section>
+
+        <section class="nav-section">
+          <h2>Files</h2>
+          <button class="nc-file-item active" data-file-id="adventure">
+            <span class="file-dot"></span>
+            <span class="nc-file-item-label">Narrative.canvas</span>
+          </button>
+          <button class="nc-file-item" data-file-id="document">
+            <span class="file-dot muted"></span>
+            <span class="nc-file-item-label">Document.md</span>
+          </button>
+          <button class="nc-file-item" data-file-id="events">
+            <span class="file-dot muted"></span>
+            <span class="nc-file-item-label">Events Sheet.csv</span>
+          </button>
+          <button class="nc-file-item" data-file-id="characters">
+            <span class="file-dot muted"></span>
+            <span class="nc-file-item-label">Library.md</span>
+          </button>
+          <button class="nc-file-item" data-file-id="variables">
+            <span class="file-dot muted"></span>
+            <span class="nc-file-item-label">Playbook.json</span>
+          </button>
+        </section>
+
+        <section class="nav-section palette">
+          <h2>Node Library</h2>
+          <div id="nodePalette" class="palette-list"></div>
+          <div class="custom-node-form node-type-form">
+            <div class="custom-node-row">
+              <input id="customNodeName" placeholder="Name" spellcheck="false">
+              <input id="customNodeColor" type="color" value="#7fdbca" title="Node color">
+              <button class="small-button" data-action="add-custom-node-type" type="button">Add</button>
+            </div>
+            <select id="customNodeKind" title="Node template">
+              <option value="node">Basic Node</option>
+              <option value="dialog">Dialog</option>
+              <option value="choice">Choice</option>
+              <option value="frame">Frame</option>
+            </select>
+            <textarea id="customNodeFields" class="custom-node-fields" rows="3" placeholder="Fields, one per line" spellcheck="false"></textarea>
+          </div>
+        </section>
+      </aside>
+      <div class="sidebar-resizer sidebar-resizer-left" data-sidebar-resizer="left" role="separator" aria-orientation="vertical" aria-label="Resize left sidebar"></div>
+
+      <main class="canvas-workspace">
+        <header class="workspace-global-bar">
+          <div class="workspace-file-label">
+            <span class="pane-kicker">File</span>
+            <strong id="activeFileTab">Narrative.canvas</strong>
+          </div>
+          <div class="workspace-global-actions">
+            <span class="project-history" role="group" aria-label="History">
+              <button id="languageToggle" class="language-toggle-button" data-web-only data-action="toggle-language" type="button" title="Switch language" aria-label="Switch language">
+                <span class="language-toggle-option" data-lang="en">EN</span>
+                <span class="language-toggle-divider" aria-hidden="true">/</span>
+                <span class="language-toggle-option" data-lang="zh">中</span>
+              </button>
+              <button id="fullscreenButton" class="icon-button history-button immersive-toggle-button" data-action="toggle-immersive-fullscreen" type="button" title="Enter immersive fullscreen" aria-label="Enter immersive fullscreen" aria-pressed="false"><svg class="history-icon immersive-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5"></path></svg></button>
+              <button id="undoButton" class="icon-button history-button" data-action="undo" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
+              <button id="redoButton" class="icon-button history-button" data-action="redo" type="button" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" aria-label="Redo" disabled>↷</button>
+            </span>
+            <button id="themeToggle" class="icon-button theme-toggle-button" title="Switch theme" data-action="toggle-theme" type="button" aria-pressed="true">Dark</button>
+          </div>
+        </header>
+        <header id="workspaceToolbar" class="canvas-workspace-tabs">
+          <div class="toolbar-group">
+            <button class="toolbar-button" data-action="zoom-out" data-files="adventure" title="Zoom out">-</button>
+            <span id="zoomReadout" class="zoom-readout" data-files="adventure">100%</span>
+            <button class="toolbar-button" data-action="zoom-in" data-files="adventure" title="Zoom in">+</button>
+            <button class="toolbar-button" data-action="center-view" data-files="adventure" title="Center canvas">Center</button>
+            <button id="snapGridButton" class="toolbar-button" data-action="toggle-snap-grid" data-files="adventure" type="button" title="Snap nodes to grid" aria-label="Snap nodes to grid" aria-pressed="false">Snap</button>
+            <button class="toolbar-button primary" data-action="play" data-files="adventure" title="Play from entry">Play</button>
+          </div>
+          <div id="frameCanvasScope" class="frame-canvas-scope" hidden>
+            <span class="frame-canvas-label">Frame canvas</span>
+            <strong id="frameCanvasTitle"></strong>
+            <button id="frameCanvasExitButton" class="toolbar-button" data-action="exit-frame-canvas" type="button" title="Exit frame canvas" aria-label="Exit frame canvas">Exit</button>
+          </div>
+          <div class="toolbar-group toolbar-group-right" data-files="adventure">
+            <span class="export-image-controls" role="group" aria-label="Image export">
+              <button class="toolbar-button export-image-button" data-action="export-image" title="Export canvas as PNG">Export PNG</button>
+              <label class="export-image-scale-label" title="Image export resolution">
+                <span class="visually-hidden">Image resolution</span>
+                <select id="exportImageScale" class="toolbar-select" title="Image export resolution">
+                  <option value="1">4096 x 4096</option>
+                  <option value="2">6144 x 6144</option>
+                  <option value="3">8192 x 8192</option>
+                  <option value="4">12000 x 12000</option>
+                </select>
+              </label>
+            </span>
+          </div>
+          <input id="fileInput" type="file" accept="application/json,.json,.ncanvas,.narrativecanvas" hidden>
+        </header>
+
+        <section id="canvasPanel" class="canvas-workspace-view canvas-panel active">
+          <div class="canvas-frame">
+            <div id="canvasViewport" class="canvas-viewport" tabindex="0" aria-label="Node canvas">
+              <div id="canvasContent" class="canvas-content">
+                <div id="frameLayer" class="frame-layer"></div>
+                <svg id="linkLayer" class="link-layer" xmlns="http://www.w3.org/2000/svg"></svg>
+                <div id="nodeLayer" class="node-layer"></div>
+                <div id="marqueeLayer" class="marquee-layer"><div id="marqueeRect" class="marquee-rect" hidden></div></div>
+              </div>
+            </div>
+            <div id="selectionHint" class="selection-hint">Click an output port, then an input port to connect nodes.</div>
+            <div id="minimap" class="minimap" role="button" aria-label="Move canvas viewport"></div>
+          </div>
+        </section>
+        <section id="charactersPanel" class="canvas-workspace-view document-panel" aria-label="Narrative Library"></section>
+        <section id="variablesPanel" class="canvas-workspace-view document-panel" aria-label="Variables"></section>
+        <section id="eventsPanel" class="canvas-workspace-view document-panel event-sheet-panel" aria-label="Events Sheet"></section>
+        <section id="documentPanel" class="canvas-workspace-view document-panel document-source-panel" aria-label="Document"></section>
+
+        <footer class="status-bar">
+          <div id="statusText">Ready</div>
+          <div id="workspaceSearchControls" class="nc-workspace-search-controls" aria-label="Search">
+            <label class="workspace-search-box canvas-search-box" data-search-scope="adventure">
+              Query
+              <input id="queryInput" type="search" placeholder="Find nodes">
+            </label>
+            <label class="workspace-search-box character-search-box" data-search-scope="characters" hidden>
+              Find
+              <input id="characterSearchInput" type="search" data-character-search placeholder="Find character" spellcheck="false">
+            </label>
+            <label class="workspace-search-box event-search-box" data-search-scope="events" hidden>
+              Find
+              <input id="eventSearchInput" type="search" data-event-search placeholder="Find event" spellcheck="false">
+            </label>
+            <label class="workspace-search-box playbook-search-box" data-search-scope="variables" hidden>
+              Find
+              <input id="playbookSearchInput" type="search" data-playbook-search placeholder="Find in Playbook" spellcheck="false">
+            </label>
+            <label class="workspace-search-box document-search-box" data-search-scope="document" hidden>
+              Find
+              <input id="documentSearchInput" type="search" data-document-search placeholder="Find in document" spellcheck="false">
+            </label>
+            <div id="matchCount">0 / 0</div>
+          </div>
+        </footer>
+        <div class="workspace-floating-controls">
+          <button class="workspace-toc-button" type="button" data-action="toggle-document-toc" aria-pressed="false" title="Toggle outline" aria-label="Toggle outline">
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M5 7h14M5 12h14M5 17h14"></path>
+            </svg>
+          </button>
+          <button class="workspace-scroll-top-button playbook-scroll-top-button" type="button" data-action="scroll-workspace-top" title="Back to top" aria-label="Back to top">
+            <span aria-hidden="true">↑</span>
+          </button>
+        </div>
+
+        <button id="aiFloatingButton" class="ai-floating-button" data-action="toggle-ai-window" type="button" title="Open AI assistant" aria-label="Open AI assistant" aria-expanded="false">
+          <span aria-hidden="true">AI</span>
+        </button>
+      </main>
+
+      <aside id="aiFloatingWindow" class="ai-floating-window" aria-label="AI assistant" hidden>
+        <header class="ai-floating-header" data-floating-window-drag="ai">
+          <div><span class="pane-kicker">Canvas copilot</span><div class="ai-title"><h2>AI</h2><span class="project-feature-badge ai-beta-badge" data-ai-beta title="Experimental feature">Beta</span></div></div>
+          <div class="floating-window-header-actions">
+            <button class="icon-button floating-window-pin-button" data-action="toggle-floating-window-pin" data-floating-window-pin="ai" type="button" aria-pressed="false" title="Pin window" aria-label="Pin window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 0-1 5 3 3v2H7v-2l3-3-1-5ZM12 14v6"></path></svg></button>
+            <button class="icon-button" data-action="close-ai-window" type="button" title="Close AI assistant" aria-label="Close AI assistant">×</button>
+          </div>
+        </header>
+        <div id="aiPanel" class="ai-floating-body"></div>
+        <span class="floating-window-resize-handle n" data-floating-window-resize="n" data-floating-window="ai"></span>
+        <span class="floating-window-resize-handle e" data-floating-window-resize="e" data-floating-window="ai"></span>
+        <span class="floating-window-resize-handle s" data-floating-window-resize="s" data-floating-window="ai"></span>
+        <span class="floating-window-resize-handle w" data-floating-window-resize="w" data-floating-window="ai"></span>
+        <span class="floating-window-resize-handle ne" data-floating-window-resize="ne" data-floating-window="ai"></span>
+        <span class="floating-window-resize-handle se" data-floating-window-resize="se" data-floating-window="ai"></span>
+        <span class="floating-window-resize-handle sw" data-floating-window-resize="sw" data-floating-window="ai"></span>
+        <span class="floating-window-resize-handle nw" data-floating-window-resize="nw" data-floating-window="ai"></span>
+      </aside>
+
+      <dialog id="playDialog" class="play-dialog">
+        <form method="dialog" class="play-shell">
+          <header class="play-header" data-floating-window-drag="play">
+            <div>
+              <span class="pane-kicker">Runtime</span>
+              <h2 id="playTitle">Preview</h2>
+            </div>
+            <div class="play-header-actions">
+              <button class="icon-button play-float-button" type="button" data-action="toggle-play-float" aria-pressed="false" title="Float preview to center" aria-label="Float preview to center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 17 7 7M7 7v7M7 7h7"></path></svg></button>
+              <button class="icon-button floating-window-pin-button" data-action="toggle-floating-window-pin" data-floating-window-pin="play" type="button" aria-pressed="false" title="Pin window" aria-label="Pin window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 0-1 5 3 3v2H7v-2l3-3-1-5ZM12 14v6"></path></svg></button>
+              <button class="icon-button" value="close" aria-label="Close preview">x</button>
+            </div>
+          </header>
+          <div class="play-scroll">
+            <article id="playBody" class="play-body"></article>
+            <footer id="playActions" class="play-actions"></footer>
+          </div>
+          <span class="floating-window-resize-handle n" data-floating-window-resize="n" data-floating-window="play"></span>
+          <span class="floating-window-resize-handle e" data-floating-window-resize="e" data-floating-window="play"></span>
+          <span class="floating-window-resize-handle s" data-floating-window-resize="s" data-floating-window="play"></span>
+          <span class="floating-window-resize-handle w" data-floating-window-resize="w" data-floating-window="play"></span>
+          <span class="floating-window-resize-handle ne" data-floating-window-resize="ne" data-floating-window="play"></span>
+          <span class="floating-window-resize-handle se" data-floating-window-resize="se" data-floating-window="play"></span>
+          <span class="floating-window-resize-handle sw" data-floating-window-resize="sw" data-floating-window="play"></span>
+          <span class="floating-window-resize-handle nw" data-floating-window-resize="nw" data-floating-window="play"></span>
+        </form>
+      </dialog>
+
+      <div class="sidebar-resizer sidebar-resizer-right" data-sidebar-resizer="right" role="separator" aria-orientation="vertical" aria-label="Resize right sidebar"></div>
+      <aside class="sidebar sidebar-right" data-sidebar="right">
+        <header class="pane-header compact">
+          <div class="header-actions">
+            <button class="icon-button sidebar-toggle-button" title="Collapse right sidebar" aria-label="Collapse right sidebar" data-sidebar-toggle="right" type="button">
+              <span class="sidebar-toggle-icon sidebar-toggle-icon-right" aria-hidden="true"></span>
+            </button>
+          </div>
+          <div class="pane-title">
+            <span class="pane-kicker">Inspector</span>
+            <h1 id="inspectorTitle">Project</h1>
+          </div>
+        </header>
+
+        <div class="inspector-tabs">
+          <div class="inspector-tab-group">
+            <button class="inspector-tab active" data-panel="project">Project</button>
+            <button class="inspector-float-button" data-action="float-inspector-panel" data-float-panel="project" type="button" title="Open Project in center" aria-label="Open Project in center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 17 7 7M7 7v7M7 7h7"></path></svg></button>
+          </div>
+          <div class="inspector-tab-group">
+            <button class="inspector-tab" data-panel="node">Node</button>
+            <button class="inspector-float-button" data-action="float-inspector-panel" data-float-panel="node" type="button" title="Open Node in center" aria-label="Open Node in center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 17 7 7M7 7v7M7 7h7"></path></svg></button>
+          </div>
+          <div class="inspector-tab-group">
+            <button class="inspector-tab" data-panel="story">Story</button>
+            <button class="inspector-float-button" data-action="float-inspector-panel" data-float-panel="story" type="button" title="Open Story in center" aria-label="Open Story in center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 17 7 7M7 7v7M7 7h7"></path></svg></button>
+          </div>
+        </div>
+
+        <div id="inspectorPanels" class="inspector-panels">
+          <section id="projectPanel" class="inspector-panel active"></section>
+          <section id="nodePanel" class="inspector-panel"></section>
+          <section id="storyPanel" class="inspector-panel"></section>
+        </div>
+      </aside>
+
+      <div id="inspectorFloatOverlay" class="inspector-float-overlay" hidden>
+        <section class="inspector-float-window" role="dialog" aria-modal="true" aria-labelledby="inspectorFloatTitle">
+          <header class="inspector-float-header" data-floating-window-drag="inspector">
+            <div>
+              <span class="pane-kicker">Inspector</span>
+              <h2 id="inspectorFloatTitle">Project</h2>
+            </div>
+            <div class="floating-window-header-actions">
+              <button class="icon-button floating-window-pin-button" data-action="toggle-floating-window-pin" data-floating-window-pin="inspector" type="button" aria-pressed="false" title="Pin window" aria-label="Pin window"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 4 6 0-1 5 3 3v2H7v-2l3-3-1-5ZM12 14v6"></path></svg></button>
+              <button class="icon-button" data-action="close-floating-inspector" type="button" title="Close centered inspector" aria-label="Close centered inspector">x</button>
+            </div>
+          </header>
+          <div id="inspectorFloatBody" class="inspector-float-body"></div>
+          <span class="floating-window-resize-handle n" data-floating-window-resize="n" data-floating-window="inspector"></span>
+          <span class="floating-window-resize-handle e" data-floating-window-resize="e" data-floating-window="inspector"></span>
+          <span class="floating-window-resize-handle s" data-floating-window-resize="s" data-floating-window="inspector"></span>
+          <span class="floating-window-resize-handle w" data-floating-window-resize="w" data-floating-window="inspector"></span>
+          <span class="floating-window-resize-handle ne" data-floating-window-resize="ne" data-floating-window="inspector"></span>
+          <span class="floating-window-resize-handle se" data-floating-window-resize="se" data-floating-window="inspector"></span>
+          <span class="floating-window-resize-handle sw" data-floating-window-resize="sw" data-floating-window="inspector"></span>
+          <span class="floating-window-resize-handle nw" data-floating-window-resize="nw" data-floating-window="inspector"></span>
+        </section>
+      </div>
+
+      <!-- Canvas overlays live inside .app-shell so they render in immersive/native fullscreen,
+           which fullscreens .app-shell; a sibling here would be hidden by the browser. -->
+      <div id="mentionPopover" class="mention-popover" hidden role="listbox" aria-label="Character mentions"></div>
+
+      <div id="nodeContextMenu" class="node-context-menu" hidden role="menu" aria-label="Node layer menu">
+        <button data-layer-action="front">Bring to front</button>
+        <button data-layer-action="forward">Bring forward</button>
+        <button data-layer-action="backward">Send backward</button>
+        <button data-layer-action="back">Send to back</button>
+        <button class="context-menu-danger" data-action="delete-node">Delete node</button>
+      </div>
+
+      <div id="canvasRadialMenu" class="canvas-radial-menu" role="menu" aria-label="Canvas quick menu" hidden></div>
+    </div>
+
+    <dialog id="exportReportDialog" class="nc-notice-dialog export-report-dialog" aria-label="Export report">
+      <form method="dialog" class="notice-shell export-report-shell">
+        <header>
+          <span id="exportReportKicker" class="pane-kicker">Export report</span>
+          <h2 id="exportReportTitle">Export report</h2>
+        </header>
+        <div id="exportReportBody" class="export-report-body"></div>
+        <footer class="confirm-actions">
+          <button class="small-button primary" value="confirm">OK</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="confirmDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span class="pane-kicker">New Canvas</span>
+          <h2>Name the new project</h2>
+          <label class="field confirm-field">
+            <span>Project name</span>
+            <input id="newProjectNameInput" type="text" value="Untitled" spellcheck="false" autocomplete="off">
+          </label>
+          <p id="newProjectPathPreview" class="confirm-body">A new project file will be created when possible.</p>
+        </header>
+        <footer class="confirm-actions">
+          <button class="small-button confirm-muted" value="confirm" type="button" data-action="confirm-new-project">Create</button>
+          <button class="small-button confirm-cancel" value="cancel" type="button" data-action="cancel-new-project" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="eventColumnDeleteDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span class="pane-kicker">Event Column</span>
+          <h2 id="eventColumnDeleteTitle">Delete column?</h2>
+          <p id="eventColumnDeleteBody" class="confirm-body"></p>
+        </header>
+        <footer class="confirm-actions">
+          <button class="small-button danger-button" value="confirm">Delete</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="eventColumnsResetDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span class="pane-kicker">Events Sheet</span>
+          <h2>Reset sheet columns?</h2>
+          <p class="confirm-body">
+            This restores the default Events Sheet columns. It removes column renames, hidden-column settings, column order changes, and custom sheet-only columns. Frame nodes are not deleted, and stored field values are not actively cleared; values from removed columns may stop showing until that field or column is added again.
+          </p>
+        </header>
+        <footer class="confirm-actions">
+          <button class="small-button danger-button" value="confirm">Reset columns</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="genericConfirmDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span id="genericConfirmKicker" class="pane-kicker">Confirm</span>
+          <h2 id="genericConfirmTitle">Confirm action?</h2>
+          <p id="genericConfirmBody" class="confirm-body"></p>
+        </header>
+        <footer class="confirm-actions">
+          <button id="genericConfirmButton" class="small-button danger-button" value="confirm">Confirm</button>
+          <button id="genericConfirmSecondaryButton" class="small-button" value="secondary" hidden>Keep</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="genericTextDialog" class="confirm-dialog">
+      <form method="dialog" class="confirm-shell">
+        <header>
+          <span id="genericTextKicker" class="pane-kicker">Edit</span>
+          <h2 id="genericTextTitle">Edit value</h2>
+          <label class="field confirm-field">
+            <span id="genericTextLabel">Value</span>
+            <input id="genericTextInput" type="text" spellcheck="false" autocomplete="off">
+          </label>
+          <p id="genericTextBody" class="confirm-body"></p>
+        </header>
+        <footer class="confirm-actions">
+          <button id="genericTextButton" class="small-button primary" value="confirm">Apply</button>
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="expandEditorDialog" class="expand-editor-dialog" aria-label="Expanded editor">
+      <div class="expand-editor-shell">
+        <header class="expand-editor-header">
+          <div>
+            <span class="pane-kicker">Editor</span>
+            <h2 id="expandEditorTitle">Edit text</h2>
+          </div>
+          <button class="icon-button" type="button" data-action="close-expand-editor" aria-label="Close editor" title="Close editor">x</button>
+        </header>
+        <div class="expand-editor-toolbar" id="expandEditorToolbar" role="toolbar" aria-label="Formatting">
+          <select class="expand-editor-language" id="expandEditorLanguage" data-expand-rich-text-format title="Rich text language" aria-label="Rich text language">
+            <option value="markdown">Markdown</option>
+            <option value="html">HTML</option>
+            <option value="unity">Unity TextMeshPro</option>
+            <option value="bbcode">Godot / Ren'Py BBCode</option>
+            <option value="unreal">Unreal RichTextBlock</option>
+          </select>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="bold" title="Bold" aria-label="Bold"><b>B</b></button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="italic" title="Italic" aria-label="Italic"><i>I</i></button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="strike" title="Strikethrough" aria-label="Strikethrough"><s>S</s></button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="code" title="Inline code" aria-label="Inline code"><code>&lt;/&gt;</code></button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="highlight" title="Highlight" aria-label="Highlight"><mark>H</mark></button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="link" title="Link" aria-label="Link"><u>A</u></button>
+          <span class="expand-editor-toolbar-sep" aria-hidden="true"></span>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="h1" title="Heading 1" aria-label="Heading 1">H1</button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="h2" title="Heading 2" aria-label="Heading 2">H2</button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="h3" title="Heading 3" aria-label="Heading 3">H3</button>
+          <span class="expand-editor-toolbar-sep" aria-hidden="true"></span>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="quote" title="Quote" aria-label="Quote">&gt;</button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="list" title="Bullet list" aria-label="Bullet list">•</button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="ordered" title="Numbered list" aria-label="Numbered list">1.</button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="task" title="Task list" aria-label="Task list">☑</button>
+          <span class="expand-editor-toolbar-sep" aria-hidden="true"></span>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="codeblock" title="Code block" aria-label="Code block">{ }</button>
+          <button class="expand-format-button" type="button" data-action="expand-editor-format" data-format="divider" title="Divider" aria-label="Divider">—</button>
+          <span class="expand-editor-toolbar-sep" aria-hidden="true"></span>
+          <label class="expand-color-control" title="Text color">
+            <span class="expand-color-letter" aria-hidden="true">A</span>
+            <input id="expandEditorTextColor" type="color" value="#e6e6e6" data-expand-color="text" aria-label="Text color">
+          </label>
+          <label class="expand-color-control" title="Highlight color">
+            <span class="expand-color-highlight" aria-hidden="true">H</span>
+            <input id="expandEditorHighlightColor" type="color" value="#ffd43b" data-expand-color="highlight" aria-label="Highlight color">
+          </label>
+        </div>
+        <div class="expand-editor-live" data-live-field>
+          <div class="expand-editor-rendered play-body-text" data-live-rendered role="textbox" tabindex="0" aria-label="Formatted text, click to edit"></div>
+          <textarea id="expandEditorInput" class="expand-editor-input" data-live-source spellcheck="false" aria-label="Expanded text editor" hidden></textarea>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="playbookHelpDialog" class="nc-notice-dialog playbook-help-dialog" aria-label="Playbook help">
+      <form method="dialog" class="notice-shell playbook-help-shell">
+        <header>
+          <span class="pane-kicker">Playbook</span>
+          <h2>What Playbook.json controls</h2>
+        </header>
+        <div class="playbook-help-body" data-playbook-help-body></div>
+        <footer class="confirm-actions playbook-help-footer">
+          <button class="small-button" type="button" data-action="playbook-help-prev">Previous tip</button>
+          <div class="playbook-help-pagination">
+            <span data-playbook-help-page-label>Page 1 of 1</span>
+            <div class="playbook-help-dots" data-playbook-help-dots></div>
+          </div>
+          <button class="small-button" type="button" data-action="playbook-help-next">Next tip</button>
+          <button class="small-button primary" value="confirm">Close</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="playRuleDialog" class="nc-notice-dialog playbook-rule-dialog" aria-label="Add preview rule">
+      <form method="dialog" class="notice-shell playbook-rule-shell">
+        <header>
+          <span class="pane-kicker">Playbook</span>
+          <h2>Add preview rule</h2>
+        </header>
+        <div class="playbook-rule-options">
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="startNode">
+            <strong>Start Node</strong>
+            <span>Pick the first node used by Play preview.</span>
+          </button>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="endCondition">
+            <strong>End Condition</strong>
+            <span>Stop Play preview when a condition becomes true.</span>
+          </button>
+          <button type="button" data-action="create-play-rule" data-playbook-rule-kind="debugMode">
+            <strong>Debug Mode</strong>
+            <span>Show state and condition details in Play preview.</span>
+          </button>
+        </div>
+        <p class="playbook-rule-allset" data-playbook-rule-allset hidden>All preview rules already enabled.</p>
+        <footer class="confirm-actions">
+          <button class="small-button confirm-cancel" value="cancel" autofocus>Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="nodeTypeDialog" class="type-dialog" aria-label="Edit node type">
+      <form method="dialog" class="type-shell">
+        <header>
+          <span class="pane-kicker">Node Type</span>
+          <h2 id="nodeTypeDialogTitle">Edit node type</h2>
+        </header>
+        <label class="field">
+          <span>Name</span>
+          <input id="nodeTypeNameInput" maxlength="40" spellcheck="false" autocomplete="off">
+        </label>
+        <label class="field">
+          <span>Template</span>
+          <select id="nodeTypeKindInput">
+            <option value="node">Basic Node</option>
+            <option value="dialog">Dialog</option>
+            <option value="choice">Choice</option>
+            <option value="frame">Frame</option>
+          </select>
+        </label>
+        <section class="node-type-field-section" aria-labelledby="nodeTypeBuiltinFieldsLabel">
+          <span id="nodeTypeBuiltinFieldsLabel" class="node-type-field-heading">Built-in fields</span>
+          <div id="nodeTypeBuiltinFields" class="node-type-field-list"></div>
+        </section>
+        <label class="field">
+          <span id="nodeTypeCustomFieldsLabel">Custom fields</span>
+          <textarea id="nodeTypeFieldsInput" rows="5" spellcheck="false" placeholder="Fields, one per line"></textarea>
+        </label>
+        <section id="nodeTypeExistingFieldsSection" class="node-type-field-section" aria-labelledby="nodeTypeExistingFieldsLabel" hidden>
+          <span id="nodeTypeExistingFieldsLabel" class="node-type-field-heading">Existing fields not in this type</span>
+          <div id="nodeTypeExistingFields" class="node-type-existing-fields"></div>
+        </section>
+        <div class="type-dialog-settings">
+          <div class="type-dialog-setting-group type-dialog-appearance-group">
+            <span class="type-dialog-setting-label" id="nodeTypeAppearanceLabel">Appearance</span>
+            <div class="type-dialog-appearance">
+              <label class="type-dialog-field-row type-dialog-icon-field">
+                <span class="type-dialog-setting-label">Icon</span>
+                <input id="nodeTypeIconInput" class="type-dialog-icon-input" maxlength="8" spellcheck="false" autocomplete="off" inputmode="text" aria-label="Icon text or emoji">
+                <button class="type-dialog-inline-reset" data-action="reset-node-type-icon" type="button" title="Use type initial" aria-label="Use type initial">↺</button>
+              </label>
+              <label class="type-dialog-field-row type-dialog-color-field">
+                <span class="type-dialog-setting-label">Color</span>
+                <input id="nodeTypeColorInput" type="color">
+              </label>
+              <label id="nodeTypeOpacityField" class="type-dialog-field-row type-dialog-opacity-field" hidden>
+                <span class="type-dialog-setting-label">Card opacity</span>
+                <span class="nc-range-control">
+                  <input id="nodeTypeOpacityInput" type="range" min="0" max="100" step="5">
+                  <span class="nc-range-track" aria-hidden="true">
+                    <span class="nc-range-thumb"></span>
+                  </span>
+                </span>
+                <span class="type-dialog-opacity-value" data-node-type-opacity-value>100%</span>
+              </label>
+            </div>
+          </div>
+          <section class="type-dialog-setting-group type-dialog-visibility-group" aria-labelledby="nodeTypeVisibilityLabel">
+            <span id="nodeTypeVisibilityLabel" class="type-dialog-setting-label">Visibility</span>
+            <div class="type-dialog-visibility">
+              <label class="nc-checkbox-field">
+                <input id="nodeTypeHiddenInput" type="checkbox">
+                <span class="nc-checkbox-box" aria-hidden="true"></span>
+                <span class="nc-checkbox-text">Hide from library</span>
+              </label>
+              <label class="nc-checkbox-field">
+                <input id="nodeTypeEventHiddenInput" type="checkbox">
+                <span class="nc-checkbox-box" aria-hidden="true"></span>
+                <span class="nc-checkbox-text">Hide frame rows from Events Sheet</span>
+              </label>
+            </div>
+          </section>
+        </div>
+        <footer class="confirm-actions">
+          <button class="small-button primary" value="confirm">Save</button>
+          <button class="small-button confirm-cancel" value="cancel">Cancel</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <dialog id="nodeRequiredDialog" class="nc-notice-dialog" aria-label="Node selection required">
+      <section class="notice-shell">
+        <span class="pane-kicker">Node Inspector</span>
+        <p>Select a node first to open the Node inspector.</p>
+      </section>
+    </dialog>
+
+    <dialog id="visionBoardDialog" class="vision-board-dialog" aria-label="Vision board">
+      <section class="vision-board-dialog-shell">
+        <header class="vision-board-dialog-header">
+          <div><span class="pane-kicker">VISION BOARD</span><h2 id="visionBoardTitle">Linked files</h2></div>
+          <button class="icon-button" type="button" data-action="close-vision-board" aria-label="Close vision board" title="Close vision board">×</button>
+        </header>
+        <div id="visionBoardCanvas" class="vision-board-canvas is-focused" aria-label="Move linked images"></div>
+      </section>
+    </dialog>
+
+    <script src="./app.js?v=1.4.1-5f4d7811"></script>
+  </body>
+</html>

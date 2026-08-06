@@ -1,0 +1,969 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/**
+ * Character data model - represents a character profile stored as a markdown file
+ * in the project's Characters/ folder.
+ */
+export interface Character {
+    /** Vault-relative path of the character .md file */
+    filePath: string;
+    /** type identifier */
+    type: 'character';
+
+    // ── Basic Information ──────────────────────────────
+    /** Character name */
+    name: string;
+    /** Short tagline — key of another field to display on character cards */
+    tagline?: string;
+    /** Vault-relative path to a portrait/avatar image */
+    image?: string;
+    /** Image gallery (max 5 images with captions) */
+    gallery?: Array<{ path: string; caption: string }>;
+    /** Nicknames or aliases */
+    nickname?: string;
+    /** Age or date of birth */
+    age?: string;
+    /** Role in the story (string or list of roles — issue #72 Tier 1) */
+    role?: string | string[];
+    /**
+     * Structured role history (issue #72 Tier 2). Each entry is a role the
+     * character holds, optionally anchored to a starting scene, plotline,
+     * and/or a free-text book label. `book:` is plain author-facing
+     * metadata — it is NOT a project reference and requires no
+     * cross-book resolution.
+     *
+     * When this array is present and non-empty, `getRoleList` /
+     * `getPrimaryRole` derive their results from it. The legacy `role`
+     * field is still read as a fallback for unmigrated characters.
+     */
+    roles?: RoleEntry[];
+    /** Occupation or vocation */
+    occupation?: string;
+    /** Where they live / are from */
+    residency?: string;
+    /** Story locations this character appears at */
+    locations?: string[];
+    /** Family & background */
+    family?: string;
+
+    /** Structured relationship rows (category -> type -> target) */
+    relations?: CharacterRelation[];
+
+    // ── Physical Characteristics ───────────────────────
+    /** Appearance description */
+    appearance?: string;
+    /** Scars, tattoos, birthmarks */
+    distinguishingFeatures?: string;
+    /** Clothing style, accessories, posture */
+    style?: string;
+    /** Specific habits or mannerisms */
+    quirks?: string;
+
+    // ── Personality ────────────────────────────────────
+    /** 3-5 words describing personality */
+    personality?: string;
+    /** What they need (internal) */
+    internalMotivation?: string;
+    /** What they want (external) */
+    externalMotivation?: string;
+    /** Their best qualities */
+    strengths?: string;
+    /** Their fatal flaws */
+    flaws?: string;
+    /** What they fear most — the thing stopping them from going after their desire */
+    fears?: string;
+    /** Core belief — what they believe about themselves */
+    belief?: string;
+    /** Misbelief — the thing they believe is true about the world */
+    misbelief?: string;
+
+    // ── Backstory ──────────────────────────────────────
+    /** Key formative events from childhood or past */
+    formativeMemories?: string;
+    /** Defining accomplishments or failures */
+    accomplishments?: string;
+    /** What they are hiding */
+    secrets?: string;
+
+    // ── Relationships ──────────────────────────────────
+    /** Allies and friends (character names) */
+    allies?: string[];
+    /** Enemies and rivals (character names) */
+    enemies?: string[];
+    /** Romantic interests / partners (character names) */
+    romantic?: string[];
+    /** Mentors — characters who guide this one */
+    mentors?: string[];
+    /** Other / miscellaneous connections (character names) */
+    otherRelations?: string[];
+    /** Custom relationship type connections (character names) */
+    customRelations?: string[];
+    /** Label/name of the custom relation type (e.g. Bodyguard, Blood Oath) */
+    customRelationType?: string;
+
+    // Typed relationships (grouped)
+    // Family
+    siblings?: string[];
+    halfSiblings?: string[];
+    twins?: string[];
+    parents?: string[];
+    children?: string[];
+    stepParents?: string[];
+    stepChildren?: string[];
+    adoptiveParents?: string[];
+    adoptedChildren?: string[];
+    guardians?: string[];
+    wards?: string[];
+    grandparents?: string[];
+    grandchildren?: string[];
+    auntsUncles?: string[];
+    niecesNephews?: string[];
+    cousins?: string[];
+    inLaws?: string[];
+
+    // Romantic
+    spouses?: string[];
+    exPartners?: string[];
+
+    // Social
+    friends?: string[];
+    bestFriends?: string[];
+    confidants?: string[];
+    acquaintances?: string[];
+
+    // Conflict
+    rivals?: string[];
+    betrayers?: string[];
+    avengers?: string[];
+
+    // Guidance / hierarchy
+    mentees?: string[];
+    leaders?: string[];
+    followers?: string[];
+    bosses?: string[];
+    subordinates?: string[];
+    commanders?: string[];
+    secondsInCommand?: string[];
+    masters?: string[];
+    apprentices?: string[];
+
+    // Professional / institutional
+    colleagues?: string[];
+    businessPartners?: string[];
+    clients?: string[];
+    handlers?: string[];
+    assets?: string[];
+
+    // Story dynamics
+    protectors?: string[];
+    dependents?: string[];
+    owesDebtTo?: string[];
+    swornTo?: string[];
+    boundByOath?: string[];
+    idolizes?: string[];
+    fearsPeople?: string[];
+    obsessedWith?: string[];
+
+    // ── Character Arc ──────────────────────────────────
+    /** How they are at story start */
+    startingPoint?: string;
+    /** What they want to achieve */
+    goal?: string;
+    /** How they change by the end */
+    expectedChange?: string;
+
+    // ── Other ──────────────────────────────────────────
+    /** Hobbies, routines, favorites */
+    habits?: string;
+    /** Items they carry or use */
+    props?: string;
+    /** User-defined custom fields */
+    custom?: Record<string, string>;
+    /** Universal field values keyed by template ID (from field-templates.json) */
+    universalFields?: Record<string, string | string[]>;
+
+    // ── Series sharing ─────────────────────────────
+    /**
+     * Which books (project titles) this character appears in. Empty / missing
+     * means the character is shared by every book in the series. Used by the
+     * "Current book only" filter in CharacterView when the active project
+     * belongs to a series.
+     */
+    books?: string[];
+
+    // ── Meta ───────────────────────────────────────────
+    /** Created date */
+    created?: string;
+    /** Modified date */
+    modified?: string;
+    /** Free-form notes (markdown body) */
+    notes?: string;
+}
+
+/**
+ * Field category definition for the character editor UI
+ */
+export interface CharacterFieldCategory {
+    title: string;
+    icon: string;
+    fields: CharacterFieldDef[];
+}
+
+/**
+ * Individual field definition
+ */
+export interface CharacterFieldDef {
+    key: keyof Character;
+    label: string;
+    placeholder: string;
+    multiline?: boolean;
+}
+
+/**
+ * Issue #72 Tier 2 — a single entry in a character's role history.
+ *
+ * All anchor fields are optional. `from` accepts either a plain scene
+ * name ("The Choice") or an Obsidian wikilink ("[[Chapter 12 - The
+ * Choice]]") so renames stay safe. `plotline` is a free-text plotline
+ * tag used to scope the role to a single arc. `book` is a free-text
+ * label like "Book 2" — author-facing only, not a project reference.
+ */
+export interface RoleEntry {
+    role: string;
+    from?: string;
+    plotline?: string;
+    book?: string;
+}
+
+/**
+ * Normalize a frontmatter `roles:` value into a clean RoleEntry[].
+ * Accepts undefined, an array of strings, or an array of objects. Strings
+ * are upgraded to `{ role: <string> }` so legacy/manually-edited YAML keeps
+ * working.
+ */
+export function normalizeRoleEntries(raw: unknown): RoleEntry[] {
+    if (!Array.isArray(raw)) return [];
+    const out: RoleEntry[] = [];
+    for (const item of raw) {
+        if (typeof item === 'string') {
+            const r = item.trim();
+            if (r) out.push({ role: r });
+            continue;
+        }
+        if (item && typeof item === 'object') {
+            const obj = item as unknown as Record<string, unknown>;
+            const role = typeof obj.role === 'string' ? obj.role.trim() : '';
+            if (!role) continue;
+            const entry: RoleEntry = { role };
+            const from = typeof obj.from === 'string' ? obj.from.trim() : '';
+            const plotline = typeof obj.plotline === 'string' ? obj.plotline.trim() : '';
+            const book = typeof obj.book === 'string' ? obj.book.trim() : '';
+            if (from) entry.from = from;
+            if (plotline) entry.plotline = plotline;
+            if (book) entry.book = book;
+            out.push(entry);
+        }
+    }
+    return out;
+}
+
+/**
+ * Normalize the `role` field (issue #72 Tier 1) into a string array.
+ * Accepts string, string[], or undefined. Splits comma-separated strings.
+ *
+ * Issue #72 Tier 2: when the character also has a structured `roles[]`
+ * history, callers should prefer `getRoleEntries(character)` and derive
+ * the display list from there — see `getRoleList(character)` overload
+ * below.
+ */
+export function getRoleList(role: string | string[] | undefined): string[];
+export function getRoleList(character: Pick<Character, 'role' | 'roles'>): string[];
+export function getRoleList(input: unknown): string[] {
+    // Character object overload — prefer Tier 2 roles[] if present.
+    if (input && typeof input === 'object' && !Array.isArray(input) && ('role' in input || 'roles' in input)) {
+        const c = input as Pick<Character, 'role' | 'roles'>;
+        if (c.roles && c.roles.length) {
+            const seen = new Set<string>();
+            const out: string[] = [];
+            for (const e of c.roles) {
+                const r = String(e.role || '').trim();
+                if (!r) continue;
+                const key = r.toLowerCase();
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push(r);
+            }
+            if (out.length) return out;
+        }
+        return getRoleListFromRaw(c.role);
+    }
+    return getRoleListFromRaw(input as string | string[] | undefined);
+}
+
+function getRoleListFromRaw(role: string | string[] | undefined): string[] {
+    if (!role) return [];
+    if (Array.isArray(role)) {
+        return role.map(r => String(r).trim()).filter(Boolean);
+    }
+    return String(role)
+        .split(',')
+        .map(r => r.trim())
+        .filter(Boolean);
+}
+
+/** Render the role field as a human-readable comma-separated string. */
+export function getRoleDisplay(role: string | string[] | undefined): string;
+export function getRoleDisplay(character: Pick<Character, 'role' | 'roles'>): string;
+export function getRoleDisplay(input: unknown): string {
+    return (getRoleList as (v: unknown) => string[])(input).join(', ');
+}
+
+/** First role (used for sort / category ordering). */
+export function getPrimaryRole(role: string | string[] | undefined): string;
+export function getPrimaryRole(character: Pick<Character, 'role' | 'roles'>): string;
+export function getPrimaryRole(input: unknown): string {
+    return (getRoleList as (v: unknown) => string[])(input)[0] ?? '';
+}
+
+/**
+ * Issue #72 Tier 2 — return the role entries that apply under the given
+ * filter (matching `book` and/or `plotline` labels case-insensitively).
+ * Entries with no anchor for a given filter are considered to apply
+ * everywhere for that dimension.
+ */
+export function getRolesAt(
+    character: Pick<Character, 'roles'>,
+    opts?: { book?: string; plotline?: string },
+): RoleEntry[] {
+    const roles = character.roles || [];
+    if (!opts || (!opts.book && !opts.plotline)) return [...roles];
+    const wantBook = opts.book ? opts.book.trim().toLowerCase() : '';
+    const wantPlot = opts.plotline ? opts.plotline.trim().toLowerCase() : '';
+    return roles.filter(e => {
+        if (wantBook) {
+            const eb = (e.book || '').trim().toLowerCase();
+            if (eb && eb !== wantBook) return false;
+        }
+        if (wantPlot) {
+            const ep = (e.plotline || '').trim().toLowerCase();
+            if (ep && ep !== wantPlot) return false;
+        }
+        return true;
+    });
+}
+
+export type CharacterRelationCategory =
+    | 'family'
+    | 'romantic'
+    | 'social'
+    | 'conflict'
+    | 'guidance'
+    | 'professional'
+    | 'story'
+    | 'custom';
+
+export interface CharacterRelation {
+    category: CharacterRelationCategory;
+    type: string;
+    target: string;
+}
+
+export const RELATION_CATEGORIES: { value: CharacterRelationCategory; label: string }[] = [
+    { value: 'family', label: 'Family' },
+    { value: 'romantic', label: 'Romantic' },
+    { value: 'social', label: 'Social' },
+    { value: 'conflict', label: 'Conflict' },
+    { value: 'guidance', label: 'Guidance / Hierarchy' },
+    { value: 'professional', label: 'Professional / Institutional' },
+    { value: 'story', label: 'Story Dynamics' },
+    { value: 'custom', label: 'Custom' },
+];
+
+export const RELATION_TYPES_BY_CATEGORY: Record<CharacterRelationCategory, string[]> = {
+    family: ['sibling', 'half-sibling', 'step-sibling', 'twin', 'parent', 'child', 'step-parent', 'step-child', 'adoptive-parent', 'adopted-child', 'guardian', 'ward', 'grandparent', 'grandchild', 'aunt/uncle', 'niece/nephew', 'cousin', 'in-law'],
+    romantic: ['partner', 'spouse', 'ex-partner'],
+    social: ['ally', 'friend', 'best-friend', 'confidant', 'acquaintance'],
+    conflict: ['enemy', 'rival', 'betrayer', 'avenger'],
+    guidance: ['mentor', 'mentee', 'leader', 'follower', 'boss', 'subordinate', 'commander', 'second-in-command', 'master', 'apprentice'],
+    professional: ['colleague', 'teammate', 'business-partner', 'client', 'handler', 'asset'],
+    story: ['protector', 'dependent', 'owes-debt-to', 'sworn-to', 'bound-by-oath', 'idolizes', 'fears', 'obsessed-with'],
+    custom: [],
+};
+
+export const RELATION_BASE_TYPE_BY_CATEGORY: Record<CharacterRelationCategory, 'ally' | 'enemy' | 'romantic' | 'family' | 'mentor' | 'other'> = {
+    family: 'family',
+    romantic: 'romantic',
+    social: 'ally',
+    conflict: 'enemy',
+    guidance: 'mentor',
+    professional: 'other',
+    story: 'other',
+    custom: 'other',
+};
+
+// ── Reciprocal relation support ────────────────────────
+
+/**
+ * Maps a relation type to its inverse.  Symmetric types map to themselves.
+ * Types not listed here are treated as symmetric (mirrored as-is).
+ */
+const INVERSE_RELATIONS: Record<string, string> = {
+    // Family
+    'parent': 'child',
+    'child': 'parent',
+    'step-parent': 'step-child',
+    'step-child': 'step-parent',
+    'adoptive-parent': 'adopted-child',
+    'adopted-child': 'adoptive-parent',
+    'guardian': 'ward',
+    'ward': 'guardian',
+    'grandparent': 'grandchild',
+    'grandchild': 'grandparent',
+    'aunt/uncle': 'niece/nephew',
+    'niece/nephew': 'aunt/uncle',
+    // Symmetric family
+    'sibling': 'sibling',
+    'half-sibling': 'half-sibling',
+    'step-sibling': 'step-sibling',
+    'twin': 'twin',
+    'cousin': 'cousin',
+    'in-law': 'in-law',
+    // Romantic (symmetric)
+    'partner': 'partner',
+    'spouse': 'spouse',
+    'ex-partner': 'ex-partner',
+    // Social (symmetric)
+    'ally': 'ally',
+    'friend': 'friend',
+    'best-friend': 'best-friend',
+    'confidant': 'confidant',
+    'acquaintance': 'acquaintance',
+    // Conflict (symmetric)
+    'enemy': 'enemy',
+    'rival': 'rival',
+    'betrayer': 'betrayer',
+    'avenger': 'avenger',
+    // Guidance / hierarchy
+    'mentor': 'mentee',
+    'mentee': 'mentor',
+    'leader': 'follower',
+    'follower': 'leader',
+    'boss': 'subordinate',
+    'subordinate': 'boss',
+    'commander': 'second-in-command',
+    'second-in-command': 'commander',
+    'master': 'apprentice',
+    'apprentice': 'master',
+    // Professional (symmetric)
+    'colleague': 'colleague',
+    'teammate': 'teammate',
+    'business-partner': 'business-partner',
+    'client': 'client',
+    'handler': 'asset',
+    'asset': 'handler',
+    // Story dynamics
+    'protector': 'dependent',
+    'dependent': 'protector',
+    'owes-debt-to': 'owes-debt-to',
+    'sworn-to': 'sworn-to',
+    'bound-by-oath': 'bound-by-oath',
+    'idolizes': 'idolizes',
+    'fears': 'fears',
+    'obsessed-with': 'obsessed-with',
+};
+
+/**
+ * Return the inverse of a relation type.  Unknown / custom types
+ * are treated as symmetric (the same type is returned).
+ */
+export function getInverseRelationType(type: string): string {
+    return INVERSE_RELATIONS[type] ?? type;
+}
+
+/**
+ * Infer the category for a given relation type by scanning all built-in categories.
+ */
+export function inferCategoryForType(type: string): CharacterRelationCategory {
+    for (const cat of RELATION_CATEGORIES) {
+        if (RELATION_TYPES_BY_CATEGORY[cat.value].includes(type)) return cat.value;
+    }
+    return 'custom';
+}
+
+/** Describes a single reciprocal update to be applied to a target character. */
+export interface ReciprocalUpdate {
+    action: 'add' | 'remove';
+    targetName: string;
+    relation: CharacterRelation;
+}
+
+/**
+ * Diff old and new relation arrays for a given source character name
+ * and return the reciprocal updates that need to be applied to target characters.
+ */
+export function computeReciprocalUpdates(
+    sourceName: string,
+    oldRelations: CharacterRelation[],
+    newRelations: CharacterRelation[],
+): ReciprocalUpdate[] {
+    const key = (r: CharacterRelation) => `${r.type}|${r.target.toLowerCase()}`;
+    const oldSet = new Map(oldRelations.map(r => [key(r), r]));
+    const newSet = new Map(newRelations.map(r => [key(r), r]));
+    const updates: ReciprocalUpdate[] = [];
+
+    // Added relations (in new but not in old)
+    for (const [k, rel] of newSet) {
+        if (!oldSet.has(k) && rel.target.trim()) {
+            const invType = getInverseRelationType(rel.type);
+            updates.push({
+                action: 'add',
+                targetName: rel.target,
+                relation: {
+                    category: inferCategoryForType(invType),
+                    type: invType,
+                    target: sourceName,
+                },
+            });
+        }
+    }
+
+    // Removed relations (in old but not in new)
+    for (const [k, rel] of oldSet) {
+        if (!newSet.has(k) && rel.target.trim()) {
+            const invType = getInverseRelationType(rel.type);
+            updates.push({
+                action: 'remove',
+                targetName: rel.target,
+                relation: {
+                    category: inferCategoryForType(invType),
+                    type: invType,
+                    target: sourceName,
+                },
+            });
+        }
+    }
+
+    return updates;
+}
+
+/**
+ * All character field categories with their placeholder descriptions.
+ * These define the UI layout and hint text.
+ */
+export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
+    {
+        title: 'Basic Information',
+        icon: 'user',
+        fields: [
+            { key: 'name', label: 'Name', placeholder: 'Full name of the character' },
+            { key: 'tagline', label: 'Tagline', placeholder: 'Choose which field to show on the card' },
+            { key: 'nickname', label: 'Nickname / Alias', placeholder: 'Alternative names and their origins', multiline: true },
+            { key: 'age', label: 'Age', placeholder: 'Date of birth, current life stage' },
+            { key: 'role', label: 'Role in Story', placeholder: 'Protagonist, antagonist, mentor, sidekick…' },
+            { key: 'occupation', label: 'Occupation', placeholder: 'Current job, income level, career history' },
+            { key: 'residency', label: 'Residency', placeholder: 'Where they are from and where they currently live', multiline: true },
+            { key: 'locations', label: 'Locations', placeholder: 'Story locations they appear at (e.g. The Tavern, Castle Ruins)' },
+        ],
+    },
+    {
+        title: 'Relationships',
+        icon: 'users',
+        fields: [
+            { key: 'family', label: 'Family / Background', placeholder: 'Relationships with parents, siblings, spouse…', multiline: true },
+            { key: 'relations', label: 'Relations', placeholder: 'Add relation rows by category and type' },
+        ],
+    },
+    {
+        title: 'Physical Characteristics',
+        icon: 'scan-face',
+        fields: [
+            { key: 'appearance', label: 'Appearance', placeholder: 'Height, weight, body type, hair, eye color, skin tone', multiline: true },
+            { key: 'distinguishingFeatures', label: 'Distinguishing Features', placeholder: 'Scars, tattoos, birthmarks, or unique marks', multiline: true },
+            { key: 'style', label: 'Style', placeholder: 'Clothing style, accessories, posture', multiline: true },
+            { key: 'quirks', label: 'Quirks', placeholder: 'Specific habits like tapping fingers, stuttering when nervous…', multiline: true },
+        ],
+    },
+    {
+        title: 'Personality',
+        icon: 'brain',
+        fields: [
+            { key: 'personality', label: 'Personality', placeholder: 'Three to five words to describe them' },
+            { key: 'internalMotivation', label: 'Internal Motivation', placeholder: 'What they need — their deepest unspoken drive', multiline: true },
+            { key: 'externalMotivation', label: 'External Motivation', placeholder: 'What they want — their stated or visible goal', multiline: true },
+            { key: 'strengths', label: 'Strengths', placeholder: 'Their best qualities', multiline: true },
+            { key: 'flaws', label: 'Flaws', placeholder: 'Their fatal flaws', multiline: true },
+            { key: 'fears', label: 'Fears', placeholder: 'What they are most afraid of — the thing stopping them from going after their desire', multiline: true },
+            { key: 'belief', label: 'Belief', placeholder: 'What they believe about themselves and their identity', multiline: true },
+            { key: 'misbelief', label: 'Misbelief', placeholder: 'The thing they believe is true about the world (but isn\'t)', multiline: true },
+        ],
+    },
+    {
+        title: 'Backstory',
+        icon: 'clock',
+        fields: [
+            { key: 'formativeMemories', label: 'Formative Memories', placeholder: 'Key events from childhood or past that shaped their personality', multiline: true },
+            { key: 'accomplishments', label: 'Accomplishments / Failures', placeholder: 'Defining moments that shaped their self-worth', multiline: true },
+            { key: 'secrets', label: 'Secrets', placeholder: 'What they are hiding', multiline: true },
+        ],
+    },
+    {
+        title: 'Character Arc',
+        icon: 'trending-up',
+        fields: [
+            { key: 'startingPoint', label: 'Starting Point', placeholder: 'How they are at the beginning of the story', multiline: true },
+            { key: 'goal', label: 'Goal', placeholder: 'What they want to achieve', multiline: true },
+            { key: 'expectedChange', label: 'Expected Change', placeholder: 'How they will change by the end of the story', multiline: true },
+        ],
+    },
+    {
+        title: 'Other',
+        icon: 'more-horizontal',
+        fields: [
+            { key: 'habits', label: 'Habits', placeholder: 'Hobbies, favorite foods, daily routines', multiline: true },
+            { key: 'props', label: 'Props', placeholder: 'Items they frequently use or carry', multiline: true },
+        ],
+    },
+];
+
+/**
+ * Frontmatter keys that map to Character fields (excludes computed/meta keys)
+ */
+export const CHARACTER_FIELD_KEYS: (keyof Character)[] = [
+    'name', 'tagline', 'image', 'gallery', 'nickname', 'age', 'role', 'roles', 'occupation', 'residency', 'locations', 'family', 'relations',
+    'appearance', 'distinguishingFeatures', 'style', 'quirks',
+    'personality', 'internalMotivation', 'externalMotivation', 'strengths', 'flaws', 'fears', 'belief', 'misbelief',
+    'formativeMemories', 'accomplishments', 'secrets',
+    'startingPoint', 'goal', 'expectedChange',
+    'habits', 'props',
+    'books',
+];
+
+export const CHARACTER_RELATION_ARRAY_FIELDS: (keyof Character)[] = [
+    'allies', 'enemies', 'romantic', 'mentors', 'customRelations',
+    'siblings', 'halfSiblings', 'twins', 'parents', 'children', 'stepParents', 'stepChildren',
+    'adoptiveParents', 'adoptedChildren', 'guardians', 'wards', 'grandparents', 'grandchildren',
+    'auntsUncles', 'niecesNephews', 'cousins', 'inLaws',
+    'spouses', 'exPartners',
+    'friends', 'bestFriends', 'confidants', 'acquaintances',
+    'rivals', 'betrayers', 'avengers',
+    'mentees', 'leaders', 'followers', 'bosses', 'subordinates', 'commanders', 'secondsInCommand', 'masters', 'apprentices',
+    'colleagues', 'businessPartners', 'clients', 'handlers', 'assets',
+    'protectors', 'dependents', 'owesDebtTo', 'swornTo', 'boundByOath', 'idolizes', 'fearsPeople', 'obsessedWith',
+];
+
+export const RELATION_FIELD_BASE_TYPE: Partial<Record<keyof Character, 'ally' | 'enemy' | 'romantic' | 'family' | 'mentor' | 'other'>> = {
+    allies: 'ally',
+    enemies: 'enemy',
+    romantic: 'romantic',
+    mentors: 'mentor',
+    customRelations: 'other',
+    otherRelations: 'other',
+
+    siblings: 'family',
+    halfSiblings: 'family',
+    twins: 'family',
+    parents: 'family',
+    children: 'family',
+    stepParents: 'family',
+    stepChildren: 'family',
+    adoptiveParents: 'family',
+    adoptedChildren: 'family',
+    guardians: 'family',
+    wards: 'family',
+    grandparents: 'family',
+    grandchildren: 'family',
+    auntsUncles: 'family',
+    niecesNephews: 'family',
+    cousins: 'family',
+    inLaws: 'family',
+
+    spouses: 'romantic',
+    exPartners: 'romantic',
+
+    friends: 'ally',
+    bestFriends: 'ally',
+    confidants: 'ally',
+    acquaintances: 'ally',
+
+    rivals: 'enemy',
+    betrayers: 'enemy',
+    avengers: 'enemy',
+
+    mentees: 'mentor',
+
+    leaders: 'other',
+    followers: 'other',
+    bosses: 'other',
+    subordinates: 'other',
+    commanders: 'other',
+    secondsInCommand: 'other',
+    masters: 'other',
+    apprentices: 'other',
+
+    colleagues: 'other',
+    businessPartners: 'other',
+    clients: 'other',
+    handlers: 'other',
+    assets: 'other',
+
+    protectors: 'other',
+    dependents: 'other',
+    owesDebtTo: 'other',
+    swornTo: 'other',
+    boundByOath: 'other',
+    idolizes: 'other',
+    fearsPeople: 'other',
+    obsessedWith: 'other',
+};
+
+export const RELATION_FIELD_LABELS: Partial<Record<keyof Character, string>> = {
+    siblings: 'Family · Sibling',
+    halfSiblings: 'Family · Half-Sibling',
+    twins: 'Family · Twin',
+    parents: 'Family · Parent',
+    children: 'Family · Child',
+    stepParents: 'Family · Step-Parent',
+    stepChildren: 'Family · Step-Child',
+    adoptiveParents: 'Family · Adoptive Parent',
+    adoptedChildren: 'Family · Adopted Child',
+    guardians: 'Family · Guardian',
+    wards: 'Family · Ward',
+    grandparents: 'Family · Grandparent',
+    grandchildren: 'Family · Grandchild',
+    auntsUncles: 'Family · Aunt/Uncle',
+    niecesNephews: 'Family · Niece/Nephew',
+    cousins: 'Family · Cousin',
+    inLaws: 'Family · In-Law',
+
+    romantic: 'Romantic · Partner',
+    spouses: 'Romantic · Spouse',
+    exPartners: 'Romantic · Ex-Partner',
+
+    allies: 'Social · Ally',
+    friends: 'Social · Friend',
+    bestFriends: 'Social · Best Friend',
+    confidants: 'Social · Confidant',
+    acquaintances: 'Social · Acquaintance',
+
+    enemies: 'Conflict · Enemy',
+    rivals: 'Conflict · Rival',
+    betrayers: 'Conflict · Betrayer',
+    avengers: 'Conflict · Avenger',
+
+    mentors: 'Guidance · Mentor',
+    mentees: 'Guidance · Mentee',
+    leaders: 'Guidance · Leader',
+    followers: 'Guidance · Follower',
+    bosses: 'Guidance · Boss',
+    subordinates: 'Guidance · Subordinate',
+    commanders: 'Guidance · Commander',
+    secondsInCommand: 'Guidance · Second-in-Command',
+    masters: 'Guidance · Master',
+    apprentices: 'Guidance · Apprentice',
+
+    colleagues: 'Professional · Colleague',
+    businessPartners: 'Professional · Business Partner',
+    clients: 'Professional · Client',
+    handlers: 'Professional · Handler',
+    assets: 'Professional · Asset',
+
+    protectors: 'Story Dynamics · Protector',
+    dependents: 'Story Dynamics · Dependent',
+    owesDebtTo: 'Story Dynamics · Owes Debt To',
+    swornTo: 'Story Dynamics · Sworn To',
+    boundByOath: 'Story Dynamics · Bound by Oath',
+    idolizes: 'Story Dynamics · Idolizes',
+    fearsPeople: 'Story Dynamics · Fears',
+    obsessedWith: 'Story Dynamics · Obsessed With',
+    customRelations: 'Story Dynamics · Custom',
+    otherRelations: 'Story Dynamics · Other',
+};
+
+export const LEGACY_RELATION_FIELDS_TO_CLEAN: (keyof Character)[] = [
+    'allies', 'enemies', 'romantic', 'mentors', 'otherRelations', 'customRelations',
+    'siblings', 'halfSiblings', 'twins', 'parents', 'children', 'stepParents', 'stepChildren',
+    'adoptiveParents', 'adoptedChildren', 'guardians', 'wards', 'grandparents', 'grandchildren',
+    'auntsUncles', 'niecesNephews', 'cousins', 'inLaws',
+    'spouses', 'exPartners',
+    'friends', 'bestFriends', 'confidants', 'acquaintances',
+    'rivals', 'betrayers', 'avengers',
+    'mentees', 'leaders', 'followers', 'bosses', 'subordinates', 'commanders', 'secondsInCommand', 'masters', 'apprentices',
+    'colleagues', 'businessPartners', 'clients', 'handlers', 'assets',
+    'protectors', 'dependents', 'owesDebtTo', 'swornTo', 'boundByOath', 'idolizes', 'fearsPeople', 'obsessedWith',
+];
+
+function normalizeRelationCategory(value: string): CharacterRelationCategory {
+    if (value === 'family' || value === 'romantic' || value === 'social' || value === 'conflict' || value === 'guidance' || value === 'professional' || value === 'story' || value === 'custom') {
+        return value;
+    }
+    return 'custom';
+}
+
+function normalizedType(value: string): string {
+    return value.trim().toLowerCase().replace(/\s+/g, '-');
+}
+
+export function normalizeCharacterRelations(relations: CharacterRelation[] | undefined): CharacterRelation[] {
+    if (!Array.isArray(relations)) return [];
+    const out: CharacterRelation[] = [];
+    const seen = new Set<string>();
+    for (const rel of relations) {
+        if (!rel || typeof rel.target !== 'string' || typeof rel.type !== 'string') continue;
+        const target = rel.target.trim();
+        if (!target) continue;
+        const category = normalizeRelationCategory(String(rel.category || 'custom'));
+        const type = normalizedType(rel.type);
+        if (!type) continue;
+        const key = `${category}|${type}|${target.toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ category, type, target });
+    }
+    return out;
+}
+
+export function relationDisplayLabel(relation: CharacterRelation): string {
+    const cat = RELATION_CATEGORIES.find(c => c.value === relation.category)?.label || relation.category;
+    return `${cat} · ${relation.type}`;
+}
+
+/**
+ * Text fields to scan for #prop tags.
+ * Excludes location-related fields (handled separately) and
+ * allies/enemies (string arrays) and custom (object).
+ */
+const PROP_SCAN_FIELDS: (keyof Character)[] = [
+    'nickname', 'age', 'occupation', 'family',
+    'appearance', 'distinguishingFeatures', 'style', 'quirks',
+    'personality', 'internalMotivation', 'externalMotivation',
+    'strengths', 'flaws', 'fears', 'belief', 'misbelief',
+    'formativeMemories', 'accomplishments', 'secrets',
+    'startingPoint', 'goal', 'expectedChange',
+    'habits', 'props', 'notes',
+];
+
+/**
+ * Fields where #tags should be classified as locations.
+ */
+const LOCATION_TAG_FIELDS: (keyof Character)[] = [
+    'residency',
+];
+
+/** Tag category types for manual override support. */
+export type TagType = 'prop' | 'location' | 'character' | 'other';
+
+/**
+ * Extract ALL #hashtags from a character's text fields and classify them.
+ * Returns a map of lowercased tag → { original casing, autoType based on field }.
+ * If `overrides` is provided, manual type wins over auto-classification.
+ */
+export function extractAllCharacterTags(
+    character: Character,
+    overrides?: Record<string, string>,
+): { name: string; type: TagType }[] {
+    const seen = new Map<string, { name: string; autoType: TagType }>();
+    const re = /#([A-Za-z0-9][A-Za-z0-9_-]*)/g;
+
+    // Scan location fields
+    for (const key of LOCATION_TAG_FIELDS) {
+        const val = character[key];
+        if (typeof val !== 'string' || !val) continue;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(val)) !== null) {
+            const low = m[1].toLowerCase();
+            if (!seen.has(low)) seen.set(low, { name: m[1], autoType: 'location' });
+        }
+        re.lastIndex = 0;
+    }
+
+    // Scan prop fields
+    for (const key of PROP_SCAN_FIELDS) {
+        const val = character[key];
+        if (typeof val !== 'string' || !val) continue;
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(val)) !== null) {
+            const low = m[1].toLowerCase();
+            if (!seen.has(low)) seen.set(low, { name: m[1], autoType: 'prop' });
+        }
+        re.lastIndex = 0;
+    }
+
+    // Scan custom fields (Record<string, string>)
+    if (character.custom) {
+        for (const val of Object.values(character.custom)) {
+            if (typeof val !== 'string' || !val) continue;
+            let m: RegExpExecArray | null;
+            while ((m = re.exec(val)) !== null) {
+                const low = m[1].toLowerCase();
+                if (!seen.has(low)) seen.set(low, { name: m[1], autoType: 'prop' });
+            }
+            re.lastIndex = 0;
+        }
+    }
+
+    // Scan string-array fields for #tags (locations, allies, enemies, etc.)
+    const ARRAY_LOCATION_FIELDS: (keyof Character)[] = ['locations'];
+    for (const key of ARRAY_LOCATION_FIELDS) {
+        const arr = character[key];
+        if (!Array.isArray(arr)) continue;
+        for (const entry of arr) {
+            if (typeof entry !== 'string' || !entry) continue;
+            let m: RegExpExecArray | null;
+            while ((m = re.exec(entry)) !== null) {
+                const low = m[1].toLowerCase();
+                if (!seen.has(low)) seen.set(low, { name: m[1], autoType: 'location' });
+            }
+            re.lastIndex = 0;
+        }
+    }
+
+    // Apply overrides
+    const result: { name: string; type: TagType }[] = [];
+    for (const [low, entry] of seen) {
+        const overrideType = overrides?.[low] as TagType | undefined;
+        result.push({ name: entry.name, type: overrideType || entry.autoType });
+    }
+    return result;
+}
+
+/**
+ * Extract #hashtag props from all text fields of a character.
+ * Supports #CamelCase, #kebab-case, #snake_case, and #digits.
+ * Returns unique prop names (without the leading #), preserving first-seen casing.
+ */
+export function extractCharacterProps(character: Character, overrides?: Record<string, string>): string[] {
+    return extractAllCharacterTags(character, overrides)
+        .filter(t => t.type === 'prop')
+        .map(t => t.name);
+}
+
+/**
+ * Extract #hashtag location tags from location-related fields (e.g. residency).
+ * Returns unique tag names (without leading #), preserving first-seen casing.
+ */
+export function extractCharacterLocationTags(character: Character, overrides?: Record<string, string>): string[] {
+    return extractAllCharacterTags(character, overrides)
+        .filter(t => t.type === 'location')
+        .map(t => t.name);
+}
+
+/**
+ * Role options for the role dropdown
+ */
+export const CHARACTER_ROLES = [
+    'Protagonist',
+    'Antagonist',
+    'Deuteragonist',
+    'Mentor',
+    'Sidekick',
+    'Love Interest',
+    'Foil',
+    'Narrator',
+    'Confidant',
+    'Suspect',
+    'Victim',
+    'Rival',
+    'Catalyst',
+    'Supporting',
+    'Minor',
+];
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
