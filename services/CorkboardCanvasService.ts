@@ -50,6 +50,13 @@ export function corkboardNodeIdForPath(path: string): string {
     return `nl-${(h >>> 0).toString(36)}`;
 }
 
+function canonicalizeCanvasPayload(data: CorkboardCanvasData): string {
+    return JSON.stringify({
+        nodes: data.nodes ?? [],
+        edges: data.edges ?? [],
+    });
+}
+
 /**
  * Bidirectional bridge between NarrativeLab board.json positions and a native
  * Obsidian `Canvas/corkboard.canvas` file (file nodes for NL items).
@@ -114,20 +121,36 @@ export class CorkboardCanvasService {
 
     async writeCanvas(path: string, data: CorkboardCanvasData): Promise<TFile> {
         await this.ensureFolderFor(path);
-        const payload = JSON.stringify(
-            {
-                nodes: data.nodes ?? [],
-                edges: data.edges ?? [],
-            },
-            null,
-            2
-        );
+        const payload = canonicalizeCanvasPayload(data);
         const existing = this.app.vault.getAbstractFileByPath(path);
         if (existing instanceof TFile) {
-            await this.app.vault.modify(existing, payload);
+            try {
+                const current = await this.app.vault.read(existing);
+                if (current === payload) return existing;
+                const parsed = JSON.parse(current) as CorkboardCanvasData;
+                if (canonicalizeCanvasPayload({
+                    nodes: Array.isArray(parsed?.nodes) ? parsed.nodes : [],
+                    edges: Array.isArray(parsed?.edges) ? parsed.edges : [],
+                }) === payload) {
+                    return existing;
+                }
+            } catch {
+                // Fall through and rewrite if current content is unreadable.
+            }
+            const suppress = this.plugin.beginSuppressVaultRefresh?.(path);
+            try {
+                await this.app.vault.modify(existing, payload);
+            } finally {
+                suppress?.();
+            }
             return existing;
         }
-        return await this.app.vault.create(path, payload);
+        const suppress = this.plugin.beginSuppressVaultRefresh?.(path);
+        try {
+            return await this.app.vault.create(path, payload);
+        } finally {
+            suppress?.();
+        }
     }
 
     /** Pull geometry from .canvas file nodes into a board.json-compatible map. */

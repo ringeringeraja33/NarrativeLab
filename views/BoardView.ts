@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, WorkspaceSplit, Menu, Notice, TFile, Modal, Setting, MarkdownRenderer, normalizePath } from 'obsidian';
+import { ItemView, WorkspaceLeaf, WorkspaceSplit, Menu, Notice, TFile, TFolder, Modal, Setting, MarkdownRenderer, normalizePath } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { Scene, SceneFilter, SortConfig, BoardGroupBy, SceneStatus, SceneTemplate, BUILTIN_BEAT_SHEETS, getStatusOrder, getStatusConfig, resolveStatusCfg } from '../models/Scene';
 import { openConfirmModal } from '../components/ConfirmModal';
@@ -90,6 +90,8 @@ export class BoardView extends ItemView {
     /** When native Canvas host fails, fall back to the legacy DOM corkboard. */
     private corkboardNativeFailed = false;
     private corkboardCanvasSyncTimer: number | null = null;
+    private corkboardGeometryCleanup: (() => void) | null = null;
+    private corkboardPositionsPersistKey = '';
     /** Fingerprint of visible paths — remount Canvas when membership changes. */
     private corkboardVisibilityKey = '';
 
@@ -145,8 +147,12 @@ export class BoardView extends ItemView {
             this.corkboardPersistTimer = null;
         }
         if (this.corkboardCanvasSyncTimer) {
-            window.clearTimeout(this.corkboardCanvasSyncTimer);
+            window.clearInterval(this.corkboardCanvasSyncTimer);
             this.corkboardCanvasSyncTimer = null;
+        }
+        if (this.corkboardGeometryCleanup) {
+            try { this.corkboardGeometryCleanup(); } catch { /* ignore */ }
+            this.corkboardGeometryCleanup = null;
         }
         await this.pullPositionsFromNativeCanvas();
         this.teardownNativeCorkboardCanvas();
@@ -603,6 +609,14 @@ export class BoardView extends ItemView {
             try { this.corkboardCanvasDeleteCleanup(); } catch { /* ignore */ }
             this.corkboardCanvasDeleteCleanup = null;
         }
+        if (this.corkboardGeometryCleanup) {
+            try { this.corkboardGeometryCleanup(); } catch { /* ignore */ }
+            this.corkboardGeometryCleanup = null;
+        }
+        if (this.corkboardCanvasSyncTimer) {
+            window.clearInterval(this.corkboardCanvasSyncTimer);
+            this.corkboardCanvasSyncTimer = null;
+        }
         if (this.corkboardCanvasResizeObserver) {
             try { this.corkboardCanvasResizeObserver.disconnect(); } catch { /* ignore */ }
             this.corkboardCanvasResizeObserver = null;
@@ -650,10 +664,11 @@ export class BoardView extends ItemView {
         }
     }
 
-    private async syncNativeCorkboardFile(): Promise<TFile | null> {
+    private async syncNativeCorkboardFile(opts?: { force?: boolean }): Promise<TFile | null> {
         this.ensureCorkboardLayoutLoaded();
-        // Canvas is source of truth for geometry while hosted
-        await this.pullPositionsFromNativeCanvas();
+        const canvasPath = this.corkboardCanvasService.getCanvasPath();
+        if (!canvasPath) return null;
+
         const visible = this.getVisibleCorkboardPaths();
         // Auto-layout missing positions so new notes land on-canvas
         visible.forEach((path, index) => {
@@ -669,10 +684,25 @@ export class BoardView extends ItemView {
             });
         });
         const visibilityKey = visible.slice().sort().join('\0');
-        if (visibilityKey !== this.corkboardVisibilityKey) {
+        const visibilityChanged = visibilityKey !== this.corkboardVisibilityKey;
+        if (visibilityChanged) {
             this.corkboardVisibilityKey = visibilityKey;
             this.corkboardCanvasFilePath = null; // remount after toggle/filter
         }
+
+        const existing = this.app.vault.getAbstractFileByPath(canvasPath);
+        // Fast path: already hosting this canvas and membership unchanged — do not
+        // rewrite corkboard.canvas (that remounts every file-card preview).
+        if (!opts?.force
+            && !visibilityChanged
+            && existing instanceof TFile
+            && this.corkboardCanvasLeaf
+            && this.corkboardCanvasFilePath === existing.path) {
+            return existing;
+        }
+
+        // Canvas is source of truth for geometry when we must rewrite membership.
+        await this.pullPositionsFromNativeCanvas();
         const file = await this.corkboardCanvasService.ensureCanvasFile(
             visible,
             this.positionsRecordFromMap()
@@ -1012,21 +1042,32 @@ export class BoardView extends ItemView {
         });
     }
 
+    /** Mirror Canvas geometry into board.json after user interaction (not every 2s). */
     private schedulePullFromNativeCanvas(): void {
-        if (this.corkboardCanvasSyncTimer) {
-            window.clearTimeout(this.corkboardCanvasSyncTimer);
-        }
-        this.corkboardCanvasSyncTimer = window.setTimeout(() => {
-            this.corkboardCanvasSyncTimer = null;
+        this.ensureCorkboardGeometryListeners();
+    }
+
+    private ensureCorkboardGeometryListeners(): void {
+        if (this.corkboardGeometryCleanup || !this.corkboardCanvasHostEl) return;
+        const host = this.corkboardCanvasHostEl;
+        const pull = () => {
+            if (!this.corkboardCanvasLeaf || this.boardMode !== 'corkboard') return;
             void (async () => {
                 await this.pullPositionsFromNativeCanvas();
                 await this.persistCorkboardLayout();
-                // Keep polling while corkboard native host is alive
-                if (this.corkboardCanvasLeaf && this.boardMode === 'corkboard') {
-                    this.schedulePullFromNativeCanvas();
-                }
             })();
-        }, 2000);
+        };
+        const onPointerUp = () => { pull(); };
+        host.addEventListener('pointerup', onPointerUp, true);
+        // Slow safety net while the tab is visible (was 2s; now 15s).
+        this.corkboardCanvasSyncTimer = window.setInterval(pull, 15000);
+        this.corkboardGeometryCleanup = () => {
+            host.removeEventListener('pointerup', onPointerUp, true);
+            if (this.corkboardCanvasSyncTimer) {
+                window.clearInterval(this.corkboardCanvasSyncTimer);
+                this.corkboardCanvasSyncTimer = null;
+            }
+        };
     }
 
     private async openCorkboardCanvasInTab(): Promise<void> {
@@ -1244,11 +1285,23 @@ export class BoardView extends ItemView {
         if (!folder) return [];
 
         const normalizedFolder = normalizePath(folder).replace(/\/+$/, '');
-        const prefix = `${normalizedFolder}/`;
-        const activeState = this.currentFilter.activeState ?? 'active';
+        const root = this.app.vault.getAbstractFileByPath(normalizedFolder);
+        if (!(root instanceof TFolder)) return [];
 
-        return this.app.vault.getMarkdownFiles()
-            .filter(file => file.path.startsWith(prefix))
+        const files: TFile[] = [];
+        const walk = (dir: TFolder) => {
+            for (const child of dir.children) {
+                if (child instanceof TFile && child.extension.toLowerCase() === 'md') {
+                    files.push(child);
+                } else if (child instanceof TFolder) {
+                    walk(child);
+                }
+            }
+        };
+        walk(root);
+
+        const activeState = this.currentFilter.activeState ?? 'active';
+        return files
             .filter(file => {
                 const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
                 const active = Object.prototype.hasOwnProperty.call(frontmatter || {}, 'active')
@@ -2222,6 +2275,9 @@ export class BoardView extends ItemView {
                 ...(pos.h ? { h: pos.h } : {}),
             };
         }
+        const key = JSON.stringify(payload);
+        if (key === this.corkboardPositionsPersistKey) return;
+        this.corkboardPositionsPersistKey = key;
         await this.sceneManager.setCorkboardPositions(payload);
         this.plugin.viewSnapshotService.scheduleAutoSave();
     }

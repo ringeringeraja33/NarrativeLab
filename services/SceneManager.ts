@@ -2698,7 +2698,10 @@ export class SceneManager implements ISceneStore {
             cleaned[path] = entry;
         }
 
+        const prev = this._activeProject.corkboardPositions || {};
+        const unchanged = JSON.stringify(prev) === JSON.stringify(cleaned);
         this._activeProject.corkboardPositions = cleaned;
+        if (unchanged) return;
 
         // Write to System/board.json
         try {
@@ -2707,7 +2710,7 @@ export class SceneManager implements ISceneStore {
             if (!await adapter.exists(sysFolder)) {
                 await this.plugin.app.vault.createFolder(sysFolder);
             }
-            await adapter.write(`${sysFolder}/board.json`, JSON.stringify({ corkboardPositions: cleaned }, null, 2));
+            await adapter.write(`${sysFolder}/board.json`, JSON.stringify({ corkboardPositions: cleaned }));
         } catch (e) {
             console.error('[NarrativeLab] Failed to save corkboard positions:', e);
         }

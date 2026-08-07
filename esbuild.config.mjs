@@ -19,12 +19,19 @@ const DEPLOY_DIRS = [
 
 function deployPluginFiles() {
   const files = ["main.js", "manifest.json", "styles.css"];
+  const canvasRuntimeSrc = join(projectRoot, "canvas-runtime/main.js");
   for (const dir of DEPLOY_DIRS) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     for (const file of files) {
       const src = join(projectRoot, file);
       if (!existsSync(src)) continue;
       copyFileSync(src, join(dir, file));
+    }
+    // Lazy-loaded Narrative Canvas module (kept out of main.js).
+    if (existsSync(canvasRuntimeSrc)) {
+      const canvasDir = join(dir, "canvas-runtime");
+      if (!existsSync(canvasDir)) mkdirSync(canvasDir, { recursive: true });
+      copyFileSync(canvasRuntimeSrc, join(canvasDir, "main.js"));
     }
     console.log(`[deploy] → ${dir}`);
   }
@@ -48,6 +55,8 @@ const context = await esbuild.context({
     "@lezer/common",
     "@lezer/highlight",
     "@lezer/lr",
+    // Vendored Narrative Canvas — loaded on demand via require().
+    "./canvas-runtime/main.js",
   ],
   format: "cjs",
   target: "es2018",

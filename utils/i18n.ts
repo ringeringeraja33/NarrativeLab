@@ -676,6 +676,10 @@ function translateLiteral(value: string): string {
 
 const LOCAL_ENTITY_SELECTOR = [
     '[data-narrative-lab-no-i18n]',
+    // Native corkboard embeds Obsidian Canvas — never walk its DOM for i18n.
+    '.story-line-corkboard-native-host',
+    '.canvas-wrapper',
+    '[data-type="canvas"]',
     // Obsidian file explorer / vault tree — never translate folder or file names.
     '.workspace-leaf-content[data-type="file-explorer"]',
     '.nav-files-container',
@@ -721,6 +725,8 @@ function isLocalEntityElement(element: Element | null): boolean {
 }
 
 export function localizeElement(root: ParentNode): void {
+    // English UI uses source strings — skip expensive TreeWalker / querySelectorAll.
+    if (activeLanguage === 'en') return;
     if (root instanceof Element && (isDocumentShell(root) || isLocalEntityElement(root))) return;
 
     const doc = root instanceof Document ? root : root.ownerDocument ?? activeDocument;
@@ -783,6 +789,7 @@ function isPluginUiRoot(element: Element): boolean {
 }
 
 export function localizePluginSubtree(node: Node): void {
+    if (activeLanguage === 'en') return;
     const element = node instanceof Element ? node : node.parentElement;
     if (!element || isDocumentShell(element)) {
         const scope = isDocumentShell(element) ? element : activeDocument?.body;

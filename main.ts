@@ -134,9 +134,6 @@ type EmbeddedCanvasModule = Plugin & {
 };
 
 type EmbeddedCanvasConstructor = new (app: App, manifest: Plugin['manifest']) => EmbeddedCanvasModule;
-// Narrative Canvas is vendored under AGPL-3.0 and runs as an internal module.
-// eslint-disable-next-line @typescript-eslint/no-require-imports, no-undef -- CJS require for vendored canvas bundle
-const EmbeddedNarrativeCanvas = require('./canvas-runtime/main.js') as EmbeddedCanvasConstructor;
 
 /**
  * NarrativeLab Plugin for Obsidian
@@ -171,6 +168,12 @@ export default class SceneCardsPlugin extends Plugin {
     seriesManager!: SeriesManager;
     researchManager!: ResearchManager;
     private canvasModule: EmbeddedCanvasModule | null = null;
+    private _canvasModuleLoading: Promise<void> | null = null;
+    /** Paths whose vault writes should not trigger open-view refresh (corkboard.canvas, etc.). */
+    private _suppressVaultRefreshPaths = new Set<string>();
+    /** Coalesce concurrent full / light view refreshes. */
+    private _refreshOpenViewsPromise: Promise<void> | null = null;
+    private _refreshViewsOnlyPromise: Promise<void> | null = null;
     /** Coalesce concurrent Library/entity reloads (Codex + Characters + Locations). */
     private _reloadEntitiesPromise: Promise<void> | null = null;
     /** Cached plotgrid mention scan — rebuilds are expensive on large grids. */
@@ -348,8 +351,7 @@ export default class SceneCardsPlugin extends Plugin {
             new ResearchView(leaf, this, this.researchManager)
         );
 
-        await this.loadEmbeddedCanvas();
-
+        // Narrative Canvas (~1.9MB) loads lazily on first ncanvas open — not at startup.
 
         // Wait for the workspace layout to be ready, then bootstrap projects
         this.app.workspace.onLayoutReady(async () => {
@@ -369,22 +371,12 @@ export default class SceneCardsPlugin extends Plugin {
             this.updateToolbarVisibility();
 
             await this.bootstrapProjects();
-            await this.ensureActiveFieldForAllProjectContent();
             // Re-initialize scene index now that the active project is set.
             // Views that opened before bootstrapProjects may have scanned a
             // fallback folder and found no scenes.
             await this.sceneManager.initialize();
             // Migrate legacy data from data.json into project frontmatter
             await this.migrateProjectDataFromSettings();
-            // Native Base files live at project-root Bases/ (migrated out of
-            // Library/ and legacy System/Bases/) — run for every project.
-            await migrateNativeLibraryBasesForAllProjects(this);
-            // Ensure Library/<Category>/Attachments exists, then move
-            // library-referenced portraits out of project-root Attachments.
-            try {
-                await ensureLibraryCategoryFolders(this);
-                await migrateLibraryAttachmentsForAllProjects(this);
-            } catch { /* non-fatal */ }
             // Load per-project data from System/ files (tagColors, aliases, etc.)
             await this.loadProjectSystemData();
             await this.plotlineManager.ensureSeeded();
@@ -425,6 +417,20 @@ export default class SceneCardsPlugin extends Plugin {
                     console.warn('[NarrativeLab] Could not open navigator:', navErr);
                 }
             }
+
+            // Vault-wide migrations are not needed to show Board/corkboard — defer.
+            window.setTimeout(() => {
+                void (async () => {
+                    try {
+                        await this.ensureActiveFieldForAllProjectContent();
+                        await migrateNativeLibraryBasesForAllProjects(this);
+                        await ensureLibraryCategoryFolders(this);
+                        await migrateLibraryAttachmentsForAllProjects(this);
+                    } catch (migErr) {
+                        console.warn('[NarrativeLab] Deferred migration error:', migErr);
+                    }
+                })();
+            }, 0);
             } catch (startupErr) {
                 console.error('[NarrativeLab] Startup error:', startupErr);
             }
@@ -759,6 +765,8 @@ export default class SceneCardsPlugin extends Plugin {
         // We debounce the async refresh pipeline so multiple rapid edits
         // only trigger one re-render after the index has finished updating.
         const debouncedRefresh = this.debounce(() => this.refreshOpenViews(), 500);
+        // Scene/note body edits: update scene index + views, skip Library entity reload.
+        const debouncedViewsOnly = this.debounce(() => this.refreshViewsOnly(), 300);
         // Native Bases already updates its own rows and columns. Library note
         // edits only need a background manager refresh; remounting every open
         // NarrativeLab view here makes the entire embedded Base flash.
@@ -771,8 +779,12 @@ export default class SceneCardsPlugin extends Plugin {
                 if (this._adoptingLibrary) return;
                 if (file instanceof TFile) {
                     if (file.extension.toLowerCase() === 'base') return;
-                    if (this._activeFieldWrites.has(normalizePath(file.path))) return;
                     const filePath = normalizePath(file.path);
+                    if (this._activeFieldWrites.has(filePath)) return;
+                    if (this._suppressVaultRefreshPaths.has(filePath)) return;
+                    // Corkboard / Obsidian Canvas JSON must not trigger a nuclear refresh
+                    // (rewrite → modify → refresh → rewrite loop freezes the board).
+                    if (file.extension.toLowerCase() === 'canvas') return;
                     // System/*.json writes must not thrash open views (stats,
                     // digests, plotlines, etc. are saved during refresh itself).
                     const systemFolder = normalizePath(this.getProjectSystemFolder() || '');
@@ -788,7 +800,12 @@ export default class SceneCardsPlugin extends Plugin {
                         debouncedLibraryEntityReload();
                         return;
                     }
-                    this.sceneManager.handleFileChange(file).then(() => debouncedRefresh());
+                    const lightRefresh = file.extension.toLowerCase() === 'md'
+                        && this.isActiveManagedPath(filePath);
+                    this.sceneManager.handleFileChange(file).then(() => {
+                        if (lightRefresh) debouncedViewsOnly();
+                        else debouncedRefresh();
+                    });
                 }
             })
         );
@@ -1195,14 +1212,27 @@ export default class SceneCardsPlugin extends Plugin {
         // NarrativeLab-owned UI. We deliberately exclude the CodeMirror / markdown
         // editor so the user's manuscript keeps Obsidian's spell-check setting.
         const STORYLINE_SELECTOR = '[class*="story-line-"], [class*="storyline-"]';
-        const EXCLUDE_SELECTOR = '.cm-editor, .markdown-view, .cm-content';
+        const EXCLUDE_SELECTOR = [
+            '.cm-editor',
+            '.markdown-view',
+            '.cm-content',
+            // Native corkboard hosts Obsidian Canvas — walking its DOM freezes the board.
+            '.story-line-corkboard-native-host',
+            '.canvas-wrapper',
+            '[data-type="canvas"]',
+        ].join(', ');
         const SPELL_FIELDS = 'input, textarea, [contenteditable="true"], [contenteditable=""]';
 
         const disableIn = (root: ParentNode): void => {
+            if (root instanceof Element && root.closest(EXCLUDE_SELECTOR)) return;
             // Fields directly inside a NarrativeLab container…
             root.querySelectorAll(STORYLINE_SELECTOR).forEach(container => {
+                if (container.closest(EXCLUDE_SELECTOR)
+                    || container.matches('.story-line-corkboard-native-host')) {
+                    return;
+                }
                 container.querySelectorAll(SPELL_FIELDS).forEach(field => {
-                    // Skip fields that live inside the manuscript editor.
+                    // Skip fields that live inside the manuscript editor / Canvas.
                     if (field.closest(EXCLUDE_SELECTOR)) return;
                     const el = field as HTMLElement;
                     if (el.getAttribute('spellcheck') !== 'false') {
@@ -1234,6 +1264,10 @@ export default class SceneCardsPlugin extends Plugin {
                 m.addedNodes.forEach(node => {
                     if (node.nodeType !== Node.ELEMENT_NODE) return;
                     const el = node as HTMLElement;
+                    if (el.closest?.(EXCLUDE_SELECTOR)
+                        || el.matches?.('.story-line-corkboard-native-host, .canvas-wrapper, [data-type="canvas"]')) {
+                        return;
+                    }
                     disableIn(el);
                 });
             }
@@ -1286,12 +1320,40 @@ export default class SceneCardsPlugin extends Plugin {
         const body = activeDocument.body;
         if (!body) return;
         localizePluginSubtree(body);
+        const SKIP_LOCALIZE = '.story-line-corkboard-native-host, .canvas-wrapper, [data-type="canvas"]';
         this.uiLanguageObserver = new MutationObserver(mutations => {
             for (const mutation of mutations) {
-                mutation.addedNodes.forEach(node => localizePluginSubtree(node));
+                mutation.addedNodes.forEach(node => {
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        const el = node as HTMLElement;
+                        if (el.closest?.(SKIP_LOCALIZE)
+                            || el.matches?.(SKIP_LOCALIZE)) {
+                            return;
+                        }
+                    }
+                    localizePluginSubtree(node);
+                });
             }
         });
         this.uiLanguageObserver.observe(body, { childList: true, subtree: true });
+    }
+
+    /**
+     * Suppress vault-modify → refreshOpenViews for a path while we rewrite it
+     * (e.g. corkboard.canvas membership sync).
+     */
+    beginSuppressVaultRefresh(path: string): () => void {
+        const normalized = normalizePath(path);
+        this._suppressVaultRefreshPaths.add(normalized);
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            // Keep suppression briefly so Obsidian's modify event can arrive first.
+            window.setTimeout(() => {
+                this._suppressVaultRefreshPaths.delete(normalized);
+            }, 750);
+        };
     }
 
     onunload(): void {
@@ -2702,44 +2764,59 @@ export default class SceneCardsPlugin extends Plugin {
      * NarrativeLab's database settings in data.json.
      */
     private async loadEmbeddedCanvas(): Promise<void> {
-        const canvas = new EmbeddedNarrativeCanvas(this.app, this.manifest);
-        canvas.loadData = async () => this.settings.narrativeCanvasData ?? {};
-        canvas.saveData = async (data: Record<string, unknown>) => {
-            this.settings.narrativeCanvasData = data;
-            await this.saveSettings();
-        };
-        canvas.getProjectAttachmentFolderName = () =>
-            (this.settings.projectAttachmentFolder || 'Attachments').trim() || 'Attachments';
-        canvas.getNarrativeLabInterfaceLanguage = () => this.getEffectiveInterfaceLanguage();
-        canvas.getNarrativeLabUiTheme = () => this.getEffectiveUiTheme();
-        canvas.onNarrativeLabUiThemeChanged = (theme: 'light' | 'dark') => {
-            void this.setUiTheme(theme, { skipCanvas: true });
-        };
-        // NarrativeLab owns the single settings page; Canvas remains an internal feature.
-        canvas.addSettingTab = () => undefined;
+        if (this.canvasModule) return;
+        if (this._canvasModuleLoading) {
+            await this._canvasModuleLoading;
+            return;
+        }
+        this._canvasModuleLoading = (async () => {
+            // Lazy-load vendored Narrative Canvas (~1.9MB) only when ncanvas is used.
+            // eslint-disable-next-line @typescript-eslint/no-require-imports, no-undef -- CJS require for vendored canvas bundle
+            const EmbeddedNarrativeCanvas = require('./canvas-runtime/main.js') as EmbeddedCanvasConstructor;
+            const canvas = new EmbeddedNarrativeCanvas(this.app, this.manifest);
+            canvas.loadData = async () => this.settings.narrativeCanvasData ?? {};
+            canvas.saveData = async (data: Record<string, unknown>) => {
+                this.settings.narrativeCanvasData = data;
+                await this.saveSettings();
+            };
+            canvas.getProjectAttachmentFolderName = () =>
+                (this.settings.projectAttachmentFolder || 'Attachments').trim() || 'Attachments';
+            canvas.getNarrativeLabInterfaceLanguage = () => this.getEffectiveInterfaceLanguage();
+            canvas.getNarrativeLabUiTheme = () => this.getEffectiveUiTheme();
+            canvas.onNarrativeLabUiThemeChanged = (theme: 'light' | 'dark') => {
+                void this.setUiTheme(theme, { skipCanvas: true });
+            };
+            // NarrativeLab owns the single settings page; Canvas remains an internal feature.
+            canvas.addSettingTab = () => undefined;
 
-        // Enter the real Component lifecycle so unload() disposes the embedded
-        // view, commands, extension associations, and event registrations.
-        // Component.load() does not await an async onload(), so capture it here.
-        const moduleOnload = canvas.onload.bind(canvas);
-        let loadPromise: Promise<void> | undefined;
-        canvas.onload = () => {
-            loadPromise = Promise.resolve(moduleOnload()).then(() => undefined);
-            return loadPromise;
-        };
-        canvas.load();
-        const pending = loadPromise;
-        if (!pending) {
-            canvas.unload();
-            throw new Error('Narrative Canvas did not enter its load lifecycle.');
-        }
+            // Enter the real Component lifecycle so unload() disposes the embedded
+            // view, commands, extension associations, and event registrations.
+            // Component.load() does not await an async onload(), so capture it here.
+            const moduleOnload = canvas.onload.bind(canvas);
+            let loadPromise: Promise<void> | undefined;
+            canvas.onload = () => {
+                loadPromise = Promise.resolve(moduleOnload()).then(() => undefined);
+                return loadPromise;
+            };
+            canvas.load();
+            const pending = loadPromise;
+            if (!pending) {
+                canvas.unload();
+                throw new Error('Narrative Canvas did not enter its load lifecycle.');
+            }
+            try {
+                await pending;
+            } catch (error) {
+                canvas.unload();
+                throw error;
+            }
+            this.canvasModule = canvas;
+        })();
         try {
-            await pending;
-        } catch (error) {
-            canvas.unload();
-            throw error;
+            await this._canvasModuleLoading;
+        } finally {
+            this._canvasModuleLoading = null;
         }
-        this.canvasModule = canvas;
     }
 
     /** Resolve .ncanvas paths for a NarrativeLab project (project-root Canvas/). */
@@ -3279,18 +3356,41 @@ export default class SceneCardsPlugin extends Plugin {
      * Refresh all open Scene Cards views
      */
     async refreshOpenViews(): Promise<void> {
-        // Single entity reload — views must not call reloadEntities() again in refresh().
-        try {
-            await this.reloadEntities();
-        } catch { /* project may not be set yet */ }
+        if (this._refreshOpenViewsPromise) return this._refreshOpenViewsPromise;
+        this._refreshOpenViewsPromise = this.doRefreshOpenViews(true).finally(() => {
+            this._refreshOpenViewsPromise = null;
+        });
+        return this._refreshOpenViewsPromise;
+    }
 
-        // Re-scan wikilinks after entity data is loaded
-        this.linkScanner.invalidateAll();
-        this.linkScanner.rebuildLookups(this.settings.characterAliases);
-        this.linkScanner.scanAll(this.sceneManager.getAllScenes());
+    /**
+     * Lightweight refresh after scene/note body edits — skip Library entity reload
+     * and full wikilink rescan (scene index already updated via handleFileChange).
+     */
+    async refreshViewsOnly(): Promise<void> {
+        if (this._refreshOpenViewsPromise) return this._refreshOpenViewsPromise;
+        if (this._refreshViewsOnlyPromise) return this._refreshViewsOnlyPromise;
+        this._refreshViewsOnlyPromise = this.doRefreshOpenViews(false).finally(() => {
+            this._refreshViewsOnlyPromise = null;
+        });
+        return this._refreshViewsOnlyPromise;
+    }
 
-        // Update codex digests (baseline new entries, prune deleted ones)
-        void this.refreshCodexDigests();
+    private async doRefreshOpenViews(full: boolean): Promise<void> {
+        if (full) {
+            // Single entity reload — views must not call reloadEntities() again in refresh().
+            try {
+                await this.reloadEntities();
+            } catch { /* project may not be set yet */ }
+
+            // Re-scan wikilinks after entity data is loaded
+            this.linkScanner.invalidateAll();
+            this.linkScanner.rebuildLookups(this.settings.characterAliases);
+            this.linkScanner.scanAll(this.sceneManager.getAllScenes());
+
+            // Update codex digests (baseline new entries, prune deleted ones)
+            void this.refreshCodexDigests();
+        }
 
         // Flush writing tracker so daily stats update in real-time
         try {
