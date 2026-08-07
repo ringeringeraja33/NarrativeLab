@@ -1,0 +1,26 @@
+---
+description: After source changes, always build and sync to the Obsidian plugin copy
+alwaysApply: true
+---
+
+# Sync to Obsidian plugin copy
+
+Whenever NarrativeLab source is changed, finish by building and deploying to the Obsidian vault plugin folder. Do not leave the plugin copy stale.
+
+## Paths
+
+- **Source**: `C:\Users\BHL\Documents\NarrativeLab`
+- **Plugin copy**: `C:\Users\BHL\Documents\Obsidian\.obsidian\plugins\narrative-lab`
+
+## Required steps after code changes
+
+1. Edit source in the NarrativeLab repo (not the plugin folder).
+2. Build: `npm run build` (esbuild production; deploys via `esbuild.config.mjs`).
+3. Confirm deploy reached `Documents\Obsidian\.obsidian\plugins\narrative-lab` (`main.js`, `styles.css`, `manifest.json` as applicable).
+4. If deploy did not run, copy those built files into the plugin folder manually.
+
+## Notes
+
+- Prefer the build deploy path over hand-editing files under `.obsidian/plugins/narrative-lab`.
+- `esbuild.config.mjs` should keep `Documents/Obsidian/.obsidian/plugins/narrative-lab` in `DEPLOY_DIRS`.
+- Remind the user to reload the plugin in Obsidian when a reload is needed to see changes.

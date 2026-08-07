@@ -63,8 +63,14 @@ export class PlotgridView extends ItemView {
     private wrapperEl: HTMLDivElement | null = null;
     private scrollAreaEl: HTMLDivElement | null = null;
     private canvasEl: HTMLDivElement | null = null;
+    /** Active cell (focus); kept in sync with selFocus for inspector / legacy callers */
     private selectedRow: number | null = null;
     private selectedCol: number | null = null;
+    /** Rectangular selection: anchor corner + focus (active) corner */
+    private selAnchor: { r: number; c: number } | null = null;
+    private selFocus: { r: number; c: number } | null = null;
+    private isSelecting = false;
+    private selectPointerId: number | null = null;
     private inspectorComponent: InspectorComponent | null = null;
     private inspectorEl: HTMLElement | null = null;
     private filtersComponent: FiltersComponent | null = null;
@@ -312,6 +318,10 @@ export class PlotgridView extends ItemView {
         // make focusable for keyboard navigation
         this.wrapperEl.tabIndex = 0;
         this.wrapperEl.addEventListener('keydown', (e) => this.onKeyDown(e as KeyboardEvent));
+        // Drag-select: track pointer across cells (capture may leave the original cell)
+        this.registerDomEvent(document, 'pointermove', (e: PointerEvent) => this.onSelectPointerMove(e));
+        this.registerDomEvent(document, 'pointerup', (e: PointerEvent) => this.onSelectPointerUp(e));
+        this.registerDomEvent(document, 'pointercancel', (e: PointerEvent) => this.onSelectPointerUp(e));
 
         const toolbar = this.wrapperEl.createDiv('story-line-toolbar plot-grid-toolbar');
         toolbar.setCssStyles({ flex: '0 0 auto' });
@@ -454,8 +464,7 @@ export class PlotgridView extends ItemView {
         this.document.activePageId = pageId;
         this.bindActivePage();
         this.undoStack = [];
-        this.selectedRow = null;
-        this.selectedCol = null;
+        this.clearSelection();
         this.hideCellInspector();
         this.scheduleSave();
         this.renderPageSidebar();
@@ -1078,17 +1087,17 @@ export class PlotgridView extends ItemView {
                 inp.addEventListener('blur', () => commit());
             });
 
-            // click opens entity for synced columns; Ctrl/Cmd+click selects
+            // Click selects whole column (Shift extends). Ctrl/Cmd+click opens synced entity.
             el.addEventListener('click', (ev) => {
                 ev.stopPropagation();
-                if (col.sourceType === 'auto' && col.sourceId && col.sourceKind !== 'tags' && !(ev.ctrlKey || ev.metaKey)) {
+                if (col.sourceType === 'auto' && col.sourceId && col.sourceKind !== 'tags' && (ev.ctrlKey || ev.metaKey)) {
                     this.navigateToColumnEntity(col);
                     return;
                 }
-                this.selectColumnHeader(ci);
+                this.selectColumnHeader(ci, ev.shiftKey);
             });
             if (col.sourceType === 'auto' && col.sourceKind && col.sourceKind !== 'tags') {
-                el.title = t('{label} (click to open)', { label: col.label });
+                el.title = t('{label} (Ctrl/Cmd+click to open)', { label: col.label });
                 el.setCssStyles({ cursor: 'pointer' });
             }
 
@@ -1244,12 +1253,12 @@ export class PlotgridView extends ItemView {
                 inp.addEventListener('blur', () => commit());
             });
 
-            // click opens scene file for synced rows; Ctrl/Cmd+click selects
-            // Use a small delay so double-click (edit label) doesn't also open the file
+            // Click selects whole row (Shift extends). Ctrl/Cmd+click opens synced scene.
+            // Delay open so double-click (edit label) doesn't also open the file.
             let clickTimer: number | null = null;
             rowEl.addEventListener('click', (ev) => {
                 ev.stopPropagation();
-                if (row.sourceType === 'auto' && row.sourceId && !(ev.ctrlKey || ev.metaKey)) {
+                if (row.sourceType === 'auto' && row.sourceId && (ev.ctrlKey || ev.metaKey)) {
                     if (clickTimer) window.clearTimeout(clickTimer);
                     clickTimer = window.setTimeout(() => {
                         clickTimer = null;
@@ -1258,13 +1267,13 @@ export class PlotgridView extends ItemView {
                     }, 250);
                     return;
                 }
-                this.selectRowHeader(ri);
+                this.selectRowHeader(ri, ev.shiftKey);
             });
             rowEl.addEventListener('dblclick', () => {
                 if (clickTimer) { window.clearTimeout(clickTimer); clickTimer = null; }
             });
             if (row.sourceType === 'auto' && row.sourceId) {
-                rowEl.title = t('{label} (click to open)', { label: row.label });
+                rowEl.title = t('{label} (Ctrl/Cmd+click to open)', { label: row.label });
                 rowEl.setCssStyles({ cursor: 'pointer' });
             }
 
@@ -1406,21 +1415,8 @@ export class PlotgridView extends ItemView {
                     void this.renderMarkdownInto(contentEl, cell.content);
                 }
 
-                // Make plain-text cells (no linked scene) draggable
-                if (cell.content && !cell.linkedSceneId) {
-                    cellEl.draggable = true;
-                    cellEl.setCssStyles({
-                        cursor: 'grab',
-                        userSelect: 'none',
-                    });
-                    cellEl.addEventListener('dragstart', (ev) => {
-                        ev.dataTransfer?.setData('text/cell-source', key);
-                        cellEl.addClass('dragging');
-                    });
-                    cellEl.addEventListener('dragend', () => {
-                        cellEl.removeClass('dragging');
-                    });
-                }
+                // Plain-text cells are not HTML5-draggable — left-drag is range select.
+                // Linked note/scene cards remain draggable from their own handles below.
 
                 // linked scene: render mini card or badge
                 if (cell.linkedSceneId) {
@@ -1464,20 +1460,19 @@ export class PlotgridView extends ItemView {
                                 void MarkdownRenderer.render(this.app, scene.body.trim(), noteBody, scene.filePath, noteComp);
                             }
 
-                            // Make the note draggable so it can be moved between cells
-                            cellEl.draggable = true;
-                            cellEl.setCssStyles({
-                                cursor: 'grab',
-                                userSelect: 'none',
-                            });
-                            cellEl.addEventListener('dragstart', (ev) => {
-                                ev.dataTransfer?.setData('text/scene-path', scene.filePath);
-                                ev.dataTransfer?.setData('text/cell-source', key);
-                                cellEl.addClass('dragging');
-                            });
-                            cellEl.addEventListener('dragend', () => {
-                                cellEl.removeClass('dragging');
-                            });
+                            // Drag from note chrome only so cell left-drag can still range-select
+                            for (const handle of [noteLabel, noteBody]) {
+                                handle.draggable = true;
+                                handle.setCssStyles({ cursor: 'grab' });
+                                handle.addEventListener('dragstart', (ev) => {
+                                    ev.dataTransfer?.setData('text/scene-path', scene.filePath);
+                                    ev.dataTransfer?.setData('text/cell-source', key);
+                                    cellEl.addClass('dragging');
+                                });
+                                handle.addEventListener('dragend', () => {
+                                    cellEl.removeClass('dragging');
+                                });
+                            }
                         } else {
                         // Render mini scene card inside the cell
                         const miniCard = cellEl.createDiv('plot-grid-mini-card');
@@ -1648,20 +1643,82 @@ export class PlotgridView extends ItemView {
                     }
                 }, true);
 
-                cellEl.addEventListener('click', () => {
-                    this.selectCell(cellEl);
-                    // Always show the cell inspector panel
-                    this.showCellInspector(ri, ci, cell);
+                // Left-drag = rectangular range select (not HTML5 drag)
+                cellEl.addEventListener('pointerdown', (ev) => {
+                    this.onCellPointerDown(ev as PointerEvent, ri, ci, cell);
                 });
 
-                // context menu for cell
+                // context menu for cell (batch-aware when a rectangle is selected)
                 cellEl.addEventListener('contextmenu', (evt) => {
                     evt.preventDefault();
+                    this.ensureSelectionIncludes(ri, ci);
+                    const selCount = this.countSelectedCells();
+                    const multi = selCount > 1;
                     const menu = new Menu();
                     const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
                     const linkedScene = cell.linkedSceneId ? scMgr?.getScene(cell.linkedSceneId) : undefined;
 
-                    if (linkedScene && linkedScene.corkboardNote) {
+                    if (multi) {
+                        // ── Batch actions for the whole selection ──
+                        menu.addItem((it) => it
+                            .setTitle(t('Edit Cells ({n})…', { n: selCount }))
+                            .setIcon('pencil')
+                            .onClick(() => this.openFillSelectionModal(cell.content || '')));
+                        menu.addItem((it) => it
+                            .setTitle(t('Clear Cell Content ({n})', { n: selCount }))
+                            .setIcon('eraser')
+                            .onClick(() => this.clearSelectionContents()));
+                        menu.addSeparator();
+                        menu.addItem((it) => it
+                            .setTitle(t('Link Note ({n})…', { n: selCount }))
+                            .setIcon('link')
+                            .onClick(() => {
+                                this.openNoteLinkModal((path) => {
+                                    this.pushPlotGridUndo();
+                                    let linked = 0;
+                                    this.forEachSelectedCell((_r, _c, _key, c) => {
+                                        if (c.linkedSceneId) return;
+                                        c.linkedSceneId = path;
+                                        linked++;
+                                    });
+                                    this.scheduleSave();
+                                    this.renderGrid();
+                                    this.refreshSelectionInspector();
+                                    new Notice(t('Linked {n} cells', { n: linked }));
+                                });
+                            }));
+                        if (scMgr) {
+                            menu.addItem((it) => it
+                                .setTitle(t('Convert to Notes ({n})', { n: selCount }))
+                                .setIcon('sticky-note')
+                                .onClick(async () => { await this.convertSelectedCells('notes'); }));
+                            menu.addItem((it) => it
+                                .setTitle(t('Convert to Scene ({n})', { n: selCount }))
+                                .setIcon('file-text')
+                                .onClick(async () => { await this.convertSelectedCells('scene'); }));
+                            menu.addItem((it) => it
+                                .setTitle(t('Convert to Research ({n})', { n: selCount }))
+                                .setIcon('book-open')
+                                .onClick(async () => { await this.convertSelectedCells('research'); }));
+                        }
+                        menu.addSeparator();
+                        menu.addItem((it) => it
+                            .setTitle(t('Unlink ({n})', { n: selCount }))
+                            .setIcon('unlink')
+                            .onClick(() => {
+                                this.pushPlotGridUndo();
+                                let n = 0;
+                                this.forEachSelectedCell((_r, _c, _key, c) => {
+                                    if (!c.linkedSceneId) return;
+                                    c.linkedSceneId = undefined;
+                                    n++;
+                                });
+                                this.scheduleSave();
+                                this.renderGrid();
+                                this.refreshSelectionInspector();
+                                new Notice(t('Unlinked {n} cells', { n }));
+                            }));
+                    } else if (linkedScene && linkedScene.corkboardNote) {
                         // ── Corkboard Note actions ──
                         const note = linkedScene;
                         const notePresets = resolveStickyNoteColors(this.plugin!.settings);
@@ -1789,27 +1846,30 @@ export class PlotgridView extends ItemView {
                             }));
                         }
                         menu.addSeparator();
-                        menu.addItem((it) => it.setTitle(t('Clear Cell Content')).onClick(() => { const c = this.data.cells[key]; if (c) c.content = ''; this.scheduleSave(); this.renderGrid(); }));
+                        menu.addItem((it) => it.setTitle(t('Clear Cell Content')).onClick(() => {
+                            this.clearSelectionContents();
+                        }));
                     }
 
-                    // Cell colour (overrides row/column colour for this cell only)
+                    // Cell colour — applies to the whole selection
                     menu.addSeparator();
                     menu.addItem((it) => it
-                        .setTitle(t('Set Cell Colour…'))
+                        .setTitle(multi ? t('Set Cell Colour ({n})…', { n: selCount }) : t('Set Cell Colour…'))
                         .setIcon('palette')
                         .onClick(() => this.openCellBgColorPicker(key, cellEl, ri, ci)));
                     menu.addItem((it) => it
-                        .setTitle(t('Set Cell Text Colour…'))
+                        .setTitle(multi ? t('Set Cell Text Colour ({n})…', { n: selCount }) : t('Set Cell Text Colour…'))
                         .setIcon('type')
                         .onClick(() => this.openCellTextColorPicker(key, cellEl)));
                     menu.addItem((it) => it
-                        .setTitle(t('Clear Cell Colour'))
+                        .setTitle(multi ? t('Clear Cell Colour ({n})', { n: selCount }) : t('Clear Cell Colour'))
                         .setIcon('rotate-ccw')
                         .onClick(() => {
-                            const c = this.data.cells[key];
-                            if (!c) return;
-                            c.bgColor = '';
-                            c.textColor = '';
+                            this.pushPlotGridUndo();
+                            this.forEachSelectedCell((_r, _c, _key, c) => {
+                                c.bgColor = '';
+                                c.textColor = '';
+                            });
                             this.scheduleSave();
                             this.renderGrid();
                         }));
@@ -1925,25 +1985,115 @@ export class PlotgridView extends ItemView {
         }
     }
 
+    private getSelectionRect(): { r0: number; r1: number; c0: number; c1: number } | null {
+        if (!this.selAnchor || !this.selFocus) return null;
+        return {
+            r0: Math.min(this.selAnchor.r, this.selFocus.r),
+            r1: Math.max(this.selAnchor.r, this.selFocus.r),
+            c0: Math.min(this.selAnchor.c, this.selFocus.c),
+            c1: Math.max(this.selAnchor.c, this.selFocus.c),
+        };
+    }
+
+    private forEachSelectedCell(fn: (r: number, c: number, key: string, cell: CellData) => void): void {
+        const rect = this.getSelectionRect();
+        if (!rect) return;
+        for (let r = rect.r0; r <= rect.r1; r++) {
+            for (let c = rect.c0; c <= rect.c1; c++) {
+                const row = this.data.rows[r];
+                const col = this.data.columns[c];
+                if (!row || !col) continue;
+                const key = `${row.id}-${col.id}`;
+                const cell = this.data.cells[key];
+                if (cell) fn(r, c, key, cell);
+            }
+        }
+    }
+
+    private countSelectedCells(): number {
+        let n = 0;
+        this.forEachSelectedCell(() => { n++; });
+        return n;
+    }
+
+    private isCellInSelection(r: number, c: number): boolean {
+        const rect = this.getSelectionRect();
+        if (!rect) return false;
+        return r >= rect.r0 && r <= rect.r1 && c >= rect.c0 && c <= rect.c1;
+    }
+
+    /** Keep the current rectangle; pin active/focus for visuals without shrinking the range. */
+    private ensureSelectionIncludes(r: number, c: number): void {
+        if (!this.isCellInSelection(r, c)) {
+            this.setSelection({ r, c }, { r, c });
+            return;
+        }
+        const rect = this.getSelectionRect();
+        if (!rect) {
+            this.setSelection({ r, c }, { r, c });
+            return;
+        }
+        this.selAnchor = { r: rect.r0, c: rect.c0 };
+        this.selFocus = { r: rect.r1, c: rect.c1 };
+        this.selectedRow = r;
+        this.selectedCol = c;
+        this.applySelectionVisuals();
+    }
+
+    private setSelection(anchor: { r: number; c: number } | null, focus: { r: number; c: number } | null): void {
+        this.selAnchor = anchor;
+        this.selFocus = focus;
+        if (focus) {
+            this.selectedRow = focus.r;
+            this.selectedCol = focus.c;
+        } else {
+            this.selectedRow = null;
+            this.selectedCol = null;
+        }
+        this.applySelectionVisuals();
+    }
+
+    private clearSelection(): void {
+        this.isSelecting = false;
+        this.selectPointerId = null;
+        this.setSelection(null, null);
+    }
+
     private applySelectionVisuals() {
         if (!this.canvasEl) return;
-        // clear any previous visual marks
-        this.canvasEl.querySelectorAll('.plot-grid-cell').forEach(n => (n as HTMLElement).setCssStyles({ outline: '', boxShadow: '' }));
-        this.canvasEl.querySelectorAll('.plot-grid-row-header, .plot-grid-col-header').forEach(n => (n as HTMLElement).setCssStyles({ boxShadow: '' }));
+        this.canvasEl.querySelectorAll('.plot-grid-cell.in-selection, .plot-grid-cell.is-active, .plot-grid-cell.selected').forEach(n => {
+            n.classList.remove('in-selection', 'is-active', 'selected');
+            (n as HTMLElement).style.boxShadow = '';
+            (n as HTMLElement).style.outline = '';
+        });
+        this.canvasEl.querySelectorAll('.plot-grid-row-header.selected, .plot-grid-col-header.selected').forEach(n => {
+            n.classList.remove('selected');
+            (n as HTMLElement).style.boxShadow = '';
+        });
 
-        if (this.selectedRow !== null && this.selectedCol !== null) {
-            const el = this.getCellElement(this.selectedRow, this.selectedCol);
-            if (el) el.setCssStyles({ boxShadow: 'inset 0 0 0 2px var(--interactive-accent)' });
+        const rect = this.getSelectionRect();
+        if (!rect) return;
+
+        for (let r = rect.r0; r <= rect.r1; r++) {
+            for (let c = rect.c0; c <= rect.c1; c++) {
+                const el = this.getCellElement(r, c);
+                if (el) el.classList.add('in-selection');
+            }
+            const rowHeader = this.canvasEl.querySelectorAll('.plot-grid-row-header')[r] as HTMLElement | undefined;
+            if (rowHeader) rowHeader.classList.add('selected');
+        }
+        for (let c = rect.c0; c <= rect.c1; c++) {
+            const colHeader = this.canvasEl.querySelectorAll('.plot-grid-col-header')[c] as HTMLElement | undefined;
+            if (colHeader) colHeader.classList.add('selected');
         }
 
-        if (this.selectedRow !== null) {
-            const header = this.canvasEl.querySelectorAll('.plot-grid-row-header')[this.selectedRow] as HTMLElement | undefined;
-            if (header) header.setCssStyles({ boxShadow: 'inset 4px 0 0 var(--interactive-accent)' });
-        }
-
-        if (this.selectedCol !== null) {
-            const header = this.canvasEl.querySelectorAll('.plot-grid-col-header')[this.selectedCol] as HTMLElement | undefined;
-            if (header) header.setCssStyles({ boxShadow: 'inset 0 4px 0 var(--interactive-accent)' });
+        const activeR = this.selectedRow ?? this.selFocus?.r;
+        const activeC = this.selectedCol ?? this.selFocus?.c;
+        if (activeR != null && activeC != null) {
+            const active = this.getCellElement(activeR, activeC);
+            if (active) {
+                active.classList.add('is-active', 'selected');
+            }
         }
     }
 
@@ -1956,35 +2106,212 @@ export class PlotgridView extends ItemView {
         window.setTimeout(() => { el.setCssStyles({ background: prevBg }); window.setTimeout(() => { el.setCssStyles({ transition: orig }); }, 200); }, 180);
     }
 
-    private selectCell(el: HTMLElement) {
-                const prev = this.canvasEl?.querySelector('.plot-grid-cell.selected');
-                if (prev) { prev.classList.remove('selected'); (prev as HTMLElement).setCssStyles({ outline: '', boxShadow: '' }); }
-                el.classList.add('selected');
-                const r = el.getAttribute('data-row');
-                const c = el.getAttribute('data-col');
-                this.selectedRow = r ? Number(r) : null;
-                this.selectedCol = c ? Number(c) : null;
-                // ensure visible
-                el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                // visual
-                el.setCssStyles({ boxShadow: 'inset 0 0 0 2px var(--interactive-accent)' });
-                this.applySelectionVisuals();
+    private selectCell(el: HTMLElement, extend = false) {
+        const r = Number(el.getAttribute('data-row'));
+        const c = Number(el.getAttribute('data-col'));
+        if (Number.isNaN(r) || Number.isNaN(c)) return;
+        if (extend && this.selAnchor) {
+            this.setSelection(this.selAnchor, { r, c });
+        } else {
+            this.setSelection({ r, c }, { r, c });
+        }
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
 
     private getCellElement(row: number, col: number): HTMLElement | null {
         return (this.canvasEl?.querySelector(`.plot-grid-cell[data-row="${row}"][data-col="${col}"]`) as HTMLElement) ?? null;
     }
 
-    private moveSelection(dx: number, dy: number) {
-        if (this.selectedRow === null || this.selectedCol === null) {
-            if (this.data.rows.length > 0 && this.data.columns.length > 0) {
-                this.selectedRow = 0; this.selectedCol = 0;
-            } else return;
+    private cellCoordsFromPoint(clientX: number, clientY: number): { r: number; c: number } | null {
+        const el = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+        const cell = el?.closest?.('.plot-grid-cell') as HTMLElement | null;
+        if (!cell || !this.canvasEl?.contains(cell)) return null;
+        const r = Number(cell.getAttribute('data-row'));
+        const c = Number(cell.getAttribute('data-col'));
+        if (Number.isNaN(r) || Number.isNaN(c)) return null;
+        return { r, c };
+    }
+
+    private isDragHandleTarget(target: EventTarget | null): boolean {
+        if (!(target instanceof HTMLElement)) return false;
+        return !!target.closest('.plot-grid-mini-card, .pg-cell-note-label, .pg-cell-note-body, .pg-cell-note-icon');
+    }
+
+    private onCellPointerDown(ev: PointerEvent, ri: number, ci: number, cell: CellData): void {
+        if (ev.button !== 0) return;
+        if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
+
+        // Note/scene card: select cell but let HTML5 drag own the gesture
+        if (this.isDragHandleTarget(ev.target)) {
+            if (ev.shiftKey && this.selAnchor) {
+                this.setSelection(this.selAnchor, { r: ri, c: ci });
+            } else {
+                this.setSelection({ r: ri, c: ci }, { r: ri, c: ci });
+            }
+            this.refreshSelectionInspector();
+            this.wrapperEl?.focus({ preventScroll: true });
+            return;
         }
-        const nr = Math.max(0, Math.min(this.data.rows.length - 1, this.selectedRow + dy));
-        const nc = Math.max(0, Math.min(this.data.columns.length - 1, this.selectedCol + dx));
+
+        ev.preventDefault();
+        this.isSelecting = true;
+        this.selectPointerId = ev.pointerId;
+        try {
+            (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+        } catch { /* noop */ }
+
+        if (ev.shiftKey && this.selAnchor) {
+            this.setSelection(this.selAnchor, { r: ri, c: ci });
+        } else {
+            this.setSelection({ r: ri, c: ci }, { r: ri, c: ci });
+        }
+        this.refreshSelectionInspector();
+        this.wrapperEl?.focus({ preventScroll: true });
+    }
+
+    private onSelectPointerMove(ev: PointerEvent): void {
+        if (!this.isSelecting) return;
+        if (this.selectPointerId !== null && ev.pointerId !== this.selectPointerId) return;
+        const coords = this.cellCoordsFromPoint(ev.clientX, ev.clientY);
+        if (!coords || !this.selAnchor) return;
+        if (this.selFocus && this.selFocus.r === coords.r && this.selFocus.c === coords.c) return;
+        this.setSelection(this.selAnchor, coords);
+    }
+
+    private onSelectPointerUp(ev: PointerEvent): void {
+        if (!this.isSelecting) return;
+        if (this.selectPointerId !== null && ev.pointerId !== this.selectPointerId) return;
+        this.isSelecting = false;
+        this.selectPointerId = null;
+        this.refreshSelectionInspector();
+    }
+
+    private moveSelection(dx: number, dy: number, extend = false) {
+        if (!this.selFocus) {
+            if (this.data.rows.length > 0 && this.data.columns.length > 0) {
+                this.setSelection({ r: 0, c: 0 }, { r: 0, c: 0 });
+            }
+            this.refreshSelectionInspector();
+            return;
+        }
+        const nr = Math.max(0, Math.min(this.data.rows.length - 1, this.selFocus.r + dy));
+        const nc = Math.max(0, Math.min(this.data.columns.length - 1, this.selFocus.c + dx));
+        if (extend && this.selAnchor) {
+            this.setSelection(this.selAnchor, { r: nr, c: nc });
+        } else {
+            this.setSelection({ r: nr, c: nc }, { r: nr, c: nc });
+        }
         const el = this.getCellElement(nr, nc);
-        if (el) this.selectCell(el);
+        if (el) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        this.refreshSelectionInspector();
+    }
+
+    private beginEditAtFocus(seedChar?: string): void {
+        if (this.selectedRow === null || this.selectedCol === null) return;
+        const el = this.getCellElement(this.selectedRow, this.selectedCol);
+        const key = `${this.data.rows[this.selectedRow].id}-${this.data.columns[this.selectedCol].id}`;
+        const cell = this.data.cells[key];
+        if (el && cell) this.enterEditMode(el, cell, el.querySelector('div') as HTMLElement, seedChar);
+    }
+
+    private clearSelectionContents(): void {
+        const rect = this.getSelectionRect();
+        if (!rect) return;
+        this.pushPlotGridUndo();
+        this.forEachSelectedCell((_r, _c, _key, cell) => {
+            cell.content = '';
+            cell.manualContent = true;
+        });
+        this.scheduleSave();
+        this.renderGrid();
+    }
+
+    private selectionToTsv(): string {
+        const rect = this.getSelectionRect();
+        if (!rect) return '';
+        const lines: string[] = [];
+        for (let r = rect.r0; r <= rect.r1; r++) {
+            const cols: string[] = [];
+            for (let c = rect.c0; c <= rect.c1; c++) {
+                const row = this.data.rows[r];
+                const col = this.data.columns[c];
+                const cell = row && col ? this.data.cells[`${row.id}-${col.id}`] : undefined;
+                const text = (cell?.content || '').replace(/\r\n/g, '\n').replace(/\t/g, ' ');
+                cols.push(text);
+            }
+            lines.push(cols.join('\t'));
+        }
+        return lines.join('\n');
+    }
+
+    private async copySelectionToClipboard(): Promise<void> {
+        const tsv = this.selectionToTsv();
+        if (!tsv && !this.getSelectionRect()) return;
+        try {
+            await navigator.clipboard.writeText(tsv);
+        } catch {
+            // Fallback for restricted clipboard
+            const ta = document.createElement('textarea');
+            ta.value = tsv;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); } catch { /* noop */ }
+            ta.remove();
+        }
+    }
+
+    private async cutSelectionToClipboard(): Promise<void> {
+        await this.copySelectionToClipboard();
+        this.clearSelectionContents();
+    }
+
+    private async pasteTsvFromClipboard(): Promise<void> {
+        if (!this.selFocus) return;
+        let text = '';
+        try {
+            text = await navigator.clipboard.readText();
+        } catch {
+            new Notice(t('Could not read clipboard'));
+            return;
+        }
+        if (text == null) return;
+        // Normalize line endings; keep trailing empty row only if present as final \n after content
+        const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        if (!normalized) return;
+        const rows = normalized.split('\n');
+        // Drop a single trailing empty line from Excel-style copies
+        if (rows.length > 1 && rows[rows.length - 1] === '') rows.pop();
+        if (!rows.length) return;
+
+        this.pushPlotGridUndo();
+        const startR = this.selFocus.r;
+        const startC = this.selFocus.c;
+        let maxCols = 1;
+        for (let i = 0; i < rows.length; i++) {
+            const tr = startR + i;
+            if (tr >= this.data.rows.length) break;
+            const cols = rows[i].split('\t');
+            maxCols = Math.max(maxCols, cols.length);
+            for (let j = 0; j < cols.length; j++) {
+                const tc = startC + j;
+                if (tc >= this.data.columns.length) break;
+                const row = this.data.rows[tr];
+                const col = this.data.columns[tc];
+                const cell = this.data.cells[`${row.id}-${col.id}`];
+                if (!cell) continue;
+                cell.content = cols[j];
+                cell.manualContent = true;
+            }
+        }
+        const pastedRows = Math.min(rows.length, this.data.rows.length - startR);
+        const pastedCols = Math.min(maxCols, this.data.columns.length - startC);
+        const endR = startR + Math.max(1, pastedRows) - 1;
+        const endC = startC + Math.max(1, pastedCols) - 1;
+        this.setSelection({ r: startR, c: startC }, { r: endR, c: endC });
+        this.scheduleSave();
+        this.renderGrid();
     }
 
     private onKeyDown(e: KeyboardEvent) {
@@ -1992,25 +2319,73 @@ export class PlotgridView extends ItemView {
         const editing = !!this.canvasEl?.querySelector('.plot-grid-cell.editing');
         if (editing) return; // let textarea handle keys
 
+        const mod = e.ctrlKey || e.metaKey;
+
+        if (mod && (e.key === 'a' || e.key === 'A')) {
+            e.preventDefault();
+            if (this.data.rows.length && this.data.columns.length) {
+                this.setSelection(
+                    { r: 0, c: 0 },
+                    { r: this.data.rows.length - 1, c: this.data.columns.length - 1 },
+                );
+                this.refreshSelectionInspector();
+            }
+            return;
+        }
+        if (mod && (e.key === 'c' || e.key === 'C')) {
+            e.preventDefault();
+            void this.copySelectionToClipboard();
+            return;
+        }
+        if (mod && (e.key === 'x' || e.key === 'X')) {
+            e.preventDefault();
+            void this.cutSelectionToClipboard();
+            return;
+        }
+        if (mod && (e.key === 'v' || e.key === 'V')) {
+            e.preventDefault();
+            void this.pasteTsvFromClipboard();
+            return;
+        }
+        if (mod && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+            e.preventDefault();
+            this.undoPlotGridMove();
+            return;
+        }
+
         switch (e.key) {
             case 'ArrowRight':
-                e.preventDefault(); this.moveSelection(1, 0); break;
+                e.preventDefault(); this.moveSelection(1, 0, e.shiftKey); break;
             case 'ArrowLeft':
-                e.preventDefault(); this.moveSelection(-1, 0); break;
+                e.preventDefault(); this.moveSelection(-1, 0, e.shiftKey); break;
             case 'ArrowDown':
-                e.preventDefault(); this.moveSelection(0, 1); break;
+                e.preventDefault(); this.moveSelection(0, 1, e.shiftKey); break;
             case 'ArrowUp':
-                e.preventDefault(); this.moveSelection(0, -1); break;
+                e.preventDefault(); this.moveSelection(0, -1, e.shiftKey); break;
             case 'Tab':
-                e.preventDefault(); if (e.shiftKey) this.moveSelection(-1,0); else this.moveSelection(1,0); break;
+                e.preventDefault(); this.moveSelection(e.shiftKey ? -1 : 1, 0, false); break;
             case 'Enter':
-                e.preventDefault(); if (this.selectedRow !== null && this.selectedCol !== null) {
-                    const el = this.getCellElement(this.selectedRow, this.selectedCol);
-                    const key = `${this.data.rows[this.selectedRow].id}-${this.data.columns[this.selectedCol].id}`;
-                    const cell = this.data.cells[key];
-                    if (el && cell) this.enterEditMode(el, cell, el.querySelector('div') as HTMLElement);
+                e.preventDefault();
+                this.beginEditAtFocus();
+                break;
+            case 'F2':
+                e.preventDefault();
+                this.beginEditAtFocus();
+                break;
+            case 'Delete':
+            case 'Backspace':
+                e.preventDefault();
+                this.clearSelectionContents();
+                break;
+            default: {
+                // Type-to-edit: printable character replaces cell content
+                if (mod || e.altKey) break;
+                if (e.key.length === 1 && !e.isComposing) {
+                    e.preventDefault();
+                    this.beginEditAtFocus(e.key);
                 }
                 break;
+            }
         }
     }
 
@@ -2031,26 +2406,36 @@ export class PlotgridView extends ItemView {
         return { key, cell, el };
     }
 
-    private selectRowHeader(index: number) {
-        this.selectedRow = index;
-        this.selectedCol = null;
-        // visually mark selection
-        // remove any previous header selection classes
-        this.canvasEl?.querySelectorAll('.plot-grid-row-header.selected').forEach(n => n.classList.remove('selected'));
-        const sel = this.canvasEl?.querySelectorAll('.plot-grid-cell') || [];
-        sel.forEach((n: Element) => (n as HTMLElement).classList.remove('selected'));
-        const header = this.canvasEl?.querySelectorAll('.plot-grid-row-header')[index] as HTMLElement | undefined;
-        if (header) header.classList.add('selected');
+    private selectRowHeader(index: number, extend = false) {
+        if (index < 0 || index >= this.data.rows.length || this.data.columns.length === 0) return;
+        const lastC = this.data.columns.length - 1;
+        if (extend && this.selAnchor && this.selFocus) {
+            const rect = this.getSelectionRect()!;
+            this.setSelection(
+                { r: this.selAnchor.r, c: rect.c0 },
+                { r: index, c: rect.c1 },
+            );
+        } else {
+            this.setSelection({ r: index, c: 0 }, { r: index, c: lastC });
+        }
+        this.refreshSelectionInspector();
+        this.wrapperEl?.focus({ preventScroll: true });
     }
 
-    private selectColumnHeader(index: number) {
-        this.selectedCol = index;
-        this.selectedRow = null;
-        this.canvasEl?.querySelectorAll('.plot-grid-col-header.selected').forEach(n => n.classList.remove('selected'));
-        const sel = this.canvasEl?.querySelectorAll('.plot-grid-cell') || [];
-        sel.forEach((n: Element) => (n as HTMLElement).classList.remove('selected'));
-        const header = this.canvasEl?.querySelectorAll('.plot-grid-col-header')[index] as HTMLElement | undefined;
-        if (header) header.classList.add('selected');
+    private selectColumnHeader(index: number, extend = false) {
+        if (index < 0 || index >= this.data.columns.length || this.data.rows.length === 0) return;
+        const lastR = this.data.rows.length - 1;
+        if (extend && this.selAnchor && this.selFocus) {
+            const rect = this.getSelectionRect()!;
+            this.setSelection(
+                { r: rect.r0, c: this.selAnchor.c },
+                { r: rect.r1, c: index },
+            );
+        } else {
+            this.setSelection({ r: 0, c: index }, { r: lastR, c: index });
+        }
+        this.refreshSelectionInspector();
+        this.wrapperEl?.focus({ preventScroll: true });
     }
 
     private moveArrayItem<T>(arr: T[], from: number, to: number) {
@@ -2089,49 +2474,126 @@ export class PlotgridView extends ItemView {
         return val || fallback;
     }
 
-    /** Open colour picker for a single cell's background. */
+    /** Open colour picker for the current selection's background. */
     private openCellBgColorPicker(cellKey: string, cellEl: HTMLElement, ri: number, ci: number): void {
-        const cell = this.data.cells[cellKey];
-        if (!cell) return;
-        const prev = cellEl.style.background;
-        this.chooseColor(cell.bgColor || this.defaultBgColor(), (c) => {
+        const targets: Array<{ cell: CellData; el: HTMLElement; r: number; c: number }> = [];
+        this.forEachSelectedCell((r, c, key, cell) => {
+            const el = this.getCellElement(r, c) || (key === cellKey ? cellEl : null);
+            if (el) targets.push({ cell, el, r, c });
+        });
+        if (targets.length === 0) {
+            const cell = this.data.cells[cellKey];
+            if (cell) targets.push({ cell, el: cellEl, r: ri, c: ci });
+        }
+        const seed = targets[0];
+        if (!seed) return;
+        const prevs = targets.map(t => t.el.style.background);
+        this.chooseColor(seed.cell.bgColor || this.defaultBgColor(), (c) => {
             if (c === null) {
-                cellEl.setCssStyles({ background: prev });
+                targets.forEach((t, i) => t.el.setCssStyles({ background: prevs[i] }));
                 return;
             }
-            cell.bgColor = c || '';
+            this.pushPlotGridUndo();
+            for (const t of targets) t.cell.bgColor = c || '';
             this.scheduleSave();
             this.renderGrid();
-            this.flashElement(this.getCellElement(ri, ci));
+            for (const t of targets) this.flashElement(this.getCellElement(t.r, t.c));
         }, (preview) => {
             if (preview === null) {
-                cellEl.setCssStyles({ background: prev });
+                targets.forEach((t, i) => t.el.setCssStyles({ background: prevs[i] }));
             } else {
-                cellEl.setCssStyles({ background: preview || '' });
-                if (preview && preview.startsWith('#') && !cell.textColor) {
-                    cellEl.setCssStyles({ color: contrastTextColor(preview) });
+                for (const t of targets) {
+                    t.el.setCssStyles({ background: preview || '' });
+                    if (preview && preview.startsWith('#') && !t.cell.textColor) {
+                        t.el.setCssStyles({ color: contrastTextColor(preview) });
+                    }
                 }
             }
         });
     }
 
-    /** Open colour picker for a single cell's text colour. */
+    /** Open colour picker for the current selection's text colour. */
     private openCellTextColorPicker(cellKey: string, cellEl: HTMLElement): void {
-        const cell = this.data.cells[cellKey];
-        if (!cell) return;
-        const prev = cellEl.style.color;
-        this.chooseColor(cell.textColor || this.defaultTextColor(), (c) => {
+        const targets: Array<{ cell: CellData; el: HTMLElement }> = [];
+        this.forEachSelectedCell((_r, _c, key, cell) => {
+            const el = this.getCellElement(_r, _c) || (key === cellKey ? cellEl : null);
+            if (el) targets.push({ cell, el });
+        });
+        if (targets.length === 0) {
+            const cell = this.data.cells[cellKey];
+            if (cell) targets.push({ cell, el: cellEl });
+        }
+        const seed = targets[0];
+        if (!seed) return;
+        const prevs = targets.map(t => t.el.style.color);
+        this.chooseColor(seed.cell.textColor || this.defaultTextColor(), (c) => {
             if (c === null) {
-                cellEl.setCssStyles({ color: prev });
+                targets.forEach((t, i) => t.el.setCssStyles({ color: prevs[i] }));
                 return;
             }
-            cell.textColor = c || '';
+            this.pushPlotGridUndo();
+            for (const t of targets) t.cell.textColor = c || '';
             this.scheduleSave();
             this.renderGrid();
         }, (preview) => {
-            if (preview === null) cellEl.setCssStyles({ color: prev });
-            else cellEl.setCssStyles({ color: preview || '' });
+            if (preview === null) targets.forEach((t, i) => t.el.setCssStyles({ color: prevs[i] }));
+            else targets.forEach(t => t.el.setCssStyles({ color: preview || '' }));
         });
+    }
+
+    /** Set the same text content for every cell in the selection. */
+    private openFillSelectionModal(seedText = ''): void {
+        const n = this.countSelectedCells();
+        if (n <= 0) return;
+        const view = this;
+        class FillSelectionModal extends Modal {
+            onOpen() {
+                const { contentEl } = this;
+                contentEl.empty();
+                contentEl.createEl('h3', { text: t('Edit Cells ({n})…', { n }) });
+                contentEl.createEl('p', {
+                    cls: 'mod-muted',
+                    text: t('Replace content in all selected cells.'),
+                });
+                const ta = contentEl.createEl('textarea', { cls: 'pg-fill-selection-textarea' });
+                ta.value = seedText;
+                ta.rows = 8;
+                ta.setCssStyles({
+                    width: '100%',
+                    resize: 'vertical',
+                    marginTop: '8px',
+                    padding: '8px',
+                    boxSizing: 'border-box',
+                });
+                const actions = contentEl.createDiv({ cls: 'modal-button-container' });
+                actions.setCssStyles({
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    gap: '8px',
+                    marginTop: '12px',
+                });
+                const cancel = actions.createEl('button', { text: t('Cancel') });
+                cancel.addEventListener('click', () => this.close());
+                const apply = actions.createEl('button', { cls: 'mod-cta', text: t('Apply') });
+                apply.addEventListener('click', () => {
+                    view.pushPlotGridUndo();
+                    view.forEachSelectedCell((_r, _c, _key, cell) => {
+                        cell.content = ta.value;
+                        cell.manualContent = true;
+                    });
+                    view.scheduleSave();
+                    view.renderGrid();
+                    view.refreshSelectionInspector();
+                    new Notice(t('Updated {n} cells', { n }));
+                    this.close();
+                });
+                window.setTimeout(() => {
+                    ta.focus();
+                    ta.select();
+                }, 0);
+            }
+        }
+        new FillSelectionModal(this.app).open();
     }
 
     /** Get a theme-aware default background color for the color picker */
@@ -2463,29 +2925,31 @@ export class PlotgridView extends ItemView {
     }
 
     /**
-     * If the cell-details panel is open, rebuild it from live cell data.
+     * If the cell-details panel is open, rebuild it from the current selection.
      * Used after delete/unlink so the Note/Scene tab is removed at once.
      */
     private refreshOpenCellInspector(): void {
         if (!this.inspectorEl) return;
         if (this.inspectorEl.style.display === 'none') return;
-        if (this.selectedRow === null || this.selectedCol === null) {
+        this.refreshSelectionInspector();
+    }
+
+    /** Show single- or multi-cell details for the current rectangular selection. */
+    private refreshSelectionInspector(): void {
+        if (!this.inspectorEl) return;
+        const items: Array<{ r: number; c: number; key: string; cell: CellData }> = [];
+        this.forEachSelectedCell((r, c, key, cell) => {
+            items.push({ r, c, key, cell });
+        });
+        if (items.length === 0) {
             this.hideCellInspector();
             return;
         }
-        const row = this.data.rows[this.selectedRow];
-        const col = this.data.columns[this.selectedCol];
-        if (!row || !col) {
-            this.hideCellInspector();
+        if (items.length === 1) {
+            this.showCellInspector(items[0].r, items[0].c, items[0].cell);
             return;
         }
-        const key = `${row.id}-${col.id}`;
-        const cell = this.data.cells[key];
-        if (!cell) {
-            this.hideCellInspector();
-            return;
-        }
-        this.showCellInspector(this.selectedRow, this.selectedCol, cell);
+        this.showMultiCellInspector(items);
     }
 
     /** Open QuickAdd modal and link the new scene to the given cell key */
@@ -2510,11 +2974,12 @@ export class PlotgridView extends ItemView {
         modal.open();
     }
 
-    private enterEditMode(cellEl: HTMLElement, cell: CellData, _contentEl: HTMLElement) {
+    private enterEditMode(cellEl: HTMLElement, cell: CellData, _contentEl: HTMLElement, seedChar?: string) {
         cellEl.classList.add('editing');
         cellEl.empty();
         const ta = cellEl.createEl('textarea');
-        ta.value = cell.content || '';
+        // Type-to-edit replaces content with the typed character; F2/Enter keeps existing text
+        ta.value = seedChar !== undefined ? seedChar : (cell.content || '');
         ta.placeholder = t('Markdown supported…');
         ta.setCssStyles({
             width: '100%',
@@ -2568,7 +3033,11 @@ export class PlotgridView extends ItemView {
         };
 
         // Use requestAnimationFrame + focus to guarantee it happens after the current event cycle
-        window.requestAnimationFrame(() => { ta.focus(); });
+        window.requestAnimationFrame(() => {
+            ta.focus();
+            const len = ta.value.length;
+            ta.setSelectionRange(len, len);
+        });
 
         ta.addEventListener('keydown', (e) => {
             e.stopPropagation();
@@ -2689,13 +3158,13 @@ export class PlotgridView extends ItemView {
         await this.convertCellToNotes(cell);
     }
 
-    private async convertCellToNotes(cell: CellData): Promise<void> {
+    private async convertCellToNotes(cell: CellData, opts?: { quiet?: boolean }): Promise<boolean> {
         const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
-        if (!scMgr) return;
-        if (cell.linkedSceneId) return;
+        if (!scMgr) return false;
+        if (cell.linkedSceneId) return false;
         if (!cell.content?.trim()) {
-            new Notice(t('Add some content before converting'));
-            return;
+            if (!opts?.quiet) new Notice(t('Add some content before converting'));
+            return false;
         }
 
         const body = cell.content.trim();
@@ -2707,16 +3176,17 @@ export class PlotgridView extends ItemView {
             plotgridOrigin: this.cellOriginLabel(cell),
         });
         this.linkFileToCell(cell, file.path);
-        new Notice(t('Converted cell to Notes'));
+        if (!opts?.quiet) new Notice(t('Converted cell to Notes'));
+        return true;
     }
 
-    private async convertCellToScene(cell: CellData): Promise<void> {
+    private async convertCellToScene(cell: CellData, opts?: { quiet?: boolean }): Promise<boolean> {
         const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
-        if (!scMgr) return;
-        if (cell.linkedSceneId) return;
+        if (!scMgr) return false;
+        if (cell.linkedSceneId) return false;
         if (!cell.content?.trim()) {
-            new Notice(t('Add some content before converting'));
-            return;
+            if (!opts?.quiet) new Notice(t('Add some content before converting'));
+            return false;
         }
 
         const body = cell.content.trim();
@@ -2727,19 +3197,20 @@ export class PlotgridView extends ItemView {
             plotgridOrigin: this.cellOriginLabel(cell),
         });
         this.linkFileToCell(cell, file.path);
-        new Notice(t('Converted cell to Scene'));
+        if (!opts?.quiet) new Notice(t('Converted cell to Scene'));
+        return true;
     }
 
-    private async convertCellToResearch(cell: CellData): Promise<void> {
+    private async convertCellToResearch(cell: CellData, opts?: { quiet?: boolean }): Promise<boolean> {
         const researchMgr = this.plugin?.researchManager;
         if (!researchMgr) {
-            new Notice(t('Research manager not available'));
-            return;
+            if (!opts?.quiet) new Notice(t('Research manager not available'));
+            return false;
         }
-        if (cell.linkedSceneId) return;
+        if (cell.linkedSceneId) return false;
         if (!cell.content?.trim()) {
-            new Notice(t('Add some content before converting'));
-            return;
+            if (!opts?.quiet) new Notice(t('Add some content before converting'));
+            return false;
         }
 
         const body = cell.content.trim();
@@ -2748,10 +3219,37 @@ export class PlotgridView extends ItemView {
             const post = await researchMgr.createPost(title, 'note', body);
             await researchMgr.scan();
             this.linkFileToCell(cell, post.filePath);
-            new Notice(t('Converted cell to Research'));
+            if (!opts?.quiet) new Notice(t('Converted cell to Research'));
+            return true;
         } catch (err) {
-            new Notice(t('Failed to create research post') + ': ' + String(err));
+            if (!opts?.quiet) new Notice(t('Failed to create research post') + ': ' + String(err));
+            return false;
         }
+    }
+
+    private async convertSelectedCells(kind: 'notes' | 'scene' | 'research'): Promise<void> {
+        const cells: CellData[] = [];
+        this.forEachSelectedCell((_r, _c, _key, cell) => {
+            if (!cell.linkedSceneId && cell.content?.trim()) cells.push(cell);
+        });
+        if (cells.length === 0) {
+            new Notice(t('Add some content before converting'));
+            return;
+        }
+        this.pushPlotGridUndo();
+        let n = 0;
+        for (const cell of cells) {
+            const ok = kind === 'notes'
+                ? await this.convertCellToNotes(cell, { quiet: true })
+                : kind === 'scene'
+                    ? await this.convertCellToScene(cell, { quiet: true })
+                    : await this.convertCellToResearch(cell, { quiet: true });
+            if (ok) n++;
+        }
+        this.scheduleSave();
+        this.renderGrid();
+        this.refreshSelectionInspector();
+        new Notice(t('Converted {n} cells', { n }));
     }
 
     /** Vault-wide file picker — any markdown note can be linked to a cell. */
@@ -3251,8 +3749,143 @@ export class PlotgridView extends ItemView {
 
     // ────────────────────────────────────────────────────
     //  Cell Inspector — shows characters, locations,
-    //  tags, and linked scene info for the selected cell
+    //  tags, and linked scene info for the selected cell(s)
     // ────────────────────────────────────────────────────
+
+    /** Stack compact detail cards for every cell in a multi-cell selection. */
+    private showMultiCellInspector(
+        items: Array<{ r: number; c: number; key: string; cell: CellData }>,
+    ): void {
+        if (!this.inspectorEl) return;
+
+        if (this.inspectorComponent) this.inspectorComponent.hide();
+
+        const el = this.inspectorEl;
+        el.empty();
+        el.setCssStyles({ display: 'block' });
+        el.addClass('story-line-inspector');
+
+        const header = el.createDiv('inspector-header');
+        header.createEl('h3', { text: t('Cell Details ({n})', { n: items.length }) });
+        const closeBtn = header.createEl('button', { cls: 'clickable-icon inspector-close', text: '×' });
+        closeBtn.addEventListener('click', () => this.hideCellInspector());
+
+        const stack = el.createDiv('pg-multi-cell-stack');
+        const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
+        const focusR = this.selFocus?.r ?? this.selectedRow;
+        const focusC = this.selFocus?.c ?? this.selectedCol;
+
+        for (const item of items) {
+            const { r: rowIndex, c: colIndex, key: cellKey } = item;
+            const row = this.data.rows[rowIndex];
+            const col = this.data.columns[colIndex];
+            const getCell = (): CellData => this.data.cells[cellKey] ?? item.cell;
+
+            const card = stack.createDiv('pg-multi-cell-card');
+            if (focusR === rowIndex && focusC === colIndex) {
+                card.addClass('is-active');
+            }
+
+            const title = card.createDiv('pg-multi-cell-card-title');
+            title.createSpan({
+                text: `${row?.label || t('Row {n}', { n: rowIndex + 1 })} · ${col?.label || t('Col {n}', { n: colIndex + 1 })}`,
+            });
+
+            const textSection = card.createDiv('inspector-section');
+            textSection.createSpan({ cls: 'inspector-label', text: t('Content:') });
+            const textArea = textSection.createEl('textarea', { cls: 'inspector-cell-textarea' });
+            textArea.value = getCell().content || '';
+            textArea.rows = 4;
+            textArea.setCssStyles({
+                width: '100%',
+                resize: 'vertical',
+                marginTop: '4px',
+                padding: '6px 8px',
+                border: '1px solid var(--background-modifier-border)',
+                borderRadius: '4px',
+                background: 'var(--background-primary)',
+                color: 'var(--text-normal)',
+                font: 'inherit',
+                fontSize: '13px',
+            });
+
+            const scanContainer = card.createDiv('inspector-scan-results');
+            this.updateCellInspectorScan(scanContainer, getCell());
+
+            let textSaveTimer: number | null = null;
+            let mdPreviewTimer: number | null = null;
+            const syncCellMarkdownPreview = () => {
+                const gridCellEl = this.getCellElement(rowIndex, colIndex);
+                const contentDiv = gridCellEl?.querySelector('.plot-grid-cell-content') as HTMLElement | null;
+                if (!contentDiv) return;
+                void this.renderMarkdownInto(contentDiv, textArea.value || '');
+            };
+            textArea.addEventListener('input', () => {
+                const liveCell = getCell();
+                liveCell.content = textArea.value;
+                liveCell.manualContent = true;
+                if (mdPreviewTimer) window.clearTimeout(mdPreviewTimer);
+                mdPreviewTimer = window.setTimeout(syncCellMarkdownPreview, 120);
+                if (textSaveTimer) window.clearTimeout(textSaveTimer);
+                textSaveTimer = window.setTimeout(() => {
+                    this.scheduleSave();
+                    this.updateCellInspectorScan(scanContainer, liveCell);
+                }, 600);
+            });
+            textArea.addEventListener('blur', () => {
+                if (textSaveTimer) { window.clearTimeout(textSaveTimer); textSaveTimer = null; }
+                if (mdPreviewTimer) { window.clearTimeout(mdPreviewTimer); mdPreviewTimer = null; }
+                const liveCell = getCell();
+                liveCell.content = textArea.value;
+                liveCell.manualContent = true;
+                syncCellMarkdownPreview();
+                this.updateCellInspectorScan(scanContainer, liveCell);
+                this.scheduleSave();
+            });
+
+            const liveForLink = getCell();
+            const linkedScene = (liveForLink.linkedSceneId && scMgr)
+                ? scMgr.getScene(liveForLink.linkedSceneId)
+                : undefined;
+            const isLinkedNote = !!(linkedScene && linkedScene.corkboardNote);
+
+            if (linkedScene) {
+                const linkSection = card.createDiv('inspector-section');
+                linkSection.createSpan({
+                    cls: 'inspector-label',
+                    text: isLinkedNote ? t('Linked Note:') : t('Linked Scene:'),
+                });
+                const sceneLink = linkSection.createEl('a', {
+                    cls: 'inspector-scene-link',
+                    text: linkedScene.title
+                        || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
+                        || 'Untitled',
+                });
+                sceneLink.setCssStyles({
+                    display: 'block',
+                    marginTop: '4px',
+                    cursor: 'pointer',
+                    color: 'var(--text-accent)',
+                });
+                sceneLink.addEventListener('click', () => {
+                    const f = this.app.vault.getAbstractFileByPath(linkedScene.filePath) as TFile | null;
+                    if (f) this.app.workspace.getLeaf('tab').openFile(f, { state: { mode: 'source', source: false } });
+                });
+                const unlinkBtn = linkSection.createEl('button', {
+                    text: isLinkedNote ? t('Unlink Note') : t('Unlink Scene'),
+                    attr: { type: 'button' },
+                });
+                unlinkBtn.setCssStyles({ marginTop: '6px' });
+                unlinkBtn.addEventListener('click', () => {
+                    const c = this.data.cells[cellKey];
+                    if (c) c.linkedSceneId = undefined;
+                    this.scheduleSave();
+                    this.renderGrid();
+                    this.refreshSelectionInspector();
+                });
+            }
+        }
+    }
 
     private showCellInspector(rowIndex: number, colIndex: number, cell: CellData): void {
         if (!this.inspectorEl) return;

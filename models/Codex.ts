@@ -492,6 +492,22 @@ export function makeCustomCodexCategory(id: string, label: string, icon: string 
     });
 }
 
+/** Permanent virtual category for Markdown files stored directly in Library/. */
+export const UNCATEGORIZED_CATEGORY_ID = 'uncategorized';
+
+export function makeUncategorizedCodexCategory(): CodexCategoryDef {
+    const definition = makeCustomCodexCategory(
+        UNCATEGORIZED_CATEGORY_ID,
+        'Uncategorized entries',
+        'file-question',
+    );
+    return {
+        ...definition,
+        folder: '',
+        builtIn: true,
+    };
+}
+
 /**
  * Icons available for custom categories (subset of Lucide).
  */

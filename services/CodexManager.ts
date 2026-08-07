@@ -1,7 +1,15 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
-import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
-import { CodexCategoryDef, CodexEntry, getBuiltinCodexCategory, withLinkingSection } from '../models/Codex';
+import { App, TFile, TFolder, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
+import {
+    CodexCategoryDef,
+    CodexEntry,
+    UNCATEGORIZED_CATEGORY_ID,
+    getBuiltinCodexCategory,
+    makeUncategorizedCodexCategory,
+    withLinkingSection,
+} from '../models/Codex';
+import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
 
 /**
  * Manages generic Codex entries — loading, saving, creating, and deleting
@@ -40,16 +48,23 @@ export class CodexManager {
         this.categoryDefs.clear();
         for (const id of enabledIds) {
             const builtin = getBuiltinCodexCategory(id);
+            const override = customDefs.find(c => c.id === id);
             if (builtin) {
                 // Issue #209 — ensure every category exposes the shared
                 // Linking & Matching section (aliases, type, case-sensitivity,
                 // exclude terms) so codex entries are consistent across types.
-                this.categoryDefs.set(id, withLinkingSection(builtin));
+                this.categoryDefs.set(id, withLinkingSection({
+                    ...builtin,
+                    label: override?.label || builtin.label,
+                    folder: override?.folder || override?.label || builtin.folder,
+                    icon: override?.icon || builtin.icon,
+                }));
             } else {
-                const custom = customDefs.find(c => c.id === id);
-                if (custom) this.categoryDefs.set(id, withLinkingSection(custom));
+                if (override) this.categoryDefs.set(id, withLinkingSection(override));
             }
         }
+        // Library-root Markdown files always have a permanent, non-deletable tab.
+        this.categoryDefs.set(UNCATEGORIZED_CATEGORY_ID, makeUncategorizedCodexCategory());
     }
 
     /** All resolved category definitions (respects current enabled list). */
@@ -60,6 +75,18 @@ export class CodexManager {
     /** Lookup a single category definition. */
     getCategoryDef(id: string): CodexCategoryDef | undefined {
         return this.categoryDefs.get(id);
+    }
+
+    /**
+     * Keep category label parallel with its Library folder basename.
+     * Does not change the stable category id / frontmatter type.
+     */
+    setCategoryFolder(id: string, folderName: string): void {
+        const def = this.categoryDefs.get(id);
+        if (!def) return;
+        const name = folderName.trim();
+        if (!name) return;
+        this.categoryDefs.set(id, { ...def, folder: name, label: name });
     }
 
     // ── Load ───────────────────────────────────────────
@@ -78,9 +105,13 @@ export class CodexManager {
 
         for (const [catId, catDef] of this.categoryDefs) {
             const catMap = new Map<string, CodexEntry>();
-            const catFolder = normalizePath(`${codexFolder}/${catDef.folder}`);
-            if (await adapter.exists(catFolder)) {
-                await this.scanFolder(catFolder, catDef, catMap);
+            if (catId === UNCATEGORIZED_CATEGORY_ID) {
+                await this.scanRootFolder(codexFolder, catDef, catMap);
+            } else {
+                const catFolder = normalizePath(`${codexFolder}/${catDef.folder}`);
+                if (await adapter.exists(catFolder)) {
+                    await this.scanFolder(catFolder, catDef, catMap);
+                }
             }
             this.entriesByCategory.set(catId, catMap);
         }
@@ -94,6 +125,11 @@ export class CodexManager {
         if (!catDef) return;
 
         const catMap = new Map<string, CodexEntry>();
+        if (categoryId === UNCATEGORIZED_CATEGORY_ID) {
+            await this.scanRootFolder(codexFolder, catDef, catMap);
+            this.entriesByCategory.set(categoryId, catMap);
+            return;
+        }
         const catFolder = normalizePath(`${codexFolder}/${catDef.folder}`);
         const adapter = this.app.vault.adapter;
         if (await adapter.exists(catFolder)) {
@@ -107,23 +143,36 @@ export class CodexManager {
         catDef: CodexCategoryDef,
         catMap: Map<string, CodexEntry>,
     ): Promise<void> {
-        const adapter = this.app.vault.adapter;
-        const listing = await adapter.list(folderPath);
-        for (const f of listing.files) {
-            if (f.endsWith('.md')) {
-                try {
-                    const fp = normalizePath(f);
-                    const content = await adapter.read(fp);
-                    // Folder-based fallback: if the file lives under the category
-                    // folder, accept it even if `type:` is missing/wrong (issue #74).
-                    const entry = this.parseEntry(content, fp, catDef, /*folderFallback*/ true);
-                    if (entry) catMap.set(fp, entry);
-                } catch { /* skip unreadable */ }
-            }
+        const files = await collectMarkdownFiles(this.app, folderPath);
+        for (const file of files) {
+            const fp = normalizePath(file.path);
+            const entry = await loadWithStampCache(
+                this.app,
+                `codex:${catDef.id}`,
+                file,
+                (content, path) => this.parseEntry(content, path, catDef, /*folderFallback*/ true),
+            );
+            if (entry) catMap.set(fp, entry);
         }
-        // Recurse into subfolders (for nested entries)
-        for (const sub of listing.folders) {
-            await this.scanFolder(normalizePath(sub), catDef, catMap);
+    }
+
+    private async scanRootFolder(
+        folderPath: string,
+        catDef: CodexCategoryDef,
+        catMap: Map<string, CodexEntry>,
+    ): Promise<void> {
+        const folder = this.app.vault.getAbstractFileByPath(normalizePath(folderPath));
+        if (!(folder instanceof TFolder)) return;
+        for (const child of folder.children) {
+            if (!(child instanceof TFile) || child.extension.toLowerCase() !== 'md') continue;
+            const fp = normalizePath(child.path);
+            const entry = await loadWithStampCache(
+                this.app,
+                `codex:${catDef.id}`,
+                child,
+                (content, path) => this.parseEntry(content, path, catDef, true),
+            );
+            if (entry) catMap.set(fp, entry);
         }
     }
 
@@ -145,6 +194,10 @@ export class CodexManager {
                 }
                 if (!catMap.has(filePath)) {
                     catMap.set(filePath, entry);
+                    const file = this.app.vault.getAbstractFileByPath(normalizePath(filePath));
+                    if (file instanceof TFile) {
+                        setCachedEntry(`codex:${catId}`, filePath, fileStamp(file), entry);
+                    }
                     return true;
                 }
             }
@@ -411,6 +464,34 @@ export class CodexManager {
             if (safeFm[key] !== undefined && safeFm[key] !== null) {
                 entry[key] = safeFm[key];
             }
+        }
+
+        // Library-root notes may have originated in any deleted category.
+        // Preserve unfamiliar top-level properties as visible custom fields
+        // instead of dropping them the next time the uncategorized entry saves.
+        if (catDef.id === UNCATEGORIZED_CATEGORY_ID) {
+            const reserved = new Set([
+                'type', 'name', 'image', 'gallery', 'created', 'modified',
+                'custom', 'universalFields', 'books',
+                ...catDef.fieldKeys,
+            ]);
+            const custom = { ...(entry.custom || {}) };
+            for (const [key, value] of Object.entries(safeFm)) {
+                if (reserved.has(key) || value === undefined || value === null) continue;
+                if (typeof value === 'string') custom[key] = value;
+                else if (typeof value === 'number' || typeof value === 'boolean') {
+                    custom[key] = String(value);
+                } else if (Array.isArray(value)) {
+                    custom[key] = value.map(String).join(', ');
+                } else {
+                    try {
+                        custom[key] = JSON.stringify(value);
+                    } catch {
+                        custom[key] = String(value);
+                    }
+                }
+            }
+            entry.custom = Object.keys(custom).length ? custom : undefined;
         }
 
         return entry;

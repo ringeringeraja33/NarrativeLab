@@ -26,7 +26,26 @@ import type SceneCardsPlugin from '../main';
 import { attachTooltip } from '../components/Tooltip';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { renderLibraryFilterChips } from '../components/LibraryFilterChips';
-import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf } from 'obsidian';
+import { renderNativeLibraryBase } from '../components/NativeLibraryBase';
+import {
+    getLibraryBrowseLayout,
+    getLibraryFilePropertyOptions,
+    getLibraryFilePropertyValue,
+    getLibraryNotePropertyOptions,
+    getLibraryNotePropertyValue,
+    getLibraryTableSort,
+    getLibraryTableColumns,
+    getLibraryTableFormulas,
+    evaluateLibraryTableFormula,
+    compareLibraryTableValues,
+    pageSlice,
+    renderLibraryBrowseToolbar,
+    renderLibraryTableHeader,
+    setLibraryTableColumns,
+    setLibraryTableSort,
+    LIBRARY_BROWSE_PAGE_SIZE,
+} from '../components/LibraryBrowseLayout';
+import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
 import { CHARACTER_CATEGORIES, CHARACTER_ROLES, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations } from '../models/Character';
 import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
@@ -66,6 +85,8 @@ export class CharacterView extends ItemView {
     private _skipReciprocalSync = false;
     /** Current search/filter text for overview grid */
     private searchText: string = '';
+    private browseSearchOpen = true;
+    private browseFilterOpen = true;
     private _searchTimer: number | null = null;
     /** Current sort mode for the overview grid */
     private sortBy: 'name' | 'modified' | 'created' | 'role' = 'name';
@@ -121,13 +142,19 @@ export class CharacterView extends ItemView {
         return 'users';
     }
 
+    /** Prefer live contentEl — avoids stale detached roots after leaf remounts. */
+    private getViewRoot(): HTMLElement {
+        const el = (this.contentEl ?? this.containerEl.children[1]) as HTMLElement;
+        this.rootContainer = el;
+        return el;
+    }
+
     async onOpen(): Promise<void> {
         this.plugin.storyLeaf = this.leaf;
-        const container = this.containerEl.children[1] as HTMLElement;
+        const container = this.getViewRoot();
         container.empty();
         container.addClass('story-line-character-container');
         applyMobileClass(container);
-        this.rootContainer = container;
 
         await this.sceneManager.initialize();
         // Skip reload when refreshOpenViews (or another Library tab) just loaded.
@@ -170,9 +197,8 @@ export class CharacterView extends ItemView {
 
         renderViewSwitcher(toolbar, CHARACTER_VIEW_TYPE, this.plugin, this.leaf);
 
-        const controls = toolbar.createDiv('story-line-toolbar-controls');
-
         // ── Codex category tabs + Browse / Story Graph ──
+        // New Character lives in the browse toolbar (inside this tab), not the project header.
         renderCodexCategoryTabs(container, {
             activeId: 'characters-pseudo',
             leaf: this.leaf,
@@ -181,13 +207,10 @@ export class CharacterView extends ItemView {
             onModeChange: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
+            onCategoriesChanged: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
         });
-
-        // New character button
-        const addBtn = controls.createEl('button', { cls: 'clickable-icon' });
-        obsidian.setIcon(addBtn, 'user-round-plus');
-        attachTooltip(addBtn, t('New Character'));
-        addBtn.addEventListener('click', () => this.promptNewCharacter());
 
         const content = container.createDiv('story-line-character-content');
 
@@ -211,68 +234,91 @@ export class CharacterView extends ItemView {
 
     private renderCharacterOverview(container: HTMLElement): void {
         container.empty();
+        if (getLibraryContentMode(this.plugin) === 'browse') {
+            void renderNativeLibraryBase(container, this.plugin, 'characters', this);
+            return;
+        }
         // Tab already says “角色” — skip a redundant page title to free vertical space.
 
-        // Search + Sort
-        const searchRow = container.createDiv('codex-search-row');
-        const searchInput = searchRow.createEl('input', {
-            cls: 'codex-search-input',
-            attr: { type: 'text', placeholder: t('Search characters…') },
-        });
-        searchInput.value = this.searchText;
-        // Track whether the search field (or any element inside this view)
-        // had focus before the re-render. Only re-focus the search input in
-        // that case — otherwise external refreshes steal focus from the
-        // manuscript editor in split view (issue #221).
-        const hadFocus = activeDocument.activeElement?.closest('.story-line-character-container') != null;
-        searchInput.addEventListener('input', () => {
-            this.searchText = searchInput.value;
-            if (this._searchTimer !== null) window.clearTimeout(this._searchTimer);
-            this._searchTimer = window.setTimeout(() => {
-                this._searchTimer = null;
+        const availableCharacters = this.characterManager.getAllCharacters();
+        const charProps = [
+            { key: 'role', label: 'role', type: 'note' as const },
+            { key: 'scenes', label: 'scenes', type: 'note' as const },
+            ...getLibraryNotePropertyOptions(
+                this.plugin,
+                availableCharacters.map(character => character.filePath),
+            ).filter(property => property.key !== 'role' && property.key !== 'scenes'),
+            ...getLibraryFilePropertyOptions(),
+        ];
+        const savedCharCols = getLibraryTableColumns(this.plugin, 'characters');
+        const selectedCharProps = savedCharCols !== undefined
+            ? savedCharCols
+            : ['role', 'scenes'];
+
+        const { searchInput, chipHost } = renderLibraryBrowseToolbar(container, {
+            plugin: this.plugin,
+            categoryId: 'characters',
+            sortOptions: [
+                { value: 'name', label: t('Name') },
+                { value: 'modified', label: t('Last edited') },
+                { value: 'created', label: t('Date created') },
+                { value: 'role', label: t('Role') },
+            ],
+            sortBy: this.sortBy,
+            onSortChange: (value) => {
+                this.sortBy = value as 'name' | 'role' | 'created' | 'modified';
                 this.renderCharacterOverview(container);
-            }, 180);
+            },
+            searchText: this.searchText,
+            searchPlaceholder: t('Search characters…'),
+            searchOpen: this.browseSearchOpen,
+            onSearchOpenChange: (open) => {
+                this.browseSearchOpen = open;
+                this.renderCharacterOverview(container);
+            },
+            onSearchChange: (value) => {
+                this.searchText = value;
+                this.renderCharacterOverview(container);
+            },
+            filterOpen: this.browseFilterOpen,
+            filterCount: this.activeTagFilters.size,
+            onFilterOpenChange: (open) => {
+                this.browseFilterOpen = open;
+                this.renderCharacterOverview(container);
+            },
+            properties: charProps,
+            selectedProperties: selectedCharProps,
+            onPropertiesChange: async (keys) => {
+                await setLibraryTableColumns(this.plugin, 'characters', keys);
+                this.renderCharacterOverview(container);
+            },
+            onNew: () => this.promptNewCharacter(),
+            newLabel: t('New'),
+            onLayoutChange: () => this.renderCharacterOverview(container),
+            appendExtra: (actionsEl) => {
+                const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
+                const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
+                if (!inSeries || !currentBook) return;
+                const filterToggle = actionsEl.createEl('button', {
+                    cls: `codex-book-filter${this.bookFilterActive ? ' active' : ''}`,
+                    text: this.bookFilterActive ? t('Showing: {book}', { book: currentBook }) : t('All projects'),
+                });
+                attachTooltip(filterToggle, this.bookFilterActive
+                    ? t('Click to show all series characters')
+                    : t('Click to hide characters not in “{book}”', { book: currentBook }));
+                filterToggle.addEventListener('click', () => {
+                    this.bookFilterActive = !this.bookFilterActive;
+                    this.renderCharacterOverview(container);
+                });
+            },
         });
-        if (hadFocus) {
-            // Re-focus the search field and restore cursor position
+
+        const hadFocus = activeDocument.activeElement?.closest('.story-line-character-container') != null;
+        if (searchInput && (hadFocus || this.browseSearchOpen)) {
             window.setTimeout(() => {
                 searchInput.focus();
                 searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
             }, 0);
-        }
-
-        searchRow.createSpan({ cls: 'codex-sort-label', text: t('Sort by') });
-        const sortSelect = searchRow.createEl('select', { cls: 'codex-sort-select' });
-        for (const opt of [
-            { value: 'name', label: 'Name' },
-            { value: 'modified', label: 'Last edited' },
-            { value: 'created', label: 'Date created' },
-            { value: 'role', label: 'Role' },
-        ]) {
-            const el = sortSelect.createEl('option', { text: t(opt.label), value: opt.value });
-            if (this.sortBy === opt.value) el.selected = true;
-        }
-        sortSelect.addEventListener('change', () => {
-            this.sortBy = sortSelect.value as 'name' | 'role' | 'created' | 'modified';
-            this.renderCharacterOverview(container);
-        });
-
-        // Series book filter — only meaningful when the active project belongs
-        // to a series and characters are shared at series level.
-        const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
-        const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
-        if (inSeries && currentBook) {
-            const filterToggle = searchRow.createEl('button', {
-                cls: `codex-book-filter${this.bookFilterActive ? ' active' : ''}`,
-                text: this.bookFilterActive ? t('Showing: {book}', { book: currentBook }) : t('All projects'),
-            });
-            attachTooltip(filterToggle, this.bookFilterActive
-                ? t('Click to show all series characters')
-                : t('Click to hide characters not in “{book}”', { book: currentBook }));
-            filterToggle.addEventListener('click', () => {
-                this.bookFilterActive = !this.bookFilterActive;
-                this.renderCharacterOverview(container);
-            });
         }
 
         const q = this.searchText.toLowerCase();
@@ -314,8 +360,8 @@ export class CharacterView extends ItemView {
             for (const p of extractCharacterLocationTags(c, overrides)) add(p);
             charFilterKeys.set(c.filePath, keys);
         }
-        const chipHost = container.createDiv('story-line-filter-chips character-tag-filter-chips library-filter-chips');
         renderLibraryFilterChips(chipHost, tagLabels, this.activeTagFilters, () => {
+            if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
             this.renderCharacterOverview(container);
         });
 
@@ -331,6 +377,7 @@ export class CharacterView extends ItemView {
         // Apply book-membership filter (series mode only).
         // A character is shown when its `books` field is missing/empty
         // (“appears in every book”) or contains the current book title.
+        const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
         if (this.bookFilterActive && currentBook) {
             const lower = currentBook.toLowerCase();
             fileCharacters = fileCharacters.filter(c => {
@@ -407,6 +454,12 @@ export class CharacterView extends ItemView {
         // One O(scenes) pass — never O(characters × scenes) per card.
         // Frontmatter / POV only — body link-scan is too expensive for large projects.
         const sceneStats = this.precomputeScenePresenceStats(scenes, aliasMap);
+
+        const layout = getLibraryBrowseLayout(this.plugin, 'characters');
+        if (layout === 'list' || layout === 'table') {
+            this.renderCharacterBrowseAlt(container, layout, fileCharacters, sceneStats);
+            return;
+        }
 
         const gen = ++this._overviewGen;
         this._overviewObserver?.disconnect();
@@ -548,6 +601,132 @@ export class CharacterView extends ItemView {
         );
         this._overviewObserver.observe(sentinel);
         requestAnimationFrame(tryLoadMore);
+    }
+
+    /** List / table layouts for Character browse (cards keep the existing grid). */
+    private renderCharacterBrowseAlt(
+        container: HTMLElement,
+        layout: 'list' | 'table',
+        characters: Character[],
+        sceneStats: Map<string, ScenePresenceStats>,
+    ): void {
+        let shown = LIBRARY_BROWSE_PAGE_SIZE;
+        const host = container.createDiv('character-browse-alt');
+
+        const paint = () => {
+            host.empty();
+            const { visible, hasMore } = pageSlice(characters, shown);
+            if (layout === 'list') {
+                const list = host.createDiv('codex-entry-list');
+                for (const char of visible) {
+                    const row = list.createDiv('codex-entry-row');
+                    const icon = row.createSpan({ cls: 'codex-entry-icon' });
+                    obsidian.setIcon(icon, 'user');
+                    row.createSpan({ cls: 'codex-entry-name', text: char.name });
+                    const role = getPrimaryRole(char);
+                    if (role) row.createSpan({ cls: 'codex-entry-type-badge', text: role });
+                    const st = sceneStats.get(char.name.toLowerCase());
+                    if (st) {
+                        row.createSpan({
+                            cls: 'codex-entry-pct',
+                            text: `${st.pov + st.present}`,
+                        });
+                    }
+                    row.addEventListener('click', () => {
+                        void this.openCharacterDetail(char.filePath);
+                    });
+                }
+            } else {
+                const cols = getLibraryTableColumns(this.plugin, 'characters') ?? ['role', 'scenes'];
+                const propertyLabels = new Map<string, string>([
+                    ['role', 'role'],
+                    ['scenes', 'scenes'],
+                    ...getLibraryNotePropertyOptions(
+                        this.plugin,
+                        characters.map(character => character.filePath),
+                    ).map(property => [property.key, property.label] as [string, string]),
+                    ...getLibraryFilePropertyOptions()
+                        .map(property => [property.key, property.label] as [string, string]),
+                ]);
+                const formulas = getLibraryTableFormulas(this.plugin, 'characters');
+                for (const formula of formulas) propertyLabels.set(`formula:${formula.id}`, formula.name);
+                const resolveValue = (char: Character, key: string): unknown => {
+                    if (key.startsWith('file.')) {
+                        return getLibraryFilePropertyValue(this.plugin, char.filePath, key);
+                    }
+                    if (key === 'name') return char.name;
+                    if (key === 'role') return getPrimaryRole(char) || '';
+                    if (key === 'scenes') {
+                        const st = sceneStats.get(char.name.toLowerCase());
+                        return (st?.pov || 0) + (st?.present || 0);
+                    }
+                    const direct = (char as unknown as Record<string, unknown>)[key];
+                    return direct !== undefined
+                        ? direct
+                        : getLibraryNotePropertyValue(this.plugin, char.filePath, key);
+                };
+                const valueForColumn = (char: Character, key: string): unknown => {
+                    const formula = key.startsWith('formula:')
+                        ? formulas.find(item => item.id === key.slice('formula:'.length))
+                        : undefined;
+                    return formula
+                        ? evaluateLibraryTableFormula(formula.expression, property => resolveValue(char, property))
+                        : resolveValue(char, key);
+                };
+                const tableSort = getLibraryTableSort(this.plugin, 'characters');
+                const tableCharacters = [...characters];
+                if (tableSort) {
+                    tableCharacters.sort((left, right) => {
+                        const result = compareLibraryTableValues(
+                            valueForColumn(left, tableSort.key),
+                            valueForColumn(right, tableSort.key),
+                        );
+                        return tableSort.direction === 'asc' ? result : -result;
+                    });
+                }
+                const tableVisible = pageSlice(tableCharacters, shown).visible;
+                const wrap = host.createDiv('library-base-table-wrap');
+                const table = wrap.createEl('table', { cls: 'library-base-table' });
+                const hr = table.createEl('thead').createEl('tr');
+                renderLibraryTableHeader(hr, 'name', 'name', tableSort, sort => {
+                    void setLibraryTableSort(this.plugin, 'characters', sort).then(paint);
+                });
+                for (const key of cols) {
+                    renderLibraryTableHeader(hr, propertyLabels.get(key) || key, key, tableSort, sort => {
+                        void setLibraryTableSort(this.plugin, 'characters', sort).then(paint);
+                    });
+                }
+                const tbody = table.createEl('tbody');
+                for (const char of tableVisible) {
+                    const tr = tbody.createEl('tr');
+                    const nameTd = tr.createEl('td');
+                    const btn = nameTd.createEl('button', {
+                        cls: 'library-base-table-name-btn',
+                        text: char.name,
+                    });
+                    btn.addEventListener('click', () => {
+                        void this.openCharacterDetail(char.filePath);
+                    });
+                    for (const key of cols) {
+                        const value = valueForColumn(char, key);
+                        tr.createEl('td', {
+                            text: Array.isArray(value) ? value.join(', ') : String(value ?? ''),
+                        });
+                    }
+                }
+            }
+            if (hasMore) {
+                const more = host.createEl('button', {
+                    cls: 'mod-cta library-browse-load-more',
+                    text: t('Load more'),
+                });
+                more.addEventListener('click', () => {
+                    shown += LIBRARY_BROWSE_PAGE_SIZE;
+                    paint();
+                });
+            }
+        };
+        paint();
     }
 
     /**
@@ -747,8 +926,7 @@ export class CharacterView extends ItemView {
         }
 
         card.addEventListener('click', () => {
-            this.selectedCharacter = char.filePath;
-            this.renderView(this.rootContainer!);
+            void this.openCharacterDetail(char.filePath);
         });
 
         // Right-click context menu — promote / demote between project and
@@ -759,6 +937,37 @@ export class CharacterView extends ItemView {
         });
 
         return card;
+    }
+
+    /**
+     * Open a character detail pane by file path (or basename fallback).
+     * Reloads entities once if the in-memory map missed a just-created file.
+     */
+    private async openCharacterDetail(filePath: string): Promise<void> {
+        const path = normalizePath(filePath || '');
+        if (!path) return;
+
+        const basename = path.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+        let char =
+            this.characterManager.getCharacter(path)
+            || (basename ? this.characterManager.findByName(basename) : undefined);
+
+        if (!char) {
+            try {
+                await this.plugin.reloadEntities();
+            } catch { /* project may not be ready */ }
+            char =
+                this.characterManager.getCharacter(path)
+                || (basename ? this.characterManager.findByName(basename) : undefined);
+        }
+
+        if (!char) {
+            new Notice(t('Character not found in the active project.'));
+            return;
+        }
+
+        this.selectedCharacter = char.filePath;
+        this.renderView(this.getViewRoot());
     }
 
     private renderUnlinkedCard(
@@ -904,12 +1113,18 @@ export class CharacterView extends ItemView {
 
     private renderCharacterDetail(container: HTMLElement): void {
         container.empty();
-        const character = this.characterManager.getCharacter(this.selectedCharacter!);
+        const selectedPath = this.selectedCharacter ? normalizePath(this.selectedCharacter) : '';
+        const basename = selectedPath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+        let character =
+            (selectedPath ? this.characterManager.getCharacter(selectedPath) : undefined)
+            || (basename ? this.characterManager.findByName(basename) : undefined);
         if (!character) {
             this.selectedCharacter = null;
             this.renderCharacterOverview(container);
             return;
         }
+        // Keep selection keyed to the canonical path from the manager.
+        this.selectedCharacter = character.filePath;
 
         // Working copy for editing
         const draft: Character = { ...character, custom: { ...(character.custom || {}) }, universalFields: { ...(character.universalFields || {}) } };
@@ -1012,11 +1227,12 @@ export class CharacterView extends ItemView {
         // ── "+ Add custom section" button at the bottom ──
         renderAddCustomSectionButton(formPanel, customHost);
 
-        // ── Side panel: gallery + scene info + references ──
+        // ── Side panel: gallery + scene info + references + notes ──
         this.renderGallery(sidePanel, draft);
         this.renderScenePanel(sidePanel, character.name);
         this.renderLinkedAliasesPanel(sidePanel, character.name);
         this.renderReferencesPanel(sidePanel, character.name);
+        this.renderNotesSection(sidePanel, draft);
     }
 
     private renderCategory(
@@ -2242,6 +2458,21 @@ export class CharacterView extends ItemView {
         renderThumbs();
     }
 
+    private renderNotesSection(container: HTMLElement, draft: Character): void {
+        const section = container.createDiv('codex-side-section entity-notes-section');
+        section.createEl('h4', { text: t('Notes') });
+
+        const textarea = section.createEl('textarea', {
+            cls: 'codex-notes-textarea',
+            attr: { placeholder: t('Free-form notes (markdown)…'), rows: '12' },
+        });
+        textarea.value = draft.notes || '';
+        textarea.addEventListener('input', () => {
+            draft.notes = textarea.value;
+            this.scheduleSave(draft);
+        });
+    }
+
     // ── Scene side panel ───────────────────────────────
 
     private renderScenePanel(container: HTMLElement, characterName: string): void {
@@ -2669,9 +2900,11 @@ export class CharacterView extends ItemView {
                                 this.sceneManager.getCharacterFolder(),
                                 name.trim()
                             );
-                            this.selectedCharacter = char.filePath;
+                            // Suppress the vault-create → refreshOpenViews bounce that
+                            // can clear selection before the new file is re-indexed.
+                            this._lastSaveTime = Date.now();
                             modal.close();
-                            this.renderView(this.rootContainer!);
+                            await this.openCharacterDetail(char.filePath);
                             new Notice(t('Character "{name}" created', { name: name.trim() }));
                         } catch (e) {
                             new Notice(String(e));
@@ -2688,8 +2921,8 @@ export class CharacterView extends ItemView {
                 this.sceneManager.getCharacterFolder(),
                 name
             );
-            this.selectedCharacter = char.filePath;
-            this.renderView(this.rootContainer!);
+            this._lastSaveTime = Date.now();
+            await this.openCharacterDetail(char.filePath);
             new Notice(t('Character profile created for "{name}"', { name }));
         } catch (e) {
             new Notice(String(e));
@@ -2937,19 +3170,7 @@ export class CharacterView extends ItemView {
      * jump from the character's freeform note back to the details panel.
      */
     async navigateToCharacter(filePath: string): Promise<void> {
-        let char = this.characterManager.getCharacter(filePath);
-        if (!char) {
-            await this.plugin.reloadEntities();
-            char = this.characterManager.getCharacter(filePath);
-        }
-        if (!char) {
-            new Notice(t('Character not found in the active project.'));
-            return;
-        }
-        this.selectedCharacter = filePath;
-        if (this.rootContainer) {
-            this.renderView(this.rootContainer);
-        }
+        await this.openCharacterDetail(filePath);
     }
 
     /**
@@ -2965,9 +3186,7 @@ export class CharacterView extends ItemView {
         ) {
             return;
         }
-        if (this.rootContainer) {
-            this.renderView(this.rootContainer);
-        }
+        this.renderView(this.getViewRoot());
     }
 
     /* ───── Character card context menu (promote/demote, book membership) ───── */

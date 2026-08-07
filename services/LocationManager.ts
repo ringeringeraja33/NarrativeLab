@@ -6,6 +6,7 @@ import {
     WORLD_FIELD_KEYS, LOCATION_FIELD_KEYS,
 } from '../models/Location';
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
+import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
 
 /**
  * Manages world & location .md files — loading, saving, creating, deleting.
@@ -44,38 +45,45 @@ export class LocationManager {
         const fm = this.extractFrontmatter(content);
         if (!fm) return false;
         if (fm.type === 'world' || fm.type === 'location') {
-            this.parseAndStoreContent(content, filePath);
-            return true;
+            const item = this.parseAndStoreContent(content, filePath);
+            if (item) {
+                const file = this.app.vault.getAbstractFileByPath(normalizePath(filePath));
+                if (file instanceof TFile) setCachedEntry('location', filePath, fileStamp(file), item);
+            }
+            return !!item;
         }
         return false;
     }
 
     private async scanFolderAdapter(folderPath: string): Promise<void> {
-        const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(folderPath)) return;
-
-        const listing = await adapter.list(folderPath);
         // Folder-based fallback (issue #74): files inside the Locations folder
-        // are accepted even if `type:` is missing or has been overwritten by
-        // a template. Default missing types to 'location' so the entry doesn't
-        // disappear from the Codex.
-        for (const f of listing.files) {
-            if (f.endsWith('.md')) {
-                try {
-                    const filePath = normalizePath(f);
-                    const content = await adapter.read(filePath);
-                    this.parseAndStoreContent(content, filePath, /*folderFallback*/ true);
-                } catch { /* file unreadable — skip */ }
-            }
-        }
-        for (const sub of listing.folders) {
-            await this.scanFolderAdapter(normalizePath(sub));
+        // are accepted even if `type:` is missing.
+        const files = await collectMarkdownFiles(this.app, folderPath);
+        for (const file of files) {
+            const filePath = normalizePath(file.path);
+            const item = await loadWithStampCache(
+                this.app,
+                'location',
+                file,
+                (content, path) => this.parseContent(content, path, /*folderFallback*/ true),
+            );
+            if (!item) continue;
+            if (item.type === 'world') this.worlds.set(filePath, item);
+            else this.locations.set(filePath, item);
         }
     }
 
-    private parseAndStoreContent(content: string, filePath: string, folderFallback = false): void {
+    private parseAndStoreContent(content: string, filePath: string, folderFallback = false): WorldOrLocation | null {
+        const item = this.parseContent(content, filePath, folderFallback);
+        if (!item) return null;
+        if (item.type === 'world') this.worlds.set(filePath, item);
+        else this.locations.set(filePath, item);
+        return item;
+    }
+
+    private parseContent(content: string, filePath: string, folderFallback = false): WorldOrLocation | null {
         const fm = this.extractFrontmatter(content);
-        if (!fm && !folderFallback) return;
+        if (!fm && !folderFallback) return null;
         const safeFm = (fm ?? {}) as Partial<StoryWorld> & Partial<StoryLocation> & Record<string, unknown>;
 
         // Resolve effective type — explicit `type:` wins; otherwise fall back
@@ -84,7 +92,7 @@ export class LocationManager {
         if (safeFm.type === 'world' || safeFm.type === 'location') {
             effectiveType = safeFm.type as 'world' | 'location';
         } else if (!folderFallback) {
-            return;
+            return null;
         }
         const fmEff = safeFm;
 
@@ -121,40 +129,40 @@ export class LocationManager {
                 modified: fmEff.modified,
                 notes: body || undefined,
             };
-            this.worlds.set(filePath, world);
-        } else if (effectiveType === 'location') {
-            const loc: StoryLocation = {
-                filePath,
-                type: 'location',
-                name: fmEff.name || basename,
-                image: fmEff.image,
-                gallery: this.parseGallery(fmEff.gallery),
-                nickname: fmEff.nickname,
-                locationType: fmEff.locationType,
-                world: fmEff.world,
-                parent: fmEff.parent,
-                description: fmEff.description,
-                atmosphere: fmEff.atmosphere,
-                significance: fmEff.significance,
-                inhabitants: fmEff.inhabitants,
-                connectedLocations: fmEff.connectedLocations,
-                mapNotes: fmEff.mapNotes,
-                books: this.parseStringList(fmEff.books),
-                custom: fmEff.custom && typeof fmEff.custom === 'object'
-                    ? (fmEff.custom as Record<string, string>)
-                    : undefined,
-                universalFields: hydrateUniversalFieldsFromTopLevel(
-                    fmEff,
-                    fmEff.universalFields && typeof fmEff.universalFields === 'object'
-                        ? (fmEff.universalFields as Record<string, string | string[]>)
-                        : undefined,
-                ) as Record<string, string | string[]> | undefined,
-                created: fmEff.created,
-                modified: fmEff.modified,
-                notes: body || undefined,
-            };
-            this.locations.set(filePath, loc);
+            return world;
         }
+
+        const loc: StoryLocation = {
+            filePath,
+            type: 'location',
+            name: fmEff.name || basename,
+            image: fmEff.image,
+            gallery: this.parseGallery(fmEff.gallery),
+            nickname: fmEff.nickname,
+            locationType: fmEff.locationType,
+            world: fmEff.world,
+            parent: fmEff.parent,
+            description: fmEff.description,
+            atmosphere: fmEff.atmosphere,
+            significance: fmEff.significance,
+            inhabitants: fmEff.inhabitants,
+            connectedLocations: fmEff.connectedLocations,
+            mapNotes: fmEff.mapNotes,
+            books: this.parseStringList(fmEff.books),
+            custom: fmEff.custom && typeof fmEff.custom === 'object'
+                ? (fmEff.custom as Record<string, string>)
+                : undefined,
+            universalFields: hydrateUniversalFieldsFromTopLevel(
+                fmEff,
+                fmEff.universalFields && typeof fmEff.universalFields === 'object'
+                    ? (fmEff.universalFields as Record<string, string | string[]>)
+                    : undefined,
+            ) as Record<string, string | string[]> | undefined,
+            created: fmEff.created,
+            modified: fmEff.modified,
+            notes: body || undefined,
+        };
+        return loc;
     }
 
     // ── Getters ────────────────────────────────────────
@@ -417,7 +425,9 @@ export class LocationManager {
     private extractBody(content: string): string {
         const clean = content.replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
         const match = clean.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)$/);
-        return match ? match[1].trim() : '';
+        if (match) return match[1].trim();
+        // No frontmatter — keep full body so adopt/save does not wipe plain notes.
+        return clean.trim();
     }
 
     private parseGallery(value: unknown): Array<{ path: string; caption: string }> | undefined {

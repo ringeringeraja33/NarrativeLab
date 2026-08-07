@@ -684,6 +684,11 @@ export interface SceneCardsSettings {
     // Manual tag-type overrides (tag name lowercased → 'prop' | 'location' | 'character' | 'other')
     tagTypeOverrides: Record<string, string>;
 
+    /** User-defined semantic categories for wikilink edges in the Story Graph. */
+    storyGraphRelationCategories?: Array<{ id: string; label: string; color: string }>;
+    /** Directed source-path → target-path edge keys mapped to a relation category id. */
+    storyGraphLinkRelationAssignments?: Record<string, string>;
+
     // Manual character alias mappings (lowercased alias → canonical character name)
     // e.g. { "sven": "Sven Andersson" } — user-defined via "Link to…" in Characters view
     characterAliases: Record<string, string>;
@@ -750,8 +755,26 @@ export interface SceneCardsSettings {
     // ── Codex settings ─────────────────────────────────
     /** IDs of enabled codex categories (e.g. ['items', 'creatures']) */
     codexEnabledCategories: string[];
-    /** User-created custom codex category definitions */
-    codexCustomCategories: Array<{ id: string; label: string; icon: string; showInSidebar?: boolean }>;
+    /** User-defined order for all Library tabs, including Characters and Locations. */
+    libraryCategoryOrder?: string[];
+    /** User-created categories plus optional label/icon overrides for presets. */
+    codexCustomCategories: Array<{
+        id: string;
+        label: string;
+        icon: string;
+        showInSidebar?: boolean;
+        preset?: boolean;
+    }>;
+    /** Preset category ids explicitly removed from the category manager. */
+    codexDeletedPresetCategories?: string[];
+    /** Per-category Browse layout: list | cards | table (keys: characters, locations, items, …) */
+    libraryBrowseLayout?: Record<string, 'list' | 'cards' | 'table'>;
+    /** Optional visible table column keys per category */
+    libraryTableColumns?: Record<string, string[]>;
+    /** Active per-column sort in each Library table. */
+    libraryTableSort?: Record<string, { key: string; direction: 'asc' | 'desc' }>;
+    /** Bases-style computed columns per Library category. */
+    libraryTableFormulas?: Record<string, Array<{ id: string; name: string; expression: string }>>;
 
     // Per-category default custom field templates (#115). When a new entry is created
     // in this category, the listed field names are pre-populated with empty values.
@@ -956,6 +979,8 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     plotlineLightness: 0,
 
     tagTypeOverrides: {},
+    storyGraphRelationCategories: [],
+    storyGraphLinkRelationAssignments: {},
 
     characterAliases: {},
 
@@ -981,7 +1006,13 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     useProjectColors: false,
 
     codexEnabledCategories: ['items'],
+    libraryCategoryOrder: [],
     codexCustomCategories: [],
+    codexDeletedPresetCategories: [],
+    libraryBrowseLayout: {},
+    libraryTableColumns: {},
+    libraryTableSort: {},
+    libraryTableFormulas: {},
     codexCategoryFieldTemplates: {},
     codexCategoryCustomSections: {},
     characterCustomSections: [],

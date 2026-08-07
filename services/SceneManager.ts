@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { StoryLineProject, ProjectDraft, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER } from '../models/StoryLineProject';
+import { StoryLineProject, ProjectDraft, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER, DEFAULT_CANVAS_FOLDER } from '../models/StoryLineProject';
 import { MetadataParser, setWordcountLocale, setSceneTitleToStemMap } from './MetadataParser';
 import { normalizeStoryLineLocale, resolveLocale, DEFAULT_STORYLINE_LOCALE, AUTO_DETECT_LOCALE, type StoryLineLocale } from '../utils/locale';
 import { UndoManager } from './UndoManager';
@@ -60,6 +60,18 @@ function normalizeActChapterList(raw: unknown): number[] {
         .filter(n => Number.isFinite(n))
         .map(n => Math.trunc(n));
     return Array.from(new Set(nums)).sort((a, b) => a - b);
+}
+
+/** Normalize project frontmatter `libraryFolders` map (id → folder basename). */
+function normalizeLibraryFoldersMap(raw: unknown): Record<string, string> {
+    if (!raw || typeof raw !== 'object') return {};
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        const id = String(k || '').trim();
+        const name = String(v ?? '').trim().replace(/[\\/:*?"<>|]/g, '-');
+        if (id && name) out[id] = name;
+    }
+    return out;
 }
 
 /**
@@ -171,10 +183,10 @@ export class SceneManager implements ISceneStore {
         return this.plugin.settings.storyLineRoot || '';
     }
 
-    /** Computed NCanvas (.ncanvas) folder for the active project */
+    /** Computed NCanvas (.ncanvas) folder for the active project (under System/) */
     getCanvasFolder(): string {
         const base = this.getProjectBaseFolder();
-        return base ? `${base}/NCanvas` : 'NCanvas';
+        return base ? `${base}/${DEFAULT_CANVAS_FOLDER}` : DEFAULT_CANVAS_FOLDER;
     }
 
     /**
@@ -199,24 +211,52 @@ export class SceneManager implements ISceneStore {
         return this._activeProject?.filePath || this.getSceneFolder();
     }
 
+    /**
+     * Library tab id → folder basename (=== tab label).
+     * Falls back to project.libraryFolders, then custom label, then defaults.
+     */
+    getLibraryFolderName(categoryId: string): string {
+        const fromProject = this._activeProject?.libraryFolders?.[categoryId]?.trim();
+        if (fromProject) return fromProject;
+        const custom = this.plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
+        if (custom?.label?.trim()) return custom.label.trim();
+        const defaults: Record<string, string> = {
+            characters: 'Characters',
+            locations: 'Locations',
+            items: 'Items',
+            creatures: 'Creatures',
+            lore: 'Lore',
+            organizations: 'Organizations',
+            culture: 'Culture',
+            systems: 'Systems',
+        };
+        return defaults[categoryId] || categoryId;
+    }
+
     /** Computed character folder for the active project (series-aware) */
     getCharacterFolder(): string {
+        const name = this.getLibraryFolderName('characters');
         if (this.getSeriesFolder()) {
-            return normalizePath(`${this.getSeriesCodexFolder()}/Characters`);
+            return normalizePath(`${this.getSeriesCodexFolder()}/${name}`);
         }
-        if (this._activeProject) return this._activeProject.characterFolder;
+        if (this._activeProject) {
+            return normalizePath(`${this._activeProject.codexFolder}/${name}`);
+        }
         const root = this.plugin.settings.storyLineRoot;
-        return root ? `${root}/Library/Characters` : 'Library/Characters';
+        return normalizePath(root ? `${root}/Library/${name}` : `Library/${name}`);
     }
 
     /** Computed location folder for the active project (series-aware) */
     getLocationFolder(): string {
+        const name = this.getLibraryFolderName('locations');
         if (this.getSeriesFolder()) {
-            return normalizePath(`${this.getSeriesCodexFolder()}/Locations`);
+            return normalizePath(`${this.getSeriesCodexFolder()}/${name}`);
         }
-        if (this._activeProject) return this._activeProject.locationFolder;
+        if (this._activeProject) {
+            return normalizePath(`${this._activeProject.codexFolder}/${name}`);
+        }
         const root = this.plugin.settings.storyLineRoot;
-        return root ? `${root}/Library/Locations` : 'Library/Locations';
+        return normalizePath(root ? `${root}/Library/${name}` : `Library/${name}`);
     }
 
     /** Computed Library folder for the active project (series-aware) */
@@ -295,7 +335,8 @@ export class SceneManager implements ISceneStore {
      */
     getProjectLocalCharacterFolder(): string | null {
         if (!this._activeProject) return null;
-        return normalizePath(this._activeProject.characterFolder);
+        const name = this._activeProject.libraryFolders?.characters || 'Characters';
+        return normalizePath(`${this._activeProject.codexFolder}/${name}`);
     }
 
     /**
@@ -304,7 +345,8 @@ export class SceneManager implements ISceneStore {
      */
     getProjectLocalLocationFolder(): string | null {
         if (!this._activeProject) return null;
-        return normalizePath(this._activeProject.locationFolder);
+        const name = this._activeProject.libraryFolders?.locations || 'Locations';
+        return normalizePath(`${this._activeProject.codexFolder}/${name}`);
     }
 
     /**
@@ -358,7 +400,7 @@ export class SceneManager implements ISceneStore {
                     // Skip internal folders that never contain project files
                     const folderName = sub.split('/').pop() ?? '';
                     if (folderName.startsWith('.')
-                        || ['System', 'Scenes', 'Characters', 'Locations', 'Library', 'Codex', 'Notes', 'Archive', 'Research', 'NCanvas', 'Canvas', 'Attachments'].includes(folderName)) continue;
+                        || ['System', 'Scenes', 'Characters', 'Locations', 'Library', 'Codex', 'Notes', 'Archive', 'Research', 'NCanvas', 'Canvas', 'Attachments', 'SceneNotes'].includes(folderName)) continue;
                     await scanFolder(sub);
                 }
             } catch { /* folder unreadable — skip */ }
@@ -474,6 +516,22 @@ export class SceneManager implements ISceneStore {
         const defaultLang = (this.plugin.settings as { defaultProjectLanguage?: string }).defaultProjectLanguage ?? DEFAULT_STORYLINE_LOCALE;
         const projectLocale = normalizeStoryLineLocale(defaultLang);
 
+        const libraryFolders: Record<string, string> = {
+            characters: 'Characters',
+            locations: 'Locations',
+        };
+        for (const id of this.plugin.settings.codexEnabledCategories || []) {
+            const custom = this.plugin.settings.codexCustomCategories?.find(c => c.id === id);
+            if (custom?.label) libraryFolders[id] = custom.label;
+            else if (id === 'items') libraryFolders[id] = 'Items';
+            else if (id === 'creatures') libraryFolders[id] = 'Creatures';
+            else if (id === 'lore') libraryFolders[id] = 'Lore';
+            else if (id === 'organizations') libraryFolders[id] = 'Organizations';
+            else if (id === 'culture') libraryFolders[id] = 'Culture';
+            else if (id === 'systems') libraryFolders[id] = 'Systems';
+            else libraryFolders[id] = id;
+        }
+
         const frontmatter: Record<string, unknown> = {
             type: 'narrative-lab',
             title,
@@ -481,6 +539,7 @@ export class SceneManager implements ISceneStore {
             language: projectLocale,
             drafts: [{ id: 'main', title: 'Primary draft' }],
             activeDraft: 'main',
+            libraryFolders,
         };
         const content = `---\n${stringifyYaml(frontmatter)}---\n${description}\n`;
 
@@ -491,10 +550,13 @@ export class SceneManager implements ISceneStore {
             // Create project file inside the folder
             await this.app.vault.create(filePath, content);
 
-            // Content folders are intentionally lazy. Scenes, Library,
-            // Characters, Locations, Notes, Archive, and Research are created
-            // by their respective create actions, avoiding empty folder trees
-            // in projects that do not use those features.
+            // Default Library tabs (special + enabled categories) — folders
+            // match tab labels and can be renamed later.
+            const libraryFolder = normalizePath(folders.codexFolder);
+            await this.ensureFolder(libraryFolder);
+            for (const folderName of Object.values(libraryFolders)) {
+                await this.ensureFolder(normalizePath(`${libraryFolder}/${folderName}`));
+            }
 
             // Create System folder for project data files
             const systemFolder = normalizePath(`${baseFolder}/System`);
@@ -528,6 +590,9 @@ export class SceneManager implements ISceneStore {
                 description,
                 locale: projectLocale,
                 ...folders,
+                characterFolder: normalizePath(`${folders.codexFolder}/${libraryFolders.characters}`),
+                locationFolder: normalizePath(`${folders.codexFolder}/${libraryFolders.locations}`),
+                libraryFolders,
                 definedActs: [],
                 definedChapters: [],
                 actLabels: {},
@@ -570,6 +635,7 @@ export class SceneManager implements ISceneStore {
         await this.plugin.saveSettings();
         await this.initialize();
         await this.migrateDraftFoldersIfNeeded();
+        await this.reconcileDraftFolders();
         await this.plugin.syncNarrativeCanvasToActiveProject();
         // Ask the plugin to refresh any open NarrativeLab views so the UI updates
         try {
@@ -793,6 +859,9 @@ export class SceneManager implements ISceneStore {
 
             // Derive folders from the file's actual location (works for any vault path)
             const folders = deriveProjectFoldersFromFilePath(filePath);
+            const libraryFolders = normalizeLibraryFoldersMap(fm.libraryFolders);
+            const charSeg = libraryFolders.characters || 'Characters';
+            const locSeg = libraryFolders.locations || 'Locations';
 
             return {
                 filePath,
@@ -805,6 +874,9 @@ export class SceneManager implements ISceneStore {
                     ? normalizeStoryLineLocale(fm.language ?? fm['storyline-locale'])
                     : undefined,
                 ...folders,
+                characterFolder: normalizePath(`${folders.codexFolder}/${charSeg}`),
+                locationFolder: normalizePath(`${folders.codexFolder}/${locSeg}`),
+                libraryFolders: Object.keys(libraryFolders).length > 0 ? libraryFolders : undefined,
                 definedActs: normalizeActChapterList(fm.acts),
                 definedChapters: normalizeActChapterList(fm.chapters),
                 actLabels: (fm.actLabels && typeof fm.actLabels === 'object') ? Object.fromEntries(Object.entries(fm.actLabels).map(([k, v]) => [Number(k), String(v)])) : {},
@@ -2638,6 +2710,13 @@ export class SceneManager implements ISceneStore {
         }
         delete existingFm.activeDraftId;
 
+        // Library tab id → folder basename (parallel with tab labels)
+        if (project.libraryFolders && Object.keys(project.libraryFolders).length > 0) {
+            existingFm.libraryFolders = { ...project.libraryFolders };
+        } else {
+            delete existingFm.libraryFolders;
+        }
+
         const newContent = `---\n${stringifyYaml(existingFm)}---${body}`;
         await this.app.vault.modify(file, newContent);
     }
@@ -2808,6 +2887,7 @@ export class SceneManager implements ISceneStore {
     async setActiveDraft(draftId: string): Promise<void> {
         if (!this._activeProject) return;
         await this.migrateDraftFoldersIfNeeded();
+        await this.reconcileDraftFolders();
         this.ensureProjectDrafts(this._activeProject);
         if (!this._activeProject.drafts?.some(d => d.id === draftId)) return;
         this._activeProject.activeDraftId = draftId;
@@ -2965,6 +3045,75 @@ export class SceneManager implements ISceneStore {
         return true;
     }
 
+    /**
+     * When a Scenes/<draft>/ folder is deleted in the file explorer, drop that
+     * draft from the project registry so the layers menu stays in sync.
+     * Also called opportunistically to prune any already-missing draft folders.
+     */
+    async reconcileDraftFolders(): Promise<boolean> {
+        const project = this._activeProject;
+        if (!project) return false;
+        this.ensureProjectDrafts(project);
+        if (!project.drafts || project.drafts.length === 0) return false;
+
+        const sceneFolder = normalizePath(this.getSceneFolder());
+        const kept: ProjectDraft[] = [];
+        const removedTitles: string[] = [];
+
+        for (const draft of project.drafts) {
+            if (!draft.folder) {
+                kept.push(draft);
+                continue;
+            }
+            const draftRoot = normalizePath(`${sceneFolder}/${draft.folder}`);
+            const folder = this.app.vault.getAbstractFileByPath(draftRoot);
+            if (folder instanceof TFolder) {
+                kept.push(draft);
+            } else {
+                removedTitles.push(draft.folder || draft.title || draft.id);
+            }
+        }
+
+        if (kept.length === 0) {
+            kept.push({ id: 'main', title: 'Primary draft' });
+        }
+
+        const activeMissing = !kept.some(d => d.id === project.activeDraftId);
+        const listChanged = kept.length !== project.drafts.length
+            || kept.some((d, i) => d.id !== project.drafts![i]?.id);
+
+        if (!listChanged && !activeMissing) return false;
+
+        project.drafts = kept;
+        if (activeMissing || !project.activeDraftId) {
+            project.activeDraftId = kept[0].id;
+        }
+        await this.saveProjectFrontmatter(project);
+        this.bumpVersion();
+        if (removedTitles.length > 0) {
+            new Notice(
+                removedTitles.length === 1
+                    ? `Draft folder removed: ${removedTitles[0]}`
+                    : `Removed ${removedTitles.length} missing draft folders`
+            );
+        }
+        return true;
+    }
+
+    /** Handle vault delete of a draft root folder under Scenes/. */
+    async handleDraftFolderDelete(path: string): Promise<boolean> {
+        const project = this._activeProject;
+        if (!project?.drafts) return false;
+        const sceneFolder = normalizePath(this.getSceneFolder());
+        const norm = normalizePath(path);
+        const parent = norm.includes('/') ? norm.slice(0, norm.lastIndexOf('/')) : '';
+        // Direct draft root, or reconcile whenever anything under Scenes/ vanishes
+        if (parent === sceneFolder || norm === sceneFolder || norm.startsWith(sceneFolder + '/')) {
+            return this.reconcileDraftFolders();
+        }
+        return false;
+    }
+
     async deleteDraft(draftId: string): Promise<boolean> {
         if (!this._activeProject?.drafts) return false;
         this.ensureProjectDrafts(this._activeProject);
@@ -3052,9 +3201,15 @@ export class SceneManager implements ISceneStore {
 
     private async ensureFolder(folderPath: string): Promise<void> {
         const normalized = normalizePath(folderPath);
-        const existing = this.app.vault.getAbstractFileByPath(normalized);
-        if (!existing) {
-            await this.app.vault.createFolder(normalized);
+        const adapter = this.app.vault.adapter;
+        if (await adapter.exists(normalized)) return;
+        const parts = normalized.split('/').filter(Boolean);
+        let cur = '';
+        for (const part of parts) {
+            cur = cur ? `${cur}/${part}` : part;
+            if (!await adapter.exists(cur)) {
+                await this.app.vault.createFolder(cur);
+            }
         }
     }
 

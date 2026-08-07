@@ -7,10 +7,10 @@ import { FilterPreset } from './Scene';
  * A project may live anywhere in the vault. The manifest normally sits inside
  * its own project folder and owns a subfolder tree:
  *
- *   Writing/My Novel/Scenes/
- *   Writing/My Novel/Library/
- *   Writing/My Novel/Library/Characters/
- *   Writing/My Novel/Library/Locations/
+ *   Writing/My Novel/Scenes/          (writer-facing)
+ *   Writing/My Novel/Library/…        (writer-facing)
+ *   Writing/My Novel/Notes/…          (writer-facing)
+ *   Writing/My Novel/System/          (plugin data: plotgrid, board, ncanvas, …)
  *
  * Legacy projects may have Characters/ and Locations/ at the project root;
  * the runtime detects this and uses the old paths transparently.
@@ -100,6 +100,13 @@ export interface StoryLineProject {
     drafts?: ProjectDraft[];
     /** Id of the draft currently used for Navigator / Manuscript order */
     activeDraftId?: string;
+
+    /**
+     * Library tab id → folder basename under Library/ (and tab label).
+     * Stable ids: characters, locations, items, creatures, custom-…;
+     * renaming a tab only changes the value here + the folder on disk.
+     */
+    libraryFolders?: Record<string, string>;
 }
 
 // ── Series metadata ────────────────────────────────
@@ -147,9 +154,14 @@ export function deriveProjectFolders(
  *  - New layout:  `Any/Path/MyNovel/MyNovel.md`  → base = `Any/Path/MyNovel`
  *  - Legacy:      `Any/Path/MyNovel.md`           → base = `Any/Path/MyNovel`
  */
-/** Subfolder inside each project that stores .ncanvas files */
-export const DEFAULT_CANVAS_FOLDER = 'NCanvas';
-/** Legacy canvas folder name — still resolved for existing projects */
+/**
+ * Subfolder inside each project that stores .ncanvas files.
+ * Lives under System/ so non-writer tooling data stays out of the manuscript tree.
+ */
+export const DEFAULT_CANVAS_FOLDER = 'System/NCanvas';
+/** Pre-System NCanvas folder at project root — still resolved / migrated */
+export const LEGACY_NCANVAS_FOLDER = 'NCanvas';
+/** Older canvas folder name — still resolved for existing projects */
 export const LEGACY_CANVAS_FOLDER = 'Canvas';
 /** Default attachment folder name inside each project root */
 export const DEFAULT_ATTACHMENT_FOLDER = 'Attachments';

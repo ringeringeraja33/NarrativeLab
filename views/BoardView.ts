@@ -23,6 +23,7 @@ import { compareActChapter, parseActChapterInput, getActDisplayLabel } from '../
 import { t, localizeBeatSheet } from '../utils/i18n';
 
 type BoardMode = 'kanban' | 'corkboard';
+const CORKBOARD_NOTE_TOGGLE_EVENT = 'narrative-lab:corkboard-note-toggle';
 
 /**
  * Board View - Kanban-style scene card board
@@ -74,6 +75,8 @@ export class BoardView extends ItemView {
      * focus out and hid the text being typed).
      */
     private editingNotePath: string | null = null;
+    /** Corkboard notes the user has expanded this session (default: collapsed). */
+    private expandedCorkboardNotes: Set<string> = new Set();
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -611,8 +614,13 @@ export class BoardView extends ItemView {
                 cardEl.addClass('selected');
             }
 
-            // Restore persisted height from layout data (only for note cards)
-            if (pos.h && pos.h > 0 && this.isCorkboardNoteScene(scene)) {
+            // Persisted height only applies while the note is expanded.
+            // Collapsed notes stay title-sized (default); expand restores height.
+            if (
+                pos.h && pos.h > 0
+                && this.isCorkboardNoteScene(scene)
+                && this.expandedCorkboardNotes.has(scene.filePath)
+            ) {
                 cardEl.setCssStyles({ height: `${pos.h}px` });
             }
 
@@ -631,6 +639,56 @@ export class BoardView extends ItemView {
 
         cardEl.addClass('story-line-corkboard-note-card');
         this.applyCorkboardNoteColor(cardEl, scene);
+
+        // Title bar: notes are collapsed by default; click to expand / collapse.
+        const titleBar = cardEl.createDiv({
+            cls: 'story-line-corkboard-note-titlebar',
+            attr: { role: 'button', tabindex: '0' },
+        });
+        const chevron = titleBar.createSpan({ cls: 'story-line-corkboard-note-chevron' });
+        const titleText = titleBar.createSpan({ cls: 'story-line-corkboard-note-title-text' });
+        titleText.setText(this.getCorkboardNoteDisplayTitle(scene));
+        const collapsedPreview = cardEl.createDiv('story-line-corkboard-note-collapsed-preview');
+        const refreshCollapsedPreview = () => {
+            const text = this.getCorkboardNotePreviewText(scene);
+            collapsedPreview.setText(text);
+            collapsedPreview.toggleClass('is-empty', text.length === 0);
+        };
+        refreshCollapsedPreview();
+
+        let isExpanded = this.expandedCorkboardNotes.has(scene.filePath);
+        const applyExpandState = () => {
+            cardEl.toggleClass('is-collapsed', !isExpanded);
+            cardEl.toggleClass('is-expanded', isExpanded);
+            obsidian.setIcon(chevron, isExpanded ? 'chevron-down' : 'chevron-right');
+            titleBar.setAttribute('aria-expanded', String(isExpanded));
+            titleBar.setAttribute('title', isExpanded ? t('Collapse note') : t('Expand note'));
+            if (!isExpanded) {
+                cardEl.setCssStyles({ height: '' });
+            } else {
+                const pos = this.corkboardPositions.get(scene.filePath);
+                if (pos?.h && pos.h > 0) {
+                    cardEl.setCssStyles({ height: `${pos.h}px` });
+                }
+            }
+        };
+        const setExpanded = (expanded: boolean) => {
+            isExpanded = expanded;
+            if (expanded) this.expandedCorkboardNotes.add(scene.filePath);
+            else this.expandedCorkboardNotes.delete(scene.filePath);
+            applyExpandState();
+        };
+        cardEl.addEventListener(CORKBOARD_NOTE_TOGGLE_EVENT, (event: Event) => {
+            event.stopPropagation();
+            setExpanded(!isExpanded);
+        });
+        titleBar.addEventListener('keydown', (event: KeyboardEvent) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setExpanded(!isExpanded);
+            }
+        });
+        applyExpandState();
 
         // ── Image note rendering ───────────────────────────
         if (scene.corkboardNoteImage) {
@@ -797,6 +855,8 @@ export class BoardView extends ItemView {
             await this.sceneManager.updateScene(scene.filePath, { body: next });
             scene.body = next;
             lastCommittedBody = next;
+            titleText.setText(this.getCorkboardNoteDisplayTitle(scene));
+            refreshCollapsedPreview();
         };
 
         const commitAndClose = async () => {
@@ -838,6 +898,7 @@ export class BoardView extends ItemView {
                     return; // let external links behave normally
                 }
             }
+            if (!isExpanded) setExpanded(true);
             setEditing(true, { x: event.clientX, y: event.clientY });
         });
 
@@ -963,6 +1024,80 @@ export class BoardView extends ItemView {
         return false;
     }
 
+    /** First meaningful line of a corkboard note — used as the collapsed title. */
+    private getCorkboardNoteDisplayTitle(scene: Scene): string {
+        if (scene.corkboardNoteImage) {
+            const caption = (scene.corkboardNoteCaption || '').trim();
+            if (caption) {
+                const first = caption.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
+                if (first) {
+                    const cleaned = first
+                        .replace(/^#{1,6}\s+/, '')
+                        .replace(/^[-*+]\s+/, '')
+                        .replace(/\*\*(.*?)\*\*/g, '$1')
+                        .replace(/\*(.*?)\*/g, '$1')
+                        .trim();
+                    if (cleaned) return cleaned.length > 60 ? `${cleaned.slice(0, 60)}…` : cleaned;
+                }
+            }
+            return t('Image note');
+        }
+
+        const firstLine = (scene.body || '')
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .find(line => line.length > 0);
+
+        if (firstLine) {
+            const cleaned = firstLine
+                .replace(/^#{1,6}\s+/, '')
+                .replace(/^[-*+]\s+/, '')
+                .replace(/^>\s*/, '')
+                .replace(/\*\*(.*?)\*\*/g, '$1')
+                .replace(/\*(.*?)\*/g, '$1')
+                .replace(/`([^`]+)`/g, '$1')
+                .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+                .trim();
+            if (cleaned.length > 0) {
+                return cleaned.length > 60 ? `${cleaned.slice(0, 60)}…` : cleaned;
+            }
+        }
+
+        return t('Note');
+    }
+
+    /** Plain-text excerpt shown below the title while a note is collapsed. */
+    private getCorkboardNotePreviewText(scene: Scene): string {
+        const source = scene.corkboardNoteImage
+            ? (scene.corkboardNoteCaption || '')
+            : (scene.body || '');
+        const lines = source
+            .split(/\r?\n/)
+            .map(line => line
+                .trim()
+                .replace(/^#{1,6}\s+/, '')
+                .replace(/^[-*+]\s+/, '')
+                .replace(/^\d+\.\s+/, '')
+                .replace(/^>\s*/, '')
+                .replace(/!\[(.*?)\]\(.*?\)/g, '$1')
+                .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+                .replace(/\[\[(?:[^|\]]+\|)?([^\]]+)\]\]/g, '$1')
+                .replace(/[*_~`]/g, '')
+                .replace(/\s+/g, ' ')
+                .trim())
+            .filter(line => line.length > 0);
+
+        if (lines.length === 0) return '';
+
+        // The first 60 characters are already represented by the title. Keep
+        // any overflow, then continue with the remaining lines.
+        const excerptParts = [
+            ...(lines[0].length > 60 ? [lines[0].slice(60)] : []),
+            ...lines.slice(1),
+        ];
+        return excerptParts.join(' ').trim().slice(0, 500);
+    }
+
     private attachCorkboardDrag(node: HTMLElement, scenePath: string): void {
         let dragging = false;
         let startClientX = 0;
@@ -974,6 +1109,7 @@ export class BoardView extends ItemView {
         let pendingX = 0;
         let pendingY = 0;
         let lastClickTime = 0;
+        let toggleNoteOnRelease = false;
 
         const applyDragPosition = () => {
             dragRaf = null;
@@ -990,7 +1126,8 @@ export class BoardView extends ItemView {
 
             const dx = e.clientX - startClientX;
             const dy = e.clientY - startClientY;
-            if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+            if (!moved && Math.max(Math.abs(dx), Math.abs(dy)) >= 6) moved = true;
+            if (!moved) return;
 
             const zoom = this.corkboardCamera.zoom || 1;
             pendingX = startX + dx / zoom;
@@ -1022,6 +1159,9 @@ export class BoardView extends ItemView {
                 this.corkboardJustDragged.add(scenePath);
                 window.setTimeout(() => this.corkboardJustDragged.delete(scenePath), 180);
                 this.schedulePersistCorkboardLayout();
+            } else if (toggleNoteOnRelease) {
+                const noteCard = node.querySelector('.story-line-corkboard-note-card');
+                noteCard?.dispatchEvent(new CustomEvent(CORKBOARD_NOTE_TOGGLE_EVENT));
             } else {
                 const scene = this.sceneManager.getScene(scenePath);
                 if (scene && !this.isCorkboardNoteScene(scene)) {
@@ -1045,6 +1185,10 @@ export class BoardView extends ItemView {
             if (target.closest('.story-line-corkboard-note-preview, .story-line-corkboard-note-caption, .story-line-corkboard-note-caption-empty')) return;
 
             const noteCard = target.closest('.story-line-corkboard-note-card') as HTMLElement | null;
+            toggleNoteOnRelease = Boolean(
+                noteCard
+                && (noteCard.hasClass('is-collapsed') || target.closest('.story-line-corkboard-note-titlebar')),
+            );
             if (noteCard) {
                 const rect = noteCard.getBoundingClientRect();
                 const resizeGripSize = 20;
@@ -3525,6 +3669,7 @@ export class BoardView extends ItemView {
 
         const pos = this.getNextQuickNotePosition();
         this.corkboardPositions.set(file.path, pos);
+        this.expandedCorkboardNotes.add(file.path);
         this.schedulePersistCorkboardLayout();
 
         this.refreshBoard();
@@ -3580,6 +3725,8 @@ export class BoardView extends ItemView {
             captionInput.setCssStyles({ display: 'none' });
             captionPreview.setCssStyles({ display: 'block' });
             await renderCaptionPreview();
+            const titleEl = cardEl.querySelector('.story-line-corkboard-note-title-text') as HTMLElement | null;
+            if (titleEl) titleEl.setText(this.getCorkboardNoteDisplayTitle(scene));
         };
 
         captionPreview.addEventListener('click', (e) => {
@@ -3772,6 +3919,7 @@ export class BoardView extends ItemView {
 
         const pos = this.getNextQuickNotePosition();
         this.corkboardPositions.set(file.path, pos);
+        this.expandedCorkboardNotes.add(file.path);
         this.schedulePersistCorkboardLayout();
         this.refreshBoard();
     }
@@ -3807,6 +3955,7 @@ export class BoardView extends ItemView {
             y: worldY,
             z: this.getCurrentMaxCorkboardZ() + 1,
         });
+        this.expandedCorkboardNotes.add(file.path);
         this.schedulePersistCorkboardLayout();
         this.refreshBoard();
     }

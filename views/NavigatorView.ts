@@ -459,36 +459,41 @@ export class NavigatorView extends ItemView {
     }
 
     private showDraftPickerMenu(e: MouseEvent): void {
-        const menu = new Menu();
-        const drafts = this.sceneManager.getDrafts();
-        const activeId = this.sceneManager.getActiveDraft()?.id;
-        for (const draft of drafts) {
-            menu.addItem(item => {
-                item.setTitle(t(this.sceneManager.draftDisplayTitle(draft)));
-                item.setIcon('layers');
-                if (draft.id === activeId) item.setChecked(true);
-                item.onClick(async () => {
-                    if (draft.id === activeId) return;
-                    await this.sceneManager.setActiveDraft(draft.id);
-                    this.plugin.refreshOpenViews();
+        // Prune drafts whose Scenes/<folder> was deleted outside the plugin,
+        // then build the menu from the reconciled list.
+        void this.sceneManager.reconcileDraftFolders().then((changed) => {
+            if (changed) this.plugin.refreshOpenViews();
+            const menu = new Menu();
+            const drafts = this.sceneManager.getDrafts();
+            const activeId = this.sceneManager.getActiveDraft()?.id;
+            for (const draft of drafts) {
+                menu.addItem(item => {
+                    item.setTitle(t(this.sceneManager.draftDisplayTitle(draft)));
+                    item.setIcon('layers');
+                    if (draft.id === activeId) item.setChecked(true);
+                    item.onClick(async () => {
+                        if (draft.id === activeId) return;
+                        await this.sceneManager.setActiveDraft(draft.id);
+                        this.plugin.refreshOpenViews();
+                    });
                 });
-            });
-        }
-        menu.addSeparator();
-        menu.addItem(item => {
-            item.setTitle(t('New draft'));
-            item.setIcon('plus');
-            item.onClick(() => this.promptNewDraft());
-        });
-        const active = this.sceneManager.getActiveDraft();
-        if (active?.folder) {
+            }
+            menu.addSeparator();
             menu.addItem(item => {
-                item.setTitle(t('Rename draft'));
-                item.setIcon('pencil');
-                item.onClick(() => this.promptRenameDraft(active));
+                item.setTitle(t('New draft'));
+                item.setIcon('plus');
+                item.onClick(() => this.promptNewDraft());
             });
-        }
-        menu.showAtMouseEvent(e);
+            const active = this.sceneManager.getActiveDraft();
+            if (active?.folder) {
+                menu.addItem(item => {
+                    item.setTitle(t('Rename draft'));
+                    item.setIcon('pencil');
+                    item.onClick(() => this.promptRenameDraft(active));
+                });
+            }
+            menu.showAtMouseEvent(e);
+        });
     }
 
     private renderNotesFolder(parent: HTMLElement): void {

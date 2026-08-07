@@ -8,9 +8,11 @@ import { homedir } from "os";
 const prod = process.argv[2] === "production";
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 const oneDrive = join(homedir(), "Library/CloudStorage/OneDrive-个人/My Library");
+const localVaultPlugin = join(homedir(), "Documents/Obsidian/.obsidian/plugins/narrative-lab");
 
 /** Vault plugin folders that should receive the built plugin files. */
 const DEPLOY_DIRS = [
+  localVaultPlugin,
   join(oneDrive, "Projects/Game Design/.obsidian/plugins/narrative-lab"),
   join(oneDrive, ".obsidian/plugins/narrative-lab"),
 ].filter((dir) => existsSync(dirname(dir)) || existsSync(join(dirname(dir), "..")));

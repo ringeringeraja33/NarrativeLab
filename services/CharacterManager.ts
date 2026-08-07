@@ -3,6 +3,7 @@ import { Character, CharacterRelation, CharacterRelationCategory, CHARACTER_FIEL
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceString } from '../utils/narrow';
+import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
 
 /**
  * Manages character .md files — loading, saving, creating, and deleting
@@ -29,29 +30,18 @@ export class CharacterManager {
 
     /** Recursively load character notes so Library subfolders remain organizational only. */
     private async scanFolder(folderPath: string): Promise<void> {
-        const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(folderPath)) return;
-
-        const listing = await adapter.list(folderPath);
-        for (const f of listing.files) {
-            if (f.endsWith('.md')) {
-                try {
-                    const filePath = normalizePath(f);
-                    const content = await adapter.read(filePath);
-                    // Folder-based fallback (issue #74): files inside the
-                    // Characters folder are accepted even if `type:` is
-                    // missing, so user-inserted templates don't make the
-                    // entry vanish from the Codex.
-                    const character = this.parseCharacterContent(content, filePath, /*folderFallback*/ true);
-                    if (character) {
-                        this.characters.set(filePath, character);
-                    }
-                } catch { /* file unreadable — skip */ }
-            }
-        }
-
-        for (const sub of listing.folders) {
-            await this.scanFolder(normalizePath(sub));
+        const files = await collectMarkdownFiles(this.app, folderPath);
+        for (const file of files) {
+            const filePath = normalizePath(file.path);
+            // Folder-based fallback (issue #74): files inside the
+            // Characters folder are accepted even if `type:` is missing.
+            const character = await loadWithStampCache(
+                this.app,
+                'character',
+                file,
+                (content, path) => this.parseCharacterContent(content, path, /*folderFallback*/ true),
+            );
+            if (character) this.characters.set(filePath, character);
         }
     }
 
@@ -60,10 +50,15 @@ export class CharacterManager {
      * Returns true if the file was recognised as a character.
      */
     addFile(content: string, filePath: string): boolean {
-        if (this.characters.has(filePath)) return false;
-        const character = this.parseCharacterContent(content, filePath);
+        const normalized = normalizePath(filePath);
+        if (this.characters.has(normalized)) return false;
+        const character = this.parseCharacterContent(content, normalized);
         if (character) {
-            this.characters.set(filePath, character);
+            this.characters.set(normalized, character);
+            const file = this.app.vault.getAbstractFileByPath(normalized);
+            if (file instanceof TFile) {
+                setCachedEntry('character', normalized, fileStamp(file), character);
+            }
             return true;
         }
         return false;
@@ -82,7 +77,9 @@ export class CharacterManager {
      * Get a character by file path.
      */
     getCharacter(filePath: string): Character | undefined {
-        return this.characters.get(filePath);
+        if (!filePath) return undefined;
+        const normalized = normalizePath(filePath);
+        return this.characters.get(normalized) ?? this.characters.get(filePath);
     }
 
     /**
@@ -160,9 +157,10 @@ export class CharacterManager {
      * Create a new character file.
      */
     async createCharacter(folderPath: string, name: string): Promise<Character> {
-        await this.ensureFolder(folderPath);
+        const folder = normalizePath(folderPath);
+        await this.ensureFolder(folder);
         const safeName = name.replace(/[\\/:*?"<>|]/g, '-');
-        const filePath = normalizePath(`${folderPath}/${safeName}.md`);
+        const filePath = normalizePath(`${folder}/${safeName}.md`);
 
         // Check if file already exists
         if (this.app.vault.getAbstractFileByPath(filePath)) {
@@ -189,6 +187,10 @@ export class CharacterManager {
         };
 
         this.characters.set(filePath, character);
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (file instanceof TFile) {
+            setCachedEntry('character', filePath, fileStamp(file), character);
+        }
         return character;
     }
 
@@ -405,7 +407,9 @@ export class CharacterManager {
     private extractBody(content: string): string {
         const clean = content.replace(/[\u200B-\u200F\u2028-\u202F\uFEFF]/g, '');
         const match = clean.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?([\s\S]*)$/);
-        return match ? match[1].trim() : '';
+        if (match) return match[1].trim();
+        // No frontmatter — keep full body so adopt/save does not wipe plain notes.
+        return clean.trim();
     }
 
     private parseStringList(value: unknown): string[] | undefined {

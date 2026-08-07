@@ -25,11 +25,12 @@ import { t } from '../utils/i18n';
 
 // ── Types ─────────────────────────────────────────────
 
-type EntityType = 'scene' | 'character' | 'location' | 'other' | 'prop';
+export type StoryGraphEntityType = 'scene' | 'character' | 'location' | 'other' | 'prop';
+type EntityType = StoryGraphEntityType;
 
 /** Edge subtypes — character-to-character relationships */
 type RelEdgeKind = 'ally' | 'enemy' | 'family' | 'romantic' | 'mentor' | 'other-rel';
-type EdgeKind = EntityType | RelEdgeKind;
+type EdgeKind = EntityType | RelEdgeKind | 'wikilink';
 
 const REL_EDGE_KINDS = new Set<string>(['ally', 'enemy', 'family', 'romantic', 'mentor', 'other-rel']);
 
@@ -61,12 +62,45 @@ interface StoryGraphNode {
     y: number;
     vx: number;
     vy: number;
+    /** Vault-relative path for opening Library entity nodes. */
+    filePath?: string;
 }
 
 interface StoryGraphEdge {
     source: string;   // node id
     target: string;   // node id
     kind: EdgeKind;   // drives colour & dash pattern
+    /** Stable directed key for a real Obsidian wikilink edge. */
+    linkKey?: string;
+    sourcePath?: string;
+    targetPath?: string;
+    relationCategoryId?: string;
+}
+
+export interface StoryGraphDocument {
+    filePath: string;
+    label: string;
+    entityType: StoryGraphEntityType;
+}
+
+export interface StoryGraphWikilink {
+    sourcePath: string;
+    targetPath: string;
+}
+
+export interface StoryGraphRelationCategory {
+    id: string;
+    label: string;
+    color: string;
+}
+
+export interface StoryGraphLinkEdgeInfo {
+    key: string;
+    sourcePath: string;
+    targetPath: string;
+    from: string;
+    to: string;
+    relationCategoryId?: string;
 }
 
 // ── Colours ───────────────────────────────────────────
@@ -86,7 +120,15 @@ function getEntityColors(): Record<EntityType, string> {
     };
 }
 
-function getEdgeColor(kind: EdgeKind): string {
+function getEdgeColor(
+    kind: EdgeKind,
+    relationCategoryId?: string,
+    relationCategories: StoryGraphRelationCategory[] = [],
+): string {
+    if (kind === 'wikilink' && relationCategoryId) {
+        return relationCategories.find(category => category.id === relationCategoryId)?.color
+            || resolveColor('--text-muted', '#6B7280');
+    }
     switch (kind) {
         case 'ally': return resolveColor('--sl-rel-ally', '#4CAF50');
         case 'enemy': return resolveColor('--sl-rel-enemy', '#F44336');
@@ -94,6 +136,7 @@ function getEdgeColor(kind: EdgeKind): string {
         case 'romantic': return resolveColor('--sl-rel-romantic', '#E91E63');
         case 'mentor': return resolveColor('--sl-rel-mentor', '#9C27B0');
         case 'other-rel': return resolveColor('--sl-rel-other', '#9E9E9E');
+        case 'wikilink': return resolveColor('--text-muted', '#6B7280');
         default: return getEntityColors()[kind] || '#999';
     }
 }
@@ -114,6 +157,7 @@ const MAX_STORY_NODES = 120;
 interface StoryEdgeDom {
     line: SVGLineElement;
     hit?: SVGLineElement;
+    label?: SVGTextElement;
     source: string;
     target: string;
     kind: EdgeKind;
@@ -132,6 +176,10 @@ export class StoryGraph {
     private scenes: Scene[];
     private characters: Character[];
     private scanResults: Map<string, LinkScanResult>;
+    private documents: StoryGraphDocument[];
+    private wikilinks: StoryGraphWikilink[];
+    private relationCategories: StoryGraphRelationCategory[];
+    private relationAssignments: Record<string, string>;
     private nodes: StoryGraphNode[] = [];
     private edges: StoryGraphEdge[] = [];
     private nodeById = new Map<string, StoryGraphNode>();
@@ -162,11 +210,15 @@ export class StoryGraph {
     private showRelationships = true;
     private showProps = true;
 
-    /** Optional callback when a scene node is double-clicked */
-    private onSelectScene?: (filePath: string) => void;
+    /** Optional callback when a graph document node is double-clicked. */
+    private onSelectDocument?: (filePath: string) => void;
 
     /** Right-click a character↔character relationship edge */
     private onRelationEdgeContextMenu?: (edge: RelationshipEdgeInfo, event: MouseEvent) => void;
+    /** Right-click an actual Obsidian wikilink edge to set its semantic category. */
+    private onLinkEdgeContextMenu?: (edge: StoryGraphLinkEdgeInfo, event: MouseEvent) => void;
+    /** Open the relation-category manager from the graph toolbar. */
+    private onManageRelationCategories?: () => void;
 
     /** Persist filter changes (e.g. onto the plugin session state) */
     private onFiltersChange?: (filters: StoryGraphFilterState) => void;
@@ -184,15 +236,27 @@ export class StoryGraph {
         onRelationEdgeContextMenu?: (edge: RelationshipEdgeInfo, event: MouseEvent) => void,
         filters?: Partial<StoryGraphFilterState>,
         onFiltersChange?: (filters: StoryGraphFilterState) => void,
+        documents: StoryGraphDocument[] = [],
+        wikilinks: StoryGraphWikilink[] = [],
+        relationCategories: StoryGraphRelationCategory[] = [],
+        relationAssignments: Record<string, string> = {},
+        onLinkEdgeContextMenu?: (edge: StoryGraphLinkEdgeInfo, event: MouseEvent) => void,
+        onManageRelationCategories?: () => void,
     ) {
         this.container = container;
         this.scenes = scenes;
         this.characters = characters;
         this.scanResults = scanResults;
-        this.onSelectScene = onSelectScene;
+        this.onSelectDocument = onSelectScene;
         this.tagTypeOverrides = tagTypeOverrides || {};
         this.onRelationEdgeContextMenu = onRelationEdgeContextMenu;
         this.onFiltersChange = onFiltersChange;
+        this.documents = documents;
+        this.wikilinks = wikilinks;
+        this.relationCategories = relationCategories;
+        this.relationAssignments = relationAssignments;
+        this.onLinkEdgeContextMenu = onLinkEdgeContextMenu;
+        this.onManageRelationCategories = onManageRelationCategories;
         if (filters) {
             if (filters.showScenes !== undefined) this.showScenes = filters.showScenes;
             if (filters.showCharacters !== undefined) this.showCharacters = filters.showCharacters;
@@ -229,7 +293,7 @@ export class StoryGraph {
 
         if (this.nodes.length === 0) {
             const empty = this.container.createDiv('story-graph-empty');
-            empty.createEl('p', { text: t('No wikilinks detected in scene text. Write [[Character]] or [[Location]] in your scenes to see connections here.') });
+            empty.createEl('p', { text: t('No links detected in Library files or scene text. Add an Obsidian wikilink such as [[Character]] to see it here.') });
             return;
         }
 
@@ -353,6 +417,16 @@ export class StoryGraph {
         makeToggle(t('Relationships'), 'heart-handshake', this.showRelationships, v => { this.showRelationships = v; });
         makeToggle(t('Props'), 'tag', this.showProps, v => { this.showProps = v; });
         makeToggle(t('Other'), 'file-text', this.showOther, v => { this.showOther = v; });
+        if (this.onManageRelationCategories) {
+            const manageBtn = bar.createEl('button', {
+                cls: 'story-graph-filter-btn story-graph-manage-relations',
+                attr: { 'aria-label': t('Relation categories') },
+            });
+            const icon = manageBtn.createSpan();
+            obsidian.setIcon(icon, 'tags');
+            manageBtn.createSpan({ text: ` ${t('Relation categories')}` });
+            manageBtn.addEventListener('click', () => this.onManageRelationCategories?.());
+        }
     }
 
     // ── Legend ──────────────────────────────────────────
@@ -388,6 +462,20 @@ export class StoryGraph {
             swatch.setCssStyles({ borderBottomColor: color });
             item.createSpan({ text: label });
         }
+        const defaultLink = legend.createDiv('story-graph-legend-item');
+        const defaultLinkSwatch = defaultLink.createSpan({
+            cls: 'story-graph-legend-swatch story-graph-legend-line',
+        });
+        defaultLinkSwatch.setCssStyles({
+            borderBottomColor: resolveColor('--text-muted', '#6B7280'),
+        });
+        defaultLink.createSpan({ text: t('Default link') });
+        for (const category of this.relationCategories) {
+            const item = legend.createDiv('story-graph-legend-item');
+            const swatch = item.createSpan({ cls: 'story-graph-legend-swatch story-graph-legend-line' });
+            swatch.setCssStyles({ borderBottomColor: category.color });
+            item.createSpan({ text: category.label });
+        }
     }
 
     // ── Graph building ─────────────────────────────────
@@ -396,19 +484,87 @@ export class StoryGraph {
         const nodeMap = new Map<string, StoryGraphNode>();
         const edgeList: StoryGraphEdge[] = [];
 
-        const ensureNode = (id: string, label: string, entityType: EntityType): StoryGraphNode => {
+        const ensureNode = (
+            id: string,
+            label: string,
+            entityType: EntityType,
+            filePath?: string,
+        ): StoryGraphNode => {
             if (!nodeMap.has(id)) {
                 nodeMap.set(id, {
                     id, label, entityType, weight: 0,
                     x: this.width / 2 + (Math.random() - 0.5) * this.width * 0.6,
                     y: this.height / 2 + (Math.random() - 0.5) * this.height * 0.6,
-                    vx: 0, vy: 0,
+                    vx: 0, vy: 0, filePath,
                 });
+            } else if (filePath && !nodeMap.get(id)?.filePath) {
+                nodeMap.get(id)!.filePath = filePath;
             }
             return nodeMap.get(id)!;
         };
 
-        // ── 1. Scene → entity edges (from LinkScanner) ─────────
+        const isVisible = (entityType: EntityType): boolean => {
+            if (entityType === 'scene') return this.showScenes;
+            if (entityType === 'character') return this.showCharacters;
+            if (entityType === 'location') return this.showLocations;
+            if (entityType === 'prop') return this.showProps;
+            return this.showOther;
+        };
+        const documentNodeId = (document: StoryGraphDocument): string =>
+            document.entityType === 'scene'
+                ? `scene::${document.filePath}`
+                : `${document.entityType}::${document.label.toLowerCase()}`;
+        const documentByPath = new Map(this.documents.map(document => [document.filePath, document]));
+        const documentByName = new Map(
+            this.documents.map(document => [document.label.toLowerCase(), document]),
+        );
+        const ensureNamedNode = (label: string, fallbackType: EntityType): StoryGraphNode => {
+            const document = documentByName.get(label.toLowerCase());
+            return document
+                ? ensureNode(documentNodeId(document), document.label, document.entityType, document.filePath)
+                : ensureNode(`${fallbackType}::${label.toLowerCase()}`, label, fallbackType);
+        };
+        const hasEdge = (source: string, target: string): boolean =>
+            edgeList.some(edge => edge.source === source && edge.target === target);
+
+        // ── 1. Real Obsidian wikilinks between Library / scene files ──
+        for (const link of this.wikilinks) {
+            const sourceDocument = documentByPath.get(link.sourcePath);
+            const targetDocument = documentByPath.get(link.targetPath);
+            if (!sourceDocument || !targetDocument) continue;
+            if (!isVisible(sourceDocument.entityType) || !isVisible(targetDocument.entityType)) continue;
+
+            const sourceId = documentNodeId(sourceDocument);
+            const targetId = documentNodeId(targetDocument);
+            if (sourceId === targetId || hasEdge(sourceId, targetId)) continue;
+
+            const sourceNode = ensureNode(
+                sourceId,
+                sourceDocument.label,
+                sourceDocument.entityType,
+                sourceDocument.filePath,
+            );
+            const targetNode = ensureNode(
+                targetId,
+                targetDocument.label,
+                targetDocument.entityType,
+                targetDocument.filePath,
+            );
+            sourceNode.weight++;
+            targetNode.weight++;
+            const linkKey = `${link.sourcePath}=>${link.targetPath}`;
+            edgeList.push({
+                source: sourceId,
+                target: targetId,
+                kind: 'wikilink',
+                linkKey,
+                sourcePath: link.sourcePath,
+                targetPath: link.targetPath,
+                relationCategoryId: this.relationAssignments[linkKey],
+            });
+        }
+
+        // ── 2. Scene → entity edges (plain mentions from LinkScanner) ──
 
         if (this.showScenes) {
             for (const scene of this.scenes) {
@@ -416,17 +572,27 @@ export class StoryGraph {
                 if (!result || result.links.length === 0) continue;
 
                 const sceneId = `scene::${scene.filePath}`;
-                ensureNode(sceneId, scene.title || 'Untitled', 'scene');
+                ensureNode(sceneId, scene.title || 'Untitled', 'scene', scene.filePath);
 
                 for (const link of result.links) {
-                    const resolvedType = (this.tagTypeOverrides[link.name.toLowerCase()] || link.type) as EntityType;
+                    const configuredType = this.tagTypeOverrides[link.name.toLowerCase()] || link.type;
+                    const resolvedType = (configuredType === 'codex' ? 'other' : configuredType) as EntityType;
                     if (resolvedType === 'character' && !this.showCharacters) continue;
                     if (resolvedType === 'location' && !this.showLocations) continue;
                     if (resolvedType === 'other' && !this.showOther) continue;
                     if (resolvedType === 'prop' && !this.showProps) continue;
 
-                    const entityId = `${resolvedType}::${link.name.toLowerCase()}`;
-                    const node = ensureNode(entityId, link.name, resolvedType);
+                    const knownDocument = documentByName.get(link.name.toLowerCase());
+                    const entityId = knownDocument
+                        ? documentNodeId(knownDocument)
+                        : `${resolvedType}::${link.name.toLowerCase()}`;
+                    if (hasEdge(sceneId, entityId)) continue;
+                    const node = ensureNode(
+                        entityId,
+                        knownDocument?.label || link.name,
+                        knownDocument?.entityType || resolvedType,
+                        knownDocument?.filePath,
+                    );
                     nodeMap.get(sceneId)!.weight++;
                     node.weight++;
 
@@ -451,8 +617,8 @@ export class StoryGraph {
                         if (!name) continue;
                         const toId = `character::${name.toLowerCase()}`;
                         // Ensure both nodes exist
-                        ensureNode(fromId, char.name, 'character');
-                        ensureNode(toId, name, 'character');
+                        ensureNamedNode(char.name, 'character');
+                        ensureNamedNode(name, 'character');
                         // Deduplicate bidirectional
                         const fwd = `${fromId}|${toId}|${kind}`;
                         const rev = `${toId}|${fromId}|${kind}`;
@@ -487,7 +653,7 @@ export class StoryGraph {
                 const props = extractCharacterProps(char, this.tagTypeOverrides);
                 if (props.length === 0) continue;
                 const charId = `character::${char.name.toLowerCase()}`;
-                ensureNode(charId, char.name, 'character');
+                ensureNamedNode(char.name, 'character');
 
                 for (const prop of props) {
                     const propId = `prop::${prop.toLowerCase()}`;
@@ -506,7 +672,7 @@ export class StoryGraph {
                 const locTags = extractCharacterLocationTags(char, this.tagTypeOverrides);
                 if (locTags.length === 0) continue;
                 const charId = `character::${char.name.toLowerCase()}`;
-                ensureNode(charId, char.name, 'character');
+                ensureNamedNode(char.name, 'character');
 
                 for (const tag of locTags) {
                     const locId = `location::${tag.toLowerCase()}`;
@@ -525,7 +691,7 @@ export class StoryGraph {
                 const locs = char.locations;
                 if (!locs || locs.length === 0) continue;
                 const charId = `character::${char.name.toLowerCase()}`;
-                ensureNode(charId, char.name, 'character');
+                ensureNamedNode(char.name, 'character');
 
                 for (const loc of locs) {
                     if (!loc) continue;
@@ -536,7 +702,7 @@ export class StoryGraph {
                     // Avoid duplicate edges if a #tag already created this link
                     const fwd = `${charId}|${locId}|location`;
                     if (edgeList.some(e => `${e.source}|${e.target}|${e.kind}` === fwd)) continue;
-                    const locNode = ensureNode(locId, cleanLoc, 'location');
+                    const locNode = ensureNamedNode(cleanLoc, 'location');
                     nodeMap.get(charId)!.weight++;
                     locNode.weight++;
                     edgeList.push({ source: charId, target: locId, kind: 'location' });
@@ -691,10 +857,12 @@ export class StoryGraph {
             if (!a || !b) continue;
 
             const isRelEdge = isRelEdgeKind(edge.kind);
+            const isWikilinkEdge = edge.kind === 'wikilink' && !!edge.linkKey;
             let hit: SVGLineElement | undefined;
 
-            // Wide invisible hit target so relationship edges are easy to right-click
-            if (isRelEdge && this.onRelationEdgeContextMenu) {
+            // Wide invisible hit target so semantic edges are easy to right-click.
+            if ((isRelEdge && this.onRelationEdgeContextMenu)
+                || (isWikilinkEdge && this.onLinkEdgeContextMenu)) {
                 hit = activeDocument.createElementNS(svgNS, 'line');
                 hit.setAttribute('x1', String(a.x));
                 hit.setAttribute('y1', String(a.y));
@@ -709,14 +877,29 @@ export class StoryGraph {
                 const openMenu = (e: MouseEvent) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    this.onRelationEdgeContextMenu?.(
-                        {
+                    if (isRelEdge) {
+                        this.onRelationEdgeContextMenu?.(
+                            {
+                                from: a.label,
+                                to: b.label,
+                                type: relKindToRelationshipType(edge.kind as RelEdgeKind),
+                            },
+                            e,
+                        );
+                    } else if (
+                        edge.linkKey
+                        && edge.sourcePath
+                        && edge.targetPath
+                    ) {
+                        this.onLinkEdgeContextMenu?.({
+                            key: edge.linkKey,
+                            sourcePath: edge.sourcePath,
+                            targetPath: edge.targetPath,
                             from: a.label,
                             to: b.label,
-                            type: relKindToRelationshipType(edge.kind),
-                        },
-                        e,
-                    );
+                            relationCategoryId: edge.relationCategoryId,
+                        }, e);
+                    }
                 };
                 hit.addEventListener('contextmenu', openMenu);
                 hit.addEventListener('click', (e) => {
@@ -729,15 +912,40 @@ export class StoryGraph {
             line.setAttribute('y1', String(a.y));
             line.setAttribute('x2', String(b.x));
             line.setAttribute('y2', String(b.y));
-            line.setAttribute('stroke', getEdgeColor(edge.kind));
-            line.setAttribute('stroke-width', isRelEdge ? '2' : '1.5');
-            line.setAttribute('stroke-opacity', isRelEdge ? '0.65' : '0.45');
-            line.style.pointerEvents = isRelEdge && hit ? 'none' : '';
+            line.setAttribute('stroke', getEdgeColor(
+                edge.kind,
+                edge.relationCategoryId,
+                this.relationCategories,
+            ));
+            line.setAttribute('stroke-width', isRelEdge || isWikilinkEdge ? '2' : '1.5');
+            line.setAttribute('stroke-opacity', isRelEdge || isWikilinkEdge ? '0.7' : '0.45');
+            line.style.pointerEvents = hit ? 'none' : '';
             if (EDGE_DASH[edge.kind]) {
                 line.setAttribute('stroke-dasharray', EDGE_DASH[edge.kind]);
             }
+            const category = edge.relationCategoryId
+                ? this.relationCategories.find(item => item.id === edge.relationCategoryId)
+                : undefined;
+            const title = activeDocument.createElementNS(svgNS, 'title');
+            title.textContent = category
+                ? `${a.label} → ${b.label}: ${category.label}`
+                : `${a.label} → ${b.label}`;
+            line.appendChild(title);
             g.appendChild(line);
-            this.edgeDom.push({ line, hit, source: edge.source, target: edge.target, kind: edge.kind, edge });
+
+            let label: SVGTextElement | undefined;
+            if (isWikilinkEdge && category) {
+                label = activeDocument.createElementNS(svgNS, 'text');
+                label.setAttribute('x', String((a.x + b.x) / 2));
+                label.setAttribute('y', String((a.y + b.y) / 2 - 4));
+                label.setAttribute('text-anchor', 'middle');
+                label.setAttribute('fill', category.color);
+                label.setAttribute('font-size', '10');
+                label.setAttribute('class', 'story-graph-edge-label');
+                label.textContent = category.label;
+                g.appendChild(label);
+            }
+            this.edgeDom.push({ line, hit, label, source: edge.source, target: edge.target, kind: edge.kind, edge });
         }
 
         for (const node of this.nodes) {
@@ -847,6 +1055,10 @@ export class StoryGraph {
                 ed.hit.setAttribute('x2', String(b.x));
                 ed.hit.setAttribute('y2', String(b.y));
             }
+            if (ed.label) {
+                ed.label.setAttribute('x', String((a.x + b.x) / 2));
+                ed.label.setAttribute('y', String((a.y + b.y) / 2 - 4));
+            }
         }
 
         for (const node of this.nodes) {
@@ -915,10 +1127,9 @@ export class StoryGraph {
             window.addEventListener('mouseup', onUp);
         });
 
-        if (node.entityType === 'scene' && this.onSelectScene) {
+        if (node.filePath && this.onSelectDocument) {
             el.addEventListener('dblclick', () => {
-                const filePath = node.id.replace('scene::', '');
-                this.onSelectScene!(filePath);
+                this.onSelectDocument!(node.filePath!);
             });
         }
 

@@ -28,7 +28,7 @@ export interface ViewSwitcherEntry {
 
 export const VIEW_ENTRIES: ViewSwitcherEntry[] = [
     { type: BOARD_VIEW_TYPE, label: 'Board', icon: 'layout-grid' },
-    { type: PLOTGRID_VIEW_TYPE, label: 'Concept Grid', icon: 'table' },
+    { type: PLOTGRID_VIEW_TYPE, label: 'Table', icon: 'table' },
     { type: STORYLINE_VIEW_TYPE, label: 'Plotlines', icon: 'git-branch' },
     { type: TIMELINE_VIEW_TYPE, label: 'Timeline', icon: 'clock' },
     { type: MANUSCRIPT_VIEW_TYPE, label: 'Manuscript', icon: 'book-open-text' },
@@ -285,7 +285,9 @@ function showCodexDropdown(
     for (const id of enabledIds) {
         const builtin = getBuiltinCodexCategory(id);
         const custom = customDefs.find((c: { id: string }) => c.id === id);
-        const def = builtin || custom;
+        const def = builtin && custom
+            ? { ...builtin, label: custom.label, folder: custom.folder, icon: custom.icon }
+            : builtin || custom;
         if (def) {
             // Codex category — navigate to CodexView with this category active
             addDropdownItem(menu, def.icon, t(def.label), false, async () => {

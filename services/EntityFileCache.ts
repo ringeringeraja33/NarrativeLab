@@ -1,0 +1,134 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/**
+ * Shared mtime/size stamp cache for Library entity loaders (ncanvas-style).
+ * Skip vault reads + YAML parse when the file stamp is unchanged.
+ */
+import { App, TFile, TFolder, normalizePath } from 'obsidian';
+
+export interface StampCacheEntry<T> {
+    stamp: string;
+    entry: T;
+}
+
+/** path → stamp cache (shared across managers via typed wrappers) */
+const caches = new Map<string, Map<string, StampCacheEntry<unknown>>>();
+
+function getCache(ns: string): Map<string, StampCacheEntry<unknown>> {
+    let c = caches.get(ns);
+    if (!c) {
+        c = new Map();
+        caches.set(ns, c);
+    }
+    return c;
+}
+
+export function fileStamp(file: TFile): string {
+    return `${Number(file.stat?.mtime || 0)}:${Number(file.stat?.size || 0)}`;
+}
+
+export function getCachedEntry<T>(ns: string, path: string, stamp: string): T | undefined {
+    const hit = getCache(ns).get(normalizePath(path));
+    if (hit && hit.stamp === stamp) return hit.entry as T;
+    return undefined;
+}
+
+export function setCachedEntry<T>(ns: string, path: string, stamp: string, entry: T): void {
+    getCache(ns).set(normalizePath(path), { stamp, entry });
+}
+
+export function invalidateCachedPath(ns: string, path: string): void {
+    getCache(ns).delete(normalizePath(path));
+}
+
+/** Invalidate a path across all entity namespaces (rename/delete). */
+export function invalidateAllEntityCaches(path: string): void {
+    const p = normalizePath(path);
+    for (const c of caches.values()) c.delete(p);
+}
+
+/** Rename cache key across all namespaces. */
+export function renameAllEntityCaches(oldPath: string, newPath: string): void {
+    const from = normalizePath(oldPath);
+    const to = normalizePath(newPath);
+    for (const c of caches.values()) {
+        const hit = c.get(from);
+        if (hit) {
+            c.delete(from);
+            c.set(to, hit);
+        }
+    }
+}
+
+export function clearEntityCache(ns: string): void {
+    getCache(ns).clear();
+}
+
+/** Collect markdown TFiles under a folder via vault tree (preferred) or adapter. */
+export async function collectMarkdownFiles(app: App, folderPath: string): Promise<TFile[]> {
+    const normalized = normalizePath(folderPath);
+    const abstract = app.vault.getAbstractFileByPath(normalized);
+    const out: TFile[] = [];
+    if (abstract instanceof TFolder) {
+        const walk = (folder: TFolder) => {
+            for (const child of folder.children) {
+                if (child instanceof TFolder) walk(child);
+                else if (child instanceof TFile && child.extension === 'md') out.push(child);
+            }
+        };
+        walk(abstract);
+        return out;
+    }
+
+    // Fallback: adapter.list recursion
+    const adapter = app.vault.adapter;
+    const scan = async (folder: string): Promise<void> => {
+        if (!await adapter.exists(folder)) return;
+        const listing = await adapter.list(folder);
+        for (const f of listing.files) {
+            if (f.endsWith('.md')) {
+                const tf = app.vault.getAbstractFileByPath(normalizePath(f));
+                if (tf instanceof TFile) out.push(tf);
+            }
+        }
+        for (const sub of listing.folders) await scan(normalizePath(sub));
+    };
+    await scan(normalized);
+    return out;
+}
+
+/** Read file text preferring vault.cachedRead. */
+export async function readVaultText(app: App, file: TFile): Promise<string> {
+    const vault = app.vault as App['vault'] & { cachedRead?: (f: TFile) => Promise<string> };
+    if (typeof vault.cachedRead === 'function') return vault.cachedRead(file);
+    return app.vault.read(file);
+}
+
+/**
+ * Load/parse a markdown file with stamp cache.
+ * `parse` returns null to skip (not cache a miss as empty unless desired).
+ */
+export async function loadWithStampCache<T>(
+    app: App,
+    ns: string,
+    file: TFile,
+    parse: (content: string, path: string) => T | null | undefined,
+): Promise<T | null> {
+    const path = normalizePath(file.path);
+    const stamp = fileStamp(file);
+    const cached = getCachedEntry<T>(ns, path, stamp);
+    if (cached !== undefined) return cached;
+
+    try {
+        const content = await readVaultText(app, file);
+        const entry = parse(content, path);
+        if (entry == null) {
+            invalidateCachedPath(ns, path);
+            return null;
+        }
+        setCachedEntry(ns, path, stamp, entry);
+        return entry;
+    } catch {
+        return null;
+    }
+}
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ButtonComponent, ItemView, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
+import { ButtonComponent, ItemView, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { LOCATION_VIEW_TYPE } from '../constants';
 import { Scene, resolveStatusCfg } from '../models/Scene';
@@ -30,6 +30,7 @@ import { RenameConfirmModal } from '../components/RenameConfirmModal';
 
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
+import { renderNativeLibraryBase } from '../components/NativeLibraryBase';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import {
     collectDelimitedTags,
@@ -41,6 +42,24 @@ import {
     renderLibraryStoryGraph,
 } from '../components/LibraryModeBar';
 import type { StoryGraph } from '../components/StoryGraph';
+import {
+    getLibraryBrowseLayout,
+    getLibraryFilePropertyOptions,
+    getLibraryFilePropertyValue,
+    getLibraryNotePropertyOptions,
+    getLibraryNotePropertyValue,
+    getLibraryTableSort,
+    getLibraryTableColumns,
+    getLibraryTableFormulas,
+    evaluateLibraryTableFormula,
+    compareLibraryTableValues,
+    pageSlice,
+    renderLibraryBrowseToolbar,
+    renderLibraryTableHeader,
+    setLibraryTableColumns,
+    setLibraryTableSort,
+    LIBRARY_BROWSE_PAGE_SIZE,
+} from '../components/LibraryBrowseLayout';
 
 /**
  * Location View — hierarchical World → Location browser with inline editing.
@@ -70,6 +89,8 @@ export class LocationView extends ItemView {
     private originalItemType: 'world' | 'location' | null = null;
     /** Current search/filter text for overview tree */
     private searchText: string = '';
+    private browseSearchOpen = true;
+    private browseFilterOpen = true;
     private _searchTimer: number | null = null;
     /** Precomputed location-name → scene count for the current overview render */
     private _locationSceneCounts: Map<string, number> | null = null;
@@ -144,8 +165,6 @@ export class LocationView extends ItemView {
 
         renderViewSwitcher(toolbar, LOCATION_VIEW_TYPE, this.plugin, this.leaf);
 
-        const controls = toolbar.createDiv('story-line-toolbar-controls');
-
         // ── Codex category tabs + Browse / Story Graph ──
         renderCodexCategoryTabs(container, {
             activeId: 'locations-pseudo',
@@ -155,18 +174,10 @@ export class LocationView extends ItemView {
             onModeChange: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
+            onCategoriesChanged: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
         });
-
-        // Add buttons
-        const addWorldBtn = controls.createEl('button', { cls: 'clickable-icon' });
-        obsidian.setIcon(addWorldBtn, 'map-plus');
-        attachTooltip(addWorldBtn, t('New World'));
-        addWorldBtn.addEventListener('click', () => this.promptNewWorld());
-
-        const addLocBtn = controls.createEl('button', { cls: 'clickable-icon' });
-        obsidian.setIcon(addLocBtn, 'map-pin-plus-inside');
-        attachTooltip(addLocBtn, t('New Location'));
-        addLocBtn.addEventListener('click', () => this.promptNewLocation());
 
         const content = container.createDiv('story-line-location-content');
 
@@ -205,69 +216,232 @@ export class LocationView extends ItemView {
         return false;
     }
 
+    /** Flat cards / table for Locations browse (list keeps the world tree). */
+    private renderLocationBrowseAlt(
+        container: HTMLElement,
+        layout: 'cards' | 'table',
+        items: WorldOrLocation[],
+    ): void {
+        let shown = LIBRARY_BROWSE_PAGE_SIZE;
+        const host = container.createDiv('location-browse-alt');
+        const paint = () => {
+            host.empty();
+            const { visible, hasMore } = pageSlice(items, shown);
+            if (layout === 'cards') {
+                const grid = host.createDiv('codex-entry-cards');
+                for (const item of visible) {
+                    const card = grid.createDiv('codex-entry-card');
+                    const cover = card.createDiv('codex-entry-card-cover');
+                    if (item.image) {
+                        const src = resolveImagePath(this.app, item.image);
+                        if (src) cover.createEl('img', { attr: { src, alt: '', loading: 'lazy' } });
+                        else obsidian.setIcon(cover, item.type === 'world' ? 'globe' : 'map-pin');
+                    } else {
+                        obsidian.setIcon(cover, item.type === 'world' ? 'globe' : 'map-pin');
+                    }
+                    card.createEl('h4', { text: item.name });
+                    if (item.type === 'location' && item.locationType) {
+                        card.createSpan({ cls: 'codex-entry-type-badge', text: item.locationType });
+                    } else if (item.type === 'world') {
+                        card.createSpan({ cls: 'codex-entry-type-badge', text: t('World') });
+                    }
+                    if (item.type === 'location' && item.world) {
+                        card.createSpan({ cls: 'codex-entry-card-meta', text: item.world });
+                    }
+                    card.addEventListener('click', () => {
+                        this.selectedItem = item.filePath;
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    });
+                }
+            } else {
+                const cols = getLibraryTableColumns(this.plugin, 'locations') ?? ['type', 'world'];
+                const propertyLabels = new Map<string, string>([
+                    ['type', 'type'] as [string, string],
+                    ['world', 'world'] as [string, string],
+                    ...getLibraryFilePropertyOptions().map(property => [property.key, property.label] as [string, string]),
+                ]);
+                const formulas = getLibraryTableFormulas(this.plugin, 'locations');
+                for (const formula of formulas) propertyLabels.set(`formula:${formula.id}`, formula.name);
+                const resolveValue = (item: WorldOrLocation, key: string): unknown => {
+                    if (key.startsWith('file.')) {
+                        return getLibraryFilePropertyValue(this.plugin, item.filePath, key);
+                    }
+                    if (key === 'name') return item.name;
+                    if (key === 'type') {
+                        return item.type === 'world'
+                            ? t('World')
+                            : (item.locationType || t('Location'));
+                    }
+                    if (key === 'world') {
+                        return item.type === 'location' ? (item.world || item.parent || '') : '';
+                    }
+                    const direct = (item as unknown as Record<string, unknown>)[key];
+                    return direct !== undefined
+                        ? direct
+                        : getLibraryNotePropertyValue(this.plugin, item.filePath, key);
+                };
+                const valueForColumn = (item: WorldOrLocation, key: string): unknown => {
+                    const formula = key.startsWith('formula:')
+                        ? formulas.find(value => value.id === key.slice('formula:'.length))
+                        : undefined;
+                    return formula
+                        ? evaluateLibraryTableFormula(formula.expression, property => resolveValue(item, property))
+                        : resolveValue(item, key);
+                };
+                const tableSort = getLibraryTableSort(this.plugin, 'locations');
+                const tableItems = [...items];
+                if (tableSort) {
+                    tableItems.sort((left, right) => {
+                        const result = compareLibraryTableValues(
+                            valueForColumn(left, tableSort.key),
+                            valueForColumn(right, tableSort.key),
+                        );
+                        return tableSort.direction === 'asc' ? result : -result;
+                    });
+                }
+                const tableVisible = pageSlice(tableItems, shown).visible;
+                const wrap = host.createDiv('library-base-table-wrap');
+                const table = wrap.createEl('table', { cls: 'library-base-table' });
+                const hr = table.createEl('thead').createEl('tr');
+                renderLibraryTableHeader(hr, 'name', 'name', tableSort, sort => {
+                    void setLibraryTableSort(this.plugin, 'locations', sort).then(paint);
+                });
+                for (const key of cols) {
+                    renderLibraryTableHeader(hr, propertyLabels.get(key) || key, key, tableSort, sort => {
+                        void setLibraryTableSort(this.plugin, 'locations', sort).then(paint);
+                    });
+                }
+                const tbody = table.createEl('tbody');
+                for (const item of tableVisible) {
+                    const tr = tbody.createEl('tr');
+                    const nameTd = tr.createEl('td');
+                    const btn = nameTd.createEl('button', {
+                        cls: 'library-base-table-name-btn',
+                        text: item.name,
+                    });
+                    btn.addEventListener('click', () => {
+                        this.selectedItem = item.filePath;
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    });
+                    for (const key of cols) {
+                        const value = valueForColumn(item, key);
+                        tr.createEl('td', {
+                            text: Array.isArray(value) ? value.join(', ') : String(value ?? ''),
+                        });
+                    }
+                }
+            }
+            if (hasMore) {
+                const more = host.createEl('button', {
+                    cls: 'mod-cta library-browse-load-more',
+                    text: t('Load more'),
+                });
+                more.addEventListener('click', () => {
+                    shown += LIBRARY_BROWSE_PAGE_SIZE;
+                    paint();
+                });
+            }
+        };
+        paint();
+    }
+
     // ── Overview: tree hierarchy ───────────────────────
 
     private renderOverview(container: HTMLElement): void {
         container.empty();
+        if (getLibraryContentMode(this.plugin) === 'browse') {
+            void renderNativeLibraryBase(container, this.plugin, 'locations', this);
+            return;
+        }
         container.createEl('h3', { text: t('Worlds & Locations') });
 
-        // Search + Sort
-        const searchRow = container.createDiv('codex-search-row');
-        const searchInput = searchRow.createEl('input', {
-            cls: 'codex-search-input',
-            attr: { type: 'text', placeholder: t('Search locations…') },
-        });
-        searchInput.value = this.searchText;
-        // Only re-focus the search input if this view already had focus —
-        // otherwise external refreshes steal focus from the manuscript
-        // editor in split view (issue #221).
-        const hadFocus = activeDocument.activeElement?.closest('.story-line-location-container') != null;
-        searchInput.addEventListener('input', () => {
-            this.searchText = searchInput.value;
-            if (this._searchTimer !== null) window.clearTimeout(this._searchTimer);
-            this._searchTimer = window.setTimeout(() => {
-                this._searchTimer = null;
+        const locationPropertyFiles: WorldOrLocation[] = [
+            ...this.locationManager.getAllWorlds(),
+            ...this.locationManager.getAllLocations(),
+        ];
+        const locProps = [
+            { key: 'type', label: 'type', type: 'note' as const },
+            { key: 'world', label: 'world', type: 'note' as const },
+            ...getLibraryNotePropertyOptions(
+                this.plugin,
+                locationPropertyFiles.map(item => item.filePath),
+            ).filter(property => property.key !== 'type' && property.key !== 'world'),
+            ...getLibraryFilePropertyOptions(),
+        ];
+        const savedLocCols = getLibraryTableColumns(this.plugin, 'locations');
+        const selectedLocProps = savedLocCols !== undefined
+            ? savedLocCols
+            : ['type', 'world'];
+
+        const { searchInput, chipHost } = renderLibraryBrowseToolbar(container, {
+            plugin: this.plugin,
+            categoryId: 'locations',
+            sortOptions: [
+                { value: 'name', label: t('Name') },
+                { value: 'modified', label: t('Last edited') },
+                { value: 'created', label: t('Date created') },
+                { value: 'type', label: t('Type') },
+            ],
+            sortBy: this.sortBy,
+            onSortChange: (value) => {
+                this.sortBy = value as 'type' | 'name' | 'created' | 'modified';
                 this.renderOverview(container);
-            }, 180);
+            },
+            searchText: this.searchText,
+            searchPlaceholder: t('Search locations…'),
+            searchOpen: this.browseSearchOpen,
+            onSearchOpenChange: (open) => {
+                this.browseSearchOpen = open;
+                this.renderOverview(container);
+            },
+            onSearchChange: (value) => {
+                this.searchText = value;
+                this.renderOverview(container);
+            },
+            filterOpen: this.browseFilterOpen,
+            filterCount: this.activeTagFilters.size,
+            onFilterOpenChange: (open) => {
+                this.browseFilterOpen = open;
+                this.renderOverview(container);
+            },
+            properties: locProps,
+            selectedProperties: selectedLocProps,
+            onPropertiesChange: async (keys) => {
+                await setLibraryTableColumns(this.plugin, 'locations', keys);
+                this.renderOverview(container);
+            },
+            onNew: (ev) => {
+                const menu = new Menu();
+                menu.addItem(item => item.setTitle(t('New World')).onClick(() => this.promptNewWorld()));
+                menu.addItem(item => item.setTitle(t('New Location')).onClick(() => this.promptNewLocation()));
+                menu.showAtMouseEvent(ev);
+            },
+            newLabel: t('New'),
+            onLayoutChange: () => this.renderOverview(container),
+            appendExtra: (actionsEl) => {
+                const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
+                const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
+                if (!inSeries || !currentBook) return;
+                const filterToggle = actionsEl.createEl('button', {
+                    cls: `codex-book-filter${this.bookFilterActive ? ' active' : ''}`,
+                    text: this.bookFilterActive ? t('Showing: {book}', { book: currentBook }) : t('All projects'),
+                });
+                attachTooltip(filterToggle, this.bookFilterActive
+                    ? t('Click to show all series locations')
+                    : t('Click to hide entries not in “{book}”', { book: currentBook }));
+                filterToggle.addEventListener('click', () => {
+                    this.bookFilterActive = !this.bookFilterActive;
+                    this.renderOverview(container);
+                });
+            },
         });
-        if (hadFocus) {
+
+        const hadFocus = activeDocument.activeElement?.closest('.story-line-location-container') != null;
+        if (searchInput && (hadFocus || this.browseSearchOpen)) {
             window.setTimeout(() => {
                 searchInput.focus();
                 searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
             }, 0);
-        }
-
-        searchRow.createSpan({ cls: 'codex-sort-label', text: t('Sort by') });
-        const sortSelect = searchRow.createEl('select', { cls: 'codex-sort-select' });
-        for (const opt of [
-            { value: 'name', label: 'Name' },
-            { value: 'modified', label: 'Last edited' },
-            { value: 'created', label: 'Date created' },
-            { value: 'type', label: 'Type' },
-        ]) {
-            const el = sortSelect.createEl('option', { text: opt.label, value: opt.value });
-            if (this.sortBy === opt.value) el.selected = true;
-        }
-        sortSelect.addEventListener('change', () => {
-            this.sortBy = sortSelect.value as 'type' | 'name' | 'created' | 'modified';
-            this.renderOverview(container);
-        });
-
-        // Series book filter
-        const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
-        const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
-        if (inSeries && currentBook) {
-            const filterToggle = searchRow.createEl('button', {
-                cls: `codex-book-filter${this.bookFilterActive ? ' active' : ''}`,
-                text: this.bookFilterActive ? `Showing: ${currentBook}` : 'All projects',
-            });
-            attachTooltip(filterToggle, this.bookFilterActive
-                ? `Click to show all series locations`
-                : `Click to hide entries not in “${currentBook}”`);
-            filterToggle.addEventListener('click', () => {
-                this.bookFilterActive = !this.bookFilterActive;
-                this.renderOverview(container);
-            });
         }
 
         // Collect locationType + #hashtag labels for chip filter
@@ -286,12 +460,13 @@ export class LocationView extends ItemView {
             for (const loc of this.locationManager.getLocationsForWorld(w.name)) collectItemTags(loc);
         }
         for (const loc of allOrphansForTags) collectItemTags(loc);
-        const chipHost = container.createDiv('story-line-filter-chips character-tag-filter-chips library-filter-chips');
         renderLibraryFilterChips(chipHost, tagLabels, this.activeTagFilters, () => {
+            if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
             this.renderOverview(container);
         });
 
         const q = this.searchText.toLowerCase();
+        const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
 
         const allWorlds = this.locationManager.getAllWorlds();
         const allOrphans = this.locationManager.getOrphanLocations();
@@ -382,6 +557,22 @@ export class LocationView extends ItemView {
             const empty = container.createDiv('location-empty-state');
             empty.createEl('h4', { text: t('No matching locations') });
             empty.createEl('p', { text: t('Try clearing search or tag filters.') });
+            return;
+        }
+
+        const layout = getLibraryBrowseLayout(this.plugin, 'locations');
+        if (layout === 'cards' || layout === 'table') {
+            const flat: WorldOrLocation[] = [];
+            for (const world of worlds) {
+                flat.push(world);
+                for (const loc of this.locationManager.getLocationsForWorld(world.name)) {
+                    if (q && !loc.name.toLowerCase().includes(q) && !world.name.toLowerCase().includes(q)) continue;
+                    if (this.activeTagFilters.size > 0 && !this.itemMatchesTagFilters(loc) && !this.itemMatchesTagFilters(world)) continue;
+                    flat.push(loc);
+                }
+            }
+            flat.push(...orphanLocations);
+            this.renderLocationBrowseAlt(container, layout, flat);
             return;
         }
 
@@ -830,6 +1021,7 @@ export class LocationView extends ItemView {
 
         // Cross-entity references
         this.renderReferencesPanel(sidePanel, item.name);
+        this.renderNotesSection(sidePanel, draft);
     }
 
     private renderCategory(
@@ -1486,6 +1678,21 @@ export class LocationView extends ItemView {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
         };
+    }
+
+    private renderNotesSection(container: HTMLElement, draft: WorldOrLocation): void {
+        const section = container.createDiv('codex-side-section entity-notes-section');
+        section.createEl('h4', { text: t('Notes') });
+
+        const textarea = section.createEl('textarea', {
+            cls: 'codex-notes-textarea',
+            attr: { placeholder: t('Free-form notes (markdown)…'), rows: '12' },
+        });
+        textarea.value = draft.notes || '';
+        textarea.addEventListener('input', () => {
+            draft.notes = textarea.value;
+            this.scheduleSave(draft);
+        });
     }
 
     // ── Side panels ────────────────────────────────────

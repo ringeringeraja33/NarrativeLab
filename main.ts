@@ -42,7 +42,13 @@ import {
     isConceptGridDocumentEmpty,
     normalizeConceptGridDocument,
 } from './models/PlotGridData';
-import { deriveProjectFoldersFromFilePath, type SeriesMetadata, type StoryLineProject } from './models/StoryLineProject';
+import {
+    deriveProjectFoldersFromFilePath,
+    LEGACY_CANVAS_FOLDER,
+    LEGACY_NCANVAS_FOLDER,
+    type SeriesMetadata,
+    type StoryLineProject,
+} from './models/StoryLineProject';
 import { BoardView } from './views/BoardView';
 import { TimelineView } from './views/TimelineView';
 import { StorylineView } from './views/StorylineView';
@@ -62,6 +68,21 @@ import { LocationManager } from './services/LocationManager';
 import { CharacterManager } from './services/CharacterManager';
 import { CodexManager } from './services/CodexManager';
 import { makeCustomCodexCategory } from './models/Codex';
+import {
+    collectMarkdownFiles,
+    invalidateAllEntityCaches,
+    readVaultText,
+    renameAllEntityCaches,
+} from './services/EntityFileCache';
+import {
+    adoptLibraryTargets,
+    type LibraryAdoptTarget,
+} from './services/LibraryEntityAdoption';
+import {
+    applyCategoryFolderLabels,
+    ensureLibraryCategoryFolders,
+    handleLibraryFolderVaultRename,
+} from './services/LibraryCategorySync';
 import { QuickAddModal } from './components/QuickAddModal';
 import { ExportModal } from './components/ExportModal';
 import {
@@ -130,6 +151,10 @@ export default class SceneCardsPlugin extends Plugin {
     private _reloadEntitiesPromise: Promise<void> | null = null;
     /** Timestamp of the last completed reloadEntities() pass. */
     private _lastEntitiesReloadAt = 0;
+    /** True while writing type/name frontmatter onto plain Library notes. */
+    private _adoptingLibrary = false;
+    /** True while UI-driven Library folder rename is in progress. */
+    _syncingLibraryFolders = false;
     /** The leaf currently hosting a NarrativeLab view */
     storyLeaf: WorkspaceLeaf | null = null;
     /** Removes native browser tooltips (`title`) inside NarrativeLab UI */
@@ -701,7 +726,9 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
+                if (this._adoptingLibrary) return;
                 if (file instanceof TFile) {
+                    invalidateAllEntityCaches(file.path);
                     this.sceneManager.handleFileChange(file).then(() => debouncedRefresh());
                 }
             })
@@ -711,6 +738,7 @@ export default class SceneCardsPlugin extends Plugin {
         // modify — adopt those files so they appear on the board with Notes ON.
         this.registerEvent(
             this.app.vault.on('create', (file) => {
+                if (this._adoptingLibrary) return;
                 if (file instanceof TFile) {
                     this.sceneManager.handleFileCreate(file).then(() => debouncedRefresh());
                 }
@@ -719,7 +747,15 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.registerEvent(
             this.app.vault.on('delete', (file) => {
+                if (file instanceof TFolder) {
+                    // Draft roots live at Scenes/<name>/ — drop ghost drafts when folder is trashed
+                    this.sceneManager.handleDraftFolderDelete(file.path).then((changed) => {
+                        if (changed) debouncedRefresh();
+                    });
+                    return;
+                }
                 if (file instanceof TFile) {
+                    invalidateAllEntityCaches(file.path);
                     this.sceneManager.handleFileDelete(file.path);
                     debouncedRefresh();
                 }
@@ -729,13 +765,19 @@ export default class SceneCardsPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('rename', (file, oldPath) => {
                 if (file instanceof TFolder) {
-                    // Draft roots live at Scenes/<name>/ — keep sidebar label in sync
-                    this.sceneManager.handleDraftFolderRename(oldPath, file.path).then((changed) => {
-                        if (changed) debouncedRefresh();
-                    });
+                    void (async () => {
+                        // Draft roots live at Scenes/<name>/ — keep sidebar label in sync
+                        const draftChanged = await this.sceneManager.handleDraftFolderRename(oldPath, file.path);
+                        let libraryChanged = false;
+                        if (!this._syncingLibraryFolders) {
+                            libraryChanged = await handleLibraryFolderVaultRename(this, oldPath, file.path);
+                        }
+                        if (draftChanged || libraryChanged) debouncedRefresh();
+                    })();
                     return;
                 }
                 if (file instanceof TFile) {
+                    renameAllEntityCaches(oldPath, file.path);
                     this.sceneManager.handleFileRename(file, oldPath).then(async () => {
                         // Update any PlotGrid cells that reference the old path
                         await this.updatePlotGridLinkedSceneIds(oldPath, file.path);
@@ -2172,20 +2214,96 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     private async reloadEntitiesUncoalesced(): Promise<void> {
-        await this.loadActiveProjectEntities();
-        // Re-load codex entries from the project Library folder, then pick up
-        // any remaining notes (root / misc folders) without re-reading files
-        // already loaded by category scans. External folders are scanned once.
+        // Init Codex category defs first so Library adopt knows folder → type.
         const codexFolder = this.sceneManager.getCodexFolder();
         if (codexFolder) {
             const customDefs = (this.settings.codexCustomCategories || []).map(
                 (cc: { id: string; label: string; icon: string }) => makeCustomCodexCategory(cc.id, cc.label, cc.icon)
             );
             this.codexManager.initCategories(this.settings.codexEnabledCategories || [], customDefs);
+            // Tab label === Library folder basename (project overrides win).
+            applyCategoryFolderLabels(this);
+        }
+
+        // Plain .md dropped into Library/<Category>/ get type/name frontmatter.
+        await this.adoptLibraryEntityFiles();
+
+        await this.loadActiveProjectEntities();
+        // Re-load codex entries from the project Library folder, then pick up
+        // any remaining notes (root / misc folders) without re-reading files
+        // already loaded by category scans. External folders are scanned once.
+        if (codexFolder) {
             await this.codexManager.loadAll(codexFolder);
             await this.scanLibraryFolder(codexFolder, { skipLoaded: true });
         }
         await this.scanExtraFolders();
+    }
+
+    /**
+     * Write minimal frontmatter onto vault files that were created outside
+     * NarrativeLab under a known Library category folder (Characters,
+     * Locations, Items, …). Preserves body text; skips files that already
+     * declare a different entity type.
+     */
+    private async adoptLibraryEntityFiles(): Promise<void> {
+        if (this._adoptingLibrary) return;
+        const targets: LibraryAdoptTarget[] = [];
+
+        const charFolder = this.sceneManager.getCharacterFolder();
+        if (charFolder) targets.push({ folderPath: charFolder, type: 'character' });
+        const localChar = this.sceneManager.getProjectLocalCharacterFolder();
+        if (localChar && localChar !== charFolder) {
+            targets.push({ folderPath: localChar, type: 'character' });
+        }
+
+        const locFolder = this.sceneManager.getLocationFolder();
+        if (locFolder) {
+            targets.push({
+                folderPath: locFolder,
+                type: 'location',
+                allowedTypes: ['location', 'world'],
+            });
+        }
+        const localLoc = this.sceneManager.getProjectLocalLocationFolder();
+        if (localLoc && localLoc !== locFolder) {
+            targets.push({
+                folderPath: localLoc,
+                type: 'location',
+                allowedTypes: ['location', 'world'],
+            });
+        }
+
+        const codexFolder = this.sceneManager.getCodexFolder();
+        if (codexFolder) {
+            for (const cat of this.codexManager.getCategories()) {
+                targets.push({
+                    folderPath: normalizePath(`${codexFolder}/${cat.folder}`),
+                    type: cat.id,
+                });
+            }
+            // Project-local Library when series redirects getCodexFolder() away.
+            const project = this.sceneManager.activeProject;
+            const projectCodex = project?.codexFolder
+                ? normalizePath(project.codexFolder)
+                : null;
+            if (projectCodex && projectCodex !== normalizePath(codexFolder)) {
+                for (const cat of this.codexManager.getCategories()) {
+                    targets.push({
+                        folderPath: normalizePath(`${projectCodex}/${cat.folder}`),
+                        type: cat.id,
+                    });
+                }
+            }
+        }
+
+        if (targets.length === 0) return;
+
+        this._adoptingLibrary = true;
+        try {
+            await adoptLibraryTargets(this.app, targets);
+        } finally {
+            this._adoptingLibrary = false;
+        }
     }
 
     /**
@@ -2229,18 +2347,22 @@ export default class SceneCardsPlugin extends Plugin {
         this.canvasModule = canvas;
     }
 
-    /** Resolve .ncanvas paths for a NarrativeLab project (NCanvas/ subfolder, with legacy Canvas/ fallback). */
+    /** Resolve .ncanvas paths for a NarrativeLab project (System/NCanvas, with legacy root fallbacks). */
     getNcanvasPathsForProject(project: StoryLineProject): { canvasFolder: string; candidates: string[] } {
         const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const canvasFolder = normalizePath(folders.canvasFolder);
-        const legacyCanvasFolder = normalizePath(`${folders.baseFolder}/Canvas`);
+        const legacyNCanvasFolder = normalizePath(`${folders.baseFolder}/${LEGACY_NCANVAS_FOLDER}`);
+        const legacyCanvasFolder = normalizePath(`${folders.baseFolder}/${LEGACY_CANVAS_FOLDER}`);
         const baseFolder = normalizePath(folders.baseFolder);
         const isNcanvas = (file: TFile) => ['ncanvas', 'narrativecanvas'].includes(file.extension.toLowerCase());
         const belongsToProject = (path: string): boolean => {
             const normalized = normalizePath(path);
             const slash = normalized.lastIndexOf('/');
             const parent = slash >= 0 ? normalized.slice(0, slash) : '';
-            return parent === canvasFolder || parent === legacyCanvasFolder || parent === baseFolder;
+            return parent === canvasFolder
+                || parent === legacyNCanvasFolder
+                || parent === legacyCanvasFolder
+                || parent === baseFolder;
         };
         const filesInFolder = (folder: string) => this.app.vault.getFiles()
             .filter(file => {
@@ -2252,7 +2374,8 @@ export default class SceneCardsPlugin extends Plugin {
             .sort((a, b) => a.localeCompare(b));
 
         const inCanvasFolder = filesInFolder(canvasFolder);
-        const inLegacyCanvasFolder = canvasFolder !== legacyCanvasFolder ? filesInFolder(legacyCanvasFolder) : [];
+        const inLegacyNCanvas = canvasFolder !== legacyNCanvasFolder ? filesInFolder(legacyNCanvasFolder) : [];
+        const inLegacyCanvas = filesInFolder(legacyCanvasFolder);
         const legacyInBase = this.app.vault.getFiles()
             .filter(file => {
                 const slash = file.path.lastIndexOf('/');
@@ -2273,11 +2396,25 @@ export default class SceneCardsPlugin extends Plugin {
             ...(remembered && belongsToProject(remembered)
                 && this.app.vault.getAbstractFileByPath(remembered) ? [remembered] : []),
             ...inCanvasFolder,
-            ...inLegacyCanvasFolder,
+            ...inLegacyNCanvas,
+            ...inLegacyCanvas,
             ...legacyInBase,
         ])];
 
         return { canvasFolder, candidates: ordered };
+    }
+
+    /** Create nested vault folders as needed (e.g. System/NCanvas). */
+    private async ensureVaultFolder(folder: string): Promise<void> {
+        const adapter = this.app.vault.adapter;
+        const parts = normalizePath(folder).split('/').filter(Boolean);
+        let cur = '';
+        for (const part of parts) {
+            cur = cur ? `${cur}/${part}` : part;
+            if (!await adapter.exists(cur)) {
+                await this.app.vault.createFolder(cur);
+            }
+        }
     }
 
     /** Open the per-project NCanvas manager (list / new / CN·EN samples). */
@@ -2342,10 +2479,7 @@ export default class SceneCardsPlugin extends Plugin {
             return null;
         }
         const { canvasFolder } = this.getNcanvasPathsForProject(project);
-        const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(canvasFolder)) {
-            await this.app.vault.createFolder(canvasFolder);
-        }
+        await this.ensureVaultFolder(canvasFolder);
         const title = String(name || '').trim() || t('Untitled Canvas');
         const safeTitle = title.replace(/[\\/:*?"<>|]/g, '-');
         const path = await this.uniqueNcanvasPath(canvasFolder, `${safeTitle}.ncanvas`);
@@ -2368,10 +2502,7 @@ export default class SceneCardsPlugin extends Plugin {
             return null;
         }
         const { canvasFolder } = this.getNcanvasPathsForProject(project);
-        const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(canvasFolder)) {
-            await this.app.vault.createFolder(canvasFolder);
-        }
+        await this.ensureVaultFolder(canvasFolder);
         const filename = SAMPLE_NCANVAS_FILENAMES[language];
         const path = normalizePath(`${canvasFolder}/${filename}`);
         const created = await canvas.createSampleProjectAtPath(path, language);
@@ -2391,9 +2522,7 @@ export default class SceneCardsPlugin extends Plugin {
         if (project && this.canvasModule.openOrCreateProjectAtPath) {
             const { canvasFolder, candidates } = this.getNcanvasPathsForProject(project);
             const adapter = this.app.vault.adapter;
-            if (!await adapter.exists(canvasFolder)) {
-                await this.app.vault.createFolder(canvasFolder);
-            }
+            await this.ensureVaultFolder(canvasFolder);
             // Match the manually renamed project manifest/folder, while keeping
             // frontmatter `title` as the human-readable canvas title.
             const manifestName = project.filePath.split('/').pop()?.replace(/\.md$/i, '') || project.title;
@@ -2404,7 +2533,8 @@ export default class SceneCardsPlugin extends Plugin {
                 : '';
             const projectBase = deriveProjectFoldersFromFilePath(project.filePath).baseFolder;
             const preferredBelongsToProject = preferredParent === canvasFolder
-                || preferredParent === normalizePath(`${projectBase}/Canvas`)
+                || preferredParent === normalizePath(`${projectBase}/${LEGACY_NCANVAS_FOLDER}`)
+                || preferredParent === normalizePath(`${projectBase}/${LEGACY_CANVAS_FOLDER}`)
                 || preferredParent === projectBase;
             const path = (normalizedPreferred && preferredBelongsToProject && await adapter.exists(normalizedPreferred))
                 ? normalizedPreferred
@@ -2451,35 +2581,28 @@ export default class SceneCardsPlugin extends Plugin {
         folderPath: string,
         options: { skipLoaded?: boolean } = {},
     ): Promise<void> {
-        const adapter = this.app.vault.adapter;
         const skipLoaded = options.skipLoaded === true;
         const alreadyLoaded = (filePath: string): boolean =>
             !!this.codexManager.getEntry(filePath)
             || !!this.characterManager.getCharacter(filePath)
             || !!this.locationManager.getItem(filePath);
-        const scan = async (folder: string): Promise<void> => {
-            if (!folder || !await adapter.exists(folder)) return;
-            const listing = await adapter.list(folder);
-            for (const path of listing.files) {
-                if (!path.endsWith('.md')) continue;
-                try {
-                    const filePath = normalizePath(path);
-                    // After loadAll / loadCharacters / loadAll locations, category
-                    // folders were already read — skip those files to cut I/O ~2×.
-                    if (skipLoaded && alreadyLoaded(filePath)) continue;
-                    const content = await adapter.read(filePath);
-                    const type = this.extractFrontmatterType(content);
-                    if (!type) continue;
-                    if (type === 'character') this.characterManager.addFile(content, filePath);
-                    else if (type === 'location' || type === 'world') this.locationManager.addFile(content, filePath);
-                    else if (type !== 'scene' && type !== 'narrative-lab' && type !== 'storyline') {
-                        this.codexManager.addFile(content, filePath);
-                    }
-                } catch { /* unreadable Library entry */ }
-            }
-            for (const subfolder of listing.folders) await scan(normalizePath(subfolder));
-        };
-        await scan(normalizePath(folderPath));
+        const files = await collectMarkdownFiles(this.app, folderPath);
+        for (const file of files) {
+            try {
+                const filePath = normalizePath(file.path);
+                // After loadAll / loadCharacters / loadAll locations, category
+                // folders were already read — skip those files to cut I/O ~2×.
+                if (skipLoaded && alreadyLoaded(filePath)) continue;
+                const content = await readVaultText(this.app, file);
+                const type = this.extractFrontmatterType(content);
+                if (!type) continue;
+                if (type === 'character') this.characterManager.addFile(content, filePath);
+                else if (type === 'location' || type === 'world') this.locationManager.addFile(content, filePath);
+                else if (type !== 'scene' && type !== 'narrative-lab' && type !== 'storyline') {
+                    this.codexManager.addFile(content, filePath);
+                }
+            } catch { /* unreadable Library entry */ }
+        }
     }
 
     /**
@@ -2850,11 +2973,16 @@ export default class SceneCardsPlugin extends Plugin {
             if (legacyKey in raw) { delete raw[legacyKey]; dirty = true; }
         }
 
-        // ── Phase 2: move JSON files from project root → System/ ──
+        // ── Phase 2: move JSON / NCanvas files from project root → System/ ──
         try {
             await this.migrateJsonFilesToSystem();
         } catch (e) {
             console.error('[NarrativeLab] migrateJsonFilesToSystem error:', e);
+        }
+        try {
+            await this.migrateNCanvasFoldersToSystem();
+        } catch (e) {
+            console.error('[NarrativeLab] migrateNCanvasFoldersToSystem error:', e);
         }
 
         // ── Phase 3: migrate per-project data from data.json → System/ files ──
@@ -2996,7 +3124,11 @@ export default class SceneCardsPlugin extends Plugin {
      */
     private async migrateJsonFilesToSystem(): Promise<void> {
         const adapter = this.app.vault.adapter;
-        const jsonFiles = ['plotgrid.json', 'timeline.json', 'board.json', 'plotlines.json', 'stats.json'];
+        const jsonFiles = [
+            'plotgrid.json', 'timeline.json', 'board.json', 'plotlines.json',
+            'stats.json', 'characters.json', 'codex-digests.json', 'manuscript-state.json',
+            'field-templates.json',
+        ];
 
         for (const project of this.sceneManager.getProjects()) {
             const baseFolder = project.sceneFolder
@@ -3018,9 +3150,7 @@ export default class SceneCardsPlugin extends Plugin {
                     }
 
                     // Ensure System/ folder exists
-                    if (!await adapter.exists(sysFolder)) {
-                        await this.app.vault.createFolder(sysFolder);
-                    }
+                    await this.ensureVaultFolder(sysFolder);
 
                     // Read old file content and write to new location
                     const content = await adapter.read(oldPath);
@@ -3035,6 +3165,81 @@ export default class SceneCardsPlugin extends Plugin {
                     console.warn(`[NarrativeLab] Failed to migrate ${oldPath} → ${newPath}:`, e);
                 }
             }
+        }
+    }
+
+    /**
+     * Move project-root NCanvas/ / Canvas/ (and loose .ncanvas) into System/NCanvas/.
+     */
+    private async migrateNCanvasFoldersToSystem(): Promise<void> {
+        const adapter = this.app.vault.adapter;
+
+        for (const project of this.sceneManager.getProjects()) {
+            const folders = deriveProjectFoldersFromFilePath(project.filePath);
+            const destFolder = normalizePath(folders.canvasFolder);
+            const baseFolder = normalizePath(folders.baseFolder);
+            const legacyFolders = [
+                normalizePath(`${baseFolder}/${LEGACY_NCANVAS_FOLDER}`),
+                normalizePath(`${baseFolder}/${LEGACY_CANVAS_FOLDER}`),
+            ].filter(folder => folder !== destFolder);
+
+            const moveFile = async (fromPath: string) => {
+                const name = fromPath.split('/').pop();
+                if (!name) return;
+                const toPath = normalizePath(`${destFolder}/${name}`);
+                try {
+                    await this.ensureVaultFolder(destFolder);
+                    if (await adapter.exists(toPath)) {
+                        const dup = this.app.vault.getAbstractFileByPath(fromPath);
+                        if (dup) await this.app.fileManager.trashFile(dup);
+                        return;
+                    }
+                    const file = this.app.vault.getAbstractFileByPath(fromPath);
+                    if (file instanceof TFile) {
+                        await this.app.fileManager.renameFile(file, toPath);
+                    } else if (await adapter.exists(fromPath)) {
+                        // Binary-safe copy for vault adapter files not yet indexed
+                        const data = await adapter.readBinary(fromPath);
+                        await adapter.writeBinary(toPath, data);
+                        await adapter.remove(fromPath);
+                    }
+                    console.log(`[NarrativeLab] Migrated ${fromPath} → ${toPath}`);
+                } catch (e) {
+                    console.warn(`[NarrativeLab] Failed to migrate ${fromPath} → ${toPath}:`, e);
+                }
+            };
+
+            for (const legacy of legacyFolders) {
+                if (!await adapter.exists(legacy)) continue;
+                try {
+                    const listing = await adapter.list(legacy);
+                    for (const filePath of listing.files) {
+                        const lower = filePath.toLowerCase();
+                        if (lower.endsWith('.ncanvas') || lower.endsWith('.narrativecanvas')) {
+                            await moveFile(normalizePath(filePath));
+                        }
+                    }
+                    // Trash empty legacy folder (and ignore leftovers)
+                    const after = await adapter.list(legacy);
+                    if (after.files.length === 0 && after.folders.length === 0) {
+                        const folderAf = this.app.vault.getAbstractFileByPath(legacy);
+                        if (folderAf) await this.app.fileManager.trashFile(folderAf);
+                    }
+                } catch (e) {
+                    console.warn(`[NarrativeLab] Failed scanning legacy canvas folder ${legacy}:`, e);
+                }
+            }
+
+            // Loose .ncanvas sitting on the project root
+            try {
+                const rootListing = await adapter.list(baseFolder);
+                for (const filePath of rootListing.files) {
+                    const lower = filePath.toLowerCase();
+                    if (lower.endsWith('.ncanvas') || lower.endsWith('.narrativecanvas')) {
+                        await moveFile(normalizePath(filePath));
+                    }
+                }
+            } catch { /* noop */ }
         }
     }
 

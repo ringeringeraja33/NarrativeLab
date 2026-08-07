@@ -1,13 +1,13 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { App, ItemView, WorkspaceLeaf, Modal, Setting, Notice, TFile } from 'obsidian';
+import { App, ItemView, WorkspaceLeaf, Menu, Modal, Setting, Notice, TFile, normalizePath, stringifyYaml } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SceneManager } from '../services/SceneManager';
 import { CodexManager } from '../services/CodexManager';
-import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, makeCustomCodexCategory, CODEX_ICON_OPTIONS } from '../models/Codex';
+import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID, makeCustomCodexCategory, makeUncategorizedCodexCategory, CODEX_ICON_OPTIONS, withLinkingSection } from '../models/Codex';
 import { CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE } from '../constants';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
+import { promptDeleteCategory, renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import {
     getLibraryContentMode,
@@ -31,12 +31,49 @@ import {
 } from '../components/CustomSectionsRenderer';
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { t } from '../utils/i18n';
+import {
+    applyCategoryFolderLabels,
+    ensureLibraryCategoryFolders,
+    renameLibraryCategory,
+} from '../services/LibraryCategorySync';
 import { VirtualScroller } from '../components/VirtualScroller';
+import { renderNativeLibraryBase } from '../components/NativeLibraryBase';
+import {
+    LIBRARY_BROWSE_PAGE_SIZE,
+    compareLibraryTableValues,
+    evaluateLibraryTableFormula,
+    getLibraryBrowseLayout,
+    getLibraryFilePropertyOptions,
+    getLibraryFilePropertyValue,
+    getLibraryNotePropertyOptions,
+    getLibraryNotePropertyValue,
+    getLibraryTableColumns,
+    getLibraryTableFormulas,
+    getLibraryTableSort,
+    pageSlice,
+    renderLibraryBrowseToolbar,
+    renderLibraryTableHeader,
+    setLibraryTableColumns,
+    setLibraryTableSort,
+} from '../components/LibraryBrowseLayout';
 
 /** One row in the Library list (codex entry or hub Character/Location shortcut). */
 type CodexListRow =
     | { kind: 'entry'; entry: CodexEntry; catDef: CodexCategoryDef }
     | { kind: 'hub'; name: string; icon: string; badge: string; onClick: () => void };
+
+type ManagedCodexCategory = {
+    id: string;
+    label: string;
+    icon: string;
+    showInSidebar?: boolean;
+    preset?: boolean;
+};
+
+type CategoryManagerState = {
+    enabled: Set<string>;
+    categories: ManagedCodexCategory[];
+};
 
 /**
  * Codex View — central hub for all codex categories.
@@ -66,10 +103,16 @@ export class CodexView extends ItemView {
     private collapsedSections: Set<string> = new Set();
     /** Search filter text */
     private searchText: string = '';
+    /** Bases-style Search control expanded (default on so the field stays discoverable) */
+    private browseSearchOpen = true;
+    /** Bases-style Filter chips panel open (default on) */
+    private browseFilterOpen = true;
     /** Debounce handle for Library search typing */
     private _searchTimer: number | null = null;
     /** Windowed list scroller for large Library overviews */
     private listScroller: VirtualScroller<CodexListRow> | null = null;
+    /** How many cards/table rows to show (grows via Load more) */
+    private browseShown = LIBRARY_BROWSE_PAGE_SIZE;
 
     // ── Auto-save state ────────────────────────────────
     private _saveTimer: number | null = null;
@@ -151,6 +194,7 @@ export class CodexView extends ItemView {
         this.activeCategory = categoryId;
         this.selectedEntry = null;
         this.activeTagFilters.clear();
+        this.browseShown = LIBRARY_BROWSE_PAGE_SIZE;
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 
@@ -202,25 +246,6 @@ export class CodexView extends ItemView {
         titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getActiveProjectDisplayName() });
         renderViewSwitcher(toolbar, CODEX_VIEW_TYPE, this.plugin, this.leaf);
 
-        // ── Controls row ───────────────────────────────
-        const controls = toolbar.createDiv('story-line-toolbar-controls');
-
-        // Manage categories button (icon-only)
-        const addCatBtn = controls.createEl('button', {
-            cls: 'codex-toolbar-icon-btn',
-        });
-        obsidian.setIcon(addCatBtn, 'settings');
-        attachTooltip(addCatBtn, t('Manage categories'));
-        addCatBtn.addEventListener('click', () => this.openManageCategoriesModal());
-
-        // Add entry button (icon-only)
-        const addBtn = controls.createEl('button', {
-            cls: 'codex-toolbar-icon-btn codex-toolbar-add-btn',
-        });
-        obsidian.setIcon(addBtn, 'plus');
-        attachTooltip(addBtn, t('New entry'));
-        addBtn.addEventListener('click', () => this.promptNewEntry());
-
         // Same tab bar placement as CharacterView / LocationView (outside content)
         renderCodexCategoryTabs(container, {
             activeId: this.activeCategory || '',
@@ -229,6 +254,31 @@ export class CodexView extends ItemView {
             showModeToggle: !this.selectedEntry,
             onModeChange: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+            onCategoriesChanged: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+            renderBeforeModeActions: this.selectedEntry || this.activeCategory !== UNCATEGORIZED_CATEGORY_ID
+                ? undefined
+                : (actions) => {
+                const newUncategorizedBtn = actions.createEl('button', {
+                    cls: 'character-mode-btn codex-new-uncategorized-tab',
+                    attr: { type: 'button', 'aria-label': t('New uncategorized entry') },
+                });
+                const icon = newUncategorizedBtn.createSpan();
+                obsidian.setIcon(icon, 'file-plus-2');
+                newUncategorizedBtn.createSpan({ text: t('New uncategorized entry') });
+                newUncategorizedBtn.addEventListener('click', () => this.promptNewUncategorizedEntry());
+            },
+            renderAfterModeActions: this.selectedEntry ? undefined : (actions) => {
+                const manageCategoriesBtn = actions.createEl('button', {
+                    cls: 'character-mode-btn codex-manage-categories-tab',
+                    attr: { type: 'button', 'aria-label': t('Manage categories') },
+                });
+                const icon = manageCategoriesBtn.createSpan();
+                obsidian.setIcon(icon, 'settings');
+                manageCategoriesBtn.createSpan({ text: t('Custom Categories') });
+                manageCategoriesBtn.addEventListener('click', () => this.openManageCategoriesModal());
             },
         });
 
@@ -257,59 +307,118 @@ export class CodexView extends ItemView {
 
     private renderOverview(container: HTMLElement): void {
         container.empty();
+        if (this.activeCategory && getLibraryContentMode(this.plugin) === 'browse') {
+            void renderNativeLibraryBase(container, this.plugin, this.activeCategory, this);
+            return;
+        }
 
         // ── Category heading (when a specific category is selected) ──
         if (this.activeCategory) {
             const catDef = this.codexManager.getCategoryDef(this.activeCategory);
             if (catDef) {
-                container.createEl('h3', { cls: 'codex-overview-heading', text: catDef.label });
+                container.createEl('h3', {
+                    cls: 'codex-overview-heading',
+                    text: catDef.id === UNCATEGORIZED_CATEGORY_ID
+                        ? t('Uncategorized entries')
+                        : catDef.label,
+                });
             }
         }
 
-        // ── Search + Sort ──────────────────────────────
-        const searchRow = container.createDiv('codex-search-row');
-        const searchInput = searchRow.createEl('input', {
-            cls: 'codex-search-input',
-            attr: { type: 'text', placeholder: t('Search entries…') },
-        });
-        searchInput.value = this.searchText;
-        searchInput.addEventListener('input', () => {
-            this.searchText = searchInput.value;
-            if (this._searchTimer !== null) window.clearTimeout(this._searchTimer);
-            this._searchTimer = window.setTimeout(() => {
-                this._searchTimer = null;
+        // ── Bases-style browse chrome ───────────────────
+        const layoutKey = this.activeCategory || 'library-hub';
+        const catDefForProps = this.activeCategory
+            ? this.codexManager.getCategoryDef(this.activeCategory)
+            : undefined;
+        const cachedNoteProperties = catDefForProps
+            ? getLibraryNotePropertyOptions(
+                this.plugin,
+                this.codexManager.getEntries(catDefForProps.id).map(entry => entry.filePath),
+            )
+            : [];
+        const propertyOpts = catDefForProps
+            ? [
+                ...cachedNoteProperties,
+                ...getLibraryFilePropertyOptions(),
+            ]
+            : undefined;
+        const savedCols = getLibraryTableColumns(this.plugin, layoutKey);
+        const selectedProps = savedCols !== undefined
+            ? savedCols
+            : (catDefForProps ? this.defaultTableColumns(catDefForProps) : []);
+
+        const listContainer = container.createDiv('codex-list-container');
+        const { searchInput, chipHost } = renderLibraryBrowseToolbar(container, {
+            plugin: this.plugin,
+            categoryId: layoutKey,
+            sortOptions: [
+                { value: 'name', label: t('Name') },
+                { value: 'modified', label: t('Last edited') },
+                { value: 'created', label: t('Date created') },
+                { value: 'type', label: t('Type') },
+            ],
+            sortBy: this.sortBy,
+            onSortChange: (value) => {
+                this.sortBy = value as 'type' | 'name' | 'created' | 'modified';
                 this.renderList(listContainer);
-            }, 180);
+            },
+            searchText: this.searchText,
+            searchPlaceholder: t('Search entries…'),
+            searchOpen: this.browseSearchOpen,
+            onSearchOpenChange: (open) => {
+                this.browseSearchOpen = open;
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+            onSearchChange: (value) => {
+                this.searchText = value;
+                this.renderList(listContainer);
+            },
+            filterOpen: this.browseFilterOpen,
+            filterCount: this.activeTagFilters.size,
+            onFilterOpenChange: (open) => {
+                this.browseFilterOpen = open;
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+            properties: propertyOpts,
+            selectedProperties: selectedProps,
+            onPropertiesChange: async (keys) => {
+                await setLibraryTableColumns(this.plugin, layoutKey, keys);
+                this.renderList(listContainer);
+            },
+            onNew: this.activeCategory === UNCATEGORIZED_CATEGORY_ID
+                ? undefined
+                : () => this.promptNewEntry(),
+            newLabel: t('New'),
+            onLayoutChange: () => {
+                this.browseShown = LIBRARY_BROWSE_PAGE_SIZE;
+                this.renderList(listContainer);
+            },
         });
 
-        searchRow.createSpan({ cls: 'codex-sort-label', text: t('Sort by') });
-        const sortSelect = searchRow.createEl('select', { cls: 'codex-sort-select' });
-        const sortOptions: { value: string; label: string }[] = [
-            { value: 'name', label: t('Name') },
-            { value: 'modified', label: t('Last edited') },
-            { value: 'created', label: t('Date created') },
-            { value: 'type', label: t('Type') },
-        ];
-        for (const opt of sortOptions) {
-            const el = sortSelect.createEl('option', { text: opt.label, value: opt.value });
-            if (this.sortBy === opt.value) el.selected = true;
+        // Keep list after chrome in DOM order
+        container.appendChild(listContainer);
+
+        if (searchInput) {
+            const hadFocus = activeDocument.activeElement?.closest('.story-line-codex-container') != null
+                || activeDocument.activeElement?.classList.contains('library-browse-search-input');
+            if (hadFocus || this.browseSearchOpen) {
+                window.setTimeout(() => {
+                    searchInput.focus();
+                    searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
+                }, 0);
+            }
         }
-        sortSelect.addEventListener('change', () => {
-            this.sortBy = sortSelect.value as 'type' | 'name' | 'created' | 'modified';
-            this.renderList(listContainer);
-        });
 
-        // Tag / type filter chips (built from current category entries)
-        const chipHost = container.createDiv('story-line-filter-chips character-tag-filter-chips library-filter-chips');
         renderLibraryFilterChips(
             chipHost,
             this.collectTypeTagsForFilter(),
             this.activeTagFilters,
-            () => this.renderList(listContainer),
+            () => {
+                if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
+                this.renderList(listContainer);
+            },
         );
 
-        // ── List ───────────────────────────────────────
-        const listContainer = container.createDiv('codex-list-container');
         this.renderList(listContainer);
     }
 
@@ -496,6 +605,21 @@ export class CodexView extends ItemView {
         }
         rows.push(...hubExtras);
 
+        const layoutKey = this.activeCategory || 'library-hub';
+        const layout = getLibraryBrowseLayout(this.plugin, layoutKey);
+
+        if (layout === 'cards') {
+            this.renderBrowseCards(container, rows);
+            return;
+        }
+        if (layout === 'table' && !isHub) {
+            const cat = catDef || (entries[0] ? getCatDef(entries[0]) : undefined);
+            if (cat) {
+                this.renderBrowseTable(container, entries, cat);
+                return;
+            }
+        }
+
         const list = container.createDiv('codex-entry-list');
         this.listScroller = new VirtualScroller<CodexListRow>({
             container: list,
@@ -520,6 +644,208 @@ export class CodexView extends ItemView {
         this.listScroller.mount();
     }
 
+    private openEntry(entry: CodexEntry): void {
+        this.activeCategory = entry.type;
+        this.selectedEntry = entry.filePath;
+        if (this.rootContainer) this.renderView(this.rootContainer);
+    }
+
+    private renderBrowseCards(container: HTMLElement, rows: CodexListRow[]): void {
+        const { visible, hasMore } = pageSlice(rows, this.browseShown);
+        const grid = container.createDiv('codex-entry-cards');
+        for (const row of visible) {
+            if (row.kind === 'hub') {
+                const card = grid.createDiv('codex-entry-card codex-entry-card-hub');
+                const iconEl = card.createDiv('codex-entry-card-icon');
+                obsidian.setIcon(iconEl, row.icon);
+                card.createEl('h4', { text: row.name });
+                card.createSpan({ cls: 'codex-entry-type-badge', text: row.badge });
+                card.addEventListener('click', row.onClick);
+                continue;
+            }
+            const { entry, catDef } = row;
+            const card = grid.createDiv('codex-entry-card');
+            const cover = card.createDiv('codex-entry-card-cover');
+            if (entry.image) {
+                const src = resolveImagePath(this.app, entry.image);
+                if (src) {
+                    cover.createEl('img', { attr: { src, alt: '', loading: 'lazy' } });
+                } else {
+                    obsidian.setIcon(cover, catDef.icon);
+                }
+            } else {
+                obsidian.setIcon(cover, catDef.icon);
+            }
+            card.createEl('h4', { text: entry.name || t('Untitled') });
+            const typeVal = this.getTypeField(entry, catDef);
+            if (typeVal) card.createSpan({ cls: 'codex-entry-type-badge', text: typeVal });
+            card.addEventListener('click', () => this.openEntry(entry));
+        }
+        if (hasMore) {
+            const more = container.createEl('button', {
+                cls: 'mod-cta library-browse-load-more',
+                text: t('Load more'),
+            });
+            more.addEventListener('click', () => {
+                this.browseShown += LIBRARY_BROWSE_PAGE_SIZE;
+                this.renderList(container);
+            });
+        }
+    }
+
+    private defaultTableColumns(catDef: CodexCategoryDef): string[] {
+        const keys = catDef.fieldKeys.filter(k =>
+            k !== 'name' && k !== 'image' && k !== 'gallery' && !k.toLowerCase().includes('notes'),
+        );
+        // Prefer short / type-like fields first
+        const preferred = keys.filter(k =>
+            k.endsWith('Type') || k === 'entryType' || k === 'description' || k === 'habitat' || k === 'origin',
+        );
+        const rest = keys.filter(k => !preferred.includes(k));
+        return [...preferred, ...rest].slice(0, 5);
+    }
+
+    private renderBrowseTable(container: HTMLElement, entries: CodexEntry[], catDef: CodexCategoryDef): void {
+        const layoutKey = this.activeCategory || catDef.id;
+        const saved = getLibraryTableColumns(this.plugin, layoutKey);
+        const columns = saved !== undefined ? saved : this.defaultTableColumns(catDef);
+        const fileProperties = getLibraryFilePropertyOptions();
+        const formulas = getLibraryTableFormulas(this.plugin, layoutKey);
+        const propertyLabels = new Map<string, string>();
+        for (const key of catDef.fieldKeys) propertyLabels.set(key, key);
+        for (const property of fileProperties) propertyLabels.set(property.key, property.label);
+        for (const formula of formulas) propertyLabels.set(`formula:${formula.id}`, formula.name);
+        const resolveValue = (entry: CodexEntry, key: string): unknown => {
+            if (key.startsWith('file.')) {
+                return getLibraryFilePropertyValue(this.plugin, entry.filePath, key);
+            }
+            if (key === 'name') return entry.name;
+            const direct = (entry as unknown as Record<string, unknown>)[key];
+            if (direct !== undefined) return direct;
+            const custom = entry.custom?.[key];
+            return custom !== undefined
+                ? custom
+                : getLibraryNotePropertyValue(this.plugin, entry.filePath, key);
+        };
+        const valueForColumn = (entry: CodexEntry, key: string): unknown => {
+            const formula = key.startsWith('formula:')
+                ? formulas.find(value => value.id === key.slice('formula:'.length))
+                : undefined;
+            return formula
+                ? evaluateLibraryTableFormula(formula.expression, property => resolveValue(entry, property))
+                : resolveValue(entry, key);
+        };
+        const tableSort = getLibraryTableSort(this.plugin, layoutKey);
+        const sortedEntries = [...entries];
+        if (tableSort) {
+            sortedEntries.sort((left, right) => {
+                const result = compareLibraryTableValues(
+                    valueForColumn(left, tableSort.key),
+                    valueForColumn(right, tableSort.key),
+                );
+                return tableSort.direction === 'asc' ? result : -result;
+            });
+        }
+        const { visible, hasMore } = pageSlice(sortedEntries, this.browseShown);
+
+        const wrap = container.createDiv('library-base-table-wrap');
+        const table = wrap.createEl('table', { cls: 'library-base-table' });
+        const thead = table.createEl('thead');
+        const hr = thead.createEl('tr');
+        renderLibraryTableHeader(hr, 'name', 'name', tableSort, sort => {
+            void setLibraryTableSort(this.plugin, layoutKey, sort).then(() => this.renderList(container));
+        });
+        for (const key of columns) {
+            renderLibraryTableHeader(hr, propertyLabels.get(key) || key, key, tableSort, sort => {
+                void setLibraryTableSort(this.plugin, layoutKey, sort).then(() => this.renderList(container));
+            });
+        }
+
+        const tbody = table.createEl('tbody');
+        for (const entry of visible) {
+            const tr = tbody.createEl('tr');
+            const nameTd = tr.createEl('td', { cls: 'library-base-table-name' });
+            const nameLink = nameTd.createEl('button', {
+                cls: 'library-base-table-name-btn',
+                text: entry.name || t('Untitled'),
+            });
+            nameLink.addEventListener('click', () => this.openEntry(entry));
+
+            for (const key of columns) {
+                const td = tr.createEl('td');
+                const formula = key.startsWith('formula:')
+                    ? formulas.find(value => value.id === key.slice('formula:'.length))
+                    : undefined;
+                if (formula || key.startsWith('file.')) {
+                    const value = formula
+                        ? evaluateLibraryTableFormula(formula.expression, property => resolveValue(entry, property))
+                        : resolveValue(entry, key);
+                    td.createSpan({
+                        text: Array.isArray(value) ? value.join(', ') : String(value ?? ''),
+                        cls: 'library-base-table-muted',
+                    });
+                    continue;
+                }
+                const field = catDef.categories.flatMap(c => c.fields).find(f => f.key === key);
+                const multiline = !!field?.multiline;
+                const raw = resolveValue(entry, key);
+                const val = raw == null ? '' : Array.isArray(raw) ? raw.join(', ') : String(raw);
+                if (multiline) {
+                    td.createSpan({ text: val.length > 80 ? val.slice(0, 80) + '…' : val, cls: 'library-base-table-muted' });
+                    continue;
+                }
+                const inp = td.createEl('input', {
+                    type: 'text',
+                    cls: 'library-base-table-input',
+                    attr: { value: val },
+                });
+                inp.value = val;
+                inp.addEventListener('change', async () => {
+                    const draft: CodexEntry = { ...entry, [key]: inp.value };
+                    try {
+                        await this.codexManager.saveEntry(draft);
+                    } catch (e) {
+                        new Notice(t('Save failed'));
+                    }
+                });
+            }
+        }
+
+        // Column picker on header context
+        hr.addEventListener('contextmenu', (evt) => {
+            evt.preventDefault();
+            const menu = new Menu();
+            const allKeys = this.defaultTableColumns(catDef);
+            // Expand to more field keys for menu
+            const menuKeys = catDef.fieldKeys.filter(k => k !== 'name' && k !== 'image' && k !== 'gallery');
+            for (const key of menuKeys) {
+                const field = catDef.categories.flatMap(c => c.fields).find(f => f.key === key);
+                const on = columns.includes(key);
+                menu.addItem(item => item
+                    .setTitle(field?.label || key)
+                    .setChecked(on)
+                    .onClick(async () => {
+                        const next = on ? columns.filter(c => c !== key) : [...columns, key];
+                        const finalCols = next.length ? next : allKeys.slice(0, 1);
+                        await setLibraryTableColumns(this.plugin, layoutKey, finalCols);
+                        this.renderList(container);
+                    }));
+            }
+            menu.showAtMouseEvent(evt);
+        });
+
+        if (hasMore) {
+            const more = container.createEl('button', {
+                cls: 'mod-cta library-browse-load-more',
+                text: t('Load more'),
+            });
+            more.addEventListener('click', () => {
+                this.browseShown += LIBRARY_BROWSE_PAGE_SIZE;
+                this.renderList(container);
+            });
+        }
+    }
+
     private renderListItem(list: HTMLElement, entry: CodexEntry, catDef: CodexCategoryDef): HTMLElement {
         const row = list.createDiv('codex-entry-row');
 
@@ -536,19 +862,19 @@ export class CodexView extends ItemView {
             row.createSpan({ cls: 'codex-entry-type-badge', text: typeVal });
         }
 
-        // Completeness indicator (compact)
-        const filled = this.countFilledFields(entry, catDef);
-        const total = catDef.fieldKeys.length;
-        if (total > 0) {
-            const pct = Math.round((filled / total) * 100);
-            row.createSpan({ cls: 'codex-entry-pct', text: `${pct}%` });
-        }
+        // Completeness — deferred so large lists paint first
+        const pctEl = row.createSpan({ cls: 'codex-entry-pct' });
+        const fillPct = () => {
+            const total = catDef.fieldKeys.length;
+            if (total <= 0) return;
+            const filled = this.countFilledFields(entry, catDef);
+            pctEl.textContent = `${Math.round((filled / total) * 100)}%`;
+        };
+        const ric = (window as Window & { requestIdleCallback?: (cb: () => void) => number }).requestIdleCallback;
+        if (typeof ric === 'function') ric(fillPct);
+        else window.setTimeout(fillPct, 0);
 
-        row.addEventListener('click', () => {
-            this.activeCategory = entry.type;
-            this.selectedEntry = entry.filePath;
-            if (this.rootContainer) this.renderView(this.rootContainer);
-        });
+        row.addEventListener('click', () => this.openEntry(entry));
         return row;
     }
 
@@ -1593,12 +1919,12 @@ export class CodexView extends ItemView {
     // ── Notes section ──────────────────────────────────
 
     private renderNotesSection(container: HTMLElement, draft: CodexEntry): void {
-        const section = container.createDiv('codex-side-section');
+        const section = container.createDiv('codex-side-section entity-notes-section');
         section.createEl('h4', { text: t('Notes') });
 
         const textarea = section.createEl('textarea', {
             cls: 'codex-notes-textarea',
-            attr: { placeholder: t('Free-form notes (markdown)…'), rows: '8' },
+            attr: { placeholder: t('Free-form notes (markdown)…'), rows: '12' },
         });
         textarea.value = draft.notes || '';
         textarea.addEventListener('input', () => {
@@ -1610,6 +1936,58 @@ export class CodexView extends ItemView {
     // ══════════════════════════════════════════════════
     //  Actions
     // ══════════════════════════════════════════════════
+
+    private promptNewUncategorizedEntry(): void {
+        const modal = new Modal(this.app);
+        modal.titleEl.setText(t('New uncategorized entry'));
+
+        let nameValue = '';
+        const create = async () => {
+            const name = nameValue.trim();
+            if (!name) return;
+            modal.close();
+            await this.createUncategorizedEntry(name);
+        };
+
+        new Setting(modal.contentEl)
+            .setName(t('Name'))
+            .addText(text => {
+                text.setPlaceholder(t('Entry name'));
+                text.onChange(value => { nameValue = value; });
+                text.inputEl.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        void create();
+                    }
+                });
+                window.setTimeout(() => text.inputEl.focus(), 50);
+            });
+
+        new Setting(modal.contentEl)
+            .addButton(button => button
+                .setButtonText(t('Create'))
+                .setCta()
+                .onClick(() => void create()));
+
+        modal.open();
+    }
+
+    private async createUncategorizedEntry(name: string): Promise<void> {
+        try {
+            const libraryFolder = normalizePath(this.sceneManager.getCodexFolder());
+            const entry = await this.codexManager.createEntry(
+                libraryFolder,
+                UNCATEGORIZED_CATEGORY_ID,
+                name,
+            );
+            this.activeCategory = UNCATEGORIZED_CATEGORY_ID;
+            this.selectedEntry = entry.filePath;
+            new Notice(t('Created {name}', { name }));
+            if (this.rootContainer) this.renderView(this.rootContainer);
+        } catch (error) {
+            new Notice(t('Failed to create entry: {err}', { err: String(error) }));
+        }
+    }
 
     private promptNewEntry(): void {
         const catDef = this.codexManager.getCategoryDef(this.activeCategory);
@@ -1760,82 +2138,216 @@ export class CodexView extends ItemView {
 
     private openManageCategoriesModal(): void {
         const modal = new Modal(this.app);
+        modal.modalEl.addClass('codex-category-manager-modal');
         modal.titleEl.setText(t('Manage Library Categories'));
         this.renderCategoryManager(modal.contentEl, modal);
         modal.open();
     }
 
-    private renderCategoryManager(el: HTMLElement, modal: Modal): void {
+    private renderCategoryManager(
+        el: HTMLElement,
+        modal: Modal,
+        existingState?: CategoryManagerState,
+    ): void {
         el.empty();
         el.addClass('codex-category-manager');
 
-        el.createEl('h4', { text: t('Enabled Categories') });
+        const state = existingState || {
+            enabled: new Set(this.plugin.settings.codexEnabledCategories),
+            categories: (this.plugin.settings.codexCustomCategories || []).map(category => ({ ...category })),
+        };
+        const presetIds = new Set(BUILTIN_CODEX_CATEGORIES.map(category => category.id));
+        const deletedPresetIds = new Set(this.plugin.settings.codexDeletedPresetCategories || []);
+
+        el.createEl('h4', { text: t('Custom Categories') });
         el.createEl('p', {
             cls: 'setting-item-description',
-            text: t('Toggle categories to show in the Library.'),
+            text: t('Show or hide categories, and edit their names, icons, and fields. Preset categories can also be deleted.'),
         });
 
-        const enabled = new Set(this.plugin.settings.codexEnabledCategories);
+        const folderLabel = (id: string, fallback: string) =>
+            this.plugin.sceneManager.getLibraryFolderName(id) || fallback;
+        const ensurePresetDraft = (cat: CodexCategoryDef): ManagedCodexCategory => {
+            let draft = state.categories.find(category => category.id === cat.id);
+            if (!draft) {
+                draft = {
+                    id: cat.id,
+                    label: folderLabel(cat.id, cat.folder),
+                    icon: cat.icon,
+                    preset: true,
+                };
+                state.categories.push(draft);
+            }
+            return draft;
+        };
+        const list = el.createDiv('codex-category-manager-list');
+        const header = list.createDiv('codex-category-manager-row codex-category-manager-header');
+        header.createSpan();
+        header.createSpan({ cls: 'codex-category-manager-icon-select', text: t('Icon') });
+        header.createSpan({ text: t('Category name') });
+        header.createSpan({ cls: 'codex-category-manager-preset', text: t('Type') });
+        header.createSpan({ text: t('Fields') });
+        header.createSpan();
+        const rows: Array<{
+            id: string;
+            label: string;
+            icon: string;
+            preset: boolean;
+            protected?: boolean;
+            definition: CodexCategoryDef;
+            draft?: ManagedCodexCategory;
+        }> = [
+            ...BUILTIN_CODEX_CATEGORIES
+                .filter(category => !deletedPresetIds.has(category.id))
+                .map(category => {
+                    const override = state.categories.find(item => item.id === category.id);
+                    return {
+                        id: category.id,
+                        label: override?.label || folderLabel(category.id, category.folder),
+                        icon: override?.icon || category.icon,
+                        preset: true,
+                        definition: withLinkingSection(category),
+                        draft: override,
+                    };
+                }),
+            ...state.categories
+                .filter(category => !presetIds.has(category.id))
+                .map(category => ({
+                    id: category.id,
+                    label: category.label || folderLabel(category.id, category.label),
+                    icon: category.icon,
+                    preset: false,
+                    definition: makeCustomCodexCategory(category.id, category.label, category.icon),
+                    draft: category,
+                })),
+            {
+                id: UNCATEGORIZED_CATEGORY_ID,
+                label: t('Uncategorized entries'),
+                icon: 'file-question',
+                preset: true,
+                protected: true,
+                definition: makeUncategorizedCodexCategory(),
+            },
+        ];
 
-        // Built-in categories
-        for (const cat of BUILTIN_CODEX_CATEGORIES) {
-            const row = el.createDiv('codex-category-manager-row');
+        for (const category of rows) {
+            const row = list.createDiv('codex-category-manager-row');
             const toggle = row.createEl('input', { attr: { type: 'checkbox' } }) as HTMLInputElement;
-            toggle.checked = enabled.has(cat.id);
-            const iconSpan = row.createSpan({ cls: 'codex-category-manager-icon' });
-            obsidian.setIcon(iconSpan, cat.icon);
-            row.createSpan({ text: cat.label });
-
+            toggle.checked = category.protected || state.enabled.has(category.id);
+            toggle.disabled = category.protected === true;
+            toggle.setAttribute('aria-label', t('Show or hide category'));
             toggle.addEventListener('change', () => {
-                if (toggle.checked) enabled.add(cat.id);
-                else enabled.delete(cat.id);
+                if (toggle.checked) state.enabled.add(category.id);
+                else state.enabled.delete(category.id);
             });
-        }
 
-        // Custom categories
-        const customCats = this.plugin.settings.codexCustomCategories;
-        if (customCats.length > 0) {
-            el.createEl('h4', { text: t('Custom Categories') });
-            for (const cc of customCats) {
-                const row = el.createDiv('codex-category-manager-row');
-                const toggle = row.createEl('input', { attr: { type: 'checkbox' } }) as HTMLInputElement;
-                toggle.checked = enabled.has(cc.id);
-                const iconSpan = row.createSpan({ cls: 'codex-category-manager-icon' });
-                obsidian.setIcon(iconSpan, cc.icon);
-                row.createSpan({ text: cc.label });
+            const iconSelect = row.createEl('select', {
+                cls: 'codex-category-manager-icon-select',
+                attr: { 'aria-label': t('Icon') },
+            });
+            for (const option of CODEX_ICON_OPTIONS) {
+                iconSelect.createEl('option', { text: option.label, value: option.value });
+            }
+            iconSelect.value = category.icon;
+            iconSelect.disabled = category.protected === true;
+            iconSelect.addEventListener('change', () => {
+                if (category.protected) return;
+                const draft = category.preset
+                    ? ensurePresetDraft(category.definition)
+                    : category.draft;
+                if (draft) draft.icon = iconSelect.value;
+            });
 
-                toggle.addEventListener('change', () => {
-                    if (toggle.checked) enabled.add(cc.id);
-                    else enabled.delete(cc.id);
+            const nameInput = row.createEl('input', {
+                cls: 'codex-category-manager-name',
+                attr: {
+                    type: 'text',
+                    value: category.label,
+                    'aria-label': t('Category name'),
+                },
+            }) as HTMLInputElement;
+            nameInput.readOnly = category.protected === true;
+            nameInput.addEventListener('input', () => {
+                if (category.protected) return;
+                const draft = category.preset
+                    ? ensurePresetDraft(category.definition)
+                    : category.draft;
+                if (draft) draft.label = nameInput.value;
+            });
+
+            if (category.protected) {
+                row.createSpan({ cls: 'codex-category-manager-preset', text: t('Fixed') });
+            } else if (category.preset) {
+                row.createSpan({ cls: 'codex-category-manager-preset', text: t('Preset') });
+            } else {
+                row.createSpan({ cls: 'codex-category-manager-preset is-custom', text: t('Custom') });
+            }
+
+            const fieldsBtn = row.createEl('button', {
+                cls: 'codex-category-manager-fields',
+                text: t('Fields'),
+            });
+            fieldsBtn.addEventListener('click', () => {
+                const draft = category.preset
+                    ? state.categories.find(item => item.id === category.id)
+                    : category.draft;
+                this.openCategoryFieldsModal(
+                    category.definition,
+                    draft?.label || nameInput.value || category.label,
+                );
+            });
+
+            if (category.protected) {
+                row.createSpan({ cls: 'codex-category-manager-protected' });
+            } else {
+                const deleteBtn = row.createEl('button', {
+                    cls: 'codex-category-delete-btn',
+                    attr: { 'aria-label': t('Delete Library category') },
                 });
-
-                // Delete custom category
-                const deleteBtn = row.createEl('button', { cls: 'codex-category-delete-btn' });
                 obsidian.setIcon(deleteBtn, 'trash');
                 deleteBtn.addEventListener('click', () => {
-                    const idx = this.plugin.settings.codexCustomCategories.findIndex(c => c.id === cc.id);
-                    if (idx >= 0) this.plugin.settings.codexCustomCategories.splice(idx, 1);
-                    enabled.delete(cc.id);
-                    this.renderCategoryManager(el, modal);
+                    const persisted = category.preset
+                        || (this.plugin.settings.codexCustomCategories || [])
+                            .some(item => item.id === category.id);
+                    const finishDelete = () => {
+                        state.enabled.delete(category.id);
+                        state.categories = state.categories.filter(item => item.id !== category.id);
+                        this.codexManager.initCategories(
+                            Array.from(state.enabled),
+                            state.categories.map(item =>
+                                makeCustomCodexCategory(item.id, item.label, item.icon)),
+                        );
+                        if (this.activeCategory === category.id) {
+                            this.activeCategory = UNCATEGORIZED_CATEGORY_ID;
+                            this.selectedEntry = null;
+                        }
+                        this.renderCategoryManager(el, modal, state);
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    };
+                    if (!persisted) {
+                        finishDelete();
+                        return;
+                    }
+                    promptDeleteCategory(this.plugin, category.id, finishDelete);
                 });
             }
         }
 
-        // Add custom category
-        el.createEl('h4', { text: t('Add Custom Category') });
+        // Add another category in the same list.
+        const addSection = el.createDiv('codex-category-manager-add');
         let newLabel = '';
         let newIcon = 'file-text';
         let newLabelInput: HTMLInputElement | null = null;
 
-        new Setting(el)
-            .setName(t('Label'))
+        new Setting(addSection)
+            .setName(t('Category name'))
             .addText(text => {
                 text.setPlaceholder(t('e.g. Factions, Artifacts, Magic…'));
                 text.onChange(v => { newLabel = v; });
                 newLabelInput = text.inputEl;
             });
 
-        new Setting(el)
+        new Setting(addSection)
             .setName(t('Icon'))
             .addDropdown(dd => {
                 for (const opt of CODEX_ICON_OPTIONS) {
@@ -1845,7 +2357,7 @@ export class CodexView extends ItemView {
                 dd.onChange(v => { newIcon = v; });
             });
 
-        new Setting(el)
+        new Setting(addSection)
             .addButton(btn => btn
                 .setButtonText(t('Add Category'))
                 .setCta()
@@ -1861,24 +2373,22 @@ export class CodexView extends ItemView {
                         new Notice(t('Please enter a label'));
                         return;
                     }
-                    const id = newLabel.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
-                    if (!id) {
-                        new Notice(t('Invalid label'));
-                        return;
-                    }
+                    // Prefer slug from Latin label; CJK-only labels get a stable custom-* id.
+                    let id = newLabel.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+                    if (!id) id = `custom-${Date.now().toString(36)}`;
                     // Check duplicates
                     if (BUILTIN_CODEX_CATEGORIES.some(c => c.id === id) ||
-                        this.plugin.settings.codexCustomCategories.some(c => c.id === id)) {
+                        state.categories.some(c => c.id === id)) {
                         new Notice(t('Category already exists'));
                         return;
                     }
-                    this.plugin.settings.codexCustomCategories.push({
+                    state.categories.push({
                         id,
                         label: newLabel.trim(),
                         icon: newIcon,
                     });
-                    enabled.add(id);
-                    this.renderCategoryManager(el, modal);
+                    state.enabled.add(id);
+                    this.renderCategoryManager(el, modal, state);
                 }));
 
         // Save & close
@@ -1887,13 +2397,48 @@ export class CodexView extends ItemView {
                 .setButtonText(t('Save'))
                 .setCta()
                 .onClick(async () => {
-                    this.plugin.settings.codexEnabledCategories = Array.from(enabled);
+                    for (const category of state.categories) {
+                        const currentName = this.plugin.sceneManager.getLibraryFolderName(category.id);
+                        const desiredName = category.label.trim();
+                        if (desiredName && currentName !== desiredName) {
+                            const renamed = await renameLibraryCategory(this.plugin, category.id, desiredName);
+                            if (!renamed
+                                && this.plugin.sceneManager.getLibraryFolderName(category.id) !== desiredName) {
+                                return;
+                            }
+                        }
+                    }
+                    this.plugin.settings.codexCustomCategories = state.categories
+                        .filter(category => category.label.trim())
+                        .map(category => ({ ...category, label: category.label.trim() }));
+                    this.plugin.settings.codexEnabledCategories = Array.from(state.enabled);
                     await this.plugin.saveSettings();
                     // Reinitialise codex manager with new categories
                     this.codexManager.initCategories(
                         this.plugin.settings.codexEnabledCategories,
                         this.resolveCustomDefs(),
                     );
+                    applyCategoryFolderLabels(this.plugin);
+
+                    // Persist folder names on the project + create missing folders
+                    const project = this.plugin.sceneManager.activeProject;
+                    if (project) {
+                        if (!project.libraryFolders) project.libraryFolders = {};
+                        project.libraryFolders.characters =
+                            project.libraryFolders.characters
+                            || this.plugin.sceneManager.getLibraryFolderName('characters');
+                        project.libraryFolders.locations =
+                            project.libraryFolders.locations
+                            || this.plugin.sceneManager.getLibraryFolderName('locations');
+                        for (const id of state.enabled) {
+                            if (!project.libraryFolders[id]) {
+                                project.libraryFolders[id] =
+                                    this.plugin.sceneManager.getLibraryFolderName(id);
+                            }
+                        }
+                        await this.plugin.sceneManager.saveProjectFrontmatter(project);
+                    }
+                    await ensureLibraryCategoryFolders(this.plugin);
                     await this.plugin.reloadEntities();
                     // Reset to first available category if current is disabled
                     const cats = this.codexManager.getCategories();
@@ -1903,6 +2448,71 @@ export class CodexView extends ItemView {
                     modal.close();
                     if (this.rootContainer) this.renderView(this.rootContainer);
                 }));
+    }
+
+    private openCategoryFieldsModal(category: CodexCategoryDef, categoryLabel: string): void {
+        const modal = new Modal(this.app);
+        modal.titleEl.setText(t('{name} fields', { name: categoryLabel }));
+        const content = modal.contentEl;
+        content.addClass('codex-category-fields-manager');
+
+        content.createEl('p', {
+            cls: 'setting-item-description',
+            text: t('Choose which preset fields are visible, and add default custom fields for every entry in this category.'),
+        });
+
+        const hidden = new Set(this.plugin.settings.hiddenFields?.[category.id] || []);
+        const seen = new Set<string>();
+        for (const section of category.categories) {
+            const fields = section.fields.filter(field => field.key !== 'name' && !seen.has(field.key));
+            if (fields.length === 0) continue;
+            content.createEl('h5', { text: t(section.title) });
+            for (const field of fields) {
+                seen.add(field.key);
+                const row = content.createDiv('codex-category-field-row');
+                const toggle = row.createEl('input', {
+                    attr: { type: 'checkbox' },
+                }) as HTMLInputElement;
+                toggle.checked = !hidden.has(field.key);
+                row.createSpan({ text: t(field.label) });
+                toggle.addEventListener('change', () => {
+                    if (toggle.checked) hidden.delete(field.key);
+                    else hidden.add(field.key);
+                });
+            }
+        }
+
+        content.createEl('h5', { text: t('Additional fields') });
+        content.createEl('p', {
+            cls: 'setting-item-description',
+            text: t('Enter one field name per line. New entries will include these fields automatically.'),
+        });
+        const textarea = content.createEl('textarea', {
+            cls: 'codex-category-fields-textarea',
+        });
+        textarea.value = (this.plugin.settings.codexCategoryFieldTemplates?.[category.id] || []).join('\n');
+
+        new Setting(content)
+            .addButton(button => button
+                .setButtonText(t('Save'))
+                .setCta()
+                .onClick(async () => {
+                    if (!this.plugin.settings.hiddenFields) this.plugin.settings.hiddenFields = {};
+                    this.plugin.settings.hiddenFields[category.id] = Array.from(hidden);
+                    if (!this.plugin.settings.codexCategoryFieldTemplates) {
+                        this.plugin.settings.codexCategoryFieldTemplates = {};
+                    }
+                    this.plugin.settings.codexCategoryFieldTemplates[category.id] = Array.from(new Set(
+                        textarea.value
+                            .split(/\r?\n/)
+                            .map(name => name.trim())
+                            .filter(Boolean),
+                    ));
+                    await this.plugin.saveSettings();
+                    modal.close();
+                    if (this.rootContainer) this.renderView(this.rootContainer);
+                }));
+        modal.open();
     }
 
     // ══════════════════════════════════════════════════
