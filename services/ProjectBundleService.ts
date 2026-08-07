@@ -167,10 +167,18 @@ export class ProjectBundleService {
         }
 
         let written = 0;
+        const projectLeaf = base.split('/').pop() || safeTitle;
         for (const entry of bundle.files) {
             const rel = normalizePath(String(entry.relativePath || '')).replace(/^\/+/, '');
             if (!rel || rel.includes('..')) continue;
-            // Skip source project markdown at root if names differ — still write content under new base
+            // Avoid a second root-level project manifest with a different name.
+            if (!rel.includes('/') && /\.md$/i.test(rel)) {
+                const baseName = rel.replace(/\.md$/i, '');
+                if (baseName !== projectLeaf) {
+                    const looksLikeProject = /^---[\s\S]*?type:\s*storyline/m.test(String(entry.content ?? ''));
+                    if (looksLikeProject) continue;
+                }
+            }
             const target = normalizePath(`${base}/${rel}`);
             await this.ensureParentFolder(target);
             const existing = this.app.vault.getAbstractFileByPath(target);
@@ -243,6 +251,3 @@ export async function pickBundleJsonFile(app: App): Promise<TFile | null> {
     });
 }
 
-export function notifyBundleResult(path: string, count: number): void {
-    new Notice(t('Project bundle written: {path} ({n} files)', { path, n: count }));
-}

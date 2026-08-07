@@ -738,6 +738,20 @@ export class SceneManager implements ISceneStore {
         // Update frontmatter
         await this.saveProjectFrontmatter(project);
 
+        // Keep tiled corkboard .canvas aligned with the project name.
+        try {
+            const { CorkboardCanvasService } = await import('./CorkboardCanvasService');
+            const corkboard = new CorkboardCanvasService(this.app, this.plugin);
+            await corkboard.renameCanvasForProject({
+                oldBaseFolder: normalizePath(oldBaseFolder),
+                newBaseFolder,
+                oldLeaf: oldBaseFolder.split('/').pop() ?? '',
+                newLeaf: safeName,
+            });
+        } catch (err) {
+            console.warn('[NarrativeLab] corkboard canvas rename skipped:', err);
+        }
+
         // If this was the active project, update settings
         if (this._activeProject?.filePath === newFilePath || this.plugin.settings.activeProjectFile === project.filePath) {
             this._activeProject = project;

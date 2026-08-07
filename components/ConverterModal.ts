@@ -337,7 +337,7 @@ export class ConverterModal extends Modal {
 
         new Setting(parent)
             .setName(t('Import Scrivener project'))
-            .setDesc(t('Import a Scrivener project (.scriv folder) as a new NarrativeLab project.'))
+            .setDesc(t('Import a Scrivener project (.scriv folder) as a new NarrativeLab project. Converts scenes, characters, locations, and research notes. Desktop only.'))
             .addButton(btn => btn
                 .setButtonText(t('Import Scrivener…'))
                 .onClick(() => {
