@@ -9,6 +9,11 @@ import { compareActChapter, getActDisplayLabel } from '../utils/actChapter';
  */
 export interface ISceneStore {
     getAllScenes(): Scene[];
+    /**
+     * Scenes for board/manuscript/timeline UI: active draft story scenes
+     * plus corkboard notes. Falls back to getAllScenes when omitted.
+     */
+    getWorkbenchScenes?(): Scene[];
     getScene(filePath: string): Scene | undefined;
     /** Raw iterator over all scenes */
     sceneValues(): Iterable<Scene>;
@@ -44,7 +49,7 @@ export class SceneQueryService {
             return this._lastResult;
         }
 
-        let scenes = this.sceneStore.getAllScenes();
+        let scenes = this.sceneStore.getWorkbenchScenes?.() ?? this.sceneStore.getAllScenes();
 
         const effectiveFilter = filter ?? {};
         scenes = scenes.filter(scene => this.matchesFilter(scene, effectiveFilter));
@@ -231,8 +236,8 @@ export class SceneQueryService {
      * Get project statistics
      */
     getStatistics(excludeArcAnchor = false) {
-        const scenes = this.sceneStore.getAllScenes();
-        const activeScenes = scenes.filter(scene => !scene.inactive);
+        const scenes = this.sceneStore.getWorkbenchScenes?.() ?? this.sceneStore.getAllScenes();
+        const activeScenes = scenes.filter(scene => !scene.inactive && !scene.corkboardNote);
         const totalScenes = activeScenes.length;
         const statusCounts: Record<string, number> = {};
         let totalWords = 0;

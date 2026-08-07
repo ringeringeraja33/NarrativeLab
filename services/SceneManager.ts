@@ -22,13 +22,15 @@ function normalizeProjectDrafts(raw: unknown): ProjectDraft[] | undefined {
         const obj = entry as Record<string, unknown>;
         const id = typeof obj.id === 'string' && obj.id.trim() ? obj.id.trim() : `draft-${drafts.length + 1}`;
         const title = typeof obj.title === 'string' && obj.title.trim() ? obj.title.trim() : 'Draft';
+        const folderRaw = obj.folder ?? obj.folderName;
+        const folder = typeof folderRaw === 'string' && folderRaw.trim() ? folderRaw.trim() : undefined;
         const scenesRaw = obj.scenes ?? obj.scenePaths;
         let scenePaths: string[] | undefined;
         if (Array.isArray(scenesRaw)) {
             scenePaths = scenesRaw.map(s => String(s)).filter(Boolean);
             if (scenePaths.length === 0) scenePaths = undefined;
         }
-        drafts.push({ id, title, scenePaths });
+        drafts.push({ id, title, folder, scenePaths });
     }
     return drafts.length > 0 ? drafts : undefined;
 }
@@ -567,6 +569,7 @@ export class SceneManager implements ISceneStore {
         await this.loadCorkboardPositions();
         await this.plugin.saveSettings();
         await this.initialize();
+        await this.migrateDraftFoldersIfNeeded();
         await this.plugin.syncNarrativeCanvasToActiveProject();
         // Ask the plugin to refresh any open NarrativeLab views so the UI updates
         try {
@@ -987,6 +990,22 @@ export class SceneManager implements ISceneStore {
     }
 
     /**
+     * Scenes for board/manuscript/timeline: active draft only (+ corkboard notes).
+     * Draft subfolders are isolated so copies in other drafts never appear here.
+     */
+    getWorkbenchScenes(): Scene[] {
+        const project = this._activeProject;
+        if (!project) return this.getAllScenes();
+        this.ensureProjectDrafts(project);
+        const draft = this.getActiveDraft();
+        if (!draft) return this.getAllScenes();
+        return this.getAllScenes().filter(s => {
+            if (s.corkboardNote) return true;
+            return this.sceneBelongsToDraft(s.filePath, draft, project);
+        });
+    }
+
+    /**
      * Get a scene by file path
      */
     getScene(filePath: string): Scene | undefined {
@@ -1019,7 +1038,14 @@ export class SceneManager implements ISceneStore {
     async createScene(sceneData: Partial<Scene>, afterScene?: Scene): Promise<TFile> {
         // Route corkboard notes to the Notes/ folder
         const isNote = sceneData.corkboardNote === true;
-        const baseFolder = isNote ? this.getNotesFolder() : this.getSceneFolder();
+        // Scenes for a named draft go under Scenes/<draft folder>/
+        let baseFolder = isNote ? this.getNotesFolder() : this.getSceneFolder();
+        if (!isNote) {
+            const draft = this.getActiveDraft();
+            if (draft?.folder) {
+                baseFolder = normalizePath(`${baseFolder}/${draft.folder}`);
+            }
+        }
 
         // Ensure folder exists
         await this.ensureFolder(baseFolder);
@@ -1098,6 +1124,16 @@ export class SceneManager implements ISceneStore {
         if (scene) {
             this.scenes.set(file.path, scene);
             this.bumpVersion(file.path);
+        }
+
+        // Keep draft reading-order list in sync when the active draft uses one
+        if (!isNote) {
+            const draft = this.getActiveDraft();
+            const project = this._activeProject;
+            if (project && draft?.scenePaths && !draft.scenePaths.includes(file.path)) {
+                draft.scenePaths = [...draft.scenePaths, file.path];
+                await this.saveProjectFrontmatter(project);
+            }
         }
 
         return file;
@@ -1528,6 +1564,7 @@ export class SceneManager implements ISceneStore {
 
         await this.app.fileManager.trashFile(file);
         this.scenes.delete(filePath);
+        await this.syncDraftScenePaths(filePath, null);
         this.bumpVersion(filePath);
 
     }
@@ -1650,6 +1687,7 @@ export class SceneManager implements ISceneStore {
      */
     handleFileDelete(filePath: string): void {
         this.scenes.delete(filePath);
+        void this.syncDraftScenePaths(filePath, null);
         this.bumpVersion(filePath);
     }
 
@@ -1678,7 +1716,35 @@ export class SceneManager implements ISceneStore {
                 }
             }
         }
+        await this.syncDraftScenePaths(oldPath, file.path);
         this.bumpVersion(file.path);
+    }
+
+    /** Keep draft reading-order lists in sync when a scene path changes or is removed. */
+    private async syncDraftScenePaths(oldPath: string, newPath: string | null): Promise<void> {
+        const project = this._activeProject;
+        if (!project?.drafts) return;
+        const oldN = normalizePath(oldPath);
+        let dirty = false;
+        for (const draft of project.drafts) {
+            if (!draft.scenePaths?.length) continue;
+            if (newPath === null) {
+                const next = draft.scenePaths.filter(p => normalizePath(p) !== oldN);
+                if (next.length !== draft.scenePaths.length) {
+                    draft.scenePaths = next.length > 0 ? next : undefined;
+                    dirty = true;
+                }
+            } else {
+                let changed = false;
+                draft.scenePaths = draft.scenePaths.map(p => {
+                    if (normalizePath(p) !== oldN) return p;
+                    changed = true;
+                    return newPath;
+                });
+                if (changed) dirty = true;
+            }
+        }
+        if (dirty) await this.saveProjectFrontmatter(project);
     }
 
     private getTitleFromSceneFileName(file: TFile): string | undefined {
@@ -2553,11 +2619,12 @@ export class SceneManager implements ISceneStore {
             delete existingFm.activeBeatSheet;
         }
 
-        // Drafts (Longform-style)
+        // Drafts — folder-isolated under Scenes/<folder>/
         this.ensureProjectDrafts(project);
         if (project.drafts && project.drafts.length > 0) {
             existingFm.drafts = project.drafts.map(d => {
                 const entry: Record<string, unknown> = { id: d.id, title: d.title };
+                if (d.folder) entry.folder = d.folder;
                 if (d.scenePaths && d.scenePaths.length > 0) entry.scenes = d.scenePaths;
                 return entry;
             });
@@ -2576,7 +2643,7 @@ export class SceneManager implements ISceneStore {
     }
 
     // ────────────────────────────────────
-    //  Drafts (Longform-style)
+    //  Drafts (folder-isolated under Scenes/)
     // ────────────────────────────────────
 
     /** Ensure the project has at least one draft and a valid activeDraftId. */
@@ -2589,9 +2656,15 @@ export class SceneManager implements ISceneStore {
         }
     }
 
-    /** Display label for a draft — legacy "Main" is shown like any other draft name. */
+    /**
+     * Display label for a draft. Named drafts use their Scenes/ subfolder name;
+     * the primary draft keeps the localized "Primary draft" title.
+     */
     draftDisplayTitle(draft: ProjectDraft): string {
-        if (draft.title === 'Main') return 'Primary draft';
+        if (draft.folder) return draft.folder;
+        if (draft.title === 'Main' || draft.title === 'Primary draft' || draft.id === 'main') {
+            return 'Primary draft';
+        }
         return draft.title || 'Primary draft';
     }
 
@@ -2609,57 +2682,302 @@ export class SceneManager implements ISceneStore {
         return project.drafts?.find(d => d.id === project.activeDraftId) ?? project.drafts?.[0] ?? null;
     }
 
+    /** Absolute vault path of a draft's Scenes subfolder, or Scenes root for primary. */
+    getDraftSceneRoot(draft?: ProjectDraft | null): string {
+        const sceneFolder = normalizePath(this.getSceneFolder());
+        if (draft?.folder) return normalizePath(`${sceneFolder}/${draft.folder}`);
+        return sceneFolder;
+    }
+
+    private sanitizeDraftFolderName(name: string): string {
+        const cleaned = name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
+        return cleaned || 'Draft';
+    }
+
+    private uniqueDraftFolderName(desired: string): string {
+        const sceneFolder = normalizePath(this.getSceneFolder());
+        let base = this.sanitizeDraftFolderName(desired);
+        let candidate = base;
+        let n = 2;
+        while (this.app.vault.getAbstractFileByPath(normalizePath(`${sceneFolder}/${candidate}`))) {
+            candidate = `${base} ${n}`;
+            n++;
+        }
+        return candidate;
+    }
+
+    private draftFolderPrefixes(project: StoryLineProject): string[] {
+        const sceneFolder = normalizePath(this.getSceneFolder());
+        return (project.drafts ?? [])
+            .map(d => d.folder)
+            .filter((f): f is string => !!f)
+            .map(f => normalizePath(`${sceneFolder}/${f}/`));
+    }
+
+    private sceneBelongsToDraft(scenePath: string, draft: ProjectDraft, project: StoryLineProject): boolean {
+        const path = normalizePath(scenePath);
+        const sceneFolder = normalizePath(this.getSceneFolder());
+        if (!this.isPathUnderFolder(path, sceneFolder)) return false;
+        const prefixes = this.draftFolderPrefixes(project);
+        if (draft.folder) {
+            const mine = normalizePath(`${sceneFolder}/${draft.folder}/`);
+            return path.startsWith(mine);
+        }
+        // Primary: in Scenes/ but not inside any other draft folder
+        return !prefixes.some(p => path.startsWith(p));
+    }
+
+    private sortScenesReadingOrder(scenes: Scene[]): Scene[] {
+        return scenes.slice().sort((a, b) => {
+            const actCmp = compareActChapter(a.act, b.act);
+            if (actCmp !== 0) return actCmp;
+            const chCmp = compareActChapter(a.chapter, b.chapter);
+            if (chCmp !== 0) return chCmp;
+            return (a.sequence ?? 9999) - (b.sequence ?? 9999);
+        });
+    }
+
+    /**
+     * Migrate legacy drafts that only had shared scenePaths (no folder) into
+     * independent Scenes/<name>/ copies so deletes no longer affect other drafts.
+     */
+    async migrateDraftFoldersIfNeeded(): Promise<void> {
+        const project = this._activeProject;
+        if (!project) return;
+        this.ensureProjectDrafts(project);
+        let dirty = false;
+        const sceneFolder = normalizePath(this.getSceneFolder());
+
+        for (const draft of project.drafts ?? []) {
+            if (draft.id === 'main' || draft.folder) continue;
+
+            const folderName = this.uniqueDraftFolderName(draft.title || 'Draft');
+            const draftRoot = normalizePath(`${sceneFolder}/${folderName}`);
+            await this.ensureFolder(draftRoot);
+
+            const sourcePaths = draft.scenePaths?.length
+                ? draft.scenePaths
+                : this.getAllScenes()
+                    .filter(s => !s.corkboardNote && !s.inactive && this.sceneBelongsToDraft(s.filePath, { id: 'main', title: 'Primary draft' }, project))
+                    .map(s => s.filePath);
+
+            const newPaths: string[] = [];
+            for (const srcPath of sourcePaths) {
+                const srcFile = this.app.vault.getAbstractFileByPath(srcPath);
+                if (!(srcFile instanceof TFile)) continue;
+                let rel = normalizePath(srcPath);
+                if (rel.startsWith(sceneFolder + '/')) rel = rel.slice(sceneFolder.length + 1);
+                else rel = srcFile.name;
+                // Don't nest another draft folder inside this one
+                for (const other of project.drafts ?? []) {
+                    if (other.folder && (rel === other.folder || rel.startsWith(other.folder + '/'))) {
+                        rel = srcFile.name;
+                        break;
+                    }
+                }
+                let dest = normalizePath(`${draftRoot}/${rel}`);
+                const destDir = dest.includes('/') ? dest.slice(0, dest.lastIndexOf('/')) : draftRoot;
+                await this.ensureFolder(destDir);
+                let dedupe = 1;
+                while (this.app.vault.getAbstractFileByPath(dest)) {
+                    const stem = rel.replace(/\.md$/i, '');
+                    dest = normalizePath(`${draftRoot}/${stem} (${dedupe}).md`);
+                    dedupe++;
+                }
+                await this.app.vault.copy(srcFile, dest);
+                const copied = await MetadataParser.parseFile(this.app, this.app.vault.getAbstractFileByPath(dest) as TFile);
+                if (copied) {
+                    this.scenes.set(dest, copied);
+                    this.bumpVersion(dest);
+                }
+                newPaths.push(dest);
+            }
+
+            draft.folder = folderName;
+            draft.title = folderName;
+            draft.scenePaths = newPaths.length > 0 ? newPaths : undefined;
+            dirty = true;
+        }
+
+        if (dirty) {
+            await this.saveProjectFrontmatter(project);
+            new Notice('Drafts migrated to Scenes/ subfolders');
+        }
+    }
+
     async setActiveDraft(draftId: string): Promise<void> {
         if (!this._activeProject) return;
+        await this.migrateDraftFoldersIfNeeded();
         this.ensureProjectDrafts(this._activeProject);
         if (!this._activeProject.drafts?.some(d => d.id === draftId)) return;
         this._activeProject.activeDraftId = draftId;
         await this.saveProjectFrontmatter(this._activeProject);
+        this.bumpVersion(); // invalidate query cache so board/manuscript re-scope
     }
 
     /**
-     * Create a new draft. By default snapshots the current reading-order
-     * scene paths so the draft can diverge from the primary set later.
+     * Create a new draft as Scenes/<name>/, copying the active draft's scenes
+     * into that folder so edits/deletes stay isolated.
      */
     async createDraft(title: string, snapshotScenes = true): Promise<ProjectDraft | null> {
         if (!this._activeProject) return null;
+        await this.migrateDraftFoldersIfNeeded();
         this.ensureProjectDrafts(this._activeProject);
-        const id = `draft-${Date.now().toString(36)}`;
-        const draft: ProjectDraft = { id, title: title.trim() || 'Draft' };
-        if (snapshotScenes) {
-            draft.scenePaths = this.getAllScenes()
-                .filter(s => !s.corkboardNote && !s.inactive)
-                .sort((a, b) => {
-                    const actCmp = compareActChapter(a.act, b.act);
-                    if (actCmp !== 0) return actCmp;
-                    const chCmp = compareActChapter(a.chapter, b.chapter);
-                    if (chCmp !== 0) return chCmp;
-                    return (a.sequence ?? 9999) - (b.sequence ?? 9999);
-                })
-                .map(s => s.filePath);
+
+        const folderName = this.uniqueDraftFolderName(title.trim() || 'Draft');
+        const sceneFolder = normalizePath(this.getSceneFolder());
+        const draftRoot = normalizePath(`${sceneFolder}/${folderName}`);
+        await this.ensureFolder(draftRoot);
+
+        const sourceDraft = this.getActiveDraft();
+        const sourceRoot = this.getDraftSceneRoot(sourceDraft);
+        const sourceScenes = snapshotScenes
+            ? this.sortScenesReadingOrder(this.getScenesForDraft(sourceDraft?.id))
+            : [];
+
+        const newPaths: string[] = [];
+        for (const scene of sourceScenes) {
+            const srcFile = this.app.vault.getAbstractFileByPath(scene.filePath);
+            if (!(srcFile instanceof TFile)) continue;
+            let rel = normalizePath(scene.filePath);
+            if (rel.startsWith(sourceRoot + '/')) rel = rel.slice(sourceRoot.length + 1);
+            else rel = srcFile.name;
+            let dest = normalizePath(`${draftRoot}/${rel}`);
+            const destDir = dest.includes('/') ? dest.slice(0, dest.lastIndexOf('/')) : draftRoot;
+            await this.ensureFolder(destDir);
+            let dedupe = 1;
+            while (this.app.vault.getAbstractFileByPath(dest)) {
+                const stem = rel.replace(/\.md$/i, '');
+                dest = normalizePath(`${draftRoot}/${stem} (${dedupe}).md`);
+                dedupe++;
+            }
+            await this.app.vault.copy(srcFile, dest);
+            const copied = await MetadataParser.parseFile(this.app, this.app.vault.getAbstractFileByPath(dest) as TFile);
+            if (copied) {
+                this.scenes.set(dest, copied);
+                this.bumpVersion(dest);
+            }
+            newPaths.push(dest);
         }
+
+        const id = `draft-${Date.now().toString(36)}`;
+        const draft: ProjectDraft = {
+            id,
+            title: folderName,
+            folder: folderName,
+            scenePaths: newPaths.length > 0 ? newPaths : undefined,
+        };
         this._activeProject.drafts = [...(this._activeProject.drafts ?? []), draft];
         this._activeProject.activeDraftId = draft.id;
         await this.saveProjectFrontmatter(this._activeProject);
+        new Notice(`Draft folder created: Scenes/${folderName}`);
         return draft;
     }
 
+    /** Rename a draft and its Scenes/<folder> (keeps sidebar label in sync). */
     async renameDraft(draftId: string, title: string): Promise<void> {
         if (!this._activeProject?.drafts) return;
         const draft = this._activeProject.drafts.find(d => d.id === draftId);
         if (!draft) return;
-        draft.title = title.trim() || draft.title;
+
+        const newName = this.sanitizeDraftFolderName(title);
+        if (!newName) return;
+
+        if (draft.folder && draft.folder !== newName) {
+            const sceneFolder = normalizePath(this.getSceneFolder());
+            const oldPath = normalizePath(`${sceneFolder}/${draft.folder}`);
+            let finalName = newName;
+            let destPath = normalizePath(`${sceneFolder}/${finalName}`);
+            let n = 2;
+            while (
+                destPath !== oldPath
+                && this.app.vault.getAbstractFileByPath(destPath)
+            ) {
+                finalName = `${newName} ${n}`;
+                destPath = normalizePath(`${sceneFolder}/${finalName}`);
+                n++;
+            }
+            const folder = this.app.vault.getAbstractFileByPath(oldPath);
+            if (folder instanceof TFolder) {
+                await this.app.fileManager.renameFile(folder, destPath);
+                const oldPrefix = oldPath + '/';
+                const newPrefix = destPath + '/';
+                if (draft.scenePaths) {
+                    draft.scenePaths = draft.scenePaths.map(p => {
+                        const np = normalizePath(p);
+                        return np.startsWith(oldPrefix) ? newPrefix + np.slice(oldPrefix.length) : p;
+                    });
+                }
+                // Re-key in-memory scene index for moved files
+                for (const [path, scene] of [...this.scenes.entries()]) {
+                    const np = normalizePath(path);
+                    if (np.startsWith(oldPrefix)) {
+                        const next = newPrefix + np.slice(oldPrefix.length);
+                        this.scenes.delete(path);
+                        scene.filePath = next;
+                        this.scenes.set(next, scene);
+                    }
+                }
+            }
+            draft.folder = finalName;
+            draft.title = finalName;
+        } else if (!draft.folder) {
+            // Primary draft — title only
+            draft.title = newName === 'Primary draft' || newName === '正文' ? 'Primary draft' : newName;
+        } else {
+            draft.title = draft.folder;
+        }
         await this.saveProjectFrontmatter(this._activeProject);
+    }
+
+    /**
+     * When the user renames a draft folder in the file explorer, keep the
+     * draft registry / sidebar label matched to the new folder name.
+     */
+    async handleDraftFolderRename(oldPath: string, newPath: string): Promise<boolean> {
+        const project = this._activeProject;
+        if (!project?.drafts) return false;
+        const sceneFolder = normalizePath(this.getSceneFolder());
+        const oldNorm = normalizePath(oldPath);
+        const newNorm = normalizePath(newPath);
+        // Only direct children of Scenes/ are draft roots
+        const oldParent = oldNorm.includes('/') ? oldNorm.slice(0, oldNorm.lastIndexOf('/')) : '';
+        if (oldParent !== sceneFolder) return false;
+
+        const oldName = oldNorm.slice(sceneFolder.length + 1);
+        const newName = newNorm.slice(sceneFolder.length + 1);
+        if (!oldName || !newName || newName.includes('/')) return false;
+
+        const draft = project.drafts.find(d => d.folder === oldName);
+        if (!draft) return false;
+
+        draft.folder = newName;
+        draft.title = newName;
+        const oldPrefix = oldNorm + '/';
+        const newPrefix = newNorm + '/';
+        if (draft.scenePaths) {
+            draft.scenePaths = draft.scenePaths.map(p => {
+                const np = normalizePath(p);
+                return np.startsWith(oldPrefix) ? newPrefix + np.slice(oldPrefix.length) : p;
+            });
+        }
+        await this.saveProjectFrontmatter(project);
+        return true;
     }
 
     async deleteDraft(draftId: string): Promise<boolean> {
         if (!this._activeProject?.drafts) return false;
         this.ensureProjectDrafts(this._activeProject);
         if ((this._activeProject.drafts?.length ?? 0) <= 1) return false;
+        const draft = this._activeProject.drafts.find(d => d.id === draftId);
         this._activeProject.drafts = this._activeProject.drafts.filter(d => d.id !== draftId);
         if (this._activeProject.activeDraftId === draftId) {
             this._activeProject.activeDraftId = this._activeProject.drafts[0]?.id;
         }
+        // Leave the Scenes/<folder> on disk — user can delete manually.
+        // Drop in-memory index entries for that folder so binder won't list them
+        // while another draft is active (they're still filtered by folder).
+        void draft;
         await this.saveProjectFrontmatter(this._activeProject);
         return true;
     }
@@ -2672,17 +2990,28 @@ export class SceneManager implements ISceneStore {
         const draft = draftId
             ? project.drafts?.find(d => d.id === draftId)
             : this.getActiveDraft();
+        if (!draft) return [];
+
         const all = this.getAllScenes().filter(s => !s.corkboardNote && !s.inactive);
-        if (!draft?.scenePaths || draft.scenePaths.length === 0) {
-            return all;
+        const candidates = all.filter(s => this.sceneBelongsToDraft(s.filePath, draft, project));
+
+        if (draft.scenePaths && draft.scenePaths.length > 0) {
+            const byPath = new Map(candidates.map(s => [s.filePath, s]));
+            const ordered: Scene[] = [];
+            for (const path of draft.scenePaths) {
+                const scene = byPath.get(path);
+                if (scene) {
+                    ordered.push(scene);
+                    byPath.delete(path);
+                }
+            }
+            // New files in the draft folder not yet in the order list
+            for (const scene of this.sortScenesReadingOrder([...byPath.values()])) {
+                ordered.push(scene);
+            }
+            return ordered;
         }
-        const byPath = new Map(all.map(s => [s.filePath, s]));
-        const ordered: Scene[] = [];
-        for (const path of draft.scenePaths) {
-            const scene = byPath.get(path);
-            if (scene) ordered.push(scene);
-        }
-        return ordered;
+        return this.sortScenesReadingOrder(candidates);
     }
 
     /**

@@ -16,14 +16,24 @@ import { FilterPreset } from './Scene';
  * the runtime detects this and uses the old paths transparently.
  */
 /**
- * A manuscript draft within a project (Longform-style).
- * When `scenePaths` is omitted/empty the draft includes every project scene
- * in reading order. When set, only those scenes (in list order) belong to it.
+ * A manuscript draft within a project.
+ *
+ * Isolation is folder-based under `Scenes/`:
+ * - Primary draft (no `folder`): scenes living in the Scenes root / Act folders
+ *   that are NOT inside another draft’s subfolder.
+ * - Other drafts: each owns `Scenes/<folder>/…` as an independent copy tree.
+ *
+ * `scenePaths` is an optional reading-order hint; membership is by folder.
  */
 export interface ProjectDraft {
     id: string;
     title: string;
-    /** Optional ordered list of scene file paths belonging to this draft */
+    /**
+     * Subfolder name under the project Scenes/ folder (e.g. "草稿 2").
+     * Omitted/empty = primary draft (Scenes root). Display name tracks this folder.
+     */
+    folder?: string;
+    /** Optional ordered list of scene file paths (reading order within the draft) */
     scenePaths?: string[];
 }
 

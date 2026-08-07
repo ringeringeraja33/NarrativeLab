@@ -480,6 +480,14 @@ export class NavigatorView extends ItemView {
             item.setIcon('plus');
             item.onClick(() => this.promptNewDraft());
         });
+        const active = this.sceneManager.getActiveDraft();
+        if (active?.folder) {
+            menu.addItem(item => {
+                item.setTitle(t('Rename draft'));
+                item.setIcon('pencil');
+                item.onClick(() => this.promptRenameDraft(active));
+            });
+        }
         menu.showAtMouseEvent(e);
     }
 
@@ -754,7 +762,8 @@ export class NavigatorView extends ItemView {
     }
 
     private promptRenameDraft(draft: ProjectDraft): void {
-        new DraftNameModal(this.app, t('Rename draft'), draft.title, async (name) => {
+        const current = this.sceneManager.draftDisplayTitle(draft);
+        new DraftNameModal(this.app, t('Rename draft'), current, async (name) => {
             await this.sceneManager.renameDraft(draft.id, name);
             this.plugin.refreshOpenViews();
         }).open();

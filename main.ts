@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { App, ButtonComponent, DropdownComponent, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
+import { App, ButtonComponent, DropdownComponent, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
 import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './settings';
 import { asRecord, asString, asNumber, asBool, isRecord } from './utils/narrow';
 import type { FilterPreset } from './models/Scene';
@@ -728,6 +728,13 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.registerEvent(
             this.app.vault.on('rename', (file, oldPath) => {
+                if (file instanceof TFolder) {
+                    // Draft roots live at Scenes/<name>/ — keep sidebar label in sync
+                    this.sceneManager.handleDraftFolderRename(oldPath, file.path).then((changed) => {
+                        if (changed) debouncedRefresh();
+                    });
+                    return;
+                }
                 if (file instanceof TFile) {
                     this.sceneManager.handleFileRename(file, oldPath).then(async () => {
                         // Update any PlotGrid cells that reference the old path

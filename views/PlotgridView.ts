@@ -1765,25 +1765,29 @@ export class PlotgridView extends ItemView {
                             });
                         }));
                     } else {
-                        // No linked scene — show cell editing + create/link options
+                        // No linked scene — edit + link / convert into project folders
                         menu.addItem((it) => it.setTitle(t('Edit Cell')).onClick(() => this.enterEditMode(cellEl, cell, contentEl)));
                         menu.addSeparator();
+                        menu.addItem((it) => it.setTitle(t('Link Note…')).setIcon('link').onClick(() => {
+                            this.openNoteLinkModal((path) => {
+                                const c = this.data.cells[key];
+                                if (c) c.linkedSceneId = path;
+                                this.scheduleSave();
+                                this.renderGrid();
+                                this.refreshOpenCellInspector();
+                            });
+                        }));
                         if (scMgr) {
-                            menu.addItem((it) => it.setTitle(t('Turn into Note')).setIcon('sticky-note').onClick(async () => {
-                                const c = this.data.cells[key] ?? cell;
-                                if (!c.content?.trim()) {
-                                    new Notice(t('Add some content before creating a note'));
-                                    return;
-                                }
-                                await this.autoCreateNoteFromCell(c);
+                            menu.addItem((it) => it.setTitle(t('Convert to Notes')).setIcon('sticky-note').onClick(async () => {
+                                await this.convertCellToNotes(this.data.cells[key] ?? cell);
                             }));
-                            menu.addItem((it) => it.setTitle(t('Create New Scene…')).setIcon('plus').onClick(() => {
-                                this.openQuickAddForCell(key);
+                            menu.addItem((it) => it.setTitle(t('Convert to Scene')).setIcon('file-text').onClick(async () => {
+                                await this.convertCellToScene(this.data.cells[key] ?? cell);
+                            }));
+                            menu.addItem((it) => it.setTitle(t('Convert to Research')).setIcon('book-open').onClick(async () => {
+                                await this.convertCellToResearch(this.data.cells[key] ?? cell);
                             }));
                         }
-                        menu.addItem((it) => it.setTitle(t('Link Scene Card…')).setIcon('link').onClick(() => {
-                            this.openSceneLinkModal((path) => { const c = this.data.cells[key]; if (c) c.linkedSceneId = path; this.scheduleSave(); this.renderGrid(); });
-                        }));
                         menu.addSeparator();
                         menu.addItem((it) => it.setTitle(t('Clear Cell Content')).onClick(() => { const c = this.data.cells[key]; if (c) c.content = ''; this.scheduleSave(); this.renderGrid(); }));
                     }
@@ -2641,62 +2645,124 @@ export class PlotgridView extends ItemView {
         modal.open();
     }
 
-    /**
-     * Auto-Note: create a corkboard note from a cell's manual text
-     * and link it back to the cell.
-     */
-    private async autoCreateNoteFromCell(cell: CellData): Promise<void> {
-        const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
-        if (!scMgr || !cell.content?.trim()) return;
+    /** First non-empty line of cell text, used as a file title. */
+    private cellTitleFromContent(content: string, fallback: string): string {
+        const first = content
+            .trim()
+            .split(/\r?\n/)
+            .map(l => l.trim())
+            .find(l => l.length > 0) || fallback;
+        return first
+            .replace(/^#{1,6}\s+/, '')
+            .replace(/^[-*+]\s+/, '')
+            .replace(/^>\s*/, '')
+            .substring(0, 60) || fallback;
+    }
 
-        // Guard: if the cell already has a linked scene, skip (prevents double-fire)
-        if (cell.linkedSceneId) return;
-
-        // Resolve row/column labels for context
-        // cell.id format: "rowId-colId" but IDs may contain hyphens from makeId,
-        // so find the matching row/col by checking all combinations
-        let rowLabel = '';
-        let colLabel = '';
+    /** Resolve row/column labels for plotgridOrigin context. */
+    private cellOriginLabel(cell: CellData): string | undefined {
         for (const row of this.data.rows) {
             for (const col of this.data.columns) {
                 if (`${row.id}-${col.id}` === cell.id) {
-                    rowLabel = row.label || '';
-                    colLabel = col.label || '';
+                    const parts = [row.label, col.label].filter(Boolean);
+                    return parts.length > 0 ? parts.join(' / ') : undefined;
                 }
             }
         }
+        return undefined;
+    }
 
-        // Build body — no longer appending origin as text
+    private linkFileToCell(cell: CellData, filePath: string): void {
+        const liveCell = this.data.cells[cell.id];
+        if (liveCell) liveCell.linkedSceneId = filePath;
+        else cell.linkedSceneId = filePath;
+        this.scheduleSave();
+        this.renderGrid();
+        this.refreshOpenCellInspector();
+    }
+
+    /**
+     * Auto-Note / Convert to Notes: create a corkboard note in Notes/
+     * from a cell's text and link it back to the cell.
+     */
+    private async autoCreateNoteFromCell(cell: CellData): Promise<void> {
+        await this.convertCellToNotes(cell);
+    }
+
+    private async convertCellToNotes(cell: CellData): Promise<void> {
+        const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
+        if (!scMgr) return;
+        if (cell.linkedSceneId) return;
+        if (!cell.content?.trim()) {
+            new Notice(t('Add some content before converting'));
+            return;
+        }
+
         const body = cell.content.trim();
-        const contextParts: string[] = [];
-        if (rowLabel) contextParts.push(rowLabel);
-        if (colLabel) contextParts.push(colLabel);
-        const originLabel = contextParts.length > 0 ? contextParts.join(' / ') : undefined;
-
         const file = await scMgr.createScene({
             status: 'idea',
             corkboardNote: true,
-            title: t('Note'),
+            title: this.cellTitleFromContent(body, t('Note')),
             body,
-            plotgridOrigin: originLabel,
+            plotgridOrigin: this.cellOriginLabel(cell),
         });
-
-        // Link the note back ONLY to this specific cell via its key
-        const liveCell = this.data.cells[cell.id];
-        if (liveCell) {
-            liveCell.linkedSceneId = file.path;
-        } else {
-            cell.linkedSceneId = file.path;
-        }
-        this.scheduleSave();
-        this.renderGrid();
-        new Notice(t('Auto-Note created from cell'));
+        this.linkFileToCell(cell, file.path);
+        new Notice(t('Converted cell to Notes'));
     }
 
-    // Scene link modal
+    private async convertCellToScene(cell: CellData): Promise<void> {
+        const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
+        if (!scMgr) return;
+        if (cell.linkedSceneId) return;
+        if (!cell.content?.trim()) {
+            new Notice(t('Add some content before converting'));
+            return;
+        }
+
+        const body = cell.content.trim();
+        const file = await scMgr.createScene({
+            status: 'idea',
+            title: this.cellTitleFromContent(body, t('Untitled Scene')),
+            body,
+            plotgridOrigin: this.cellOriginLabel(cell),
+        });
+        this.linkFileToCell(cell, file.path);
+        new Notice(t('Converted cell to Scene'));
+    }
+
+    private async convertCellToResearch(cell: CellData): Promise<void> {
+        const researchMgr = this.plugin?.researchManager;
+        if (!researchMgr) {
+            new Notice(t('Research manager not available'));
+            return;
+        }
+        if (cell.linkedSceneId) return;
+        if (!cell.content?.trim()) {
+            new Notice(t('Add some content before converting'));
+            return;
+        }
+
+        const body = cell.content.trim();
+        const title = this.cellTitleFromContent(body, t('Untitled'));
+        try {
+            const post = await researchMgr.createPost(title, 'note', body);
+            await researchMgr.scan();
+            this.linkFileToCell(cell, post.filePath);
+            new Notice(t('Converted cell to Research'));
+        } catch (err) {
+            new Notice(t('Failed to create research post') + ': ' + String(err));
+        }
+    }
+
+    /** Vault-wide file picker — any markdown note can be linked to a cell. */
+    private openNoteLinkModal(onChoose: (path: string) => void) {
+        this.openSceneLinkModal(onChoose);
+    }
+
+    // Legacy name kept for any remaining call sites
     private openSceneLinkModal(onChoose: (path: string) => void) {
         const app = this.app;
-        class SceneLinkModal extends Modal {
+        class NoteLinkModal extends Modal {
             onChoose: (path: string) => void;
             listEl: HTMLDivElement | null = null;
             inputEl: HTMLInputElement | null = null;
@@ -2706,7 +2772,7 @@ export class PlotgridView extends ItemView {
             }
             onOpen() {
                 const { contentEl } = this;
-                contentEl.createEl('h3', { text: t('Link Scene Card') });
+                contentEl.createEl('h3', { text: t('Link Note') });
                 this.inputEl = contentEl.createEl('input');
                 this.inputEl.placeholder = t('Search files...');
                 this.inputEl.setCssStyles({ width: '100%' });
@@ -2722,7 +2788,8 @@ export class PlotgridView extends ItemView {
                 if (!this.listEl || !this.inputEl) return;
                 this.listEl.empty();
                 const q = this.inputEl.value.toLowerCase();
-                const files = this.app.vault.getMarkdownFiles().filter((f: TFile) => f.path.toLowerCase().includes(q) || f.basename.toLowerCase().includes(q));
+                const files = this.app.vault.getMarkdownFiles().filter((f: TFile) =>
+                    f.path.toLowerCase().includes(q) || f.basename.toLowerCase().includes(q));
                 for (const f of files) {
                     const row = this.listEl.createDiv('scene-link-row');
                     row.setCssStyles({
@@ -2739,7 +2806,7 @@ export class PlotgridView extends ItemView {
             }
         }
 
-        const modal = new SceneLinkModal(app, onChoose);
+        const modal = new NoteLinkModal(app, onChoose);
         modal.open();
     }
 
@@ -3416,33 +3483,27 @@ export class PlotgridView extends ItemView {
                 if (isLinkedNote) new Notice(t('Note unlinked from cell'));
             });
         } else {
-            // Unlinked cell — offer turn-into-note / link scene
-            const createNoteBtn = actions.createEl('button', {
-                cls: 'mod-cta pg-cell-cta-btn',
-                text: t('Turn into Note'),
-                attr: { type: 'button', title: t('Create a corkboard note from this cell’s content') },
-            });
-            createNoteBtn.addEventListener('click', async () => {
+            // Unlinked cell — link any vault note, or convert into Notes / Scenes / Research
+            const syncTextarea = () => {
                 const liveCell = getCell();
-                // Persist latest textarea before creating the note
                 liveCell.content = textArea.value;
                 liveCell.manualContent = true;
-                if (!liveCell.content?.trim()) {
-                    new Notice(t('Add some content before creating a note'));
-                    textArea.focus();
-                    return;
-                }
-                await this.autoCreateNoteFromCell(liveCell);
-                const updated = this.data.cells[cellKey] ?? liveCell;
-                this.showCellInspector(rowIndex, colIndex, updated);
-            });
+                return liveCell;
+            };
 
-            const linkSceneBtn = actions.createEl('button', {
-                text: t('Link Scene Card…'),
-                attr: { type: 'button' },
-            });
-            linkSceneBtn.addEventListener('click', () => {
-                this.openSceneLinkModal((path) => {
+            const makeAccentBtn = (label: string, title: string, onClick: () => void | Promise<void>) => {
+                const btn = actions.createEl('button', {
+                    cls: 'mod-cta pg-cell-cta-btn',
+                    text: label,
+                    attr: { type: 'button', title },
+                });
+                btn.addEventListener('click', () => { void onClick(); });
+                return btn;
+            };
+
+            makeAccentBtn(t('Link Note…'), t('Link any markdown file in the vault to this cell'), () => {
+                syncTextarea();
+                this.openNoteLinkModal((path) => {
                     const c = this.data.cells[cellKey] ?? cell;
                     c.linkedSceneId = path;
                     this.scheduleSave();
@@ -3450,6 +3511,51 @@ export class PlotgridView extends ItemView {
                     this.showCellInspector(rowIndex, colIndex, c);
                 });
             });
+
+            makeAccentBtn(
+                t('Convert to Notes'),
+                t('Create a Notes/ file from this cell and link it'),
+                async () => {
+                    const liveCell = syncTextarea();
+                    if (!liveCell.content?.trim()) {
+                        new Notice(t('Add some content before converting'));
+                        textArea.focus();
+                        return;
+                    }
+                    await this.convertCellToNotes(liveCell);
+                    this.showCellInspector(rowIndex, colIndex, this.data.cells[cellKey] ?? liveCell);
+                },
+            );
+
+            makeAccentBtn(
+                t('Convert to Scene'),
+                t('Create a Scenes/ file from this cell and link it'),
+                async () => {
+                    const liveCell = syncTextarea();
+                    if (!liveCell.content?.trim()) {
+                        new Notice(t('Add some content before converting'));
+                        textArea.focus();
+                        return;
+                    }
+                    await this.convertCellToScene(liveCell);
+                    this.showCellInspector(rowIndex, colIndex, this.data.cells[cellKey] ?? liveCell);
+                },
+            );
+
+            makeAccentBtn(
+                t('Convert to Research'),
+                t('Create a Research/ file from this cell and link it'),
+                async () => {
+                    const liveCell = syncTextarea();
+                    if (!liveCell.content?.trim()) {
+                        new Notice(t('Add some content before converting'));
+                        textArea.focus();
+                        return;
+                    }
+                    await this.convertCellToResearch(liveCell);
+                    this.showCellInspector(rowIndex, colIndex, this.data.cells[cellKey] ?? liveCell);
+                },
+            );
         }
     }
 

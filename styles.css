@@ -7687,7 +7687,13 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     z-index: 20;
 }
 
-/* Cell inspector CTAs — override theme button padding so CJK labels center */
+/* Cell inspector CTAs — accent buttons for link / convert actions */
+.pg-cell-link-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
 .pg-cell-link-actions button.mod-cta.pg-cell-cta-btn,
 .pg-cell-link-actions button.mod-cta,
 .story-line-inspector-panel button.mod-cta {
@@ -7703,6 +7709,9 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     border-radius: 6px;
     font-size: 13px;
     font-weight: 600;
+    background-color: var(--interactive-accent) !important;
+    color: var(--text-on-accent, var(--text-on-accent-inverted, #fff)) !important;
+    border-color: transparent !important;
 }
 
 /* ??? Export Modal ???????????????????????????????????????????? */
