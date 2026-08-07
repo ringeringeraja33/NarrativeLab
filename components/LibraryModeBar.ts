@@ -30,6 +30,7 @@ const DEFAULT_FILTERS: StoryGraphFilterState = {
     showScenes: true,
     showCharacters: true,
     showLocations: true,
+    showCodex: true,
     showRelationships: true,
     showProps: true,
     showOther: true,
@@ -130,7 +131,7 @@ function collectStoryGraphDocuments(
         add({ filePath: location.filePath, label: location.name, entityType: 'location' });
     }
     for (const entry of plugin.codexManager.getAllEntries()) {
-        add({ filePath: entry.filePath, label: entry.name, entityType: 'other' });
+        add({ filePath: entry.filePath, label: entry.name, entityType: 'codex' });
     }
     return Array.from(documents.values());
 }

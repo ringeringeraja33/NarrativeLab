@@ -32,7 +32,8 @@ class ManageSnapshotsModal extends Modal {
 
         const newDiv = header.createDiv({ cls: 'sl-snapshot-new-btn clickable-icon' });
         obsidian.setIcon(newDiv, 'plus');
-        newDiv.setAttribute('aria-label', 'New Snapshot');
+        newDiv.setAttribute('aria-label', t('New Snapshot'));
+        newDiv.setAttribute('title', t('Capture current board & plot grid'));
         newDiv.addEventListener('click', async () => {
             const snap = await this.service.createSnapshot(`Snapshot ${await this.service.getNextId()}`);
             new Notice(t('Created snapshot #{id}', { id: snap.id }));
@@ -56,6 +57,11 @@ class ManageSnapshotsModal extends Modal {
             return;
         }
 
+        this.listEl.createEl('p', {
+            text: t('Click a snapshot or Restore to apply its board & plot grid layout.'),
+            cls: 'sl-snapshot-hint',
+        });
+
         for (const meta of metas) {
             this.renderSnapshotItem(meta, meta.id === activeId);
         }
@@ -63,13 +69,20 @@ class ManageSnapshotsModal extends Modal {
 
     private renderSnapshotItem(meta: ViewSnapshotMeta, isActive: boolean) {
         const row = this.listEl.createDiv({ cls: `sl-snapshot-item${isActive ? ' is-active' : ''}` });
+        row.setAttribute('role', 'button');
+        row.setAttribute('tabindex', '0');
+        row.setAttribute(
+            'aria-label',
+            t('Restore snapshot #{id} "{name}"', { id: meta.id, name: meta.name }),
+        );
 
         // Info
         const info = row.createDiv({ cls: 'sl-snapshot-info' });
         const titleLine = info.createDiv({ cls: 'sl-snapshot-title-line' });
         titleLine.createEl('span', { text: `#${meta.id}`, cls: 'sl-snapshot-id' });
-
+        titleLine.createEl('span', { text: meta.name || t('Untitled'), cls: 'sl-snapshot-name' });
         if (isActive) {
+            titleLine.createEl('span', { text: t('Active'), cls: 'sl-snapshot-badge' });
         }
 
         const dateStr = new Date(meta.modified ?? meta.created).toLocaleString();
@@ -81,38 +94,70 @@ class ManageSnapshotsModal extends Modal {
         // Actions (divs, not buttons)
         const actions = row.createDiv({ cls: 'sl-snapshot-actions' });
 
-        if (!isActive) {
-            const loadDiv = actions.createDiv({ cls: 'sl-snapshot-action-btn clickable-icon', attr: { 'aria-label': t('Load') } });
-            obsidian.setIcon(loadDiv, 'upload');
-            loadDiv.createEl('span', { text: t('Load') });
-            loadDiv.addEventListener('click', async () => {
-                const ok = await this.service.restoreSnapshot(meta.id);
-                if (ok) {
-                    new Notice(t('Loaded snapshot #{id} "{name}".', { id: meta.id, name: meta.name }));
-                    this.close();
-                } else {
-                    new Notice(t('Failed to load snapshot.'));
-                }
-            });
-        }
+        const restoreDiv = actions.createDiv({
+            cls: 'sl-snapshot-action-btn sl-snapshot-restore clickable-icon',
+            attr: {
+                'aria-label': t('Restore'),
+                title: isActive
+                    ? t('Reload this snapshot (discard unsaved layout changes)')
+                    : t('Restore this snapshot'),
+            },
+        });
+        obsidian.setIcon(restoreDiv, 'upload');
+        restoreDiv.createEl('span', { text: t('Restore') });
+        restoreDiv.addEventListener('click', (e) => {
+            e.stopPropagation();
+            void this.restore(meta);
+        });
 
-        const editDiv = actions.createDiv({ cls: 'sl-snapshot-action-btn clickable-icon', attr: { 'aria-label': t('Edit') } });
+        const editDiv = actions.createDiv({
+            cls: 'sl-snapshot-action-btn clickable-icon',
+            attr: { 'aria-label': t('Edit'), title: t('Edit') },
+        });
         obsidian.setIcon(editDiv, 'pencil');
-        editDiv.addEventListener('click', () => {
+        editDiv.addEventListener('click', (e) => {
+            e.stopPropagation();
             this.openEditInline(meta, row);
         });
 
-        const deleteDiv = actions.createDiv({ cls: 'sl-snapshot-action-btn clickable-icon sl-snapshot-delete', attr: { 'aria-label': t('Delete') } });
+        const deleteDiv = actions.createDiv({
+            cls: 'sl-snapshot-action-btn clickable-icon sl-snapshot-delete',
+            attr: { 'aria-label': t('Delete'), title: t('Delete') },
+        });
         obsidian.setIcon(deleteDiv, 'trash-2');
-        deleteDiv.addEventListener('click', async () => {
+        deleteDiv.addEventListener('click', async (e) => {
+            e.stopPropagation();
             await this.service.deleteSnapshot(meta.id);
             new Notice(t('Deleted snapshot #{id}.', { id: meta.id }));
             await this.renderList();
         });
+
+        // Clicking the row (outside action icons) restores the snapshot.
+        row.addEventListener('click', (e) => {
+            if ((e.target as HTMLElement | null)?.closest('.sl-snapshot-actions')) return;
+            void this.restore(meta);
+        });
+        row.addEventListener('keydown', (e) => {
+            if (e.key !== 'Enter' && e.key !== ' ') return;
+            e.preventDefault();
+            void this.restore(meta);
+        });
+    }
+
+    private async restore(meta: ViewSnapshotMeta): Promise<void> {
+        const ok = await this.service.restoreSnapshot(meta.id);
+        if (ok) {
+            new Notice(t('Loaded snapshot #{id} "{name}".', { id: meta.id, name: meta.name }));
+            this.close();
+        } else {
+            new Notice(t('Failed to load snapshot.'));
+        }
     }
 
     private openEditInline(meta: ViewSnapshotMeta, row: HTMLElement) {
         row.empty();
+        row.removeAttribute('role');
+        row.removeAttribute('tabindex');
         row.addClass('sl-snapshot-editing');
 
         const form = row.createDiv({ cls: 'sl-snapshot-edit-form' });

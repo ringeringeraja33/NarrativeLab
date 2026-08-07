@@ -5,6 +5,8 @@ import type SceneCardsPlugin from '../main';
 import { SceneManager } from '../services/SceneManager';
 import { CodexManager } from '../services/CodexManager';
 import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID, makeCustomCodexCategory, makeUncategorizedCodexCategory, CODEX_ICON_OPTIONS, withLinkingSection } from '../models/Codex';
+import { CHARACTER_CATEGORIES } from '../models/Character';
+import { LOCATION_CATEGORIES, WORLD_CATEGORIES } from '../models/Location';
 import { CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE } from '../constants';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
 import { promptDeleteCategory, renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
@@ -31,13 +33,18 @@ import {
 } from '../components/CustomSectionsRenderer';
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { t } from '../utils/i18n';
+import { coerceString } from '../utils/narrow';
 import {
     applyCategoryFolderLabels,
     ensureLibraryCategoryFolders,
     renameLibraryCategory,
 } from '../services/LibraryCategorySync';
 import { VirtualScroller } from '../components/VirtualScroller';
-import { renderNativeLibraryBase } from '../components/NativeLibraryBase';
+import {
+    ALL_LIBRARY_CATEGORY_ID,
+    disposeNativeLibraryBase,
+    renderNativeLibraryBase,
+} from '../components/NativeLibraryBase';
 import {
     LIBRARY_BROWSE_PAGE_SIZE,
     compareLibraryTableValues,
@@ -73,7 +80,41 @@ type ManagedCodexCategory = {
 type CategoryManagerState = {
     enabled: Set<string>;
     categories: ManagedCodexCategory[];
+    deletedPresets: Set<string>;
 };
+
+const FIXED_LIBRARY_CATEGORY_IDS = ['characters', 'locations', UNCATEGORIZED_CATEGORY_ID] as const;
+
+function makeEntityFieldsDefinition(
+    id: string,
+    label: string,
+    icon: string,
+    sourceCategories: Array<{
+        title: string;
+        icon: string;
+        fields: Array<{ key: string | number | symbol; label: string; placeholder: string; multiline?: boolean }>;
+    }>,
+): CodexCategoryDef {
+    const categories = sourceCategories.map(category => ({
+        title: category.title,
+        icon: category.icon,
+        fields: category.fields.map(field => ({
+            key: String(field.key),
+            label: field.label,
+            placeholder: field.placeholder,
+            multiline: field.multiline,
+        })),
+    }));
+    return {
+        id,
+        label,
+        icon,
+        folder: label,
+        categories,
+        fieldKeys: Array.from(new Set(categories.flatMap(category => category.fields.map(field => field.key)))),
+        builtIn: true,
+    };
+}
 
 /**
  * Codex View — central hub for all codex categories.
@@ -236,6 +277,7 @@ export class CodexView extends ItemView {
     // ══════════════════════════════════════════════════
 
     private renderView(container: HTMLElement): void {
+        disposeNativeLibraryBase(this);
         this.destroyListScroller();
         this.clearPortaledDropdowns(); // issue #102 — don't leak portaled popups across re-renders
         container.empty();
@@ -307,8 +349,13 @@ export class CodexView extends ItemView {
 
     private renderOverview(container: HTMLElement): void {
         container.empty();
-        if (this.activeCategory && getLibraryContentMode(this.plugin) === 'browse') {
-            void renderNativeLibraryBase(container, this.plugin, this.activeCategory, this);
+        if (getLibraryContentMode(this.plugin) === 'browse') {
+            void renderNativeLibraryBase(
+                container,
+                this.plugin,
+                this.activeCategory || ALL_LIBRARY_CATEGORY_ID,
+                this,
+            );
             return;
         }
 
@@ -780,8 +827,11 @@ export class CodexView extends ItemView {
                     const value = formula
                         ? evaluateLibraryTableFormula(formula.expression, property => resolveValue(entry, property))
                         : resolveValue(entry, key);
+                    const text = Array.isArray(value)
+                        ? value.map(item => coerceString(item).trim()).filter(Boolean).join(', ')
+                        : coerceString(value);
                     td.createSpan({
-                        text: Array.isArray(value) ? value.join(', ') : String(value ?? ''),
+                        text,
                         cls: 'library-base-table-muted',
                     });
                     continue;
@@ -789,7 +839,9 @@ export class CodexView extends ItemView {
                 const field = catDef.categories.flatMap(c => c.fields).find(f => f.key === key);
                 const multiline = !!field?.multiline;
                 const raw = resolveValue(entry, key);
-                const val = raw == null ? '' : Array.isArray(raw) ? raw.join(', ') : String(raw);
+                const val = Array.isArray(raw)
+                    ? raw.map(item => coerceString(item).trim()).filter(Boolean).join(', ')
+                    : coerceString(raw);
                 if (multiline) {
                     td.createSpan({ text: val.length > 80 ? val.slice(0, 80) + '…' : val, cls: 'library-base-table-muted' });
                     continue;
@@ -962,7 +1014,7 @@ export class CodexView extends ItemView {
             placeholder.createEl('span', { text: t('Click to add image') });
         }
         portraitArea.addEventListener('click', () => {
-            const attachmentSourcePath = this.sceneManager.getAttachmentSourcePath();
+            const attachmentSourcePath = this.sceneManager.getLibraryAttachmentFolder(catDef.id);
             pickImageModal(this.app, attachmentSourcePath, draft.image).then(async (picked) => {
                 if (picked !== undefined) {
                     draft.image = picked;
@@ -1514,7 +1566,8 @@ export class CodexView extends ItemView {
                 autoGrow();
             });
         } else if (tpl.type === 'checkbox') {
-            const checked = value === true || value === 'true' || value === 'yes';
+            const raw: unknown = draft.universalFields?.[tpl.id];
+            const checked = raw === true || raw === 'true' || raw === 'yes';
             const wrap = row.createDiv('codex-field-checkbox-wrap');
             const cb = wrap.createEl('input', {
                 cls: 'codex-field-checkbox',
@@ -1522,7 +1575,7 @@ export class CodexView extends ItemView {
             });
             cb.checked = !!checked;
             cb.addEventListener('change', () => {
-                draft.universalFields![tpl.id] = cb.checked;
+                draft.universalFields![tpl.id] = cb.checked ? 'true' : 'false';
                 this.scheduleSave(draft);
             });
         } else {
@@ -1679,7 +1732,7 @@ export class CodexView extends ItemView {
         }
         const allSections = this.plugin.settings.codexCategoryCustomSections;
         if (!allSections[draft.type]) allSections[draft.type] = [];
-        const sections = allSections[draft.type];
+        const sections = allSections[draft.type] as import('../components/CustomSectionsRenderer').CustomSection[];
         return {
             app: this.app,
             draft,
@@ -1781,7 +1834,8 @@ export class CodexView extends ItemView {
             obsidian.setIcon(addBtn, 'plus');
             addBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                const attachmentSourcePath = this.sceneManager.getAttachmentSourcePath();
+                const categoryId = draft.type || this.activeCategory || 'items';
+                const attachmentSourcePath = this.sceneManager.getLibraryAttachmentFolder(String(categoryId));
                 pickImageModal(this.app, attachmentSourcePath).then(async (picked) => {
                     if (picked !== undefined) {
                         if (!draft.gallery) draft.gallery = [];
@@ -2152,12 +2206,18 @@ export class CodexView extends ItemView {
         el.empty();
         el.addClass('codex-category-manager');
 
+        const hiddenFixed = new Set(this.plugin.settings.libraryHiddenFixedCategories || []);
         const state = existingState || {
-            enabled: new Set(this.plugin.settings.codexEnabledCategories),
+            enabled: new Set([
+                ...this.plugin.settings.codexEnabledCategories,
+                ...FIXED_LIBRARY_CATEGORY_IDS.filter(id => !hiddenFixed.has(id)),
+            ]),
             categories: (this.plugin.settings.codexCustomCategories || []).map(category => ({ ...category })),
+            deletedPresets: new Set(this.plugin.settings.codexDeletedPresetCategories || []),
         };
         const presetIds = new Set(BUILTIN_CODEX_CATEGORIES.map(category => category.id));
-        const deletedPresetIds = new Set(this.plugin.settings.codexDeletedPresetCategories || []);
+        const fixedIds = new Set<string>(FIXED_LIBRARY_CATEGORY_IDS);
+        const deletedPresetIds = state.deletedPresets;
 
         el.createEl('h4', { text: t('Custom Categories') });
         el.createEl('p', {
@@ -2167,19 +2227,6 @@ export class CodexView extends ItemView {
 
         const folderLabel = (id: string, fallback: string) =>
             this.plugin.sceneManager.getLibraryFolderName(id) || fallback;
-        const ensurePresetDraft = (cat: CodexCategoryDef): ManagedCodexCategory => {
-            let draft = state.categories.find(category => category.id === cat.id);
-            if (!draft) {
-                draft = {
-                    id: cat.id,
-                    label: folderLabel(cat.id, cat.folder),
-                    icon: cat.icon,
-                    preset: true,
-                };
-                state.categories.push(draft);
-            }
-            return draft;
-        };
         const list = el.createDiv('codex-category-manager-list');
         const header = list.createDiv('codex-category-manager-row codex-category-manager-header');
         header.createSpan();
@@ -2193,10 +2240,41 @@ export class CodexView extends ItemView {
             label: string;
             icon: string;
             preset: boolean;
-            protected?: boolean;
+            undeletable?: boolean;
             definition: CodexCategoryDef;
+            fieldsDefinition?: CodexCategoryDef;
             draft?: ManagedCodexCategory;
         }> = [
+            {
+                id: 'characters',
+                label: state.categories.find(category => category.id === 'characters')?.label
+                    || folderLabel('characters', 'Characters'),
+                icon: state.categories.find(category => category.id === 'characters')?.icon || 'users',
+                preset: true,
+                undeletable: true,
+                definition: makeCustomCodexCategory('characters', 'Characters', 'users'),
+                fieldsDefinition: makeEntityFieldsDefinition(
+                    'character',
+                    'Characters',
+                    'users',
+                    CHARACTER_CATEGORIES,
+                ),
+            },
+            {
+                id: 'locations',
+                label: state.categories.find(category => category.id === 'locations')?.label
+                    || folderLabel('locations', 'Locations'),
+                icon: state.categories.find(category => category.id === 'locations')?.icon || 'map-pin',
+                preset: true,
+                undeletable: true,
+                definition: makeCustomCodexCategory('locations', 'Locations', 'map-pin'),
+                fieldsDefinition: makeEntityFieldsDefinition(
+                    'location',
+                    'Locations',
+                    'map-pin',
+                    [...WORLD_CATEGORIES, ...LOCATION_CATEGORIES],
+                ),
+            },
             ...BUILTIN_CODEX_CATEGORIES
                 .filter(category => !deletedPresetIds.has(category.id))
                 .map(category => {
@@ -2211,7 +2289,7 @@ export class CodexView extends ItemView {
                     };
                 }),
             ...state.categories
-                .filter(category => !presetIds.has(category.id))
+                .filter(category => !presetIds.has(category.id) && !fixedIds.has(category.id))
                 .map(category => ({
                     id: category.id,
                     label: category.label || folderLabel(category.id, category.label),
@@ -2222,24 +2300,68 @@ export class CodexView extends ItemView {
                 })),
             {
                 id: UNCATEGORIZED_CATEGORY_ID,
-                label: t('Uncategorized entries'),
-                icon: 'file-question',
+                label: state.categories.find(category => category.id === UNCATEGORIZED_CATEGORY_ID)?.label
+                    || t('Uncategorized entries'),
+                icon: state.categories.find(category => category.id === UNCATEGORIZED_CATEGORY_ID)?.icon
+                    || 'file-question',
                 preset: true,
-                protected: true,
+                undeletable: true,
                 definition: makeUncategorizedCodexCategory(),
             },
         ];
 
+        const baseTabOrder = [
+            'characters',
+            'locations',
+            ...Array.from(state.enabled).filter(id => !fixedIds.has(id)),
+        ].filter(id => state.enabled.has(id) && rows.some(category => category.id === id));
+        const storedOrder = this.plugin.settings.libraryCategoryOrder || [];
+        const storedOrderIndex = new Map(storedOrder.map((id, index) => [id, index]));
+        baseTabOrder.sort((left, right) => {
+            const leftIndex = storedOrderIndex.get(left);
+            const rightIndex = storedOrderIndex.get(right);
+            if (leftIndex === undefined && rightIndex === undefined) return 0;
+            if (leftIndex === undefined) return 1;
+            if (rightIndex === undefined) return -1;
+            return leftIndex - rightIndex;
+        });
+        if (state.enabled.has(UNCATEGORIZED_CATEGORY_ID)) {
+            baseTabOrder.push(UNCATEGORIZED_CATEGORY_ID);
+        }
+        const tabOrderIndex = new Map(baseTabOrder.map((id, index) => [id, index]));
+        rows.sort((left, right) => {
+            const leftIndex = tabOrderIndex.get(left.id);
+            const rightIndex = tabOrderIndex.get(right.id);
+            if (leftIndex !== undefined && rightIndex !== undefined) return leftIndex - rightIndex;
+            if (leftIndex !== undefined) return -1;
+            if (rightIndex !== undefined) return 1;
+            return 0;
+        });
+
         for (const category of rows) {
             const row = list.createDiv('codex-category-manager-row');
             const toggle = row.createEl('input', { attr: { type: 'checkbox' } }) as HTMLInputElement;
-            toggle.checked = category.protected || state.enabled.has(category.id);
-            toggle.disabled = category.protected === true;
+            toggle.checked = state.enabled.has(category.id);
             toggle.setAttribute('aria-label', t('Show or hide category'));
             toggle.addEventListener('change', () => {
                 if (toggle.checked) state.enabled.add(category.id);
                 else state.enabled.delete(category.id);
+                this.renderCategoryManager(el, modal, state);
             });
+
+            const ensureDraft = (): ManagedCodexCategory => {
+                let draft = state.categories.find(item => item.id === category.id);
+                if (!draft) {
+                    draft = {
+                        id: category.id,
+                        label: category.label,
+                        icon: category.icon,
+                        preset: category.preset,
+                    };
+                    state.categories.push(draft);
+                }
+                return draft;
+            };
 
             const iconSelect = row.createEl('select', {
                 cls: 'codex-category-manager-icon-select',
@@ -2249,13 +2371,8 @@ export class CodexView extends ItemView {
                 iconSelect.createEl('option', { text: option.label, value: option.value });
             }
             iconSelect.value = category.icon;
-            iconSelect.disabled = category.protected === true;
             iconSelect.addEventListener('change', () => {
-                if (category.protected) return;
-                const draft = category.preset
-                    ? ensurePresetDraft(category.definition)
-                    : category.draft;
-                if (draft) draft.icon = iconSelect.value;
+                ensureDraft().icon = iconSelect.value;
             });
 
             const nameInput = row.createEl('input', {
@@ -2266,16 +2383,11 @@ export class CodexView extends ItemView {
                     'aria-label': t('Category name'),
                 },
             }) as HTMLInputElement;
-            nameInput.readOnly = category.protected === true;
             nameInput.addEventListener('input', () => {
-                if (category.protected) return;
-                const draft = category.preset
-                    ? ensurePresetDraft(category.definition)
-                    : category.draft;
-                if (draft) draft.label = nameInput.value;
+                ensureDraft().label = nameInput.value;
             });
 
-            if (category.protected) {
+            if (category.undeletable) {
                 row.createSpan({ cls: 'codex-category-manager-preset', text: t('Fixed') });
             } else if (category.preset) {
                 row.createSpan({ cls: 'codex-category-manager-preset', text: t('Preset') });
@@ -2288,16 +2400,15 @@ export class CodexView extends ItemView {
                 text: t('Fields'),
             });
             fieldsBtn.addEventListener('click', () => {
-                const draft = category.preset
-                    ? state.categories.find(item => item.id === category.id)
-                    : category.draft;
                 this.openCategoryFieldsModal(
-                    category.definition,
-                    draft?.label || nameInput.value || category.label,
+                    category.fieldsDefinition || category.definition,
+                    state.categories.find(item => item.id === category.id)?.label
+                        || nameInput.value
+                        || category.label,
                 );
             });
 
-            if (category.protected) {
+            if (category.undeletable) {
                 row.createSpan({ cls: 'codex-category-manager-protected' });
             } else {
                 const deleteBtn = row.createEl('button', {
@@ -2312,8 +2423,9 @@ export class CodexView extends ItemView {
                     const finishDelete = () => {
                         state.enabled.delete(category.id);
                         state.categories = state.categories.filter(item => item.id !== category.id);
+                        if (category.preset) state.deletedPresets.add(category.id);
                         this.codexManager.initCategories(
-                            Array.from(state.enabled),
+                            Array.from(state.enabled).filter(id => !fixedIds.has(id)),
                             state.categories.map(item =>
                                 makeCustomCodexCategory(item.id, item.label, item.icon)),
                         );
@@ -2329,6 +2441,26 @@ export class CodexView extends ItemView {
                         return;
                     }
                     promptDeleteCategory(this.plugin, category.id, finishDelete);
+                });
+            }
+        }
+
+        const deletedPresets = BUILTIN_CODEX_CATEGORIES.filter(category => deletedPresetIds.has(category.id));
+        if (deletedPresets.length > 0) {
+            el.createEl('h4', { text: t('Deleted preset categories') });
+            const deletedList = el.createDiv('codex-category-manager-deleted');
+            for (const preset of deletedPresets) {
+                const row = deletedList.createDiv('codex-category-manager-row codex-category-manager-deleted-row');
+                row.createSpan({ text: preset.label, cls: 'codex-category-manager-name' });
+                row.createSpan({ cls: 'codex-category-manager-preset', text: t('Preset') });
+                const restoreBtn = row.createEl('button', {
+                    cls: 'codex-category-restore-btn',
+                    text: t('Restore'),
+                });
+                restoreBtn.addEventListener('click', () => {
+                    state.deletedPresets.delete(preset.id);
+                    state.enabled.add(preset.id);
+                    this.renderCategoryManager(el, modal, state);
                 });
             }
         }
@@ -2376,6 +2508,10 @@ export class CodexView extends ItemView {
                     // Prefer slug from Latin label; CJK-only labels get a stable custom-* id.
                     let id = newLabel.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
                     if (!id) id = `custom-${Date.now().toString(36)}`;
+                    if (id === UNCATEGORIZED_CATEGORY_ID) {
+                        new Notice(t('That category id is reserved'));
+                        return;
+                    }
                     // Check duplicates
                     if (BUILTIN_CODEX_CATEGORIES.some(c => c.id === id) ||
                         state.categories.some(c => c.id === id)) {
@@ -2398,6 +2534,7 @@ export class CodexView extends ItemView {
                 .setCta()
                 .onClick(async () => {
                     for (const category of state.categories) {
+                        if (category.id === UNCATEGORIZED_CATEGORY_ID) continue;
                         const currentName = this.plugin.sceneManager.getLibraryFolderName(category.id);
                         const desiredName = category.label.trim();
                         if (desiredName && currentName !== desiredName) {
@@ -2411,7 +2548,11 @@ export class CodexView extends ItemView {
                     this.plugin.settings.codexCustomCategories = state.categories
                         .filter(category => category.label.trim())
                         .map(category => ({ ...category, label: category.label.trim() }));
-                    this.plugin.settings.codexEnabledCategories = Array.from(state.enabled);
+                    this.plugin.settings.codexEnabledCategories = Array.from(state.enabled)
+                        .filter(id => !fixedIds.has(id));
+                    this.plugin.settings.libraryHiddenFixedCategories =
+                        FIXED_LIBRARY_CATEGORY_IDS.filter(id => !state.enabled.has(id));
+                    this.plugin.settings.codexDeletedPresetCategories = Array.from(state.deletedPresets);
                     await this.plugin.saveSettings();
                     // Reinitialise codex manager with new categories
                     this.codexManager.initCategories(

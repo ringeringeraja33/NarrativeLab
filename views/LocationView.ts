@@ -30,7 +30,7 @@ import { RenameConfirmModal } from '../components/RenameConfirmModal';
 
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
-import { renderNativeLibraryBase } from '../components/NativeLibraryBase';
+import { renderNativeLibraryBase, disposeNativeLibraryBase } from '../components/NativeLibraryBase';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import {
     collectDelimitedTags,
@@ -39,11 +39,11 @@ import {
 } from '../components/LibraryFilterChips';
 import {
     getLibraryContentMode,
+    setLibraryContentMode,
     renderLibraryStoryGraph,
 } from '../components/LibraryModeBar';
 import type { StoryGraph } from '../components/StoryGraph';
 import {
-    getLibraryBrowseLayout,
     getLibraryFilePropertyOptions,
     getLibraryFilePropertyValue,
     getLibraryNotePropertyOptions,
@@ -89,6 +89,8 @@ export class LocationView extends ItemView {
     private originalItemType: 'world' | 'location' | null = null;
     /** Current search/filter text for overview tree */
     private searchText: string = '';
+    /** Locations-specific top-level interface: card profiles, native browse, or graph. */
+    private locationOverviewMode: 'editor' | 'base' | 'story-graph';
     private browseSearchOpen = true;
     private browseFilterOpen = true;
     private _searchTimer: number | null = null;
@@ -119,6 +121,9 @@ export class LocationView extends ItemView {
         // Use the plugin's shared LocationManager so entries scanned from
         // Additional Source Folders survive view refreshes.
         this.locationManager = plugin.locationManager;
+        this.locationOverviewMode = getLibraryContentMode(plugin) === 'story-graph'
+            ? 'story-graph'
+            : 'editor';
     }
 
     getViewType(): string { return LOCATION_VIEW_TYPE; }
@@ -156,7 +161,8 @@ export class LocationView extends ItemView {
     // ── Main render ────────────────────────────────────
 
     private renderView(container: HTMLElement): void {
-        this.clearPortaledDropdowns(); // issue #102 — don't leak portaled popups across re-renders
+        disposeNativeLibraryBase(this);
+        this.clearPortaledDropdowns();
         container.empty();
 
         const toolbar = container.createDiv('story-line-toolbar');
@@ -165,15 +171,15 @@ export class LocationView extends ItemView {
 
         renderViewSwitcher(toolbar, LOCATION_VIEW_TYPE, this.plugin, this.leaf);
 
-        // ── Codex category tabs + Browse / Story Graph ──
+        // ── Codex category tabs + Location Profiles / Browse / Story Graph ──
         renderCodexCategoryTabs(container, {
             activeId: 'locations-pseudo',
             leaf: this.leaf,
             plugin: this.plugin,
-            showModeToggle: !this.selectedItem,
-            onModeChange: () => {
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            },
+            showModeToggle: false,
+            renderBeforeModeActions: !this.selectedItem
+                ? (actions) => this.renderLocationOverviewModes(actions)
+                : undefined,
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
@@ -188,12 +194,43 @@ export class LocationView extends ItemView {
 
         if (this.selectedItem) {
             this.renderDetail(content);
-        } else if (getLibraryContentMode(this.plugin) === 'story-graph' && !isMobile) {
+        } else if (this.locationOverviewMode === 'story-graph' && !isMobile) {
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
         } else {
             this.renderOverview(content);
+        }
+    }
+
+    private renderLocationOverviewModes(parent: HTMLElement): void {
+        const toggle = parent.createDiv('library-mode-toggle character-mode-toggle');
+        const modes: Array<{
+            id: 'editor' | 'base' | 'story-graph';
+            label: string;
+            icon: string;
+        }> = [
+            { id: 'editor', label: 'Location Profiles', icon: 'map-pin' },
+            { id: 'base', label: 'Browse', icon: 'layout-grid' },
+            { id: 'story-graph', label: 'Story Graph', icon: 'share-2' },
+        ];
+        for (const mode of modes) {
+            const button = toggle.createEl('button', {
+                cls: `character-mode-btn ${this.locationOverviewMode === mode.id ? 'active' : ''}`,
+                attr: { type: 'button', 'aria-label': t(mode.label), 'data-mode': mode.id },
+            });
+            const icon = button.createSpan();
+            obsidian.setIcon(icon, mode.icon);
+            button.createSpan({ text: t(mode.label) });
+            button.addEventListener('click', () => {
+                if (this.locationOverviewMode === mode.id) return;
+                this.locationOverviewMode = mode.id;
+                setLibraryContentMode(
+                    this.plugin,
+                    mode.id === 'story-graph' ? 'story-graph' : 'browse',
+                );
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            });
         }
     }
 
@@ -325,9 +362,10 @@ export class LocationView extends ItemView {
                     });
                     for (const key of cols) {
                         const value = valueForColumn(item, key);
-                        tr.createEl('td', {
-                            text: Array.isArray(value) ? value.join(', ') : String(value ?? ''),
-                        });
+                        const text = Array.isArray(value)
+                            ? value.map(item => coerceString(item).trim()).filter(Boolean).join(', ')
+                            : coerceString(value);
+                        tr.createEl('td', { text });
                     }
                 }
             }
@@ -349,29 +387,10 @@ export class LocationView extends ItemView {
 
     private renderOverview(container: HTMLElement): void {
         container.empty();
-        if (getLibraryContentMode(this.plugin) === 'browse') {
+        if (this.locationOverviewMode === 'base') {
             void renderNativeLibraryBase(container, this.plugin, 'locations', this);
             return;
         }
-        container.createEl('h3', { text: t('Worlds & Locations') });
-
-        const locationPropertyFiles: WorldOrLocation[] = [
-            ...this.locationManager.getAllWorlds(),
-            ...this.locationManager.getAllLocations(),
-        ];
-        const locProps = [
-            { key: 'type', label: 'type', type: 'note' as const },
-            { key: 'world', label: 'world', type: 'note' as const },
-            ...getLibraryNotePropertyOptions(
-                this.plugin,
-                locationPropertyFiles.map(item => item.filePath),
-            ).filter(property => property.key !== 'type' && property.key !== 'world'),
-            ...getLibraryFilePropertyOptions(),
-        ];
-        const savedLocCols = getLibraryTableColumns(this.plugin, 'locations');
-        const selectedLocProps = savedLocCols !== undefined
-            ? savedLocCols
-            : ['type', 'world'];
 
         const { searchInput, chipHost } = renderLibraryBrowseToolbar(container, {
             plugin: this.plugin,
@@ -404,12 +423,6 @@ export class LocationView extends ItemView {
                 this.browseFilterOpen = open;
                 this.renderOverview(container);
             },
-            properties: locProps,
-            selectedProperties: selectedLocProps,
-            onPropertiesChange: async (keys) => {
-                await setLibraryTableColumns(this.plugin, 'locations', keys);
-                this.renderOverview(container);
-            },
             onNew: (ev) => {
                 const menu = new Menu();
                 menu.addItem(item => item.setTitle(t('New World')).onClick(() => this.promptNewWorld()));
@@ -417,6 +430,8 @@ export class LocationView extends ItemView {
                 menu.showAtMouseEvent(ev);
             },
             newLabel: t('New'),
+            // Location Profiles is card-only; Browse (native Base) owns table/list.
+            showLayoutToggle: false,
             onLayoutChange: () => this.renderOverview(container),
             appendExtra: (actionsEl) => {
                 const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
@@ -533,7 +548,39 @@ export class LocationView extends ItemView {
         sortItems(worlds);
         sortItems(orphanLocations);
 
-        if (worlds.length === 0 && orphanLocations.length === 0 && !q && this.activeTagFilters.size === 0) {
+        // Flat profile cards (same chrome as Character Profiles).
+        const flat: WorldOrLocation[] = [];
+        for (const world of worlds) {
+            flat.push(world);
+            for (const loc of this.locationManager.getLocationsForWorld(world.name)) {
+                if (q && !loc.name.toLowerCase().includes(q) && !world.name.toLowerCase().includes(q)) continue;
+                if (this.activeTagFilters.size > 0 && !this.itemMatchesTagFilters(loc) && !this.itemMatchesTagFilters(world)) continue;
+                if (this.bookFilterActive && currentBook) {
+                    const lower = currentBook.toLowerCase();
+                    const inBook = !loc.books || loc.books.length === 0
+                        || loc.books.some(b => b.toLowerCase() === lower);
+                    if (!inBook) continue;
+                }
+                flat.push(loc);
+            }
+        }
+        flat.push(...orphanLocations);
+        sortItems(flat);
+
+        // Locations from scenes that don't have files yet
+        let unlinked: string[] = [];
+        if (this.activeTagFilters.size === 0) {
+            const allLocNames = new Set([
+                ...this.locationManager.getAllLocations().map(l => l.name.toLowerCase()),
+                ...allWorlds.map(w => w.name.toLowerCase()),
+            ]);
+            const sceneLocations = this.sceneManager.queryService.getUniqueValues('location');
+            unlinked = sceneLocations.filter(n => !allLocNames.has(n.toLowerCase()));
+            if (q) unlinked = unlinked.filter(n => n.toLowerCase().includes(q));
+            unlinked.sort((a, b) => a.localeCompare(b));
+        }
+
+        if (flat.length === 0 && unlinked.length === 0 && !q && this.activeTagFilters.size === 0 && !this.bookFilterActive) {
             const empty = container.createDiv('location-empty-state');
             const emptyIcon = empty.createDiv('location-empty-icon');
             obsidian.setIcon(emptyIcon, 'map');
@@ -553,64 +600,120 @@ export class LocationView extends ItemView {
             return;
         }
 
-        if (worlds.length === 0 && orphanLocations.length === 0) {
+        if (flat.length === 0 && unlinked.length === 0) {
             const empty = container.createDiv('location-empty-state');
             empty.createEl('h4', { text: t('No matching locations') });
             empty.createEl('p', { text: t('Try clearing search or tag filters.') });
             return;
         }
 
-        const layout = getLibraryBrowseLayout(this.plugin, 'locations');
-        if (layout === 'cards' || layout === 'table') {
-            const flat: WorldOrLocation[] = [];
-            for (const world of worlds) {
-                flat.push(world);
-                for (const loc of this.locationManager.getLocationsForWorld(world.name)) {
-                    if (q && !loc.name.toLowerCase().includes(q) && !world.name.toLowerCase().includes(q)) continue;
-                    if (this.activeTagFilters.size > 0 && !this.itemMatchesTagFilters(loc) && !this.itemMatchesTagFilters(world)) continue;
-                    flat.push(loc);
-                }
-            }
-            flat.push(...orphanLocations);
-            this.renderLocationBrowseAlt(container, layout, flat);
-            return;
-        }
-
-        const tree = container.createDiv('location-tree');
-
-        // Render each world and its locations
-        for (const world of worlds) {
-            this.renderWorldNode(tree, world, scenes);
-        }
-
-        // Orphan locations (not linked to a world)
-        if (orphanLocations.length > 0) {
-            if (worlds.length > 0) {
-                const divider = tree.createDiv('location-orphan-divider');
-                divider.createEl('span', { text: t('Standalone Locations') });
-            }
-            for (const loc of orphanLocations) {
-                this.renderLocationNode(tree, loc, scenes, 0);
-            }
-        }
-
-        // Locations from scenes that don't have files yet
-        if (this.activeTagFilters.size > 0) return;
-        const allLocNames = [...this.locationManager.getAllLocations().map(l => l.name.toLowerCase()),
-            ...allWorlds.map(w => w.name.toLowerCase())];
-        const sceneLocations = this.sceneManager.queryService.getUniqueValues('location');
-        let unlinked = sceneLocations.filter(n => !allLocNames.includes(n.toLowerCase()));
-        if (q) {
-            unlinked = unlinked.filter(n => n.toLowerCase().includes(q));
+        const listHost = container.createDiv('character-overview-list');
+        const grid = listHost.createDiv('character-overview-grid');
+        for (const item of flat) {
+            this.renderLocationProfileCard(grid, item);
         }
 
         if (unlinked.length > 0) {
-            const divider = tree.createDiv('location-orphan-divider');
-            divider.createEl('span', { text: t('Locations from scenes (no profile yet)') });
+            if (flat.length > 0) {
+                const divider = listHost.createDiv('character-unlinked-divider');
+                divider.createEl('span', { text: t('Locations from scenes (no profile yet)') });
+            }
+            const unlinkedGrid = listHost.createDiv('character-overview-grid');
             for (const name of unlinked) {
-                this.renderUnlinkedLocation(tree, name, scenes);
+                this.renderUnlinkedLocationCard(unlinkedGrid, name);
             }
         }
+    }
+
+    private renderLocationProfileCard(grid: HTMLElement, item: WorldOrLocation): void {
+        const card = grid.createDiv('character-overview-card location-overview-card');
+
+        const badges = card.createDiv('character-role-badges');
+        if (item.type === 'world') {
+            const badge = badges.createDiv('character-role-badge');
+            badge.textContent = t('World');
+            badge.addClass('role-supporting');
+        } else if (item.locationType) {
+            for (const part of String(item.locationType).split(',').map(s => s.trim()).filter(Boolean)) {
+                const badge = badges.createDiv('character-role-badge');
+                badge.textContent = part;
+                badge.addClass('role-supporting');
+            }
+        } else {
+            const badge = badges.createDiv('character-role-badge');
+            badge.textContent = t('Location');
+            badge.addClass('role-minor');
+        }
+
+        const portrait = card.createDiv('character-card-portrait');
+        const placeholderIcon = item.type === 'world' ? 'globe' : 'map-pin';
+        if (item.image) {
+            const imgSrc = resolveImagePath(this.app, item.image);
+            if (imgSrc) {
+                const img = portrait.createEl('img', {
+                    cls: 'character-portrait-img',
+                    attr: { src: imgSrc, alt: item.name, loading: 'lazy', decoding: 'async' },
+                });
+                img.onerror = () => {
+                    img.remove();
+                    const ph = portrait.createDiv('character-portrait-placeholder');
+                    obsidian.setIcon(ph, placeholderIcon);
+                };
+            } else {
+                const ph = portrait.createDiv('character-portrait-placeholder');
+                obsidian.setIcon(ph, placeholderIcon);
+            }
+        } else {
+            const ph = portrait.createDiv('character-portrait-placeholder');
+            obsidian.setIcon(ph, placeholderIcon);
+        }
+
+        card.createEl('h4', { text: item.name });
+
+        let snippet = '';
+        if (item.type === 'location') {
+            snippet = item.world || item.parent || item.atmosphere || item.description || '';
+        } else {
+            snippet = item.description || item.geography || item.culture || '';
+        }
+        if (snippet) {
+            card.createEl('p', { cls: 'character-card-snippet', text: coerceString(snippet) });
+        }
+
+        const sceneCount = this._locationSceneCounts?.get(item.name.toLowerCase()) ?? 0;
+        const stats = card.createDiv('character-card-stats');
+        if (sceneCount > 0) {
+            stats.createSpan({ text: t('{count} scenes', { count: sceneCount }) });
+        } else {
+            stats.createSpan({ cls: 'character-stat-none', text: t('No scenes yet') });
+        }
+
+        card.addEventListener('click', () => {
+            this.selectedItem = item.filePath;
+            if (this.rootContainer) this.renderView(this.rootContainer);
+        });
+        card.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            this.showItemContextMenu(item, e);
+        });
+    }
+
+    private renderUnlinkedLocationCard(grid: HTMLElement, name: string): void {
+        const card = grid.createDiv('character-overview-card character-unlinked location-overview-card');
+        const portrait = card.createDiv('character-card-portrait');
+        const ph = portrait.createDiv('character-portrait-placeholder');
+        obsidian.setIcon(ph, 'map-pin');
+        card.createEl('h4', { text: name });
+        const sceneCount = this._locationSceneCounts?.get(name.toLowerCase()) ?? 0;
+        const stats = card.createDiv('character-card-stats');
+        if (sceneCount > 0) {
+            stats.createSpan({ text: t('{count} scenes', { count: sceneCount }) });
+        } else {
+            stats.createSpan({ cls: 'character-stat-none', text: t('No scenes yet') });
+        }
+        card.addEventListener('click', () => {
+            void this.createLocationFromName(name);
+        });
     }
 
     private renderWorldNode(parent: HTMLElement, world: StoryWorld, scenes: Scene[]): void {
@@ -648,10 +751,8 @@ export class LocationView extends ItemView {
                 img.onerror = () => {
                     img.remove();
                     obsidian.setIcon(icon, 'globe');
-                    console.log('Failed to load world image:', world.image);
                 };
-            } catch (error) {
-                console.error('Error loading world image:', error);
+            } catch {
                 obsidian.setIcon(icon, 'globe');
             }
         } else {
@@ -723,10 +824,8 @@ export class LocationView extends ItemView {
                 img.onerror = () => {
                     img.remove();
                     obsidian.setIcon(icon, 'map-pin');
-                    console.log('Failed to load location image:', loc.image);
                 };
-            } catch (error) {
-                console.error('Error loading location image:', error);
+            } catch {
                 obsidian.setIcon(icon, 'map-pin');
             }
         } else {
@@ -952,10 +1051,8 @@ export class LocationView extends ItemView {
                         img.remove();
                         const ph = portraitArea.createDiv('location-detail-portrait-placeholder');
                         obsidian.setIcon(ph, 'image');
-                        console.log('Failed to load location detail image:', draft.image);
                     };
-                } catch (error) {
-                    console.error('Error loading location detail image:', error);
+                } catch {
                     const ph = portraitArea.createDiv('location-detail-portrait-placeholder');
                     obsidian.setIcon(ph, 'image');
                 }
@@ -1497,7 +1594,8 @@ export class LocationView extends ItemView {
                 this.scheduleSave(draft);
             });
         } else if (tpl.type === 'checkbox') {
-            const checked = value === true || value === 'true' || value === 'yes';
+            const raw: unknown = draft.universalFields?.[tpl.id];
+            const checked = raw === true || raw === 'true' || raw === 'yes';
             const wrap = row.createDiv('location-field-checkbox-wrap');
             const cb = wrap.createEl('input', {
                 cls: 'location-field-checkbox',
@@ -1505,7 +1603,7 @@ export class LocationView extends ItemView {
             });
             cb.checked = !!checked;
             cb.addEventListener('change', () => {
-                draft.universalFields![tpl.id] = cb.checked;
+                draft.universalFields![tpl.id] = cb.checked ? 'true' : 'false';
                 this.scheduleSave(draft);
             });
         } else {
@@ -2624,7 +2722,7 @@ export class LocationView extends ItemView {
      * Returns the vault-relative path, empty string to clear, or undefined if cancelled.
      */
     private pickImage(currentImage?: string): Promise<string | undefined> {
-        const attachmentSourcePath = this.sceneManager.getAttachmentSourcePath();
+        const attachmentSourcePath = this.sceneManager.getLibraryAttachmentFolder('locations');
         return pickImageModal(this.app, attachmentSourcePath, currentImage);
     }
 }

@@ -9,6 +9,7 @@ import { BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID } from '../models/C
 import type { StoryLineProject } from '../models/StoryLineProject';
 import type SceneCardsPlugin from '../main';
 import { t } from '../utils/i18n';
+import { removeNativeLibraryBase, syncNativeLibraryBase } from '../components/NativeLibraryBase';
 
 /** Default English folder basenames for built-in / special Library tabs. */
 export const DEFAULT_LIBRARY_FOLDER_NAMES: Record<string, string> = {
@@ -87,6 +88,10 @@ export async function ensureLibraryCategoryFolders(plugin: SceneCardsPlugin): Pr
         if (!await adapter.exists(path)) {
             await plugin.app.vault.createFolder(path).catch(() => undefined);
         }
+        const attachments = normalizePath(`${path}/Attachments`);
+        if (!await adapter.exists(attachments)) {
+            await plugin.app.vault.createFolder(attachments).catch(() => undefined);
+        }
     }
 }
 
@@ -139,7 +144,7 @@ export async function renameLibraryCategory(
         project.libraryFolders[categoryId] = newName;
         applyLibraryFolderPaths(project, plugin);
 
-        // Keep global custom label in sync so new projects inherit the name.
+        // Keep the active project's custom label in sync with the folder name.
         const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
         if (custom) {
             custom.label = newName;
@@ -148,6 +153,7 @@ export async function renameLibraryCategory(
 
         await plugin.sceneManager.saveProjectFrontmatter(project);
         applyCategoryFolderLabels(plugin);
+        await syncNativeLibraryBase(plugin, categoryId);
         return true;
     } finally {
         pluginAny._syncingLibraryFolders = false;
@@ -173,14 +179,15 @@ export async function deleteLibraryCategory(
     }
 
     const folderName = resolveLibraryFolderName(plugin, categoryId, project);
-    const libraryRoot = normalizePath(plugin.sceneManager.getCodexFolder());
-    const folderPath = normalizePath(`${libraryRoot}/${folderName}`);
+    const libraryRoots = libraryRootsForProject(plugin, project);
     const pluginAny = plugin as SceneCardsPlugin & { _syncingLibraryFolders?: boolean };
     pluginAny._syncingLibraryFolders = true;
 
     try {
-        const folder = plugin.app.vault.getAbstractFileByPath(folderPath);
-        if (folder instanceof TFolder) {
+        for (const libraryRoot of libraryRoots) {
+            const folderPath = normalizePath(`${libraryRoot}/${folderName}`);
+            const folder = plugin.app.vault.getAbstractFileByPath(folderPath);
+            if (!(folder instanceof TFolder)) continue;
             if (mode === 'move-to-root') {
                 const files: TFile[] = [];
                 const collectFiles = (current: TFolder) => {
@@ -191,6 +198,7 @@ export async function deleteLibraryCategory(
                 };
                 collectFiles(folder);
                 for (const file of files) {
+                    if (file.name === '_NarrativeLab.base' || file.name === '.narrative-lab.base') continue;
                     const dot = file.name.lastIndexOf('.');
                     const stem = dot > 0 ? file.name.slice(0, dot) : file.name;
                     const extension = dot > 0 ? file.name.slice(dot) : '';
@@ -201,11 +209,6 @@ export async function deleteLibraryCategory(
                         suffix += 1;
                     }
                     await plugin.app.fileManager.renameFile(file, targetPath);
-                    if (file.extension.toLowerCase() === 'md') {
-                        await plugin.app.fileManager.processFrontMatter(file, frontmatter => {
-                            frontmatter.type = UNCATEGORIZED_CATEGORY_ID;
-                        });
-                    }
                 }
                 const remainingFolder = plugin.app.vault.getAbstractFileByPath(folderPath);
                 if (remainingFolder instanceof TFolder) {
@@ -215,6 +218,7 @@ export async function deleteLibraryCategory(
                 await plugin.app.fileManager.trashFile(folder);
             }
         }
+        await removeNativeLibraryBase(plugin, categoryId);
 
         plugin.settings.codexEnabledCategories =
             (plugin.settings.codexEnabledCategories || []).filter(id => id !== categoryId);
@@ -306,6 +310,7 @@ export async function handleLibraryFolderVaultRename(
 
     await plugin.sceneManager.saveProjectFrontmatter(project);
     applyCategoryFolderLabels(plugin);
+    await syncNativeLibraryBase(plugin, categoryId);
     return true;
 }
 
@@ -354,5 +359,242 @@ export async function ensureFoldersExist(app: App, paths: string[]): Promise<voi
         if (await app.vault.adapter.exists(path)) continue;
         await app.vault.createFolder(path).catch(() => undefined);
     }
+}
+
+/** Per-project Library category config stored in System/library-categories.json. */
+export const LIBRARY_CATEGORIES_FILENAME = 'library-categories.json';
+
+export type LibraryCategorySettingsPayload = {
+    enabledCategories: string[];
+    customCategories: Array<{
+        id: string;
+        label: string;
+        icon: string;
+        showInSidebar?: boolean;
+        preset?: boolean;
+    }>;
+    categoryOrder: string[];
+    hiddenFixedCategories: string[];
+    deletedPresetCategories: string[];
+};
+
+const FIXED_LIBRARY_FOLDER_IDS = new Set(['characters', 'locations']);
+
+export function emptyLibraryCategorySettings(): LibraryCategorySettingsPayload {
+    return {
+        enabledCategories: [],
+        customCategories: [],
+        categoryOrder: [],
+        hiddenFixedCategories: [],
+        deletedPresetCategories: [],
+    };
+}
+
+export function readLibraryCategorySettings(
+    settings: SceneCardsPlugin['settings'],
+): LibraryCategorySettingsPayload {
+    return {
+        enabledCategories: [...(settings.codexEnabledCategories || [])],
+        customCategories: (settings.codexCustomCategories || []).map(category => ({ ...category })),
+        categoryOrder: [...(settings.libraryCategoryOrder || [])],
+        hiddenFixedCategories: [...(settings.libraryHiddenFixedCategories || [])],
+        deletedPresetCategories: [...(settings.codexDeletedPresetCategories || [])],
+    };
+}
+
+export function applyLibraryCategorySettings(
+    plugin: SceneCardsPlugin,
+    payload: LibraryCategorySettingsPayload,
+): void {
+    plugin.settings.codexEnabledCategories = [...(payload.enabledCategories || [])];
+    plugin.settings.codexCustomCategories = (payload.customCategories || []).map(category => ({ ...category }));
+    plugin.settings.libraryCategoryOrder = [...(payload.categoryOrder || [])];
+    plugin.settings.libraryHiddenFixedCategories = [...(payload.hiddenFixedCategories || [])];
+    plugin.settings.codexDeletedPresetCategories = [...(payload.deletedPresetCategories || [])];
+}
+
+function parseLibraryCategorySettings(raw: Record<string, unknown>): LibraryCategorySettingsPayload | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const hasAny = 'enabledCategories' in raw
+        || 'customCategories' in raw
+        || 'categoryOrder' in raw
+        || 'hiddenFixedCategories' in raw
+        || 'deletedPresetCategories' in raw;
+    if (!hasAny) return null;
+
+    const customRaw = Array.isArray(raw.customCategories) ? raw.customCategories : [];
+    const customCategories = customRaw
+        .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
+        .map(item => ({
+            id: String(item.id || '').trim(),
+            label: String(item.label || '').trim(),
+            icon: String(item.icon || 'file-text').trim() || 'file-text',
+            ...(typeof item.showInSidebar === 'boolean' ? { showInSidebar: item.showInSidebar } : {}),
+            ...(typeof item.preset === 'boolean' ? { preset: item.preset } : {}),
+        }))
+        .filter(item => item.id && item.label);
+
+    const asStringArray = (value: unknown): string[] =>
+        Array.isArray(value)
+            ? value.map(entry => String(entry || '').trim()).filter(Boolean)
+            : [];
+
+    return {
+        enabledCategories: asStringArray(raw.enabledCategories),
+        customCategories,
+        categoryOrder: asStringArray(raw.categoryOrder),
+        hiddenFixedCategories: asStringArray(raw.hiddenFixedCategories),
+        deletedPresetCategories: asStringArray(raw.deletedPresetCategories),
+    };
+}
+
+export function libraryCategorySettingsFromUnknown(
+    raw: Record<string, unknown>,
+): LibraryCategorySettingsPayload | null {
+    return parseLibraryCategorySettings(raw);
+}
+
+function slugLibraryCategoryId(name: string): string {
+    const slug = name
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^\p{L}\p{N}_-]/gu, '')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+    return slug || 'category';
+}
+
+function resolveCategoryIdForLibraryFolder(
+    plugin: SceneCardsPlugin,
+    project: StoryLineProject,
+    folderName: string,
+): { id: string; label: string; icon: string; builtin: boolean } | null {
+    const normalized = folderName.trim();
+    if (!normalized) return null;
+
+    const byProject = Object.entries(project.libraryFolders || {})
+        .find(([, name]) => name === normalized);
+    if (byProject) {
+        const id = byProject[0];
+        if (FIXED_LIBRARY_FOLDER_IDS.has(id)) return null;
+        const builtin = BUILTIN_CODEX_CATEGORIES.find(category => category.id === id);
+        const custom = plugin.settings.codexCustomCategories?.find(category => category.id === id);
+        return {
+            id,
+            label: custom?.label || builtin?.label || normalized,
+            icon: custom?.icon || builtin?.icon || 'file-text',
+            builtin: !!builtin,
+        };
+    }
+
+    for (const builtin of BUILTIN_CODEX_CATEGORIES) {
+        if (builtin.folder === normalized || builtin.id === normalized.toLowerCase()) {
+            return {
+                id: builtin.id,
+                label: builtin.label,
+                icon: builtin.icon,
+                builtin: true,
+            };
+        }
+    }
+
+    const custom = plugin.settings.codexCustomCategories?.find(category =>
+        category.label === normalized || category.id === normalized.toLowerCase());
+    if (custom) {
+        return {
+            id: custom.id,
+            label: custom.label,
+            icon: custom.icon || 'file-text',
+            builtin: false,
+        };
+    }
+
+    const id = slugLibraryCategoryId(normalized);
+    if (FIXED_LIBRARY_FOLDER_IDS.has(id) || id === UNCATEGORIZED_CATEGORY_ID) return null;
+    return {
+        id,
+        label: normalized,
+        icon: 'file-text',
+        builtin: false,
+    };
+}
+
+/**
+ * Discover Library subfolders and register missing categories for the active project.
+ * When `enableExisting` is true (first migration), restore/enable categories that
+ * already have folders — e.g. revive Creatures after a shared global delete.
+ */
+export async function adoptLibraryCategoriesFromFolders(
+    plugin: SceneCardsPlugin,
+    options: { enableExisting?: boolean } = {},
+): Promise<boolean> {
+    const project = plugin.sceneManager.activeProject;
+    if (!project) return false;
+
+    const enableExisting = options.enableExisting === true;
+    const libraryRoot = normalizePath(project.codexFolder);
+    const rootAf = plugin.app.vault.getAbstractFileByPath(libraryRoot);
+    if (!(rootAf instanceof TFolder)) return false;
+
+    let changed = false;
+    const enabled = new Set(plugin.settings.codexEnabledCategories || []);
+    const order = [...(plugin.settings.libraryCategoryOrder || [])];
+    const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
+    if (!plugin.settings.codexCustomCategories) plugin.settings.codexCustomCategories = [];
+    if (!project.libraryFolders) project.libraryFolders = {};
+
+    const ensureRegistered = (id: string, label: string, icon: string, builtin: boolean, folderName: string) => {
+        if (deleted.has(id)) {
+            deleted.delete(id);
+            changed = true;
+        }
+        if (!enabled.has(id)) {
+            enabled.add(id);
+            changed = true;
+        }
+        if (!builtin && !plugin.settings.codexCustomCategories.some(category => category.id === id)) {
+            plugin.settings.codexCustomCategories.push({ id, label, icon });
+            changed = true;
+        }
+        if (!order.includes(id)) {
+            order.push(id);
+            changed = true;
+        }
+        if (project.libraryFolders![id] !== folderName) {
+            project.libraryFolders![id] = folderName;
+            changed = true;
+        }
+    };
+
+    for (const child of rootAf.children) {
+        if (!(child instanceof TFolder)) continue;
+        const folderName = child.name;
+        const resolved = resolveCategoryIdForLibraryFolder(plugin, project, folderName);
+        if (!resolved) continue;
+
+        const { id, label, icon, builtin } = resolved;
+        const listed = enabled.has(id)
+            || !!plugin.settings.codexCustomCategories.find(category => category.id === id)
+            || !!project.libraryFolders[id];
+
+        if (enableExisting) {
+            ensureRegistered(id, label, icon, builtin, folderName);
+            continue;
+        }
+
+        // Already-migrated project: keep user hide/delete choices, only adopt
+        // brand-new folders that are not part of this project's category config.
+        if (deleted.has(id) || listed || (builtin && !deleted.has(id) && enabled.has(id))) continue;
+        if (builtin && !listed) continue;
+        ensureRegistered(id, label, icon, builtin, folderName);
+    }
+
+    if (changed) {
+        plugin.settings.codexEnabledCategories = Array.from(enabled);
+        plugin.settings.libraryCategoryOrder = order;
+        plugin.settings.codexDeletedPresetCategories = Array.from(deleted);
+    }
+    return changed;
 }
 /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

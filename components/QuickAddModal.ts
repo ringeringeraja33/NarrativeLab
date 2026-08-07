@@ -51,11 +51,7 @@ export class QuickAddModal extends Modal {
                 dd.addOption('', t('(none)'));
                 allTemplates.forEach((tpl, idx) => dd.addOption(String(idx), t(tpl.name)));
                 dd.onChange(value => {
-                    if (value === '') {
-                        this.selectedTemplate = null;
-                    } else {
-                        this.selectedTemplate = allTemplates[Number(value)];
-                    }
+                    this.selectedTemplate = value === '' ? null : allTemplates[Number(value)];
                 });
             });
 
@@ -296,7 +292,7 @@ export class QuickAddModal extends Modal {
         // Apply template default fields (only for fields the user didn't explicitly set)
         if (this.selectedTemplate) {
             const df = this.selectedTemplate.defaultFields;
-            if (df.status && !this.result.status) this.result.status = df.status;
+            if (df.status) this.result.status = df.status;
             if (df.emotion && !this.result.emotion) this.result.emotion = df.emotion;
             if (df.conflict && !this.result.conflict) this.result.conflict = df.conflict;
             if (df.target_wordcount && !this.result.target_wordcount) this.result.target_wordcount = df.target_wordcount;

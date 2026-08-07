@@ -23,7 +23,6 @@ import { compareActChapter, parseActChapterInput, getActDisplayLabel } from '../
 import { t, localizeBeatSheet } from '../utils/i18n';
 
 type BoardMode = 'kanban' | 'corkboard';
-const CORKBOARD_NOTE_TOGGLE_EVENT = 'narrative-lab:corkboard-note-toggle';
 
 /**
  * Board View - Kanban-style scene card board
@@ -35,7 +34,7 @@ export class BoardView extends ItemView {
     private _lastCacheVersion = -1;
     private filtersComponent: FiltersComponent | null = null;
     private inspectorComponent: InspectorComponent | null = null;
-    private currentFilter: SceneFilter = {};
+    private currentFilter: SceneFilter = { activeState: 'active' };
     private currentSort: SortConfig = { field: 'sequence', direction: 'asc' };
     private groupBy: BoardGroupBy = 'act';
     private selectedScene: Scene | null = null;
@@ -45,7 +44,7 @@ export class BoardView extends ItemView {
     private rootContainer: HTMLElement | null = null;
     private _pendingRefresh: number | null = null;
     private boardMode: BoardMode = 'corkboard';
-    private corkboardPositions: Map<string, { x: number; y: number; z: number; h?: number }> = new Map();
+    private corkboardPositions: Map<string, { x: number; y: number; z: number; w?: number; h?: number }> = new Map();
     private corkboardJustDragged: Set<string> = new Set();
     private corkboardPersistTimer: number | null = null;
     private corkboardLoadedProjectFile: string | null = null;
@@ -104,6 +103,8 @@ export class BoardView extends ItemView {
 
     async onOpen(): Promise<void> {
         this.plugin.storyLeaf = this.leaf;
+        // Opening the board always starts with parked/inactive content hidden.
+        this.currentFilter.activeState = 'active';
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
         container.addClass('story-line-board-container');
@@ -156,7 +157,12 @@ export class BoardView extends ItemView {
                 this.currentSort = sort;
                 this.refreshBoard();
             },
-            this.plugin
+            this.plugin,
+            undefined,
+            {
+                initialFilter: this.currentFilter,
+                initialSort: this.currentSort,
+            },
         );
         this.filtersComponent.render();
 
@@ -532,6 +538,7 @@ export class BoardView extends ItemView {
         if (!this.plugin.settings.showScenesInCorkboard) {
             scenes = scenes.filter(scene => this.isCorkboardNoteScene(scene));
         }
+        const researchFiles = this.getCorkboardResearchFiles();
         // Only render nodes for visible scenes, but keep positions for
         // filtered-out scenes so they don't lose their layout.
 
@@ -543,7 +550,7 @@ export class BoardView extends ItemView {
             return max;
         };
 
-        if (scenes.length === 0) {
+        if (scenes.length === 0 && researchFiles.length === 0) {
             const empty = this.boardEl.createDiv('story-line-empty');
             empty.createEl('p', { text: t('No scenes found.') });
             empty.createEl('p', { text: t('Click "+ New Scene" to create your first scene, or adjust your filters.') });
@@ -583,6 +590,7 @@ export class BoardView extends ItemView {
                 left: `${pos.x}px`,
                 top: `${pos.y}px`,
                 zIndex: String(pos.z ?? 1),
+                ...(pos.w && pos.w > 0 ? { width: `${pos.w}px` } : {}),
             });
             if (this.isCorkboardNoteScene(scene)) {
                 node.addClass('story-line-corkboard-note-node');
@@ -591,7 +599,6 @@ export class BoardView extends ItemView {
             const cardEl = this.cardComponent.render(scene, node, {
                 compact: false,
                 onSelect: (s, event) => {
-                    if (this.isCorkboardNoteScene(s)) return;
                     if (this.corkboardJustDragged.has(s.filePath)) return;
                     this.selectScene(s, event);
                 },
@@ -631,6 +638,104 @@ export class BoardView extends ItemView {
             console.error(`[NarrativeLab] Failed to render corkboard scene "${scene.filePath}":`, err);
           }
         });
+
+        researchFiles.forEach((item, researchIndex) => {
+            const index = scenes.length + researchIndex;
+            const existing = this.corkboardPositions.get(item.file.path);
+            const col = index % 4;
+            const row = Math.floor(index / 4);
+            const pos = existing || {
+                x: col * 320,
+                y: row * 230,
+                z: currentMaxZ() + 1,
+            };
+            if (!existing) {
+                this.corkboardPositions.set(item.file.path, pos);
+                if (this._corkboardProjectLoaded) this.schedulePersistCorkboardLayout();
+            }
+
+            const node = canvas.createDiv('story-line-corkboard-node story-line-corkboard-research-node');
+            node.setCssStyles({
+                left: `${pos.x}px`,
+                top: `${pos.y}px`,
+                zIndex: String(pos.z ?? 1),
+                width: `${pos.w && pos.w > 0 ? pos.w : 220}px`,
+            });
+
+            const card = node.createDiv({
+                cls: 'story-line-corkboard-research-card',
+                attr: {
+                    'data-path': item.file.path,
+                    role: 'button',
+                    tabindex: '0',
+                    title: t('Double-click to open'),
+                },
+            });
+            card.createDiv({
+                cls: 'story-line-corkboard-research-title',
+                text: item.title,
+            });
+
+            const selectCard = () => {
+                if (this.corkboardJustDragged.has(item.file.path)) return;
+                this.selectedScene = null;
+                this.selectedScenes.clear();
+                this.boardEl?.querySelectorAll('.selected').forEach(el => el.removeClass('selected'));
+                card.addClass('selected');
+                this.inspectorComponent?.hide();
+                this.updateBulkBar();
+            };
+            const openFile = () => {
+                void this.app.workspace.getLeaf('tab').openFile(item.file);
+            };
+
+            card.addEventListener('click', (event) => {
+                event.stopPropagation();
+                selectCard();
+            });
+            card.addEventListener('dblclick', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                openFile();
+            });
+            card.addEventListener('keydown', (event: KeyboardEvent) => {
+                if (event.key !== 'Enter') return;
+                event.preventDefault();
+                openFile();
+            });
+
+            this.attachCorkboardDrag(node, item.file.path);
+        });
+    }
+
+    private getCorkboardResearchFiles(): Array<{ file: TFile; title: string }> {
+        const folder = this.sceneManager.activeProject?.researchFolder;
+        if (!folder) return [];
+
+        const normalizedFolder = normalizePath(folder).replace(/\/+$/, '');
+        const prefix = `${normalizedFolder}/`;
+        const activeState = this.currentFilter.activeState ?? 'active';
+
+        return this.app.vault.getMarkdownFiles()
+            .filter(file => file.path.startsWith(prefix))
+            .filter(file => {
+                const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+                const active = Object.prototype.hasOwnProperty.call(frontmatter || {}, 'active')
+                    ? frontmatter?.active === true
+                    : frontmatter?.inactive !== true;
+                const inactive = !active;
+                if (activeState === 'active') return !inactive;
+                if (activeState === 'inactive') return inactive;
+                return true;
+            })
+            .map(file => {
+                const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+                const title = typeof frontmatter?.title === 'string' && frontmatter.title.trim()
+                    ? frontmatter.title.trim()
+                    : file.basename;
+                return { file, title };
+            })
+            .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
     }
 
     private attachCorkboardNoteEditor(cardEl: HTMLElement, scene: Scene): void {
@@ -640,12 +745,20 @@ export class BoardView extends ItemView {
         cardEl.addClass('story-line-corkboard-note-card');
         this.applyCorkboardNoteColor(cardEl, scene);
 
-        // Title bar: notes are collapsed by default; click to expand / collapse.
+        cardEl.createDiv({
+            cls: 'story-line-corkboard-note-filename',
+            text: this.getCorkboardNoteFileName(scene),
+        });
+
+        // Canvas-style title bar. The chevron remains the explicit
+        // NarrativeLab expand/collapse control; clicking the node selects it.
         const titleBar = cardEl.createDiv({
             cls: 'story-line-corkboard-note-titlebar',
-            attr: { role: 'button', tabindex: '0' },
         });
-        const chevron = titleBar.createSpan({ cls: 'story-line-corkboard-note-chevron' });
+        const chevron = titleBar.createEl('button', {
+            cls: 'story-line-corkboard-note-chevron clickable-icon',
+            attr: { type: 'button' },
+        });
         const titleText = titleBar.createSpan({ cls: 'story-line-corkboard-note-title-text' });
         titleText.setText(this.getCorkboardNoteDisplayTitle(scene));
         const collapsedPreview = cardEl.createDiv('story-line-corkboard-note-collapsed-preview');
@@ -678,16 +791,14 @@ export class BoardView extends ItemView {
             else this.expandedCorkboardNotes.delete(scene.filePath);
             applyExpandState();
         };
-        cardEl.addEventListener(CORKBOARD_NOTE_TOGGLE_EVENT, (event: Event) => {
+        const toggleExpand = (event: Event) => {
+            event.preventDefault();
             event.stopPropagation();
+            if (this.corkboardJustDragged.has(scene.filePath)) return;
             setExpanded(!isExpanded);
-        });
-        titleBar.addEventListener('keydown', (event: KeyboardEvent) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                setExpanded(!isExpanded);
-            }
-        });
+        };
+        chevron.addEventListener('click', toggleExpand);
+        titleBar.addEventListener('click', toggleExpand);
         applyExpandState();
 
         // ── Image note rendering ───────────────────────────
@@ -785,6 +896,7 @@ export class BoardView extends ItemView {
 
         const setEditing = (editing: boolean, clickPoint?: { x: number; y: number }) => {
             isEditing = editing;
+            cardEl.toggleClass('is-editing', editing);
             if (editing) {
                 // Track the actively-edited note so refresh() skips rebuilds
                 // that would tear down the textarea mid-edit (issue #190).
@@ -898,6 +1010,21 @@ export class BoardView extends ItemView {
                     return; // let external links behave normally
                 }
             }
+            if (isMobile) {
+                if (!isExpanded) setExpanded(true);
+                setEditing(true, { x: event.clientX, y: event.clientY });
+            }
+        });
+
+        // Match native Canvas: one click selects/moves the node; double-click
+        // enters text editing. Touch keeps the single-tap editor above.
+        cardEl.addEventListener('dblclick', (event: MouseEvent) => {
+            const target = event.target as HTMLElement;
+            if (target.closest('a, button, input, textarea, select, img, .story-line-corkboard-note-resize-handle')) {
+                return;
+            }
+            event.preventDefault();
+            event.stopPropagation();
             if (!isExpanded) setExpanded(true);
             setEditing(true, { x: event.clientX, y: event.clientY });
         });
@@ -947,12 +1074,18 @@ export class BoardView extends ItemView {
             e.stopPropagation();
 
             const startY = e.clientY;
+            const startX = e.clientX;
             const zoom = this.corkboardCamera.zoom || 1;
+            const nodeEl = cardEl.closest('.story-line-corkboard-node') as HTMLElement | null;
+            const startWidth = (nodeEl?.getBoundingClientRect().width || cardEl.getBoundingClientRect().width) / zoom;
             const startHeight = cardEl.getBoundingClientRect().height / zoom;
+            const minWidth = 240;
             const minHeight = 220;
 
             const onMove = (moveEvent: PointerEvent) => {
+                const nextWidth = Math.max(minWidth, startWidth + (moveEvent.clientX - startX) / zoom);
                 const nextHeight = Math.max(minHeight, startHeight + (moveEvent.clientY - startY) / zoom);
+                nodeEl?.setCssStyles({ width: `${nextWidth}px` });
                 cardEl.setCssStyles({ height: `${nextHeight}px` });
             };
 
@@ -960,10 +1093,12 @@ export class BoardView extends ItemView {
                 window.removeEventListener('pointermove', onMove);
                 window.removeEventListener('pointerup', onUp);
                 const finalHeight = parseFloat(cardEl.style.height);
-                if (finalHeight > 0) {
+                const finalWidth = nodeEl ? parseFloat(nodeEl.style.width) : 0;
+                if (finalHeight > 0 || finalWidth > 0) {
                     const pos = this.corkboardPositions.get(scene.filePath);
                     if (pos) {
-                        pos.h = finalHeight;
+                        if (finalWidth > 0) pos.w = finalWidth;
+                        if (finalHeight > 0) pos.h = finalHeight;
                         this.schedulePersistCorkboardLayout();
                     }
                 }
@@ -1006,7 +1141,13 @@ export class BoardView extends ItemView {
         // Position the duplicate offset from the original
         const origPos = this.corkboardPositions.get(scene.filePath);
         const pos = origPos
-            ? { x: origPos.x + 30, y: origPos.y + 30, z: this.getCurrentMaxCorkboardZ() + 1 }
+            ? {
+                x: origPos.x + 30,
+                y: origPos.y + 30,
+                z: this.getCurrentMaxCorkboardZ() + 1,
+                ...(origPos.w ? { w: origPos.w } : {}),
+                ...(origPos.h ? { h: origPos.h } : {}),
+            }
             : this.getNextQuickNotePosition();
         this.corkboardPositions.set(file.path, pos);
         this.schedulePersistCorkboardLayout();
@@ -1024,46 +1165,15 @@ export class BoardView extends ItemView {
         return false;
     }
 
-    /** First meaningful line of a corkboard note — used as the collapsed title. */
+    /** Frontmatter title shown prominently inside the sticky note. */
     private getCorkboardNoteDisplayTitle(scene: Scene): string {
-        if (scene.corkboardNoteImage) {
-            const caption = (scene.corkboardNoteCaption || '').trim();
-            if (caption) {
-                const first = caption.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
-                if (first) {
-                    const cleaned = first
-                        .replace(/^#{1,6}\s+/, '')
-                        .replace(/^[-*+]\s+/, '')
-                        .replace(/\*\*(.*?)\*\*/g, '$1')
-                        .replace(/\*(.*?)\*/g, '$1')
-                        .trim();
-                    if (cleaned) return cleaned.length > 60 ? `${cleaned.slice(0, 60)}…` : cleaned;
-                }
-            }
-            return t('Image note');
-        }
+        return scene.title?.trim() || t('Untitled note');
+    }
 
-        const firstLine = (scene.body || '')
-            .split(/\r?\n/)
-            .map(line => line.trim())
-            .find(line => line.length > 0);
-
-        if (firstLine) {
-            const cleaned = firstLine
-                .replace(/^#{1,6}\s+/, '')
-                .replace(/^[-*+]\s+/, '')
-                .replace(/^>\s*/, '')
-                .replace(/\*\*(.*?)\*\*/g, '$1')
-                .replace(/\*(.*?)\*/g, '$1')
-                .replace(/`([^`]+)`/g, '$1')
-                .replace(/\[(.*?)\]\(.*?\)/g, '$1')
-                .trim();
-            if (cleaned.length > 0) {
-                return cleaned.length > 60 ? `${cleaned.slice(0, 60)}…` : cleaned;
-            }
-        }
-
-        return t('Note');
+    /** Vault filename shown as the small Canvas-style label above the note. */
+    private getCorkboardNoteFileName(scene: Scene): string {
+        const name = scene.filePath.split('/').pop() || scene.filePath;
+        return name.replace(/\.md$/i, '');
     }
 
     /** Plain-text excerpt shown below the title while a note is collapsed. */
@@ -1108,8 +1218,6 @@ export class BoardView extends ItemView {
         let dragRaf: number | null = null;
         let pendingX = 0;
         let pendingY = 0;
-        let lastClickTime = 0;
-        let toggleNoteOnRelease = false;
 
         const applyDragPosition = () => {
             dragRaf = null;
@@ -1118,7 +1226,12 @@ export class BoardView extends ItemView {
                 top: `${pendingY}px`,
             });
             const current = this.corkboardPositions.get(scenePath);
-            this.corkboardPositions.set(scenePath, { x: pendingX, y: pendingY, z: current?.z ?? 1 });
+            this.corkboardPositions.set(scenePath, {
+                ...current,
+                x: pendingX,
+                y: pendingY,
+                z: current?.z ?? 1,
+            });
         };
 
         const onPointerMove = (e: PointerEvent) => {
@@ -1126,7 +1239,12 @@ export class BoardView extends ItemView {
 
             const dx = e.clientX - startClientX;
             const dy = e.clientY - startClientY;
-            if (!moved && Math.max(Math.abs(dx), Math.abs(dy)) >= 6) moved = true;
+            if (!moved && Math.max(Math.abs(dx), Math.abs(dy)) >= 6) {
+                moved = true;
+                // Capture only after threshold so a stationary click still expands.
+                try { node.setPointerCapture(e.pointerId); } catch { /* */ }
+                node.addClass('is-dragging');
+            }
             if (!moved) return;
 
             const zoom = this.corkboardCamera.zoom || 1;
@@ -1159,21 +1277,6 @@ export class BoardView extends ItemView {
                 this.corkboardJustDragged.add(scenePath);
                 window.setTimeout(() => this.corkboardJustDragged.delete(scenePath), 180);
                 this.schedulePersistCorkboardLayout();
-            } else if (toggleNoteOnRelease) {
-                const noteCard = node.querySelector('.story-line-corkboard-note-card');
-                noteCard?.dispatchEvent(new CustomEvent(CORKBOARD_NOTE_TOGGLE_EVENT));
-            } else {
-                const scene = this.sceneManager.getScene(scenePath);
-                if (scene && !this.isCorkboardNoteScene(scene)) {
-                    const now = Date.now();
-                    if (now - lastClickTime < 400) {
-                        this.openScene(scene);
-                        lastClickTime = 0;
-                    } else {
-                        lastClickTime = now;
-                        this.selectScene(scene, e);
-                    }
-                }
             }
         };
 
@@ -1185,10 +1288,6 @@ export class BoardView extends ItemView {
             if (target.closest('.story-line-corkboard-note-preview, .story-line-corkboard-note-caption, .story-line-corkboard-note-caption-empty')) return;
 
             const noteCard = target.closest('.story-line-corkboard-note-card') as HTMLElement | null;
-            toggleNoteOnRelease = Boolean(
-                noteCard
-                && (noteCard.hasClass('is-collapsed') || target.closest('.story-line-corkboard-note-titlebar')),
-            );
             if (noteCard) {
                 const rect = noteCard.getBoundingClientRect();
                 const resizeGripSize = 20;
@@ -1208,11 +1307,7 @@ export class BoardView extends ItemView {
             };
             startX = pos.x;
             startY = pos.y;
-
-            node.addClass('is-dragging');
-            node.setPointerCapture(e.pointerId);
-            e.preventDefault();
-            e.stopPropagation();
+            // Defer capture/preventDefault until move threshold (see onPointerMove).
         });
 
         node.addEventListener('pointermove', onPointerMove);
@@ -1564,7 +1659,14 @@ export class BoardView extends ItemView {
             const z = Number(pos?.z);
             if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
             const h = Number(pos?.h);
-            this.corkboardPositions.set(path, { x, y, z: Number.isFinite(z) ? z : 1, ...(Number.isFinite(h) && h > 0 ? { h } : {}) });
+            const w = Number(pos?.w);
+            this.corkboardPositions.set(path, {
+                x,
+                y,
+                z: Number.isFinite(z) ? z : 1,
+                ...(Number.isFinite(w) && w > 0 ? { w } : {}),
+                ...(Number.isFinite(h) && h > 0 ? { h } : {}),
+            });
         }
     }
 
@@ -1579,9 +1681,15 @@ export class BoardView extends ItemView {
     }
 
     private async persistCorkboardLayout(): Promise<void> {
-        const payload: Record<string, { x: number; y: number; z?: number; h?: number }> = {};
+        const payload: Record<string, { x: number; y: number; z?: number; w?: number; h?: number }> = {};
         for (const [path, pos] of this.corkboardPositions.entries()) {
-            payload[path] = { x: pos.x, y: pos.y, z: pos.z, ...(pos.h ? { h: pos.h } : {}) };
+            payload[path] = {
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+                ...(pos.w ? { w: pos.w } : {}),
+                ...(pos.h ? { h: pos.h } : {}),
+            };
         }
         await this.sceneManager.setCorkboardPositions(payload);
         this.plugin.viewSnapshotService.scheduleAutoSave();
@@ -2322,7 +2430,7 @@ export class BoardView extends ItemView {
         obsidian.setIcon(tagIcon, 'tag');
         tagBtn.addEventListener('click', (e) => {
             const menu = new Menu();
-            const tags = this.sceneManager.queryService.getAllTags();
+            const tags = this.sceneManager.getPlotlines();
 
             tags.forEach(tag => {
                 menu.addItem(item => {
@@ -3724,9 +3832,29 @@ export class BoardView extends ItemView {
             }
             captionInput.setCssStyles({ display: 'none' });
             captionPreview.setCssStyles({ display: 'block' });
+            cardEl.removeClass('is-editing');
             await renderCaptionPreview();
             const titleEl = cardEl.querySelector('.story-line-corkboard-note-title-text') as HTMLElement | null;
             if (titleEl) titleEl.setText(this.getCorkboardNoteDisplayTitle(scene));
+        };
+
+        const openCaptionEditor = () => {
+            if (captionInput.style.display !== 'none') return;
+            captionPreview.setCssStyles({ display: 'none' });
+            captionInput.setCssStyles({ display: 'block' });
+            cardEl.addClass('is-editing');
+            captionInput.focus();
+
+            // Listen for clicks outside the caption to close the editor
+            const outsideHandler = (pe: PointerEvent) => {
+                const target = pe.target as Node | null;
+                if (target && editorWrap.contains(target)) return;
+                activeDocument.removeEventListener('pointerdown', outsideHandler, true);
+                void saveCaptionAndClose();
+            };
+            window.setTimeout(() => {
+                activeDocument.addEventListener('pointerdown', outsideHandler, true);
+            }, 0);
         };
 
         captionPreview.addEventListener('click', (e) => {
@@ -3742,20 +3870,13 @@ export class BoardView extends ItemView {
                 }
                 if (href && !href.startsWith('#')) return;
             }
-            captionPreview.setCssStyles({ display: 'none' });
-            captionInput.setCssStyles({ display: 'block' });
-            captionInput.focus();
-
-            // Listen for clicks outside the caption to close the editor
-            const outsideHandler = (pe: PointerEvent) => {
-                const target = pe.target as Node | null;
-                if (target && editorWrap.contains(target)) return;
-                activeDocument.removeEventListener('pointerdown', outsideHandler, true);
-                void saveCaptionAndClose();
-            };
-            window.setTimeout(() => {
-                activeDocument.addEventListener('pointerdown', outsideHandler, true);
-            }, 0);
+            if (isMobile) openCaptionEditor();
+        });
+        captionPreview.addEventListener('dblclick', (e: MouseEvent) => {
+            if ((e.target as HTMLElement).closest('a')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            openCaptionEditor();
         });
 
         captionInput.addEventListener('blur', () => { void saveCaptionAndClose(); });
@@ -3770,21 +3891,30 @@ export class BoardView extends ItemView {
         resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
             e.preventDefault();
             e.stopPropagation();
+            const startX = e.clientX;
             const startY = e.clientY;
             const zoom = this.corkboardCamera.zoom || 1;
+            const nodeEl = cardEl.closest('.story-line-corkboard-node') as HTMLElement | null;
+            const startWidth = (nodeEl?.getBoundingClientRect().width || cardEl.getBoundingClientRect().width) / zoom;
             const startHeight = cardEl.getBoundingClientRect().height / zoom;
+            const minWidth = 240;
             const minHeight = 180;
             const onMove = (me: PointerEvent) => {
+                nodeEl?.setCssStyles({
+                    width: `${Math.max(minWidth, startWidth + (me.clientX - startX) / zoom)}px`,
+                });
                 cardEl.setCssStyles({ height: `${Math.max(minHeight, startHeight + (me.clientY - startY) / zoom)}px` });
             };
             const onUp = () => {
                 window.removeEventListener('pointermove', onMove);
                 window.removeEventListener('pointerup', onUp);
                 const finalHeight = parseFloat(cardEl.style.height);
-                if (finalHeight > 0) {
+                const finalWidth = nodeEl ? parseFloat(nodeEl.style.width) : 0;
+                if (finalHeight > 0 || finalWidth > 0) {
                     const pos = this.corkboardPositions.get(scene.filePath);
                     if (pos) {
-                        pos.h = finalHeight;
+                        if (finalWidth > 0) pos.w = finalWidth;
+                        if (finalHeight > 0) pos.h = finalHeight;
                         this.schedulePersistCorkboardLayout();
                     }
                 }

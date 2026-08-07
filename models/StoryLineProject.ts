@@ -84,8 +84,10 @@ export interface StoryLineProject {
     chapterDescriptions: Record<number, string>;
     /** Saved filter presets (persisted in project frontmatter) */
     filterPresets: FilterPreset[];
-    /** Corkboard free-position layout (scene file path -> coordinates + layer order + optional height) */
-    corkboardPositions: Record<string, { x: number; y: number; z?: number; h?: number }>;
+    /** Explicit plotline names, including plotlines that do not have scenes yet */
+    plotlines?: string[];
+    /** Corkboard free-position layout (scene file path -> coordinates, layer order, and optional size) */
+    corkboardPositions: Record<string, { x: number; y: number; z?: number; w?: number; h?: number }>;
 
     // ── Series ──────────────────────────────────────
     /** Optional series ID — links this project to a series (matches series.json name) */
@@ -156,11 +158,11 @@ export function deriveProjectFolders(
  */
 /**
  * Subfolder inside each project that stores .ncanvas files.
- * Lives under System/ so non-writer tooling data stays out of the manuscript tree.
+ * NCanvas files are authored project content and live at the project root.
  */
-export const DEFAULT_CANVAS_FOLDER = 'System/NCanvas';
-/** Pre-System NCanvas folder at project root — still resolved / migrated */
-export const LEGACY_NCANVAS_FOLDER = 'NCanvas';
+export const DEFAULT_CANVAS_FOLDER = 'NCanvas';
+/** Former internal location — migrated back to the project NCanvas folder. */
+export const LEGACY_SYSTEM_NCANVAS_FOLDER = 'System/NCanvas';
 /** Older canvas folder name — still resolved for existing projects */
 export const LEGACY_CANVAS_FOLDER = 'Canvas';
 /** Default attachment folder name inside each project root */

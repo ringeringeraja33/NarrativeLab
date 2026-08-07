@@ -45,7 +45,7 @@ import {
 import {
     deriveProjectFoldersFromFilePath,
     LEGACY_CANVAS_FOLDER,
-    LEGACY_NCANVAS_FOLDER,
+    LEGACY_SYSTEM_NCANVAS_FOLDER,
     type SeriesMetadata,
     type StoryLineProject,
 } from './models/StoryLineProject';
@@ -67,7 +67,7 @@ import { ResearchManager } from './services/ResearchManager';
 import { LocationManager } from './services/LocationManager';
 import { CharacterManager } from './services/CharacterManager';
 import { CodexManager } from './services/CodexManager';
-import { makeCustomCodexCategory } from './models/Codex';
+import { makeCustomCodexCategory, UNCATEGORIZED_CATEGORY_ID } from './models/Codex';
 import {
     collectMarkdownFiles,
     invalidateAllEntityCaches,
@@ -79,12 +79,21 @@ import {
     type LibraryAdoptTarget,
 } from './services/LibraryEntityAdoption';
 import {
+    adoptLibraryCategoriesFromFolders,
     applyCategoryFolderLabels,
+    applyLibraryCategorySettings,
+    emptyLibraryCategorySettings,
     ensureLibraryCategoryFolders,
     handleLibraryFolderVaultRename,
+    LIBRARY_CATEGORIES_FILENAME,
+    libraryCategorySettingsFromUnknown,
+    parentOfPath,
+    readLibraryCategorySettings,
 } from './services/LibraryCategorySync';
 import { QuickAddModal } from './components/QuickAddModal';
 import { ExportModal } from './components/ExportModal';
+import { migrateNativeLibraryBasesForActiveProject } from './components/NativeLibraryBase';
+import { migrateLibraryAttachmentsForAllProjects } from './services/LibraryAttachmentMigration';
 import {
     NCanvasManagerModal,
     SAMPLE_NCANVAS_FILENAMES,
@@ -93,6 +102,9 @@ import {
 import { WritingTracker } from './services/WritingTracker';
 import { SnapshotManager } from './services/SnapshotManager';
 import { ViewSnapshotService } from './services/ViewSnapshotService';
+import { PlotGridCsvSync } from './services/PlotGridCsvSync';
+import { PlotlineManager } from './services/PlotlineManager';
+import type { PlotlineDefinition } from './models/Plotline';
 import { openManageSnapshotsModal } from './components/ViewSnapshotModal';
 import { LinkScanner } from './services/LinkScanner';
 import { CascadeRenameService } from './services/CascadeRenameService';
@@ -120,7 +132,7 @@ type EmbeddedCanvasModule = Plugin & {
 
 type EmbeddedCanvasConstructor = new (app: App, manifest: Plugin['manifest']) => EmbeddedCanvasModule;
 // Narrative Canvas is vendored under AGPL-3.0 and runs as an internal module.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// eslint-disable-next-line @typescript-eslint/no-require-imports, no-undef -- CJS require for vendored canvas bundle
 const EmbeddedNarrativeCanvas = require('./canvas-runtime/main.js') as EmbeddedCanvasConstructor;
 
 /**
@@ -135,12 +147,21 @@ export default class SceneCardsPlugin extends Plugin {
     private _systemMigrationDone = false;
     /** Snapshot of colour settings from data.json (global defaults) */
     private _globalColorDefaults: Partial<SceneCardsSettings> = {};
+    /**
+     * One-time seed for migrating Library categories out of global data.json.
+     * Captured at load; each project gets its own System/library-categories.json.
+     */
+    private _legacyLibraryCategoryDefaults = emptyLibraryCategorySettings();
     locationManager!: LocationManager;
     characterManager!: CharacterManager;
     codexManager!: CodexManager;
     writingTracker: WritingTracker = new WritingTracker();
     snapshotManager!: SnapshotManager;
     viewSnapshotService!: ViewSnapshotService;
+    plotGridCsvSync!: PlotGridCsvSync;
+    plotlineManager!: PlotlineManager;
+    /** Per-project plotline registry (System/plotlines.json → definitions). */
+    plotlineDefinitions: PlotlineDefinition[] = [];
     linkScanner!: LinkScanner;
     cascadeRename!: CascadeRenameService;
     fieldTemplates!: FieldTemplateService;
@@ -149,12 +170,33 @@ export default class SceneCardsPlugin extends Plugin {
     private canvasModule: EmbeddedCanvasModule | null = null;
     /** Coalesce concurrent Library/entity reloads (Codex + Characters + Locations). */
     private _reloadEntitiesPromise: Promise<void> | null = null;
+    /** Cached plotgrid mention scan — rebuilds are expensive on large grids. */
+    private _plotGridScanCache: {
+        at: number;
+        result: {
+            characters: Map<string, Set<string>>;
+            locations: Map<string, Set<string>>;
+            tags: Map<string, Set<string>>;
+        };
+    } | null = null;
+    private static readonly PLOTGRID_SCAN_TTL_MS = 60_000;
     /** Timestamp of the last completed reloadEntities() pass. */
     private _lastEntitiesReloadAt = 0;
     /** True while writing type/name frontmatter onto plain Library notes. */
     private _adoptingLibrary = false;
     /** True while UI-driven Library folder rename is in progress. */
     _syncingLibraryFolders = false;
+    /** Files currently receiving/migrating the active frontmatter field. */
+    private _activeFieldWrites = new Set<string>();
+
+    /** Suppress vault modify→refresh echo while the plugin writes a path. */
+    withSuppressedVaultEcho<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+        const path = normalizePath(filePath);
+        this._activeFieldWrites.add(path);
+        return fn().finally(() => {
+            this._activeFieldWrites.delete(path);
+        });
+    }
     /** The leaf currently hosting a NarrativeLab view */
     storyLeaf: WorkspaceLeaf | null = null;
     /** Removes native browser tooltips (`title`) inside NarrativeLab UI */
@@ -186,6 +228,7 @@ export default class SceneCardsPlugin extends Plugin {
         this.register(setupMobileKeyboardHandling());
 
         this.sceneManager = new SceneManager(this.app, this);
+        this.plotlineManager = new PlotlineManager(this, this.sceneManager);
         this.locationManager = new LocationManager(this.app);
         this.characterManager = new CharacterManager(this.app);
         this.codexManager = new CodexManager(this.app);
@@ -196,6 +239,7 @@ export default class SceneCardsPlugin extends Plugin {
                 ?? 'en',
         );
         this.viewSnapshotService = new ViewSnapshotService(this);
+        this.plotGridCsvSync = new PlotGridCsvSync(this);
         this.linkScanner = new LinkScanner(this.characterManager, this.locationManager);
         this.linkScanner.setCodexManager(this.codexManager);
         this.cascadeRename = new CascadeRenameService(this.app, this.sceneManager, this.characterManager, this.locationManager);
@@ -317,14 +361,25 @@ export default class SceneCardsPlugin extends Plugin {
             this.updateToolbarVisibility();
 
             await this.bootstrapProjects();
+            await this.ensureActiveFieldForAllProjectContent();
             // Re-initialize scene index now that the active project is set.
             // Views that opened before bootstrapProjects may have scanned a
             // fallback folder and found no scenes.
             await this.sceneManager.initialize();
             // Migrate legacy data from data.json into project frontmatter
             await this.migrateProjectDataFromSettings();
+            // Native Base files are persistent view data; keep them out of
+            // user-facing Library folders and preserve them under System/Bases.
+            await migrateNativeLibraryBasesForActiveProject(this);
+            // Ensure Library/<Category>/Attachments exists, then move
+            // library-referenced portraits out of project-root Attachments.
+            try {
+                await ensureLibraryCategoryFolders(this);
+                await migrateLibraryAttachmentsForAllProjects(this);
+            } catch { /* non-fatal */ }
             // Load per-project data from System/ files (tagColors, aliases, etc.)
             await this.loadProjectSystemData();
+            await this.plotlineManager.ensureSeeded();
             // Load universal field templates from System/field-templates.json
             await this.fieldTemplates.load();
             // Load corkboard layout from System/board.json
@@ -640,7 +695,7 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.addCommand({
             id: 'import-scrivener',
-            name: 'Import Scrivener project',
+            name: 'Import scrivener project',
             callback: async () => {
                 const { ScrivenerImporter } = await import('./services/ScrivenerImporter');
                 if (!ScrivenerImporter.isAvailable()) {
@@ -723,12 +778,28 @@ export default class SceneCardsPlugin extends Plugin {
         // We debounce the async refresh pipeline so multiple rapid edits
         // only trigger one re-render after the index has finished updating.
         const debouncedRefresh = this.debounce(() => this.refreshOpenViews(), 500);
+        // Native Bases already updates its own rows and columns. Library note
+        // edits only need a background manager refresh; remounting every open
+        // NarrativeLab view here makes the entire embedded Base flash.
+        const debouncedLibraryEntityReload = this.debounce(() => {
+            void this.reloadEntities();
+        }, 500);
 
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
                 if (this._adoptingLibrary) return;
                 if (file instanceof TFile) {
+                    if (file.extension.toLowerCase() === 'base') return;
+                    if (this._activeFieldWrites.has(normalizePath(file.path))) return;
                     invalidateAllEntityCaches(file.path);
+                    const libraryRoot = normalizePath(this.sceneManager.getCodexFolder());
+                    const filePath = normalizePath(file.path);
+                    if (file.extension.toLowerCase() === 'md'
+                        && libraryRoot
+                        && (filePath === libraryRoot || filePath.startsWith(`${libraryRoot}/`))) {
+                        debouncedLibraryEntityReload();
+                        return;
+                    }
                     this.sceneManager.handleFileChange(file).then(() => debouncedRefresh());
                 }
             })
@@ -740,6 +811,20 @@ export default class SceneCardsPlugin extends Plugin {
             this.app.vault.on('create', (file) => {
                 if (this._adoptingLibrary) return;
                 if (file instanceof TFile) {
+                    if (file.extension.toLowerCase() === 'base') return;
+                    if (file.extension.toLowerCase() === 'md' && this.isActiveManagedPath(file.path)) {
+                        void this.ensureActiveField(file).then(() =>
+                            this.sceneManager.handleFileCreate(file).then(() => debouncedRefresh()));
+                        return;
+                    }
+                    const libraryRoot = normalizePath(this.sceneManager.getCodexFolder());
+                    const filePath = normalizePath(file.path);
+                    if (file.extension.toLowerCase() === 'md'
+                        && libraryRoot
+                        && filePath.startsWith(`${libraryRoot}/`)) {
+                        debouncedLibraryEntityReload();
+                        return;
+                    }
                     this.sceneManager.handleFileCreate(file).then(() => debouncedRefresh());
                 }
             })
@@ -755,7 +840,16 @@ export default class SceneCardsPlugin extends Plugin {
                     return;
                 }
                 if (file instanceof TFile) {
+                    if (file.extension.toLowerCase() === 'base') return;
                     invalidateAllEntityCaches(file.path);
+                    const libraryRoot = normalizePath(this.sceneManager.getCodexFolder());
+                    const filePath = normalizePath(file.path);
+                    if (file.extension.toLowerCase() === 'md'
+                        && libraryRoot
+                        && filePath.startsWith(`${libraryRoot}/`)) {
+                        debouncedLibraryEntityReload();
+                        return;
+                    }
                     this.sceneManager.handleFileDelete(file.path);
                     debouncedRefresh();
                 }
@@ -777,7 +871,18 @@ export default class SceneCardsPlugin extends Plugin {
                     return;
                 }
                 if (file instanceof TFile) {
+                    if (file.extension.toLowerCase() === 'base') return;
                     renameAllEntityCaches(oldPath, file.path);
+                    const libraryRoot = normalizePath(this.sceneManager.getCodexFolder());
+                    const filePath = normalizePath(file.path);
+                    const previousPath = normalizePath(oldPath);
+                    if (file.extension.toLowerCase() === 'md'
+                        && libraryRoot
+                        && (filePath.startsWith(`${libraryRoot}/`)
+                            || previousPath.startsWith(`${libraryRoot}/`))) {
+                        debouncedLibraryEntityReload();
+                        return;
+                    }
                     this.sceneManager.handleFileRename(file, oldPath).then(async () => {
                         // Update any PlotGrid cells that reference the old path
                         await this.updatePlotGridLinkedSceneIds(oldPath, file.path);
@@ -871,14 +976,31 @@ export default class SceneCardsPlugin extends Plugin {
                 }, 120);
             })
         );
+
+        // External edits to System/PlotGrid/*.csv (Tablite / CSV Editor / Excel sync)
+        // → reload the matching table page in any open Plot Grid view.
+        let csvReloadTimer: number | null = null;
+        this.registerEvent(
+            this.app.vault.on('modify', (file) => {
+                if (!(file instanceof TFile)) return;
+                if (!this.plotGridCsvSync?.isPlotGridCsvPath(file.path)) return;
+                if (this.plotGridCsvSync.isWriting(file.path)) return;
+                if (csvReloadTimer) window.clearTimeout(csvReloadTimer);
+                csvReloadTimer = window.setTimeout(() => {
+                    csvReloadTimer = null;
+                    this.app.workspace.trigger('narrativelab:plotgrid-csv-changed', file.path);
+                }, 400);
+            })
+        );
     }
 
     /** Resolved Properties display mode for NarrativeLab notes. */
     private getFrontmatterDisplayMode(): 'collapse' | 'hide' | 'visible' {
         const mode = this.settings.frontmatterDisplay;
         if (mode === 'hide' || mode === 'visible' || mode === 'collapse') return mode;
-        // Legacy boolean
-        if (this.settings.hideFrontmatter === false) return 'visible';
+        // Legacy boolean (kept for migration from hideFrontmatter)
+        const legacyHide = (this.settings as { hideFrontmatter?: boolean }).hideFrontmatter;
+        if (legacyHide === false) return 'visible';
         return 'collapse';
     }
 
@@ -929,6 +1051,59 @@ export default class SceneCardsPlugin extends Plugin {
             ).forEach((el) => {
                 this.collapsePropertiesContainer(el as HTMLElement);
             });
+        }
+    }
+
+    /** True for Markdown content stored in any project's Scenes, Notes, or Research tree. */
+    private isActiveManagedPath(filePath: string): boolean {
+        const path = normalizePath(filePath);
+        for (const project of this.sceneManager?.getProjects() || []) {
+            const roots = [project.sceneFolder, project.notesFolder, project.researchFolder]
+                .map(root => normalizePath(root))
+                .filter(Boolean);
+            if (roots.some(root => path.startsWith(`${root}/`))) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Store visibility as a positive checkbox. Legacy `inactive` values are
+     * inverted once, then removed so Properties only exposes `active`.
+     */
+    private async ensureActiveField(file: TFile): Promise<boolean> {
+        if (file.extension.toLowerCase() !== 'md' || !this.isActiveManagedPath(file.path)) return false;
+        const path = normalizePath(file.path);
+        let changed = false;
+        this._activeFieldWrites.add(path);
+        try {
+            await this.app.fileManager.processFrontMatter(file, frontmatter => {
+                const hasActive = Object.prototype.hasOwnProperty.call(frontmatter, 'active');
+                const hasInactive = Object.prototype.hasOwnProperty.call(frontmatter, 'inactive');
+                if (!hasActive) {
+                    const legacy = frontmatter.inactive;
+                    const legacyInactive = legacy === true
+                        || legacy === 1
+                        || (typeof legacy === 'string' && legacy.trim().toLowerCase() === 'true');
+                    frontmatter.active = hasInactive ? !legacyInactive : true;
+                    changed = true;
+                }
+                if (hasInactive) {
+                    delete frontmatter.inactive;
+                    changed = true;
+                }
+            });
+        } finally {
+            this._activeFieldWrites.delete(path);
+        }
+        return changed;
+    }
+
+    /** Backfill the field across all discovered NarrativeLab projects. */
+    private async ensureActiveFieldForAllProjectContent(): Promise<void> {
+        for (const file of this.app.vault.getMarkdownFiles()) {
+            if (this.isActiveManagedPath(file.path)) {
+                await this.ensureActiveField(file);
+            }
         }
     }
 
@@ -1091,7 +1266,7 @@ export default class SceneCardsPlugin extends Plugin {
             ?.split('/')
             .pop()
             ?.replace(/\.md$/i, '')
-            .trim();
+            ?.trim();
         return manifestName || project?.title?.trim() || 'NarrativeLab';
     }
 
@@ -1269,7 +1444,7 @@ export default class SceneCardsPlugin extends Plugin {
         const ownData = (await this.loadData()) as Record<string, unknown> | null;
         let migratedData: Record<string, unknown> = ownData && typeof ownData === 'object' ? { ...ownData } : {};
         let importedLegacySettings = false;
-        const configDir = this.app.vault.configDir || '.obsidian';
+        const configDir = this.app.vault.configDir;
         const readPluginData = async (pluginId: string): Promise<Record<string, unknown> | null> => {
             const path = normalizePath(`${configDir}/plugins/${pluginId}/data.json`);
             try {
@@ -1319,6 +1494,17 @@ export default class SceneCardsPlugin extends Plugin {
         }
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, migratedData);
+        if (!Array.isArray(this.settings.sceneTemplates)) {
+            this.settings.sceneTemplates = [];
+        } else {
+            this.settings.sceneTemplates = this.settings.sceneTemplates
+                .filter(template => template && typeof template === 'object')
+                .map(template => ({
+                    ...template,
+                    defaultFields: { ...(template.defaultFields || {}) },
+                    bodyTemplate: typeof template.bodyTemplate === 'string' ? template.bodyTemplate : '',
+                }));
+        }
         this.settings.interfaceLanguage = normalizeUiLanguageSetting(this.settings.interfaceLanguage);
         if (this.settings.frontmatterDisplay !== 'hide'
             && this.settings.frontmatterDisplay !== 'visible'
@@ -1358,6 +1544,9 @@ export default class SceneCardsPlugin extends Plugin {
             stickyNoteFontColorLight: this.settings.stickyNoteFontColorLight,
             stickyNoteFontColorDark: this.settings.stickyNoteFontColorDark,
         };
+        // Library categories used to live in global data.json and leaked across
+        // projects. Keep one seed for first-time per-project migration.
+        this._legacyLibraryCategoryDefaults = readLibraryCategorySettings(this.settings);
     }
 
     /** Per-project field keys that live in System/ files, not data.json */
@@ -1368,6 +1557,9 @@ export default class SceneCardsPlugin extends Plugin {
         'rows', 'columns', 'cells', 'zoom', 'stickyHeaders',
         // Legacy / per-project keys that don't belong in global settings
         'filterPresets',
+        // Library categories are one-config-per-project (System/library-categories.json)
+        'codexEnabledCategories', 'codexCustomCategories', 'libraryCategoryOrder',
+        'libraryHiddenFixedCategories', 'codexDeletedPresetCategories',
     ];
 
     async saveSettings(): Promise<void> {
@@ -1386,6 +1578,14 @@ export default class SceneCardsPlugin extends Plugin {
             for (const key of SceneCardsPlugin.PROJECT_DATA_KEYS) {
                 delete toSave[key];
             }
+            // Keep empty Library category defaults in data.json so new vaults /
+            // projects do not inherit the active project's working copy.
+            const emptyCats = emptyLibraryCategorySettings();
+            toSave.codexEnabledCategories = emptyCats.enabledCategories;
+            toSave.codexCustomCategories = emptyCats.customCategories;
+            toSave.libraryCategoryOrder = emptyCats.categoryOrder;
+            toSave.libraryHiddenFixedCategories = emptyCats.hiddenFixedCategories;
+            toSave.codexDeletedPresetCategories = emptyCats.deletedPresetCategories;
             // When using per-project colours, restore global defaults into
             // data.json so the global values are not overwritten by the
             // project-specific ones currently in memory.
@@ -1449,12 +1649,21 @@ export default class SceneCardsPlugin extends Plugin {
         locations: Map<string, Set<string>>;
         tags: Map<string, Set<string>>;
     }> {
+        const cached = this._plotGridScanCache;
+        if (cached && Date.now() - cached.at < SceneCardsPlugin.PLOTGRID_SCAN_TTL_MS) {
+            return cached.result;
+        }
+
         const characters = new Map<string, Set<string>>();
         const locations = new Map<string, Set<string>>();
         const tags = new Map<string, Set<string>>();
 
         const data = await this.loadPlotGrid();
-        if (!data?.pages?.length) return { characters, locations, tags };
+        if (!data?.pages?.length) {
+            const empty = { characters, locations, tags };
+            this._plotGridScanCache = { at: Date.now(), result: empty };
+            return empty;
+        }
 
         this.linkScanner.rebuildLookups(this.settings.characterAliases);
 
@@ -1496,7 +1705,14 @@ export default class SceneCardsPlugin extends Plugin {
           }
         }
 
-        return { characters, locations, tags };
+        const result = { characters, locations, tags };
+        this._plotGridScanCache = { at: Date.now(), result };
+        return result;
+    }
+
+    /** Drop cached plotgrid mention scan (call after plotgrid writes). */
+    invalidatePlotGridScanCache(): void {
+        this._plotGridScanCache = null;
     }
 
     // ────────────────────────────────────
@@ -1743,6 +1959,30 @@ export default class SceneCardsPlugin extends Plugin {
         const plotlines = await this.readSystemJson('plotlines.json');
         const characters = await this.readSystemJson('characters.json');
         const stats = await this.readSystemJson('stats.json');
+        const libraryCategoriesRaw = await this.readSystemJson(LIBRARY_CATEGORIES_FILENAME);
+        const storedLibraryCategories = libraryCategorySettingsFromUnknown(libraryCategoriesRaw);
+        const migratingLibraryCategories = !storedLibraryCategories;
+
+        // Overlay per-project Library categories. First open after the
+        // global→per-project split seeds from the legacy data.json snapshot,
+        // then restores any categories that still have Library folders.
+        let libraryCategoriesDirty = migratingLibraryCategories;
+        if (storedLibraryCategories) {
+            applyLibraryCategorySettings(this, storedLibraryCategories);
+            libraryCategoriesDirty = await adoptLibraryCategoriesFromFolders(this, {
+                enableExisting: false,
+            });
+        } else {
+            applyLibraryCategorySettings(this, {
+                enabledCategories: [...this._legacyLibraryCategoryDefaults.enabledCategories],
+                customCategories: this._legacyLibraryCategoryDefaults.customCategories.map(c => ({ ...c })),
+                categoryOrder: [...this._legacyLibraryCategoryDefaults.categoryOrder],
+                hiddenFixedCategories: [...this._legacyLibraryCategoryDefaults.hiddenFixedCategories],
+                deletedPresetCategories: [...this._legacyLibraryCategoryDefaults.deletedPresetCategories],
+            });
+            await adoptLibraryCategoriesFromFolders(this, { enableExisting: true });
+            libraryCategoriesDirty = true;
+        }
 
         // Overlay per-project data onto settings (used as working copy)
         this.settings.tagColors = isRecord(plotlines.tagColors)
@@ -1751,6 +1991,8 @@ export default class SceneCardsPlugin extends Plugin {
         this.settings.tagTypeOverrides = isRecord(plotlines.tagTypeOverrides)
             ? (plotlines.tagTypeOverrides as Record<string, string>)
             : {};
+
+        this.plotlineManager.applyLoaded(plotlines.definitions);
 
         // Per-project colour overrides (if the project has them stored)
         if (isRecord(plotlines.projectColors)) {
@@ -1803,6 +2045,19 @@ export default class SceneCardsPlugin extends Plugin {
             this.writingTracker.importData(stats.writingTrackerData as unknown as Parameters<typeof this.writingTracker.importData>[0]);
         }
 
+        // Persist migrated / folder-adopted Library categories immediately so
+        // the next project switch cannot fall back to the shared legacy seed.
+        const activeProject = this.sceneManager?.activeProject;
+        if (libraryCategoriesDirty && activeProject) {
+            await this.writeSystemJson(
+                LIBRARY_CATEGORIES_FILENAME,
+                readLibraryCategorySettings(this.settings) as unknown as Record<string, unknown>,
+            );
+            if (activeProject.libraryFolders) {
+                await this.sceneManager.saveProjectFrontmatter(activeProject).catch(() => undefined);
+            }
+        }
+
         // System files are now the source of truth
         this._systemMigrationDone = true;
     }
@@ -1817,6 +2072,11 @@ export default class SceneCardsPlugin extends Plugin {
         const plotlinesPayload: Record<string, unknown> = {
             tagColors: this.settings.tagColors || {},
             tagTypeOverrides: this.settings.tagTypeOverrides || {},
+            definitions: this.plotlineDefinitions.map(d => ({
+                id: d.id,
+                label: d.label,
+                scenePaths: d.scenePaths,
+            })),
         };
 
         if (this.settings.useProjectColors) {
@@ -1846,6 +2106,11 @@ export default class SceneCardsPlugin extends Plugin {
         await this.writeSystemJson('stats.json', {
             writingTrackerData: this.writingTracker.exportData(),
         });
+
+        await this.writeSystemJson(
+            LIBRARY_CATEGORIES_FILENAME,
+            readLibraryCategorySettings(this.settings) as unknown as Record<string, unknown>,
+        );
     }
 
     /**
@@ -1865,7 +2130,6 @@ export default class SceneCardsPlugin extends Plugin {
                     const existing = await adapter.read(filePath);
                     const parsed = normalizeConceptGridDocument(JSON.parse(existing));
                     if (!isConceptGridDocumentEmpty(parsed)) {
-                        console.log('[NarrativeLab] savePlotGrid: BLOCKED overwriting non-empty plotgrid with empty data');
                         return;
                     }
                 } catch { /* file unreadable or invalid JSON — allow overwrite */ }
@@ -1879,6 +2143,14 @@ export default class SceneCardsPlugin extends Plugin {
             }
 
             await adapter.write(filePath, contents);
+            this.invalidatePlotGridScanCache();
+            // Mirror each page as CSV under System/PlotGrid/ for external editors
+            // (Tablite, CSV Editor, Excel, etc.) and round-trip import.
+            try {
+                await this.plotGridCsvSync.syncDocument(document);
+            } catch {
+                /* CSV mirror is best-effort; JSON remains canonical */
+            }
         } catch (e) {
             new Notice(t('NarrativeLab: failed to save PlotGrid to vault: ') + String(e));
         }
@@ -1912,10 +2184,9 @@ export default class SceneCardsPlugin extends Plugin {
                     await adapter.write(`${folder}/plotgrid.json`, JSON.stringify(imported, null, 2));
                     // Remove the import file so it isn't re-imported next time
                     await adapter.remove(importPath);
-                    console.log('[NarrativeLab] loadPlotGrid: imported data from plotgrid-import.json');
                     return imported;
-                } catch (importErr) {
-                    console.warn('[NarrativeLab] loadPlotGrid: failed to import plotgrid-import.json', importErr);
+                } catch {
+                    /* import file unreadable or invalid — fall through to plotgrid.json */
                 }
             }
 
@@ -1971,7 +2242,7 @@ export default class SceneCardsPlugin extends Plugin {
     /**
      * Open the appropriate NarrativeLab view and navigate to the entity's detail panel.
      */
-    private async showEntityDetails(filePath: string): Promise<void> {
+    async showEntityDetails(filePath: string): Promise<void> {
         const kind = this.resolveEntityType(filePath);
         switch (kind) {
             case 'character': {
@@ -2050,24 +2321,25 @@ export default class SceneCardsPlugin extends Plugin {
 
         let leaf = workspace.getLeavesOfType(viewType)[0] ?? null;
         if (!leaf) {
-            leaf = workspace.getRightLeaf(false);
-            if (!leaf) return null;
+            const rightLeaf = workspace.getRightLeaf(false);
+            if (!rightLeaf) return null;
+            leaf = rightLeaf;
             await leaf.setViewState({ type: viewType, active: true });
         }
 
         workspace.revealLeaf(leaf);
         workspace.setActiveLeaf(leaf, { focus: true });
         // Wait a frame so Obsidian finishes painting the tab header after reveal
-        window.requestAnimationFrame(() => this.flashWorkspaceTab(leaf!));
+        window.requestAnimationFrame(() => this.flashWorkspaceTab(leaf));
         return leaf;
     }
 
     /** Brief accent pulse on a leaf's workspace tab header. */
     private flashWorkspaceTab(leaf: WorkspaceLeaf): void {
-        const withTab = leaf as unknown as { tabHeaderEl?: HTMLElement };
+        const withTab = leaf as unknown as { tabHeaderEl?: HTMLElement; containerEl?: HTMLElement };
         let tabHeader = withTab.tabHeaderEl ?? null;
         if (!tabHeader) {
-            const leafEl = leaf.containerEl?.closest('.workspace-leaf') as HTMLElement | null;
+            const leafEl = withTab.containerEl?.closest('.workspace-leaf') as HTMLElement | null;
             const tabs = leafEl?.parentElement?.parentElement;
             const headers = tabs?.querySelectorAll('.workspace-tab-header');
             if (headers && leafEl?.parentElement) {
@@ -2328,18 +2600,19 @@ export default class SceneCardsPlugin extends Plugin {
         // view, commands, extension associations, and event registrations.
         // Component.load() does not await an async onload(), so capture it here.
         const moduleOnload = canvas.onload.bind(canvas);
-        let loadPromise: Promise<void> | null = null;
+        let loadPromise: Promise<void> | undefined;
         canvas.onload = () => {
-            loadPromise = Promise.resolve(moduleOnload());
+            loadPromise = Promise.resolve(moduleOnload()).then(() => undefined);
             return loadPromise;
         };
         canvas.load();
-        if (!loadPromise) {
+        const pending = loadPromise;
+        if (!pending) {
             canvas.unload();
             throw new Error('Narrative Canvas did not enter its load lifecycle.');
         }
         try {
-            await loadPromise;
+            await pending;
         } catch (error) {
             canvas.unload();
             throw error;
@@ -2347,11 +2620,11 @@ export default class SceneCardsPlugin extends Plugin {
         this.canvasModule = canvas;
     }
 
-    /** Resolve .ncanvas paths for a NarrativeLab project (System/NCanvas, with legacy root fallbacks). */
+    /** Resolve .ncanvas paths for a NarrativeLab project (project-root NCanvas). */
     getNcanvasPathsForProject(project: StoryLineProject): { canvasFolder: string; candidates: string[] } {
         const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const canvasFolder = normalizePath(folders.canvasFolder);
-        const legacyNCanvasFolder = normalizePath(`${folders.baseFolder}/${LEGACY_NCANVAS_FOLDER}`);
+        const legacySystemNCanvasFolder = normalizePath(`${folders.baseFolder}/${LEGACY_SYSTEM_NCANVAS_FOLDER}`);
         const legacyCanvasFolder = normalizePath(`${folders.baseFolder}/${LEGACY_CANVAS_FOLDER}`);
         const baseFolder = normalizePath(folders.baseFolder);
         const isNcanvas = (file: TFile) => ['ncanvas', 'narrativecanvas'].includes(file.extension.toLowerCase());
@@ -2360,7 +2633,7 @@ export default class SceneCardsPlugin extends Plugin {
             const slash = normalized.lastIndexOf('/');
             const parent = slash >= 0 ? normalized.slice(0, slash) : '';
             return parent === canvasFolder
-                || parent === legacyNCanvasFolder
+                || parent === legacySystemNCanvasFolder
                 || parent === legacyCanvasFolder
                 || parent === baseFolder;
         };
@@ -2374,7 +2647,7 @@ export default class SceneCardsPlugin extends Plugin {
             .sort((a, b) => a.localeCompare(b));
 
         const inCanvasFolder = filesInFolder(canvasFolder);
-        const inLegacyNCanvas = canvasFolder !== legacyNCanvasFolder ? filesInFolder(legacyNCanvasFolder) : [];
+        const inLegacySystemNCanvas = filesInFolder(legacySystemNCanvasFolder);
         const inLegacyCanvas = filesInFolder(legacyCanvasFolder);
         const legacyInBase = this.app.vault.getFiles()
             .filter(file => {
@@ -2396,7 +2669,7 @@ export default class SceneCardsPlugin extends Plugin {
             ...(remembered && belongsToProject(remembered)
                 && this.app.vault.getAbstractFileByPath(remembered) ? [remembered] : []),
             ...inCanvasFolder,
-            ...inLegacyNCanvas,
+            ...inLegacySystemNCanvas,
             ...inLegacyCanvas,
             ...legacyInBase,
         ])];
@@ -2404,7 +2677,7 @@ export default class SceneCardsPlugin extends Plugin {
         return { canvasFolder, candidates: ordered };
     }
 
-    /** Create nested vault folders as needed (e.g. System/NCanvas). */
+    /** Create nested vault folders as needed (e.g. project-root NCanvas). */
     private async ensureVaultFolder(folder: string): Promise<void> {
         const adapter = this.app.vault.adapter;
         const parts = normalizePath(folder).split('/').filter(Boolean);
@@ -2533,7 +2806,7 @@ export default class SceneCardsPlugin extends Plugin {
                 : '';
             const projectBase = deriveProjectFoldersFromFilePath(project.filePath).baseFolder;
             const preferredBelongsToProject = preferredParent === canvasFolder
-                || preferredParent === normalizePath(`${projectBase}/${LEGACY_NCANVAS_FOLDER}`)
+                || preferredParent === normalizePath(`${projectBase}/${LEGACY_SYSTEM_NCANVAS_FOLDER}`)
                 || preferredParent === normalizePath(`${projectBase}/${LEGACY_CANVAS_FOLDER}`)
                 || preferredParent === projectBase;
             const path = (normalizedPreferred && preferredBelongsToProject && await adapter.exists(normalizedPreferred))
@@ -2582,6 +2855,7 @@ export default class SceneCardsPlugin extends Plugin {
         options: { skipLoaded?: boolean } = {},
     ): Promise<void> {
         const skipLoaded = options.skipLoaded === true;
+        const libraryRoot = normalizePath(folderPath);
         const alreadyLoaded = (filePath: string): boolean =>
             !!this.codexManager.getEntry(filePath)
             || !!this.characterManager.getCharacter(filePath)
@@ -2590,6 +2864,7 @@ export default class SceneCardsPlugin extends Plugin {
         for (const file of files) {
             try {
                 const filePath = normalizePath(file.path);
+                if (parentOfPath(filePath) === libraryRoot) continue;
                 // After loadAll / loadCharacters / loadAll locations, category
                 // folders were already read — skip those files to cut I/O ~2×.
                 if (skipLoaded && alreadyLoaded(filePath)) continue;
@@ -2598,7 +2873,12 @@ export default class SceneCardsPlugin extends Plugin {
                 if (!type) continue;
                 if (type === 'character') this.characterManager.addFile(content, filePath);
                 else if (type === 'location' || type === 'world') this.locationManager.addFile(content, filePath);
-                else if (type !== 'scene' && type !== 'narrative-lab' && type !== 'storyline') {
+                else if (
+                    type !== 'scene'
+                    && type !== 'narrative-lab'
+                    && type !== 'storyline'
+                    && type !== UNCATEGORIZED_CATEGORY_ID
+                ) {
                     this.codexManager.addFile(content, filePath);
                 }
             } catch { /* unreadable Library entry */ }
@@ -2723,7 +3003,7 @@ export default class SceneCardsPlugin extends Plugin {
                             this.locationManager.addFile(content, fp);
                             break;
                         default:
-                            // Try codex categories (items, creatures, custom, etc.)
+                            if (type === UNCATEGORIZED_CATEGORY_ID) break;
                             this.codexManager.addFile(content, fp);
                             break;
                     }
@@ -2973,16 +3253,16 @@ export default class SceneCardsPlugin extends Plugin {
             if (legacyKey in raw) { delete raw[legacyKey]; dirty = true; }
         }
 
-        // ── Phase 2: move JSON / NCanvas files from project root → System/ ──
+        // ── Phase 2: move JSON data to System/, but keep NCanvas as project content ──
         try {
             await this.migrateJsonFilesToSystem();
         } catch (e) {
             console.error('[NarrativeLab] migrateJsonFilesToSystem error:', e);
         }
         try {
-            await this.migrateNCanvasFoldersToSystem();
+            await this.migrateNCanvasFoldersToProjectRoot();
         } catch (e) {
-            console.error('[NarrativeLab] migrateNCanvasFoldersToSystem error:', e);
+            console.error('[NarrativeLab] migrateNCanvasFoldersToProjectRoot error:', e);
         }
 
         // ── Phase 3: migrate per-project data from data.json → System/ files ──
@@ -3054,6 +3334,7 @@ export default class SceneCardsPlugin extends Plugin {
                     const merged: Record<string, unknown> = {
                         tagColors: raw.tagColors ?? existing.tagColors ?? this.settings.tagColors ?? {},
                         tagTypeOverrides: raw.tagTypeOverrides ?? existing.tagTypeOverrides ?? this.settings.tagTypeOverrides ?? {},
+                        definitions: existing.definitions ?? [],
                     };
                     await adapter.write(path, JSON.stringify(merged, null, 2));
                 } catch (e) {
@@ -3159,19 +3440,18 @@ export default class SceneCardsPlugin extends Plugin {
                     // Delete old file
                     const oldFile = this.app.vault.getAbstractFileByPath(oldPath);
                     if (oldFile) await this.app.fileManager.trashFile(oldFile);
-
-                    console.log(`[NarrativeLab] Migrated ${oldPath} → ${newPath}`);
-                } catch (e) {
-                    console.warn(`[NarrativeLab] Failed to migrate ${oldPath} → ${newPath}:`, e);
+                } catch {
+                    /* skip unreadable/unmovable paths */
                 }
             }
         }
     }
 
     /**
-     * Move project-root NCanvas/ / Canvas/ (and loose .ncanvas) into System/NCanvas/.
+     * Move former System/NCanvas/, legacy Canvas/, and loose project-root
+     * files into the project's authored NCanvas/ folder.
      */
-    private async migrateNCanvasFoldersToSystem(): Promise<void> {
+    private async migrateNCanvasFoldersToProjectRoot(): Promise<void> {
         const adapter = this.app.vault.adapter;
 
         for (const project of this.sceneManager.getProjects()) {
@@ -3179,20 +3459,20 @@ export default class SceneCardsPlugin extends Plugin {
             const destFolder = normalizePath(folders.canvasFolder);
             const baseFolder = normalizePath(folders.baseFolder);
             const legacyFolders = [
-                normalizePath(`${baseFolder}/${LEGACY_NCANVAS_FOLDER}`),
+                normalizePath(`${baseFolder}/${LEGACY_SYSTEM_NCANVAS_FOLDER}`),
                 normalizePath(`${baseFolder}/${LEGACY_CANVAS_FOLDER}`),
             ].filter(folder => folder !== destFolder);
 
             const moveFile = async (fromPath: string) => {
                 const name = fromPath.split('/').pop();
                 if (!name) return;
-                const toPath = normalizePath(`${destFolder}/${name}`);
+                let toPath = normalizePath(`${destFolder}/${name}`);
                 try {
                     await this.ensureVaultFolder(destFolder);
                     if (await adapter.exists(toPath)) {
-                        const dup = this.app.vault.getAbstractFileByPath(fromPath);
-                        if (dup) await this.app.fileManager.trashFile(dup);
-                        return;
+                        // Never discard authored canvases. Preserve both files
+                        // when a root NCanvas file already has the same name.
+                        toPath = await this.uniqueNcanvasPath(destFolder, name);
                     }
                     const file = this.app.vault.getAbstractFileByPath(fromPath);
                     if (file instanceof TFile) {
@@ -3203,9 +3483,8 @@ export default class SceneCardsPlugin extends Plugin {
                         await adapter.writeBinary(toPath, data);
                         await adapter.remove(fromPath);
                     }
-                    console.log(`[NarrativeLab] Migrated ${fromPath} → ${toPath}`);
-                } catch (e) {
-                    console.warn(`[NarrativeLab] Failed to migrate ${fromPath} → ${toPath}:`, e);
+                } catch {
+                    /* skip unreadable/unmovable paths */
                 }
             };
 

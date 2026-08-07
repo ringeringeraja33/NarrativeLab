@@ -63,8 +63,15 @@ export class CodexManager {
                 if (override) this.categoryDefs.set(id, withLinkingSection(override));
             }
         }
-        // Library-root Markdown files always have a permanent, non-deletable tab.
-        this.categoryDefs.set(UNCATEGORIZED_CATEGORY_ID, makeUncategorizedCodexCategory());
+        // Library-root Markdown files always remain a non-deletable category,
+        // while its tab label/icon may be customized like other fixed categories.
+        const uncategorized = makeUncategorizedCodexCategory();
+        const uncategorizedOverride = customDefs.find(c => c.id === UNCATEGORIZED_CATEGORY_ID);
+        this.categoryDefs.set(UNCATEGORIZED_CATEGORY_ID, {
+            ...uncategorized,
+            label: uncategorizedOverride?.label || uncategorized.label,
+            icon: uncategorizedOverride?.icon || uncategorized.icon,
+        });
     }
 
     /** All resolved category definitions (respects current enabled list). */
@@ -185,6 +192,7 @@ export class CodexManager {
      */
     addFile(content: string, filePath: string): boolean {
         for (const [catId, catDef] of this.categoryDefs) {
+            if (catId === UNCATEGORIZED_CATEGORY_ID) continue;
             const entry = this.parseEntry(content, filePath, catDef);
             if (entry) {
                 let catMap = this.entriesByCategory.get(catId);
@@ -275,11 +283,13 @@ export class CodexManager {
 
         const now = new Date().toISOString().split('T')[0];
         const fm: Record<string, unknown> = {
-            type: catDef.id,
             name,
             created: now,
             modified: now,
         };
+        if (categoryId !== UNCATEGORIZED_CATEGORY_ID) {
+            fm.type = catDef.id;
+        }
 
         await this.app.vault.create(filePath, `---\n${stringifyYaml(fm)}---\n`);
 
@@ -313,7 +323,19 @@ export class CodexManager {
         const body = this.extractBody(content);
 
         const fm: Record<string, unknown> = { ...existingFm };
-        fm.type = entry.type;
+        const uncategorizedDef = this.categoryDefs.get(UNCATEGORIZED_CATEGORY_ID);
+        const isUncategorizedEntry = uncategorizedDef
+            && this.entriesByCategory.get(UNCATEGORIZED_CATEGORY_ID)?.has(normalizedPath);
+        if (isUncategorizedEntry) {
+            const preservedType = existingFm.type;
+            if (preservedType && preservedType !== UNCATEGORIZED_CATEGORY_ID) {
+                fm.type = preservedType;
+            } else {
+                delete fm.type;
+            }
+        } else {
+            fm.type = entry.type;
+        }
         fm.name = entry.name;
         fm.modified = new Date().toISOString().split('T')[0];
         if (entry.created) fm.created = entry.created;

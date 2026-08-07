@@ -86,7 +86,10 @@ export class SceneManager implements ISceneStore {
     private scenes: Map<string, Scene> = new Map();
     private projects: Map<string, StoryLineProject> = new Map();
     private initialized = false;
+    private initializePromise: Promise<void> | null = null;
     private _activeProject: StoryLineProject | null = null;
+    /** Serialize project.md writes — concurrent vault.modify races cause Windows UNKNOWN open errors. */
+    private _projectFrontmatterWrite: Promise<void> = Promise.resolve();
     /** Paths currently being adopted as Notes/ corkboard files (re-entrancy guard). */
     private adoptingNotes = new Set<string>();
     public undoManager: UndoManager;
@@ -183,7 +186,7 @@ export class SceneManager implements ISceneStore {
         return this.plugin.settings.storyLineRoot || '';
     }
 
-    /** Computed NCanvas (.ncanvas) folder for the active project (under System/) */
+    /** Computed NCanvas (.ncanvas) folder at the active project root. */
     getCanvasFolder(): string {
         const base = this.getProjectBaseFolder();
         return base ? `${base}/${DEFAULT_CANVAS_FOLDER}` : DEFAULT_CANVAS_FOLDER;
@@ -209,6 +212,16 @@ export class SceneManager implements ISceneStore {
         const attachmentFolder = this.getAttachmentFolder();
         if (attachmentFolder) return attachmentFolder;
         return this._activeProject?.filePath || this.getSceneFolder();
+    }
+
+    /**
+     * Per-category Library attachment folder: Library/<Category>/Attachments.
+     * Used for character/location/codex portraits; scene attachments stay at project root.
+     */
+    getLibraryAttachmentFolder(categoryId: string): string {
+        const folderName = this.getLibraryFolderName(categoryId);
+        const libraryRoot = this.getCodexFolder();
+        return normalizePath(`${libraryRoot}/${folderName}/${DEFAULT_ATTACHMENT_FOLDER}`);
     }
 
     /**
@@ -555,7 +568,9 @@ export class SceneManager implements ISceneStore {
             const libraryFolder = normalizePath(folders.codexFolder);
             await this.ensureFolder(libraryFolder);
             for (const folderName of Object.values(libraryFolders)) {
-                await this.ensureFolder(normalizePath(`${libraryFolder}/${folderName}`));
+                const categoryFolder = normalizePath(`${libraryFolder}/${folderName}`);
+                await this.ensureFolder(categoryFolder);
+                await this.ensureFolder(normalizePath(`${categoryFolder}/${DEFAULT_ATTACHMENT_FOLDER}`));
             }
 
             // Create System folder for project data files
@@ -600,6 +615,7 @@ export class SceneManager implements ISceneStore {
                 actDescriptions: {},
                 chapterDescriptions: {},
                 filterPresets: [],
+                plotlines: [],
                 corkboardPositions: {},
                 drafts: [{ id: 'main', title: 'Primary draft' }],
                 activeDraftId: 'main',
@@ -636,6 +652,7 @@ export class SceneManager implements ISceneStore {
         await this.initialize();
         await this.migrateDraftFoldersIfNeeded();
         await this.reconcileDraftFolders();
+        await this.plugin.plotlineManager.ensureSeeded();
         await this.plugin.syncNarrativeCanvasToActiveProject();
         // Ask the plugin to refresh any open NarrativeLab views so the UI updates
         try {
@@ -884,6 +901,11 @@ export class SceneManager implements ISceneStore {
                 actDescriptions: (fm.actDescriptions && typeof fm.actDescriptions === 'object') ? Object.fromEntries(Object.entries(fm.actDescriptions).map(([k, v]) => [Number(k), String(v)])) : {},
                 chapterDescriptions: (fm.chapterDescriptions && typeof fm.chapterDescriptions === 'object') ? Object.fromEntries(Object.entries(fm.chapterDescriptions).map(([k, v]) => [Number(k), String(v)])) : {},
                 filterPresets: Array.isArray(fm.filterPresets) ? fm.filterPresets : [],
+                plotlines: Array.isArray(fm.plotlines)
+                    ? [...new Set((fm.plotlines as unknown[])
+                        .map((value: unknown) => String(value).trim())
+                        .filter(Boolean))]
+                    : [],
                 corkboardPositions: {},
                 seriesId: fm.seriesId || undefined,
                 coverImage: fm.coverImage || undefined,
@@ -931,13 +953,25 @@ export class SceneManager implements ISceneStore {
      * externally-created or synced files.
      */
     async initialize(): Promise<void> {
-        this.scenes.clear();
-        const sceneFolder = this.getSceneFolder();
-        await this.scanFolderAdapter(sceneFolder);
-        const notesFolder = this.getNotesFolder();
-        await this.scanFolderAdapter(notesFolder);
-        this.initialized = true;
-        this.bumpVersion();
+        if (this.initializePromise) return this.initializePromise;
+        this.initializePromise = (async () => {
+            this.scenes.clear();
+            const sceneFolder = this.getSceneFolder();
+            await this.scanFolderAdapter(sceneFolder);
+            const notesFolder = this.getNotesFolder();
+            await this.scanFolderAdapter(notesFolder);
+            this.initialized = true;
+            this.bumpVersion();
+        })().finally(() => {
+            this.initializePromise = null;
+        });
+        return this.initializePromise;
+    }
+
+    /** Reuse the current scene index when it has already been initialized. */
+    async ensureInitialized(): Promise<void> {
+        if (this.initialized) return;
+        await this.initialize();
     }
 
     /**
@@ -1279,15 +1313,17 @@ export class SceneManager implements ISceneStore {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!file || !(file instanceof TFile)) return filePath;
 
-        const sceneFolder = this.getSceneFolder();
+        // Keep the scene inside its owning draft (named draft folder), not the
+        // project-wide Scenes root — otherwise Navigator hides it while that draft is active.
+        const draftRoot = this.getDraftSceneRoot(this.getDraftOwningScenePath(filePath));
 
         // Determine target folder. Same sanitization as createScene so a
         // string act like "1.1" or "Prologue" produces a valid folder name.
-        let targetFolder = sceneFolder;
+        let targetFolder = draftRoot;
         if (newAct !== undefined) {
             const actFolderSegment = sanitizeActChapterForPath(String(newAct));
             if (actFolderSegment) {
-                targetFolder = normalizePath(`${sceneFolder}/Act ${actFolderSegment}`);
+                targetFolder = normalizePath(`${draftRoot}/Act ${actFolderSegment}`);
             }
         }
         await this.ensureFolder(targetFolder);
@@ -1435,14 +1471,17 @@ export class SceneManager implements ISceneStore {
             plotgridOrigin: undefined,
         });
 
-        // Determine target location in the Scenes/ folder
-        const sceneFolder = this.getSceneFolder();
-        await this.ensureFolder(sceneFolder);
+        // Target the active draft's Scenes root (not always project-wide Scenes/)
+        const draftRoot = this.getDraftSceneRoot(this.getActiveDraft());
+        await this.ensureFolder(draftRoot);
 
-        let targetFolder = sceneFolder;
+        let targetFolder = draftRoot;
         if (scene?.act !== undefined) {
-            targetFolder = normalizePath(`${sceneFolder}/Act ${scene.act}`);
-            await this.ensureFolder(targetFolder);
+            const actSeg = sanitizeActChapterForPath(String(scene.act));
+            if (actSeg) {
+                targetFolder = normalizePath(`${draftRoot}/Act ${actSeg}`);
+                await this.ensureFolder(targetFolder);
+            }
         }
 
         const newPath = normalizePath(`${targetFolder}/${file.name}`);
@@ -1562,18 +1601,18 @@ export class SceneManager implements ISceneStore {
             return filePath;
         }
 
-        const sceneFolder = this.getSceneFolder();
-        await this.ensureFolder(sceneFolder);
-        let newPath = normalizePath(`${sceneFolder}/${file.name}`);
+        const draftRoot = this.getDraftSceneRoot(this.getActiveDraft());
+        await this.ensureFolder(draftRoot);
+        let newPath = normalizePath(`${draftRoot}/${file.name}`);
 
         // Handle filename collision — append " (restored)" if needed
         if (this.app.vault.getAbstractFileByPath(newPath)) {
             const baseName = file.basename;
-            newPath = normalizePath(`${sceneFolder}/${baseName} (restored).md`);
+            newPath = normalizePath(`${draftRoot}/${baseName} (restored).md`);
             // If even that exists, add a number
             let counter = 2;
             while (this.app.vault.getAbstractFileByPath(newPath)) {
-                newPath = normalizePath(`${sceneFolder}/${baseName} (restored ${counter}).md`);
+                newPath = normalizePath(`${draftRoot}/${baseName} (restored ${counter}).md`);
                 counter++;
             }
         }
@@ -1637,6 +1676,7 @@ export class SceneManager implements ISceneStore {
         await this.app.fileManager.trashFile(file);
         this.scenes.delete(filePath);
         await this.syncDraftScenePaths(filePath, null);
+        await this.plugin.plotlineManager?.syncScenePath(filePath, null);
         this.bumpVersion(filePath);
 
     }
@@ -1760,6 +1800,7 @@ export class SceneManager implements ISceneStore {
     handleFileDelete(filePath: string): void {
         this.scenes.delete(filePath);
         void this.syncDraftScenePaths(filePath, null);
+        void this.plugin.plotlineManager?.syncScenePath(filePath, null);
         this.bumpVersion(filePath);
     }
 
@@ -1789,6 +1830,7 @@ export class SceneManager implements ISceneStore {
             }
         }
         await this.syncDraftScenePaths(oldPath, file.path);
+        await this.plugin.plotlineManager?.syncScenePath(oldPath, file.path);
         this.bumpVersion(file.path);
     }
 
@@ -1866,8 +1908,100 @@ export class SceneManager implements ISceneStore {
         return this.queryService.getAllTags();
     }
 
+    /** Plotlines defined for the project, including currently empty plotlines. */
+    getPlotlines(): string[] {
+        const mgr = this.plugin.plotlineManager;
+        const ids = new Set<string>();
+        const ordered: string[] = [];
+
+        if (mgr) {
+            for (const def of mgr.getPlotlineDefinitions()) {
+                if (!ids.has(def.id)) {
+                    ids.add(def.id);
+                    ordered.push(def.id);
+                }
+            }
+        }
+
+        for (const name of this._activeProject?.plotlines ?? []) {
+            const trimmed = String(name).trim();
+            if (trimmed && !ids.has(trimmed)) {
+                ids.add(trimmed);
+                ordered.push(trimmed);
+            }
+        }
+
+        for (const scene of this.scenes.values()) {
+            if (scene.corkboardNote) continue;
+            for (const tag of scene.tags ?? []) {
+                const name = String(tag).trim();
+                if (name && !ids.has(name)) {
+                    ids.add(name);
+                    ordered.push(name);
+                }
+            }
+        }
+
+        if (ordered.length > 0) return ordered;
+        return [...ids].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    }
+
+    /** Create an empty plotline that can receive scenes later. */
+    async addPlotline(name: string): Promise<boolean> {
+        const normalized = name.trim();
+        if (!normalized) return false;
+        if (this.plugin.plotlineManager) {
+            return this.plugin.plotlineManager.createPlotline(normalized);
+        }
+        const project = this._activeProject;
+        if (!project) return false;
+        const existing = this.getPlotlines();
+        if (existing.some(value => value.toLowerCase() === normalized.toLowerCase())) return false;
+        project.plotlines = [...(project.plotlines ?? []), normalized];
+        await this.saveProjectFrontmatter(project);
+        return true;
+    }
+
+    getPlotlineDefinitions() {
+        return this.plugin.plotlineManager?.getPlotlineDefinitions() ?? [];
+    }
+
+    assignSceneToPlotline(scenePath: string, plotlineId: string): Promise<void> {
+        return this.plugin.plotlineManager?.assignSceneToPlotline(scenePath, plotlineId) ?? Promise.resolve();
+    }
+
+    unassignSceneFromPlotline(scenePath: string, plotlineId: string): Promise<void> {
+        return this.plugin.plotlineManager?.unassignSceneFromPlotline(scenePath, plotlineId) ?? Promise.resolve();
+    }
+
+    reorderSceneInPlotline(plotlineId: string, scenePath: string, targetIndex: number): Promise<void> {
+        return this.plugin.plotlineManager?.reorderSceneInPlotline(plotlineId, scenePath, targetIndex)
+            ?? Promise.resolve();
+    }
+
+    setPlotlineSceneOrder(plotlineId: string, orderedPaths: string[]): Promise<void> {
+        return this.plugin.plotlineManager?.setPlotlineSceneOrder(plotlineId, orderedPaths)
+            ?? Promise.resolve();
+    }
+
+    getScenesOrderedForPlotline(plotlineId: string) {
+        return this.plugin.plotlineManager?.getScenesOrderedForPlotline(plotlineId) ?? [];
+    }
+
+    orderScenesForPlotline(plotlineId: string, scenes: Scene[]) {
+        return this.plugin.plotlineManager?.orderScenesForPlotline(plotlineId, scenes) ?? scenes;
+    }
+
+    renamePlotline(oldId: string, newId: string): Promise<number> {
+        return this.plugin.plotlineManager?.renamePlotline(oldId, newId) ?? this.renameTag(oldId, newId);
+    }
+
+    deletePlotline(plotlineId: string): Promise<number> {
+        return this.plugin.plotlineManager?.deletePlotline(plotlineId) ?? this.deleteTag(plotlineId);
+    }
+
     /**
-     * Update only the tags field via Obsidian's processFrontmatter.
+     * Update only the tags field via Obsidian's processFrontMatter.
      * Prefer this over updateScene for tag/plotline edits — full-file
      * read/modify can hang indefinitely on cloud-synced vaults (OneDrive).
      */
@@ -1879,6 +2013,7 @@ export class SceneManager implements ISceneStore {
         }
 
         const oldSnap = this.scenes.get(filePath);
+        const oldTags = oldSnap?.tags ?? [];
         const uniqueTags = [...new Set(tags.map(t => String(t)).filter(Boolean))];
 
         if (oldSnap) {
@@ -1890,7 +2025,7 @@ export class SceneManager implements ISceneStore {
             );
         }
 
-        await this.app.fileManager.processFrontmatter(file, (fm) => {
+        await this.app.fileManager.processFrontMatter(file, (fm) => {
             if (uniqueTags.length > 0) fm.tags = uniqueTags;
             else delete fm.tags;
         });
@@ -1900,6 +2035,19 @@ export class SceneManager implements ISceneStore {
             cached.tags = uniqueTags;
             this.bumpVersion(filePath);
         }
+
+        const project = this._activeProject;
+        if (project && uniqueTags.length > 0) {
+            const defined = new Set(project.plotlines ?? []);
+            const before = defined.size;
+            uniqueTags.forEach(tag => defined.add(tag));
+            if (defined.size !== before) {
+                project.plotlines = [...defined];
+                await this.saveProjectFrontmatter(project);
+            }
+        }
+
+        await this.plugin.plotlineManager?.syncSceneTags(filePath, oldTags, uniqueTags);
     }
 
     /**
@@ -1913,6 +2061,12 @@ export class SceneManager implements ISceneStore {
                 await this.updateSceneTags(scene.filePath, newTags);
                 count++;
             }
+        }
+        if (this._activeProject?.plotlines?.includes(oldTag)) {
+            this._activeProject.plotlines = [...new Set(
+                this._activeProject.plotlines.map(tag => tag === oldTag ? newTag : tag),
+            )];
+            await this.saveProjectFrontmatter(this._activeProject);
         }
         return count;
     }
@@ -1928,6 +2082,10 @@ export class SceneManager implements ISceneStore {
                 await this.updateSceneTags(scene.filePath, newTags);
                 count++;
             }
+        }
+        if (this._activeProject?.plotlines?.includes(tag)) {
+            this._activeProject.plotlines = this._activeProject.plotlines.filter(value => value !== tag);
+            await this.saveProjectFrontmatter(this._activeProject);
         }
         return count;
     }
@@ -2508,7 +2666,7 @@ export class SceneManager implements ISceneStore {
     }
 
     /** Get persisted corkboard positions from System/board.json */
-    getCorkboardPositions(): Record<string, { x: number; y: number; z?: number; h?: number }> {
+    getCorkboardPositions(): Record<string, { x: number; y: number; z?: number; w?: number; h?: number }> {
         // Return the in-memory cache (populated by loadCorkboardPositions)
         return this._activeProject?.corkboardPositions ?? {};
     }
@@ -2525,15 +2683,17 @@ export class SceneManager implements ISceneStore {
                 return;
             }
             const raw = JSON.parse(await adapter.read(path));
-            const positions: Record<string, { x: number; y: number; z?: number; h?: number }> = {};
+            const positions: Record<string, { x: number; y: number; z?: number; w?: number; h?: number }> = {};
             if (raw.corkboardPositions && typeof raw.corkboardPositions === 'object') {
                 for (const [key, value] of Object.entries(raw.corkboardPositions)) {
-                    const v = value as { x?: unknown; y?: unknown; z?: unknown; h?: unknown };
+                    const v = value as { x?: unknown; y?: unknown; z?: unknown; w?: unknown; h?: unknown };
                     const x = Number(v?.x);
                     const y = Number(v?.y);
                     const z = Number(v?.z);
                     if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-                    const entry: { x: number; y: number; z?: number; h?: number } = Number.isFinite(z) ? { x, y, z } : { x, y };
+                    const entry: { x: number; y: number; z?: number; w?: number; h?: number } = Number.isFinite(z) ? { x, y, z } : { x, y };
+                    const w = Number(v?.w);
+                    if (Number.isFinite(w) && w > 0) entry.w = w;
                     const h = Number(v?.h);
                     if (Number.isFinite(h) && h > 0) entry.h = h;
                     positions[key] = entry;
@@ -2546,16 +2706,18 @@ export class SceneManager implements ISceneStore {
     }
 
     /** Persist corkboard positions to System/board.json */
-    async setCorkboardPositions(positions: Record<string, { x: number; y: number; z?: number; h?: number }>): Promise<void> {
+    async setCorkboardPositions(positions: Record<string, { x: number; y: number; z?: number; w?: number; h?: number }>): Promise<void> {
         if (!this._activeProject) return;
 
-        const cleaned: Record<string, { x: number; y: number; z?: number; h?: number }> = {};
+        const cleaned: Record<string, { x: number; y: number; z?: number; w?: number; h?: number }> = {};
         for (const [path, pos] of Object.entries(positions)) {
             const x = Number(pos?.x);
             const y = Number(pos?.y);
             if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
             const z = Number(pos?.z);
-            const entry: { x: number; y: number; z?: number; h?: number } = Number.isFinite(z) ? { x, y, z } : { x, y };
+            const entry: { x: number; y: number; z?: number; w?: number; h?: number } = Number.isFinite(z) ? { x, y, z } : { x, y };
+            const w = Number((pos as unknown as Record<string, unknown>)?.w);
+            if (Number.isFinite(w) && w > 0) entry.w = w;
             const h = Number((pos as unknown as Record<string, unknown>)?.h);
             if (Number.isFinite(h) && h > 0) entry.h = h;
             cleaned[path] = entry;
@@ -2583,36 +2745,21 @@ export class SceneManager implements ISceneStore {
     /**
      * Save project-specific data back to the project .md frontmatter.
      * Preserves the body content below the frontmatter.
+     * Writes are serialized + retried — concurrent modify on Windows often
+     * surfaces as Obsidian "UNKNOWN: unknown error, open" notice spam.
      */
     async saveProjectFrontmatter(project: StoryLineProject): Promise<void> {
+        const run = this._projectFrontmatterWrite.then(
+            () => this.saveProjectFrontmatterUnqueued(project),
+            () => this.saveProjectFrontmatterUnqueued(project),
+        );
+        this._projectFrontmatterWrite = run.then(() => undefined, () => undefined);
+        return run;
+    }
+
+    private async saveProjectFrontmatterUnqueued(project: StoryLineProject): Promise<void> {
         const file = this.app.vault.getAbstractFileByPath(project.filePath);
         if (!file || !(file instanceof TFile)) return;
-
-        const content = await this.app.vault.read(file);
-        const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-        let existingFm: Record<string, unknown> = {};
-        let body = content;
-
-        if (fmMatch) {
-            try {
-                existingFm = parseYaml(fmMatch[1]) || {};
-            } catch {
-                existingFm = {};
-            }
-            body = content.slice(fmMatch[0].length);
-        }
-
-        // Update project-specific fields
-        existingFm.type = 'storyline';
-        existingFm.title = project.title;
-        existingFm.created = project.created;
-
-        // Multi-language support — persist BCP-47 locale.
-        if (project.locale) {
-            existingFm.language = normalizeStoryLineLocale(project.locale);
-            // Drop the legacy/community-PR key if both were present.
-            if ('storyline-locale' in existingFm) delete existingFm['storyline-locale'];
-        }
 
         // If we're rewriting the *active* project's frontmatter, also bring the
         // module-level word-count tokeniser in sync immediately.
@@ -2620,105 +2767,160 @@ export class SceneManager implements ISceneStore {
             this.applyActiveProjectLocale();
         }
 
-        // Acts & chapters — only write if non-empty, remove if empty
-        if (project.definedActs.length > 0) {
-            existingFm.acts = project.definedActs;
-        } else {
-            delete existingFm.acts;
-        }
-        if (project.definedChapters.length > 0) {
-            existingFm.chapters = project.definedChapters;
-        } else {
-            delete existingFm.chapters;
-        }
+        const buildContent = async (): Promise<string | null> => {
+            const content = await this.app.vault.read(file);
+            const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+            let existingFm: Record<string, unknown> = {};
+            let body = content;
 
-        // Act labels (beat names)
-        if (Object.keys(project.actLabels).length > 0) {
-            existingFm.actLabels = project.actLabels;
-        } else {
-            delete existingFm.actLabels;
-        }
+            if (fmMatch) {
+                try {
+                    existingFm = parseYaml(fmMatch[1]) || {};
+                } catch {
+                    existingFm = {};
+                }
+                body = content.slice(fmMatch[0].length);
+            }
 
-        // Chapter labels
-        if (Object.keys(project.chapterLabels).length > 0) {
-            existingFm.chapterLabels = project.chapterLabels;
-        } else {
-            delete existingFm.chapterLabels;
-        }
+            // Update project-specific fields
+            existingFm.type = 'storyline';
+            existingFm.title = project.title;
+            existingFm.created = project.created;
 
-        // Act descriptions
-        if (Object.keys(project.actDescriptions).length > 0) {
-            existingFm.actDescriptions = project.actDescriptions;
-        } else {
-            delete existingFm.actDescriptions;
-        }
+            // Multi-language support — persist BCP-47 locale.
+            if (project.locale) {
+                existingFm.language = normalizeStoryLineLocale(project.locale);
+                // Drop the legacy/community-PR key if both were present.
+                if ('storyline-locale' in existingFm) delete existingFm['storyline-locale'];
+            }
 
-        // Chapter descriptions
-        if (Object.keys(project.chapterDescriptions).length > 0) {
-            existingFm.chapterDescriptions = project.chapterDescriptions;
-        } else {
-            delete existingFm.chapterDescriptions;
-        }
+            // Acts & chapters — only write if non-empty, remove if empty
+            if (project.definedActs.length > 0) {
+                existingFm.acts = project.definedActs;
+            } else {
+                delete existingFm.acts;
+            }
+            if (project.definedChapters.length > 0) {
+                existingFm.chapters = project.definedChapters;
+            } else {
+                delete existingFm.chapters;
+            }
 
-        // Filter presets
-        if (project.filterPresets.length > 0) {
-            existingFm.filterPresets = project.filterPresets;
-        } else {
-            delete existingFm.filterPresets;
-        }
+            // Act labels (beat names)
+            if (Object.keys(project.actLabels).length > 0) {
+                existingFm.actLabels = project.actLabels;
+            } else {
+                delete existingFm.actLabels;
+            }
 
-        // corkboardPositions no longer stored in frontmatter — lives in System/board.json
-        delete existingFm.corkboardPositions;
+            // Chapter labels
+            if (Object.keys(project.chapterLabels).length > 0) {
+                existingFm.chapterLabels = project.chapterLabels;
+            } else {
+                delete existingFm.chapterLabels;
+            }
 
-        // Series ID
-        if (project.seriesId) {
-            existingFm.seriesId = project.seriesId;
-        } else {
-            delete existingFm.seriesId;
-        }
+            // Act descriptions
+            if (Object.keys(project.actDescriptions).length > 0) {
+                existingFm.actDescriptions = project.actDescriptions;
+            } else {
+                delete existingFm.actDescriptions;
+            }
 
-        // Cover image
-        if (project.coverImage) {
-            existingFm.coverImage = project.coverImage;
-        } else {
-            delete existingFm.coverImage;
-        }
+            // Chapter descriptions
+            if (Object.keys(project.chapterDescriptions).length > 0) {
+                existingFm.chapterDescriptions = project.chapterDescriptions;
+            } else {
+                delete existingFm.chapterDescriptions;
+            }
 
-        // Active beat sheet template
-        if (project.activeBeatSheet) {
-            existingFm.activeBeatSheet = project.activeBeatSheet;
-        } else {
-            delete existingFm.activeBeatSheet;
-        }
+            // Filter presets
+            if (project.filterPresets.length > 0) {
+                existingFm.filterPresets = project.filterPresets;
+            } else {
+                delete existingFm.filterPresets;
+            }
 
-        // Drafts — folder-isolated under Scenes/<folder>/
-        this.ensureProjectDrafts(project);
-        if (project.drafts && project.drafts.length > 0) {
-            existingFm.drafts = project.drafts.map(d => {
-                const entry: Record<string, unknown> = { id: d.id, title: d.title };
-                if (d.folder) entry.folder = d.folder;
-                if (d.scenePaths && d.scenePaths.length > 0) entry.scenes = d.scenePaths;
-                return entry;
-            });
-        } else {
-            delete existingFm.drafts;
-        }
-        if (project.activeDraftId) {
-            existingFm.activeDraft = project.activeDraftId;
-        } else {
-            delete existingFm.activeDraft;
-        }
-        delete existingFm.activeDraftId;
+            // Explicit plotlines preserve empty story threads before scenes are assigned.
+            if (project.plotlines && project.plotlines.length > 0) {
+                existingFm.plotlines = [...new Set(project.plotlines.map(name => name.trim()).filter(Boolean))];
+            } else {
+                delete existingFm.plotlines;
+            }
 
-        // Library tab id → folder basename (parallel with tab labels)
-        if (project.libraryFolders && Object.keys(project.libraryFolders).length > 0) {
-            existingFm.libraryFolders = { ...project.libraryFolders };
-        } else {
-            delete existingFm.libraryFolders;
-        }
+            // corkboardPositions no longer stored in frontmatter — lives in System/board.json
+            delete existingFm.corkboardPositions;
 
-        const newContent = `---\n${stringifyYaml(existingFm)}---${body}`;
-        await this.app.vault.modify(file, newContent);
+            // Series ID
+            if (project.seriesId) {
+                existingFm.seriesId = project.seriesId;
+            } else {
+                delete existingFm.seriesId;
+            }
+
+            // Cover image
+            if (project.coverImage) {
+                existingFm.coverImage = project.coverImage;
+            } else {
+                delete existingFm.coverImage;
+            }
+
+            // Active beat sheet template
+            if (project.activeBeatSheet) {
+                existingFm.activeBeatSheet = project.activeBeatSheet;
+            } else {
+                delete existingFm.activeBeatSheet;
+            }
+
+            // Drafts — folder-isolated under Scenes/<folder>/
+            this.ensureProjectDrafts(project);
+            if (project.drafts && project.drafts.length > 0) {
+                existingFm.drafts = project.drafts.map(d => {
+                    const entry: Record<string, unknown> = { id: d.id, title: d.title };
+                    if (d.folder) entry.folder = d.folder;
+                    if (d.scenePaths && d.scenePaths.length > 0) entry.scenes = d.scenePaths;
+                    return entry;
+                });
+            } else {
+                delete existingFm.drafts;
+            }
+            if (project.activeDraftId) {
+                existingFm.activeDraft = project.activeDraftId;
+            } else {
+                delete existingFm.activeDraft;
+            }
+            delete existingFm.activeDraftId;
+
+            // Library tab id → folder basename (parallel with tab labels)
+            if (project.libraryFolders && Object.keys(project.libraryFolders).length > 0) {
+                existingFm.libraryFolders = { ...project.libraryFolders };
+            } else {
+                delete existingFm.libraryFolders;
+            }
+
+            const newContent = `---\n${stringifyYaml(existingFm)}---${body}`;
+            // Skip no-op writes — they still contend with the open editor on Windows.
+            if (newContent === content) return null;
+            return newContent;
+        };
+
+        return this.plugin.withSuppressedVaultEcho(file.path, async () => {
+            let lastError: unknown;
+            for (let attempt = 0; attempt < 4; attempt++) {
+                try {
+                    const newContent = await buildContent();
+                    if (newContent == null) return;
+                    await this.app.vault.modify(file, newContent);
+                    return;
+                } catch (err) {
+                    lastError = err;
+                    // Brief backoff for sharing violations / OneDrive / editor autosave races.
+                    await new Promise(resolve => window.setTimeout(resolve, 80 * (attempt + 1)));
+                }
+            }
+            console.error('[NarrativeLab] saveProjectFrontmatter failed after retries', project.filePath, lastError);
+            throw lastError instanceof Error ? lastError : new Error(String(lastError));
+        });
     }
 
     // ────────────────────────────────────
@@ -2768,6 +2970,20 @@ export class SceneManager implements ISceneStore {
         return sceneFolder;
     }
 
+    /** Draft that currently owns a scene path, or the primary/active draft as fallback. */
+    getDraftOwningScenePath(scenePath: string): ProjectDraft | null {
+        const project = this._activeProject;
+        if (!project) return null;
+        this.ensureProjectDrafts(project);
+        const drafts = project.drafts ?? [];
+        for (const draft of drafts) {
+            if (draft.folder && this.sceneBelongsToDraft(scenePath, draft, project)) return draft;
+        }
+        const primary = drafts.find(d => !d.folder) ?? drafts[0] ?? null;
+        if (primary && this.sceneBelongsToDraft(scenePath, primary, project)) return primary;
+        return this.getActiveDraft();
+    }
+
     private sanitizeDraftFolderName(name: string): string {
         const cleaned = name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
         return cleaned || 'Draft';
@@ -2806,14 +3022,16 @@ export class SceneManager implements ISceneStore {
         return !prefixes.some(p => path.startsWith(p));
     }
 
-    private sortScenesReadingOrder(scenes: Scene[]): Scene[] {
-        return scenes.slice().sort((a, b) => {
-            const actCmp = compareActChapter(a.act, b.act);
-            if (actCmp !== 0) return actCmp;
-            const chCmp = compareActChapter(a.chapter, b.chapter);
-            if (chCmp !== 0) return chCmp;
-            return (a.sequence ?? 9999) - (b.sequence ?? 9999);
-        });
+    compareScenesReadingOrder(a: Scene, b: Scene): number {
+        const actCmp = compareActChapter(a.act, b.act);
+        if (actCmp !== 0) return actCmp;
+        const chCmp = compareActChapter(a.chapter, b.chapter);
+        if (chCmp !== 0) return chCmp;
+        return (a.sequence ?? 9999) - (b.sequence ?? 9999);
+    }
+
+    sortScenesReadingOrder(scenes: Scene[]): Scene[] {
+        return scenes.slice().sort((a, b) => this.compareScenesReadingOrder(a, b));
     }
 
     /**

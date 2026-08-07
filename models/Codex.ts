@@ -513,6 +513,9 @@ export function makeUncategorizedCodexCategory(): CodexCategoryDef {
  */
 export const CODEX_ICON_OPTIONS: Array<{ value: string; label: string }> = [
     { value: 'file-text', label: 'Document' },
+    { value: 'users', label: 'Users' },
+    { value: 'map-pin', label: 'Map pin' },
+    { value: 'file-question', label: 'File question' },
     { value: 'package', label: 'Package' },
     { value: 'bug', label: 'Creature' },
     { value: 'scroll-text', label: 'Scroll' },

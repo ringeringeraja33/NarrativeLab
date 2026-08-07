@@ -1290,7 +1290,44 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     return projectRoot ? joinVaultPath(projectRoot, folderName.replace(/^\/+|\/+$/g, "")) : "";
   }
 
-  async importCodexImage(file, entryName = "") {
+  /**
+   * Library/<Category>/Attachments for canvas library imports.
+   * Resolves category folder from the entry's vault path when possible.
+   */
+  getLibraryAttachmentFolderForEntry(projectPath, entry = null) {
+    const libraryRoot = this.getCodexFolderForProject(projectPath);
+    if (!libraryRoot) return "";
+    const codexFile = normalizeVaultPath(entry?.codexFile || "");
+    let categoryFolder = "";
+    if (codexFile.startsWith(`${libraryRoot}/`)) {
+      const rel = codexFile.slice(libraryRoot.length + 1);
+      categoryFolder = String(rel.split("/")[0] || "").trim();
+    }
+    if (!categoryFolder) {
+      const raw = String(entry?.category || entry?.kind || "").trim();
+      const defaults = {
+        character: "Characters",
+        characters: "Characters",
+        location: "Locations",
+        locations: "Locations",
+        creature: "Creatures",
+        creatures: "Creatures",
+        item: "Items",
+        items: "Items",
+        lore: "Lore",
+        organization: "Organizations",
+        organizations: "Organizations",
+        culture: "Culture",
+        system: "Systems",
+        systems: "Systems",
+      };
+      categoryFolder = defaults[raw.toLowerCase()] || raw || "Characters";
+    }
+    if (!categoryFolder || categoryFolder === DEFAULT_ATTACHMENT_FOLDER_NAME) return "";
+    return joinVaultPath(joinVaultPath(libraryRoot, categoryFolder), DEFAULT_ATTACHMENT_FOLDER_NAME);
+  }
+
+  async importCodexImage(file, entryName = "", entry = null) {
     if (!file || typeof file.arrayBuffer !== "function") throw new Error("No image file was provided.");
     const originalName = String(file.name || "").trim();
     const originalExtension = getVaultPathExtension(originalName).toLowerCase();
@@ -1309,7 +1346,8 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     const baseName = sanitizeFileName(originalBase || entryName || "Library image") || "Library image";
     const sourcePath = this.getCurrentProjectPath() || "";
     if (!sourcePath) throw new Error("Open or save the Narrative Canvas project before importing an image.");
-    const attachmentFolder = this.getAttachmentFolderForProject(sourcePath);
+    const libraryAttachmentFolder = this.getLibraryAttachmentFolderForEntry(sourcePath, entry);
+    const attachmentFolder = libraryAttachmentFolder || this.getAttachmentFolderForProject(sourcePath);
     if (!attachmentFolder) throw new Error("Could not resolve the project attachment folder.");
     await ensureVaultFolder(this.app, attachmentFolder);
     let targetPath = joinVaultPath(attachmentFolder, `${baseName}.${extension}`);
@@ -2061,7 +2099,7 @@ class NarrativeCanvasView extends ItemView {
         openVaultFile: (reference) => this.plugin.openVaultFile(reference),
         readVaultFile: (reference) => this.plugin.readVaultFile(reference),
         getVaultResourceUrl: (reference) => this.plugin.getVaultResourceUrl(reference),
-        importCodexImage: (file, entryName) => this.plugin.importCodexImage(file, entryName),
+        importCodexImage: (file, entryName, entry) => this.plugin.importCodexImage(file, entryName, entry),
         loadCodexEntries: () => this.plugin.loadCodexEntries(),
         deleteCodexEntryFile: (entry) => this.plugin.deleteCodexEntryFile(entry),
         createCodexCanvas: (entry) => this.plugin.createCodexCanvas(entry),
@@ -15360,9 +15398,6 @@ function installNarrativeCanvasApp() {
       "Import layout .json": "导入布局 .json",
       "Import state .json": "导入状态 .json",
       "Import Layout": "导入布局",
-      "Import Story Markdown and replace this project": "导入 Story Markdown 并替换当前项目",
-      "Import Story Markdown layout sidecar": "导入 Story Markdown 布局 sidecar",
-      "Import state schema sidecar and replace variables": "导入状态定义 sidecar 并替换变量",
       "Import Story Layout?": "导入 Story Layout？",
       "Choose a Layout JSON sidecar and apply canvas positions, frame membership, ports, collapsed state, and matching link metadata. Story nodes are not created or deleted.": "选择 Layout JSON sidecar，并应用画布坐标、frame 归属、端口、折叠状态和匹配连线元数据。剧情节点保持不变。",
       "Import State": "导入状态",
@@ -15451,7 +15486,6 @@ function installNarrativeCanvasApp() {
       "Line": "台词",
       "Link": "连线",
       "Links": "连线",
-      "Location": "地点",
       "Location State": "地点状态",
       "Lock choice": "锁定选项",
       "Markdown": "Markdown",
@@ -15504,7 +15538,6 @@ function installNarrativeCanvasApp() {
       "No project file to reload.": "没有可重新加载的项目文件。",
       "No variables yet.": "还没有变量。",
       "No variables match this variable type.": "当前变量类型没有变量。",
-      "Node": "节点",
       "Node assignment": "节点赋值",
       "Node behavior": "节点行为",
       "Node template": "节点模板",
@@ -15614,7 +15647,6 @@ function installNarrativeCanvasApp() {
       "Missing variable": "缺失变量",
       "Define this key in Variables before this action can run.": "运行该动作前，需在变量定义中声明该 key。",
       "Variable type": "变量类型",
-      "Variable": "变量",
       "String": "字符串",
       "Number": "数字",
       "Boolean": "布尔",
@@ -15655,7 +15687,6 @@ function installNarrativeCanvasApp() {
       "Untitled Story": "未命名故事",
       "Unnamed Character": "未命名角色",
       "Use Story MD as the source workflow": "使用 Story MD 作为源工作流",
-      "Variable": "变量",
       "Initial": "初始值",
       "Import MD": "导入 MD",
       "Import Story Markdown?": "导入 Story Markdown？",
@@ -15679,7 +15710,6 @@ function installNarrativeCanvasApp() {
       "No template values.": "没有模板变量。",
       "No affected values.": "没有会被影响的变量。",
       "current": "当前",
-      "Choice effect": "选项效果",
       "Node effect": "节点效果",
       "Variable action": "变量动作",
       "Custom": "自定义",
@@ -15785,7 +15815,6 @@ function installNarrativeCanvasApp() {
       "Effect added.": "已添加效果。",
       "Effect lines": "效果语句",
       "Conditional effect syntax: if variable1 > variable2 then set variable3 = variable1 else set variable3 = variable2": "条件效果语法：if variable1 > variable2 then set variable3 = variable1 else set variable3 = variable2",
-      "Condition expression": "条件表达式",
       "Each option is available when its condition is met; selecting it runs its Effects. Empty Requires = always available.": "条件成立时选项可用；选择后执行该选项的效果。条件要求为空表示始终可用。",
       "Event Column": "事件列",
       "Events sheet": "事件表",
@@ -15858,7 +15887,6 @@ function installNarrativeCanvasApp() {
       "Play preview rules": "演示预览规则",
       "Previous tip": "上一页",
       "Node Requirements decide whether a node can be entered. Node Effects write state when the node is visited or chosen. Routing controls where the story goes next.": "节点条件决定节点能否进入；节点效果在进入或选择节点时写入状态；路线定义后续节点。",
-      "Script Builder": "脚本构建",
       "The Clue group is automatic. It is not a per-node container.": "Clue 分组自动生成，不表示节点实例容器。",
       "The old gate + if action is still loaded for compatibility. Edit node Requirements in Script Builder; edit choice Requirements in Choice Conditions or the Choice panel.": "旧项目条件动作保留用于兼容；节点条件在脚本构建中编辑，选项条件在选项条件页或 Choice 节点面板中编辑。",
       "This old action is kept for compatibility. New actions should use state operations.": "旧版动作保留用于兼容。新建动作应使用状态操作。",
@@ -15881,8 +15909,6 @@ function installNarrativeCanvasApp() {
       "This legacy gate has no target. Add a target before migrating.": "该旧版条件没有目标。迁移前需补充目标。",
       "Trigger": "时机",
       "Operation": "操作",
-      "Key": "键",
-      "Value": "值",
       "Mode": "模式",
       "Writes": "写入",
       "Workflow mode": "工作流模式",
@@ -15988,9 +16014,6 @@ function installNarrativeCanvasApp() {
       "{variables} variables, {rules} Play rules, {scriptRows} node logic rows, {actions} actions": "{variables} 个变量，{rules} 条演示规则，{scriptRows} 行节点逻辑，{actions} 个动作",
       "{variables} variable definitions, {actions} variable actions, {rules} Play rules, {scriptRows} node logic rows": "{variables} 个变量定义，{actions} 个变量动作，{rules} 条演示规则，{scriptRows} 行节点逻辑",
       "Voice": "语气",
-      "Gate": "条件",
-      "Routing": "路线",
-      "Variables": "变量",
       "Visited": "访问记录",
       "What can Playbook.json do?": "查看演示设置说明",
       "What does this rule do?": "查看这条规则的说明",
@@ -16080,16 +16103,11 @@ function installNarrativeCanvasApp() {
       "Could not create the board.": "无法创建画板。",
       "Detach board": "解除画板",
       "Resize image": "调整图片大小",
-      "Bring to front": "置于顶层",
-      "Bring forward": "上移一层",
-      "Send backward": "下移一层",
-      "Send to back": "置于底层",
       "Image layer updated.": "图层顺序已更新。",
       "Board detached. The canvas file is kept in the vault.": "已解除画板关联；.canvas 文件仍保留在库中。",
       "Loading board...": "正在加载画板……",
       "Could not load the board.": "无法加载画板。",
       "The board is empty.": "画板还是空的。",
-      "Icon": "图标",
       "Search icon image": "搜索图标图片",
       "Remove icon": "移除图标",
       "Icon updated.": "图标已更新。",
@@ -16155,7 +16173,6 @@ function installNarrativeCanvasApp() {
       "Delete entry": "删除条目",
       "Hidden entries": "已隐藏条目",
       "Show entry": "显示条目",
-      "Show all entries": "显示全部条目",
       "Atmosphere": "氛围",
       "Reference source": "参考来源",
       "Choose vault file": "选择库中文件",
@@ -16191,7 +16208,6 @@ function installNarrativeCanvasApp() {
       "Link this node to notes or other files in the vault.": "将此节点关联到库中的笔记或其他文件。",
       "Vault file": "库文件",
       "Vault file link cleared.": "已清除库文件关联。",
-      "Vault file linked.": "已关联库文件。",
       "Search or choose a vault file": "搜索或选择库文件",
       "Vault file suggestions": "库文件建议",
       "Vault links open only in Obsidian.": "库文件关联只能在 Obsidian 中打开。",
@@ -34932,8 +34948,9 @@ function installNarrativeCanvasApp() {
     if (!getCharacterById(characterId) || !images.length || !host?.importCodexImage) return;
     try {
       const references = [];
+      const entry = getCharacterById(characterId);
       for (const file of images) {
-        references.push(await host.importCodexImage(file, getCharacterById(characterId)?.name || ""));
+        references.push(await host.importCodexImage(file, entry?.name || "", entry));
       }
       assignCodexImageFiles(characterId, references);
     } catch (error) {
@@ -35165,8 +35182,9 @@ function installNarrativeCanvasApp() {
     try {
       const references = [];
       if (localImages.length && window.NarrativeCanvasHost?.importCodexImage) {
+        const entry = getCharacterById(characterId);
         for (const file of localImages) {
-          references.push(await window.NarrativeCanvasHost.importCodexImage(file, getCharacterById(characterId)?.name || ""));
+          references.push(await window.NarrativeCanvasHost.importCodexImage(file, entry?.name || "", entry));
         }
       }
       if (!references.length) references.push(getCodexImageReferenceFromDataTransfer(transfer));

@@ -2,6 +2,7 @@
 import { EventRef, ItemView, MarkdownView, TFile, WorkspaceLeaf, WorkspaceSplit, setIcon } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SceneManager } from '../services/SceneManager';
+import type { Scene } from '../models/Scene';
 import { ManuscriptView } from './ManuscriptView';
 import { MANUSCRIPT_VIEW_TYPE, NOTES_VIEW_TYPE } from '../constants';
 import { t } from '../utils/i18n';

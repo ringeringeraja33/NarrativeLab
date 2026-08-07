@@ -1723,13 +1723,13 @@ export class TimelineView extends ItemView {
             if (!this.rootContainer) return;
             this._lastCacheVersion = this.sceneManager.cacheVersion;
             // Save scroll position before re-render
-            const scrollEl = this.rootContainer.querySelector('.story-line-main-area');
-            const savedScroll = scrollEl ? { top: scrollEl.scrollTop, left: scrollEl.left } : null;
+            const scrollEl = this.rootContainer.querySelector('.story-line-main-area') as HTMLElement | null;
+            const savedScroll = scrollEl ? { top: scrollEl.scrollTop, left: scrollEl.scrollLeft } : null;
             const prevSelectedPath = this.selectedScene?.filePath ?? null;
             this.renderView(this.rootContainer);
             // Restore scroll position after re-render
             if (savedScroll) {
-                const newScrollEl = this.rootContainer.querySelector('.story-line-main-area');
+                const newScrollEl = this.rootContainer.querySelector('.story-line-main-area') as HTMLElement | null;
                 if (newScrollEl) {
                     newScrollEl.scrollTop = savedScroll.top;
                     newScrollEl.scrollLeft = savedScroll.left;

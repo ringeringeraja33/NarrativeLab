@@ -11,7 +11,7 @@ export type SampleNcanvasLanguage = keyof typeof SAMPLE_NCANVAS_FILENAMES;
 
 /**
  * Per-project NCanvas manager: list/switch .ncanvas files, create blank,
- * and generate Chinese / English guide samples into the project's System/NCanvas folder.
+ * and generate Chinese / English guide samples into the project's NCanvas folder.
  */
 export class NCanvasManagerModal extends Modal {
     private plugin: SceneCardsPlugin;

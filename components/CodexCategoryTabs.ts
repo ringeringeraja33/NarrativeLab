@@ -52,36 +52,43 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
 
     const tabs = parent.createDiv('codex-category-tabs');
     const renderedTabs: Array<{ id: string; el: HTMLButtonElement }> = [];
+    const hiddenFixed = new Set(plugin.settings.libraryHiddenFixedCategories || []);
+    const categoryOverrides = plugin.settings.codexCustomCategories || [];
+    const overrideFor = (id: string) => categoryOverrides.find(category => category.id === id);
     const charName = plugin.sceneManager.getLibraryFolderName('characters');
     const locName = plugin.sceneManager.getLibraryFolderName('locations');
 
     // ── Characters pseudo-tab ──
-    const charTab = tabs.createEl('button', {
-        cls: `codex-tab codex-pseudo-tab ${activeId === 'characters-pseudo' ? 'active' : ''}`,
-        attr: { 'aria-label': charName, type: 'button', 'data-category-id': 'characters' },
-    });
-    const charIcon = charTab.createSpan({ cls: 'codex-tab-icon' });
-    obsidian.setIcon(charIcon, 'users');
-    charTab.createSpan({ cls: 'codex-tab-label', text: charName });
-    if (activeId !== 'characters-pseudo') {
-        charTab.addEventListener('click', () => switchTo(leaf, plugin, CHARACTER_VIEW_TYPE));
+    if (!hiddenFixed.has('characters')) {
+        const charTab = tabs.createEl('button', {
+            cls: `codex-tab codex-pseudo-tab ${activeId === 'characters-pseudo' ? 'active' : ''}`,
+            attr: { 'aria-label': charName, type: 'button', 'data-category-id': 'characters' },
+        });
+        const charIcon = charTab.createSpan({ cls: 'codex-tab-icon' });
+        obsidian.setIcon(charIcon, overrideFor('characters')?.icon || 'users');
+        charTab.createSpan({ cls: 'codex-tab-label', text: charName });
+        if (activeId !== 'characters-pseudo') {
+            charTab.addEventListener('click', () => switchTo(leaf, plugin, CHARACTER_VIEW_TYPE));
+        }
+        attachRenameMenu(charTab, plugin, 'characters', onCategoriesChanged);
+        renderedTabs.push({ id: 'characters', el: charTab });
     }
-    attachRenameMenu(charTab, plugin, 'characters', onCategoriesChanged);
-    renderedTabs.push({ id: 'characters', el: charTab });
 
     // ── Locations pseudo-tab ──
-    const locTab = tabs.createEl('button', {
-        cls: `codex-tab codex-pseudo-tab ${activeId === 'locations-pseudo' ? 'active' : ''}`,
-        attr: { 'aria-label': locName, type: 'button', 'data-category-id': 'locations' },
-    });
-    const locIcon = locTab.createSpan({ cls: 'codex-tab-icon' });
-    obsidian.setIcon(locIcon, 'map-pin');
-    locTab.createSpan({ cls: 'codex-tab-label', text: locName });
-    if (activeId !== 'locations-pseudo') {
-        locTab.addEventListener('click', () => switchTo(leaf, plugin, LOCATION_VIEW_TYPE));
+    if (!hiddenFixed.has('locations')) {
+        const locTab = tabs.createEl('button', {
+            cls: `codex-tab codex-pseudo-tab ${activeId === 'locations-pseudo' ? 'active' : ''}`,
+            attr: { 'aria-label': locName, type: 'button', 'data-category-id': 'locations' },
+        });
+        const locIcon = locTab.createSpan({ cls: 'codex-tab-icon' });
+        obsidian.setIcon(locIcon, overrideFor('locations')?.icon || 'map-pin');
+        locTab.createSpan({ cls: 'codex-tab-label', text: locName });
+        if (activeId !== 'locations-pseudo') {
+            locTab.addEventListener('click', () => switchTo(leaf, plugin, LOCATION_VIEW_TYPE));
+        }
+        attachRenameMenu(locTab, plugin, 'locations', onCategoriesChanged);
+        renderedTabs.push({ id: 'locations', el: locTab });
     }
-    attachRenameMenu(locTab, plugin, 'locations', onCategoriesChanged);
-    renderedTabs.push({ id: 'locations', el: locTab });
 
     // ── Custom / built-in codex categories ──
     const cats = plugin.codexManager.getCategories()
@@ -152,40 +159,44 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     for (const item of renderedTabs) tabs.appendChild(item.el);
     attachTabReordering(tabs, renderedTabs, plugin, onCategoriesChanged);
 
-    // Permanent final tab: direct Markdown children of Library/.
-    const uncategorizedActive = activeId === UNCATEGORIZED_CATEGORY_ID;
-    const uncategorizedTab = tabs.createEl('button', {
-        cls: `codex-tab codex-uncategorized-tab ${uncategorizedActive ? 'active' : ''}`,
-        attr: {
-            'aria-label': t('Uncategorized entries'),
-            type: 'button',
-            'data-category-id': UNCATEGORIZED_CATEGORY_ID,
-        },
-    });
-    const uncategorizedIcon = uncategorizedTab.createSpan({ cls: 'codex-tab-icon' });
-    obsidian.setIcon(uncategorizedIcon, 'file-question');
-    uncategorizedTab.createSpan({
-        cls: 'codex-tab-label',
-        text: t('Uncategorized entries'),
-    });
-    if (!uncategorizedActive) {
-        uncategorizedTab.addEventListener('click', () => {
-            if (leaf.view?.getViewType?.() === CODEX_VIEW_TYPE) {
-                const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
-                view.setActiveCategory?.(UNCATEGORIZED_CATEGORY_ID);
-                return;
-            }
-            try {
-                void leaf.setViewState({ type: CODEX_VIEW_TYPE, active: true, state: {} });
-                plugin.app.workspace.revealLeaf(leaf);
-                window.setTimeout(() => {
+    // Uncategorized remains a fixed definition and, when shown, is always last.
+    if (!hiddenFixed.has(UNCATEGORIZED_CATEGORY_ID)) {
+        const uncategorizedActive = activeId === UNCATEGORIZED_CATEGORY_ID;
+        const uncategorizedOverride = overrideFor(UNCATEGORIZED_CATEGORY_ID);
+        const uncategorizedLabel = uncategorizedOverride?.label || t('Uncategorized entries');
+        const uncategorizedTab = tabs.createEl('button', {
+            cls: `codex-tab codex-uncategorized-tab ${uncategorizedActive ? 'active' : ''}`,
+            attr: {
+                'aria-label': uncategorizedLabel,
+                type: 'button',
+                'data-category-id': UNCATEGORIZED_CATEGORY_ID,
+            },
+        });
+        const uncategorizedIcon = uncategorizedTab.createSpan({ cls: 'codex-tab-icon' });
+        obsidian.setIcon(uncategorizedIcon, uncategorizedOverride?.icon || 'file-question');
+        uncategorizedTab.createSpan({
+            cls: 'codex-tab-label',
+            text: uncategorizedLabel,
+        });
+        if (!uncategorizedActive) {
+            uncategorizedTab.addEventListener('click', () => {
+                if (leaf.view?.getViewType?.() === CODEX_VIEW_TYPE) {
                     const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
                     view.setActiveCategory?.(UNCATEGORIZED_CATEGORY_ID);
-                }, 50);
-            } catch {
-                plugin.activateView(CODEX_VIEW_TYPE);
-            }
-        });
+                    return;
+                }
+                try {
+                    void leaf.setViewState({ type: CODEX_VIEW_TYPE, active: true, state: {} });
+                    plugin.app.workspace.revealLeaf(leaf);
+                    window.setTimeout(() => {
+                        const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
+                        view.setActiveCategory?.(UNCATEGORIZED_CATEGORY_ID);
+                    }, 50);
+                } catch {
+                    plugin.activateView(CODEX_VIEW_TYPE);
+                }
+            });
+        }
     }
 
     // Keep the complete right-side action cluster together so no controls

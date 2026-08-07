@@ -117,6 +117,12 @@ export class PlotgridView extends ItemView {
         this.renderToolbar();
         // keep main scroll area untouched (no forced scrolling)
         this.renderGrid();
+
+        // Ensure System/PlotGrid/*.csv mirrors exist for every page (first open / migration).
+        if (this.plugin?.plotGridCsvSync) {
+            void this.plugin.plotGridCsvSync.syncDocument(this.document).catch(() => { /* non-fatal */ });
+        }
+
         // Watch for file renames to update linkedSceneId paths AND row sourceIds
         this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
             if (file instanceof TFile) {
@@ -136,6 +142,73 @@ export class PlotgridView extends ItemView {
                 if (changed) { this.scheduleSave(); this.renderGrid(); }
             }
         }));
+
+        // CSV edited outside (Tablite / CSV Editor / Excel) → pull into the matching page.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        this.registerEvent((this.app.workspace as any).on('narrativelab:plotgrid-csv-changed', (csvPath: string) => {
+            void this.onExternalCsvChanged(csvPath);
+        }));
+    }
+
+    /** Open the active page's System/PlotGrid/*.csv in a new leaf (CSV plugins take over). */
+    private async openActivePageCsv(): Promise<void> {
+        const sync = this.plugin?.plotGridCsvSync;
+        if (!sync) {
+            new Notice(t('CSV sync is not available.'));
+            return;
+        }
+        // Flush pending grid edits first so the CSV is current.
+        if (this.saveDebounce) {
+            window.clearTimeout(this.saveDebounce);
+            this.saveDebounce = null;
+            if (this.plugin) await this.plugin.savePlotGrid(this.document);
+        } else {
+            await sync.writePageCsv(this.data as ConceptGridPage);
+        }
+        const file = await sync.ensurePageCsvFile(this.data as ConceptGridPage);
+        if (!file) {
+            new Notice(t('Could not create page CSV.'));
+            return;
+        }
+        await this.app.workspace.getLeaf('tab').openFile(file);
+        new Notice(t('Opened {path}. Edit with a CSV plugin, then return here — changes sync automatically.', {
+            path: file.path,
+        }));
+    }
+
+    /** Pull CSV text into the active page (and persist). */
+    private async reloadActivePageFromCsv(notify: boolean): Promise<void> {
+        const sync = this.plugin?.plotGridCsvSync;
+        if (!sync) return;
+        const page = this.document.pages.find(p => p.id === this.document.activePageId);
+        if (!page) return;
+        const ok = await sync.importPageFromDisk(page);
+        if (!ok) {
+            if (notify) new Notice(t('No CSV file found for this page yet. Save the grid once to create it.'));
+            return;
+        }
+        this.bindActivePage();
+        this.renderGrid();
+        this.scheduleSave();
+        if (notify) new Notice(t('Reloaded page from CSV.'));
+    }
+
+    private async onExternalCsvChanged(csvPath: string): Promise<void> {
+        const sync = this.plugin?.plotGridCsvSync;
+        if (!sync) return;
+        const pageId = await sync.findPageIdForCsvPath(csvPath);
+        if (!pageId) return;
+        const page = this.document.pages.find(p => p.id === pageId);
+        if (!page) return;
+        const ok = await sync.importPageFromDisk(page);
+        if (!ok) return;
+        if (page.id === this.document.activePageId) {
+            this.bindActivePage();
+            this.renderGrid();
+        }
+        // Persist JSON without immediately fighting the CSV (sync will rewrite same content).
+        this.scheduleSave();
+        new Notice(t('Updated table page from CSV: {name}', { name: page.title }));
     }
 
     async onClose(): Promise<void> {
@@ -429,6 +502,21 @@ export class PlotgridView extends ItemView {
                 menu.addItem(item => item.setTitle(t('Rename page')).onClick(() => this.renamePage(page.id)));
                 menu.addItem(item => item.setTitle(t('Duplicate page')).onClick(() => this.duplicatePage(page.id)));
                 menu.addSeparator();
+                menu.addItem(item => item
+                    .setTitle(t('Open page CSV'))
+                    .setIcon('table')
+                    .onClick(() => {
+                        if (page.id !== this.document.activePageId) this.switchPage(page.id);
+                        void this.openActivePageCsv();
+                    }));
+                menu.addItem(item => item
+                    .setTitle(t('Reload page from CSV'))
+                    .setIcon('folder-input')
+                    .onClick(() => {
+                        if (page.id !== this.document.activePageId) this.switchPage(page.id);
+                        void this.reloadActivePageFromCsv(true);
+                    }));
+                menu.addSeparator();
                 menu.addItem(item => {
                     item.setTitle(t('Delete page'));
                     item.setDisabled(this.document.pages.length <= 1);
@@ -454,9 +542,8 @@ export class PlotgridView extends ItemView {
             this.createPage();
         });
 
-        if (activeTab) {
-            activeTab.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        }
+        const tabToScroll = activeTab as HTMLElement | null;
+        tabToScroll?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
 
     private switchPage(pageId: string): void {
@@ -545,13 +632,15 @@ export class PlotgridView extends ItemView {
 
     private renderToolbar() {
         if (!this.wrapperEl) return;
-        const toolbar = this.wrapperEl.querySelector('.plot-grid-toolbar') as HTMLDivElement;
+        const toolbar = this.wrapperEl.querySelector('.plot-grid-toolbar') as HTMLDivElement | null;
+        if (!toolbar) return;
         toolbar.empty();
 
         const titleRow = toolbar.createDiv('story-line-title-row');
+        const projectTitle = this.plugin?.getActiveProjectDisplayName() || '';
         titleRow.createEl('h3', {
             cls: 'story-line-view-title',
-            text: this.plugin.getActiveProjectDisplayName()
+            text: projectTitle,
         });
         // Show active project title next to the main label (no dropdown / new button here)
         // project name shown in top-center only; no inline project selector here
@@ -701,10 +790,24 @@ export class PlotgridView extends ItemView {
             if (this.plugin) openManageSnapshotsModal(this.plugin.app, this.plugin.viewSnapshotService);
         });
 
+        // ── CSV mirror (System/PlotGrid) — open with Tablite / CSV Editor / Excel ──
+        const openCsvBtn = actions.createDiv({ cls: 'clickable-icon' });
+        obsidian.setIcon(openCsvBtn, 'table');
+        attachTooltip(openCsvBtn, t('Open page CSV'));
+        openCsvBtn.addEventListener('click', () => { void this.openActivePageCsv(); });
+
+        const reloadCsvBtn = actions.createDiv({ cls: 'clickable-icon' });
+        obsidian.setIcon(reloadCsvBtn, 'folder-input');
+        attachTooltip(reloadCsvBtn, t('Reload page from CSV'));
+        reloadCsvBtn.addEventListener('click', () => { void this.reloadActivePageFromCsv(true); });
+
         actions.appendChild(zoomOut);
         actions.appendChild(zoomLabel);
         actions.appendChild(zoomIn);
         actions.appendChild(resetZoomBtn);
+        actions.appendChild(openCsvBtn);
+        actions.appendChild(reloadCsvBtn);
+        actions.appendChild(snapManage);
 
         // Icons are rendered exclusively via `obsidian.setIcon()` above —
         // the previous `lucide.createIcons()` bootstrap was dead code and
@@ -819,7 +922,9 @@ export class PlotgridView extends ItemView {
 
             const requiredRowHeights = new Map<number, number>();
 
-            const cellElements = Array.from(this.canvasEl.querySelectorAll<HTMLElement>('.plot-grid-cell[data-row][data-col]'));
+            const cellElements: HTMLElement[] = Array.from(
+                this.canvasEl.querySelectorAll<HTMLElement>('.plot-grid-cell[data-row][data-col]'),
+            );
             for (const cellEl of cellElements) {
                 const rowIndex = Number(cellEl.dataset.row);
                 if (!Number.isInteger(rowIndex)) continue;
@@ -1069,27 +1174,18 @@ export class PlotgridView extends ItemView {
             if (col.bold) el.setCssStyles({ fontWeight: '600' });
             if (col.italic) el.setCssStyles({ fontStyle: 'italic' });
 
-            // allow naming like cells: double-click to edit label
+            // Double-click (or F2 / type after selecting the header) renames the column.
             el.addEventListener('dblclick', (ev) => {
+                ev.preventDefault();
                 ev.stopPropagation();
-                const inp = activeDocument.createElement('input');
-                inp.type = 'text';
-                inp.value = col.label;
-                inp.setCssStyles({
-                    width: '100%',
-                    boxSizing: 'border-box',
-                });
-                el.empty();
-                el.appendChild(inp);
-                inp.focus();
-                const commit = () => { col.label = inp.value || col.label; this.scheduleSave(); this.renderGrid(); };
-                inp.addEventListener('keydown', (ke) => { if (ke.key === 'Enter') { commit(); } else if (ke.key === 'Escape') { this.renderGrid(); } });
-                inp.addEventListener('blur', () => commit());
+                this.selectColumnHeader(ci, false, { focusWrapper: false });
+                this.beginHeaderLabelEdit('col', ci);
             });
 
             // Click selects whole column (Shift extends). Ctrl/Cmd+click opens synced entity.
             el.addEventListener('click', (ev) => {
                 ev.stopPropagation();
+                if (el.hasClass('plot-grid-header-editing')) return;
                 if (col.sourceType === 'auto' && col.sourceId && col.sourceKind !== 'tags' && (ev.ctrlKey || ev.metaKey)) {
                     this.navigateToColumnEntity(col);
                     return;
@@ -1180,7 +1276,15 @@ export class PlotgridView extends ItemView {
                 menu.addItem((item) => item.setTitle(t('Insert Column Left')).onClick(() => this.insertColumnAt(ci, true)));
                 menu.addItem((item) => item.setTitle(t('Insert Column Right')).onClick(() => this.insertColumnAt(ci, false)));
                 menu.addSeparator();
-                menu.addItem((item) => item.setTitle(t('Delete Column')).onClick(() => this.deleteColumn(ci)));
+                menu.addItem((item) => {
+                    const selectedCols = this.getSelectedColumnIndices();
+                    const colsToDelete = selectedCols.includes(ci) && selectedCols.length > 1
+                        ? selectedCols
+                        : [ci];
+                    const n = colsToDelete.length;
+                    item.setTitle(n > 1 ? t('Delete Columns ({n})', { n }) : t('Delete Column'))
+                        .onClick(() => this.confirmDeleteColumns(colsToDelete));
+                });
                 menu.showAtMouseEvent(evt);
             });
         }
@@ -1233,31 +1337,21 @@ export class PlotgridView extends ItemView {
                 }
             }
 
-            // allow naming like cells: double-click to edit label
+            // Double-click (or F2 / type after selecting the header) renames the row.
+            let clickTimer: number | null = null;
             rowEl.addEventListener('dblclick', (ev) => {
+                ev.preventDefault();
                 ev.stopPropagation();
-                rowEl.draggable = false;
-                const inp = activeDocument.createElement('input');
-                inp.type = 'text';
-                inp.value = row.label;
-                inp.setCssStyles({
-                    width: '100%',
-                    boxSizing: 'border-box',
-                });
-                rowEl.empty();
-                rowEl.appendChild(inp);
-                inp.focus();
-                inp.select();
-                const commit = () => { row.label = inp.value || row.label; this.scheduleSave(); this.renderGrid(); };
-                inp.addEventListener('keydown', (ke) => { if (ke.key === 'Enter') { commit(); } else if (ke.key === 'Escape') { this.renderGrid(); } });
-                inp.addEventListener('blur', () => commit());
+                if (clickTimer) { window.clearTimeout(clickTimer); clickTimer = null; }
+                this.selectRowHeader(ri, false, { focusWrapper: false });
+                this.beginHeaderLabelEdit('row', ri);
             });
 
             // Click selects whole row (Shift extends). Ctrl/Cmd+click opens synced scene.
             // Delay open so double-click (edit label) doesn't also open the file.
-            let clickTimer: number | null = null;
             rowEl.addEventListener('click', (ev) => {
                 ev.stopPropagation();
+                if (rowEl.hasClass('plot-grid-header-editing')) return;
                 if (row.sourceType === 'auto' && row.sourceId && (ev.ctrlKey || ev.metaKey)) {
                     if (clickTimer) window.clearTimeout(clickTimer);
                     clickTimer = window.setTimeout(() => {
@@ -1268,9 +1362,6 @@ export class PlotgridView extends ItemView {
                     return;
                 }
                 this.selectRowHeader(ri, ev.shiftKey);
-            });
-            rowEl.addEventListener('dblclick', () => {
-                if (clickTimer) { window.clearTimeout(clickTimer); clickTimer = null; }
             });
             if (row.sourceType === 'auto' && row.sourceId) {
                 rowEl.title = t('{label} (Ctrl/Cmd+click to open)', { label: row.label });
@@ -1356,7 +1447,15 @@ export class PlotgridView extends ItemView {
                 menu.addItem((item) => item.setTitle(t('Insert Row Above')).onClick(() => this.insertRowAt(ri, true)));
                 menu.addItem((item) => item.setTitle(t('Insert Row Below')).onClick(() => this.insertRowAt(ri, false)));
                 menu.addSeparator();
-                menu.addItem((item) => item.setTitle(t('Delete Row')).onClick(() => this.deleteRow(ri)));
+                menu.addItem((item) => {
+                    const selectedRows = this.getSelectedRowIndices();
+                    const rowsToDelete = selectedRows.includes(ri) && selectedRows.length > 1
+                        ? selectedRows
+                        : [ri];
+                    const n = rowsToDelete.length;
+                    item.setTitle(n > 1 ? t('Delete Rows ({n})', { n }) : t('Delete Row'))
+                        .onClick(() => this.confirmDeleteRows(rowsToDelete));
+                });
                 menu.showAtMouseEvent(evt);
             });
 
@@ -1880,8 +1979,22 @@ export class PlotgridView extends ItemView {
                     menu.addItem((it) => it.setTitle(t('Insert Column Left')).onClick(() => this.insertColumnAt(ci, true)));
                     menu.addItem((it) => it.setTitle(t('Insert Column Right')).onClick(() => this.insertColumnAt(ci, false)));
                     menu.addSeparator();
-                    menu.addItem((it) => it.setTitle(t('Delete Row')).onClick(() => this.deleteRow(ri)));
-                    menu.addItem((it) => it.setTitle(t('Delete Column')).onClick(() => this.deleteColumn(ci)));
+                    {
+                        const rowIndices = this.getSelectedRowIndices();
+                        const colIndices = this.getSelectedColumnIndices();
+                        const rowN = rowIndices.length || 1;
+                        const colN = colIndices.length || 1;
+                        const rowsToDelete = rowIndices.length ? rowIndices : [ri];
+                        const colsToDelete = colIndices.length ? colIndices : [ci];
+                        menu.addItem((it) => it
+                            .setTitle(rowN > 1 ? t('Delete Rows ({n})', { n: rowN }) : t('Delete Row'))
+                            .setIcon('trash')
+                            .onClick(() => this.confirmDeleteRows(rowsToDelete)));
+                        menu.addItem((it) => it
+                            .setTitle(colN > 1 ? t('Delete Columns ({n})', { n: colN }) : t('Delete Column'))
+                            .setIcon('trash')
+                            .onClick(() => this.confirmDeleteColumns(colsToDelete)));
+                    }
                     menu.showAtMouseEvent(evt);
                 });
 
@@ -2063,12 +2176,9 @@ export class PlotgridView extends ItemView {
         if (!this.canvasEl) return;
         this.canvasEl.querySelectorAll('.plot-grid-cell.in-selection, .plot-grid-cell.is-active, .plot-grid-cell.selected').forEach(n => {
             n.classList.remove('in-selection', 'is-active', 'selected');
-            (n as HTMLElement).style.boxShadow = '';
-            (n as HTMLElement).style.outline = '';
         });
         this.canvasEl.querySelectorAll('.plot-grid-row-header.selected, .plot-grid-col-header.selected').forEach(n => {
             n.classList.remove('selected');
-            (n as HTMLElement).style.boxShadow = '';
         });
 
         const rect = this.getSelectionRect();
@@ -2250,14 +2360,17 @@ export class PlotgridView extends ItemView {
         try {
             await navigator.clipboard.writeText(tsv);
         } catch {
-            // Fallback for restricted clipboard
-            const ta = document.createElement('textarea');
+            // Fallback for restricted clipboard APIs
+            const ta = activeDocument.createElement('textarea');
             ta.value = tsv;
-            ta.style.position = 'fixed';
-            ta.style.left = '-9999px';
-            document.body.appendChild(ta);
+            ta.classList.add('pg-clipboard-helper');
+            activeDocument.body.appendChild(ta);
             ta.select();
-            try { document.execCommand('copy'); } catch { /* noop */ }
+            try {
+                // execCommand remains the only sync fallback when Clipboard API is blocked
+                // eslint-disable-next-line @typescript-eslint/no-deprecated
+                activeDocument.execCommand('copy');
+            } catch { /* noop */ }
             ta.remove();
         }
     }
@@ -2316,8 +2429,41 @@ export class PlotgridView extends ItemView {
 
     private onKeyDown(e: KeyboardEvent) {
         if (!this.wrapperEl) return;
-        const editing = !!this.canvasEl?.querySelector('.plot-grid-cell.editing');
-        if (editing) return; // let textarea handle keys
+        const target = e.target as HTMLElement | null;
+        // Inputs/textareas handle their own keys (do not intercept).
+        if (target?.closest('input, textarea, [contenteditable="true"]')) {
+            return;
+        }
+        if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) {
+            return;
+        }
+        // Header rename: if focus was stolen by the wrapper, give keystrokes back.
+        const headerInput = this.canvasEl?.querySelector(
+            '.plot-grid-header-editing input',
+        ) as HTMLInputElement | null;
+        if (headerInput) {
+            headerInput.focus();
+            if (
+                e.key.length === 1
+                && !e.ctrlKey && !e.metaKey && !e.altKey
+                && !e.isComposing
+            ) {
+                e.preventDefault();
+                const start = headerInput.selectionStart ?? headerInput.value.length;
+                const end = headerInput.selectionEnd ?? headerInput.value.length;
+                headerInput.value =
+                    headerInput.value.slice(0, start) + e.key + headerInput.value.slice(end);
+                const pos = start + e.key.length;
+                headerInput.setSelectionRange(pos, pos);
+            } else if (e.key === 'Enter') {
+                e.preventDefault();
+                headerInput.blur();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                headerInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+            }
+            return;
+        }
 
         const mod = e.ctrlKey || e.metaKey;
 
@@ -2366,10 +2512,12 @@ export class PlotgridView extends ItemView {
                 e.preventDefault(); this.moveSelection(e.shiftKey ? -1 : 1, 0, false); break;
             case 'Enter':
                 e.preventDefault();
+                if (this.beginSelectedHeaderEdit()) break;
                 this.beginEditAtFocus();
                 break;
             case 'F2':
                 e.preventDefault();
+                if (this.beginSelectedHeaderEdit()) break;
                 this.beginEditAtFocus();
                 break;
             case 'Delete':
@@ -2378,15 +2526,154 @@ export class PlotgridView extends ItemView {
                 this.clearSelectionContents();
                 break;
             default: {
-                // Type-to-edit: printable character replaces cell content
+                // Type-to-edit: printable character replaces cell/header content
                 if (mod || e.altKey) break;
                 if (e.key.length === 1 && !e.isComposing) {
                     e.preventDefault();
+                    if (this.beginSelectedHeaderEdit(e.key)) break;
                     this.beginEditAtFocus(e.key);
                 }
                 break;
             }
         }
+    }
+
+    /** True when the current selection is an entire column (header click). */
+    private isFullColumnSelection(): number | null {
+        const rect = this.getSelectionRect();
+        if (!rect || this.data.rows.length === 0) return null;
+        if (rect.c0 === rect.c1 && rect.r0 === 0 && rect.r1 === this.data.rows.length - 1) {
+            return rect.c0;
+        }
+        return null;
+    }
+
+    /** True when the current selection is an entire row (header click). */
+    private isFullRowSelection(): number | null {
+        const rect = this.getSelectionRect();
+        if (!rect || this.data.columns.length === 0) return null;
+        if (rect.r0 === rect.r1 && rect.c0 === 0 && rect.c1 === this.data.columns.length - 1) {
+            return rect.r0;
+        }
+        return null;
+    }
+
+    /** Start renaming the selected row/column header; returns true if handled. */
+    private beginSelectedHeaderEdit(seedChar?: string): boolean {
+        const colIdx = this.isFullColumnSelection();
+        if (colIdx !== null) {
+            this.beginHeaderLabelEdit('col', colIdx, seedChar);
+            return true;
+        }
+        const rowIdx = this.isFullRowSelection();
+        if (rowIdx !== null) {
+            this.beginHeaderLabelEdit('row', rowIdx, seedChar);
+            return true;
+        }
+        return false;
+    }
+
+    /** Inline rename for a row or column header label. */
+    private beginHeaderLabelEdit(
+        kind: 'col' | 'row',
+        index: number,
+        seedChar?: string,
+    ): void {
+        if (!this.canvasEl) return;
+        const selector = kind === 'col' ? '.plot-grid-col-header' : '.plot-grid-row-header';
+        const headers = this.canvasEl.querySelectorAll(selector);
+        const el = headers[index] as HTMLElement | undefined;
+        if (!el) return;
+
+        const target = kind === 'col' ? this.data.columns[index] : this.data.rows[index];
+        if (!target) return;
+
+        // Avoid nesting editors / fighting drag-reorder while typing.
+        if (el.querySelector('input')) return;
+        el.draggable = false;
+        el.addClass('plot-grid-header-editing');
+
+        // Same as cell edit: wrapper must not steal focus/keystrokes while renaming.
+        if (this.wrapperEl) this.wrapperEl.tabIndex = -1;
+
+        const inp = activeDocument.createElement('input');
+        inp.type = 'text';
+        inp.value = seedChar !== undefined ? seedChar : (target.label || '');
+        inp.setAttr('aria-label', kind === 'col' ? t('Rename Column') : t('Rename Row'));
+        inp.setCssStyles({
+            width: '100%',
+            height: '100%',
+            minHeight: '28px',
+            boxSizing: 'border-box',
+            margin: '0',
+            border: 'none',
+            outline: '2px solid var(--interactive-accent)',
+            background: 'var(--background-primary)',
+            color: 'var(--text-normal)',
+            font: 'inherit',
+            textAlign: 'center',
+            zIndex: '30',
+            position: 'relative',
+            pointerEvents: 'auto',
+        });
+        el.empty();
+        el.appendChild(inp);
+
+        let finished = false;
+        const restoreFocusability = () => {
+            if (this.wrapperEl) this.wrapperEl.tabIndex = 0;
+        };
+        const finish = (commit: boolean) => {
+            if (finished) return;
+            finished = true;
+            restoreFocusability();
+            if (commit) {
+                const next = inp.value.trim();
+                if (next) target.label = next;
+                this.scheduleSave();
+            }
+            this.renderGrid();
+            // Restore grid keyboard nav after rename.
+            window.requestAnimationFrame(() => {
+                this.wrapperEl?.focus({ preventScroll: true });
+            });
+        };
+
+        const stop = (event: Event) => event.stopPropagation();
+        inp.addEventListener('mousedown', stop);
+        inp.addEventListener('mouseup', stop);
+        inp.addEventListener('click', stop);
+        inp.addEventListener('dblclick', stop);
+        inp.addEventListener('pointerdown', stop);
+        inp.addEventListener('keydown', (ke) => {
+            ke.stopPropagation();
+            if (ke.key === 'Enter') {
+                ke.preventDefault();
+                finish(true);
+            } else if (ke.key === 'Escape') {
+                ke.preventDefault();
+                finish(false);
+            }
+        });
+        // Defer blur-commit so clicking another header doesn't race with focus restore.
+        inp.addEventListener('blur', () => {
+            window.setTimeout(() => {
+                if (finished) return;
+                // Still focused inside this editor (e.g. IME) — don't commit yet.
+                if (activeDocument.activeElement === inp) return;
+                finish(true);
+            }, 0);
+        });
+
+        window.requestAnimationFrame(() => {
+            inp.focus();
+            if (seedChar !== undefined) {
+                const len = inp.value.length;
+                inp.setSelectionRange(len, len);
+            } else {
+                inp.select();
+            }
+        });
     }
 
     private getSelectedCellKey(): string | null {
@@ -2406,7 +2693,7 @@ export class PlotgridView extends ItemView {
         return { key, cell, el };
     }
 
-    private selectRowHeader(index: number, extend = false) {
+    private selectRowHeader(index: number, extend = false, opts?: { focusWrapper?: boolean }) {
         if (index < 0 || index >= this.data.rows.length || this.data.columns.length === 0) return;
         const lastC = this.data.columns.length - 1;
         if (extend && this.selAnchor && this.selFocus) {
@@ -2419,10 +2706,12 @@ export class PlotgridView extends ItemView {
             this.setSelection({ r: index, c: 0 }, { r: index, c: lastC });
         }
         this.refreshSelectionInspector();
-        this.wrapperEl?.focus({ preventScroll: true });
+        if (opts?.focusWrapper !== false) {
+            this.wrapperEl?.focus({ preventScroll: true });
+        }
     }
 
-    private selectColumnHeader(index: number, extend = false) {
+    private selectColumnHeader(index: number, extend = false, opts?: { focusWrapper?: boolean }) {
         if (index < 0 || index >= this.data.columns.length || this.data.rows.length === 0) return;
         const lastR = this.data.rows.length - 1;
         if (extend && this.selAnchor && this.selFocus) {
@@ -2435,7 +2724,9 @@ export class PlotgridView extends ItemView {
             this.setSelection({ r: 0, c: index }, { r: lastR, c: index });
         }
         this.refreshSelectionInspector();
-        this.wrapperEl?.focus({ preventScroll: true });
+        if (opts?.focusWrapper !== false) {
+            this.wrapperEl?.focus({ preventScroll: true });
+        }
     }
 
     private moveArrayItem<T>(arr: T[], from: number, to: number) {
@@ -2545,7 +2836,17 @@ export class PlotgridView extends ItemView {
     private openFillSelectionModal(seedText = ''): void {
         const n = this.countSelectedCells();
         if (n <= 0) return;
-        const view = this;
+        const applyFill = (text: string) => {
+            this.pushPlotGridUndo();
+            this.forEachSelectedCell((_r, _c, _key, cell) => {
+                cell.content = text;
+                cell.manualContent = true;
+            });
+            this.scheduleSave();
+            this.renderGrid();
+            this.refreshSelectionInspector();
+            new Notice(t('Updated {n} cells', { n }));
+        };
         class FillSelectionModal extends Modal {
             onOpen() {
                 const { contentEl } = this;
@@ -2576,15 +2877,7 @@ export class PlotgridView extends ItemView {
                 cancel.addEventListener('click', () => this.close());
                 const apply = actions.createEl('button', { cls: 'mod-cta', text: t('Apply') });
                 apply.addEventListener('click', () => {
-                    view.pushPlotGridUndo();
-                    view.forEachSelectedCell((_r, _c, _key, cell) => {
-                        cell.content = ta.value;
-                        cell.manualContent = true;
-                    });
-                    view.scheduleSave();
-                    view.renderGrid();
-                    view.refreshSelectionInspector();
-                    new Notice(t('Updated {n} cells', { n }));
+                    applyFill(ta.value);
                     this.close();
                 });
                 window.setTimeout(() => {
@@ -3655,15 +3948,7 @@ export class PlotgridView extends ItemView {
     }
 
     private deleteRow(index: number) {
-        const row = this.data.rows[index];
-        if (!row) return;
-        // remove any cells referencing this row
-        for (const key of Object.keys(this.data.cells)) {
-            if (key.startsWith(row.id + '-')) delete this.data.cells[key];
-        }
-        this.data.rows.splice(index, 1);
-        this.scheduleSave();
-        this.renderGrid();
+        this.deleteRows([index]);
     }
 
     private insertColumnAt(index: number, left: boolean) {
@@ -3677,14 +3962,112 @@ export class PlotgridView extends ItemView {
     }
 
     private deleteColumn(index: number) {
-        const col = this.data.columns[index];
-        if (!col) return;
-        for (const key of Object.keys(this.data.cells)) {
-            if (key.endsWith('-' + col.id)) delete this.data.cells[key];
+        this.deleteColumns([index]);
+    }
+
+    /** Unique row indices covered by the current selection rectangle. */
+    private getSelectedRowIndices(): number[] {
+        const rect = this.getSelectionRect();
+        if (!rect) return [];
+        const out: number[] = [];
+        for (let r = rect.r0; r <= rect.r1; r++) {
+            if (this.data.rows[r]) out.push(r);
         }
-        this.data.columns.splice(index, 1);
+        return out;
+    }
+
+    /** Unique column indices covered by the current selection rectangle. */
+    private getSelectedColumnIndices(): number[] {
+        const rect = this.getSelectionRect();
+        if (!rect) return [];
+        const out: number[] = [];
+        for (let c = rect.c0; c <= rect.c1; c++) {
+            if (this.data.columns[c]) out.push(c);
+        }
+        return out;
+    }
+
+    private confirmDeleteRows(indices: number[]): void {
+        const unique = [...new Set(indices)]
+            .filter((i) => i >= 0 && i < this.data.rows.length)
+            .sort((a, b) => a - b);
+        if (!unique.length) return;
+        if (unique.length === 1) {
+            this.deleteRows(unique);
+            return;
+        }
+        openConfirmModal(this.app, {
+            title: t('Delete Rows ({n})', { n: unique.length }),
+            message: t('Delete {n} selected rows?', { n: unique.length }),
+            confirmLabel: t('Delete'),
+            onConfirm: () => this.deleteRows(unique),
+        });
+    }
+
+    private confirmDeleteColumns(indices: number[]): void {
+        const unique = [...new Set(indices)]
+            .filter((i) => i >= 0 && i < this.data.columns.length)
+            .sort((a, b) => a - b);
+        if (!unique.length) return;
+        if (unique.length === 1) {
+            this.deleteColumns(unique);
+            return;
+        }
+        openConfirmModal(this.app, {
+            title: t('Delete Columns ({n})', { n: unique.length }),
+            message: t('Delete {n} selected columns?', { n: unique.length }),
+            confirmLabel: t('Delete'),
+            onConfirm: () => this.deleteColumns(unique),
+        });
+    }
+
+    private deleteRows(indices: number[]): void {
+        const sorted = [...new Set(indices)]
+            .filter((i) => i >= 0 && i < this.data.rows.length)
+            .sort((a, b) => b - a);
+        if (!sorted.length) return;
+        // Keep at least one row so the grid stays usable.
+        if (sorted.length >= this.data.rows.length) {
+            new Notice(t('Keep at least one row'));
+            return;
+        }
+        this.pushPlotGridUndo();
+        for (const index of sorted) {
+            const row = this.data.rows[index];
+            if (!row) continue;
+            for (const key of Object.keys(this.data.cells)) {
+                if (key.startsWith(row.id + '-')) delete this.data.cells[key];
+            }
+            this.data.rows.splice(index, 1);
+        }
+        this.clearSelection();
         this.scheduleSave();
         this.renderGrid();
+        if (sorted.length > 1) new Notice(t('Deleted {n} rows', { n: sorted.length }));
+    }
+
+    private deleteColumns(indices: number[]): void {
+        const sorted = [...new Set(indices)]
+            .filter((i) => i >= 0 && i < this.data.columns.length)
+            .sort((a, b) => b - a);
+        if (!sorted.length) return;
+        if (sorted.length >= this.data.columns.length) {
+            new Notice(t('Keep at least one column'));
+            return;
+        }
+        this.pushPlotGridUndo();
+        for (const index of sorted) {
+            const col = this.data.columns[index];
+            if (!col) continue;
+            for (const key of Object.keys(this.data.cells)) {
+                if (key.endsWith('-' + col.id)) delete this.data.cells[key];
+            }
+            this.data.columns.splice(index, 1);
+        }
+        this.clearSelection();
+        this.scheduleSave();
+        this.renderGrid();
+        if (sorted.length > 1) new Notice(t('Deleted {n} columns', { n: sorted.length }));
     }
 
     // Resizing logic

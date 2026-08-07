@@ -18,6 +18,8 @@ import { t } from '../utils/i18n';
  * Sort modes available in the navigator.
  */
 type NavSortMode = 'reading' | 'chapter' | 'chronological' | 'status' | 'recent' | 'words' | 'title';
+const UNASSIGNED_PLOTLINE_FILTER = '__narrative_lab_unassigned__';
+const SCENE_DRAG_MIME = 'application/x-narrative-lab-scene';
 
 const SORT_LABELS: Record<NavSortMode, string> = {
     reading: 'Reading order (by act)',
@@ -58,6 +60,8 @@ export class NavigatorView extends ItemView {
     private collapsedChapters: Set<string> = new Set();
     /** Collapsed binder nodes: project:{path} | plotlines | drafts | scenes | draft:{id} | act:… | chapter:… */
     private collapsedNodes: Set<string> = new Set(['plotlines']);
+    /** Active scene drag path — browsers hide dataTransfer.getData() during dragover. */
+    private draggingScenePath: string | null = null;
 
     // DOM refs
     private searchInput: HTMLInputElement | null = null;
@@ -312,12 +316,11 @@ export class NavigatorView extends ItemView {
         }
     }
 
-    private renderPlotlinesFolder(parent: HTMLElement): void {
-        const tags = this.sceneManager.queryService.getAllTags().sort();
-        if (tags.length === 0) return;
+    private renderPlotlinesFolder(parent: HTMLElement, draftScenes: Scene[]): void {
+        const tags = this.sceneManager.getPlotlines();
 
         const label = this.plotlineFilter
-            ? `${t('Plotlines')}: ${this.plotlineFilter}`
+            ? `${t('Plotlines')}: ${this.plotlineFilter === UNASSIGNED_PLOTLINE_FILTER ? t('Unassigned') : this.plotlineFilter}`
             : t('Plotlines');
         const plotNode = this.renderFolderHeader(parent, {
             key: 'plotlines',
@@ -326,6 +329,15 @@ export class NavigatorView extends ItemView {
             count: tags.length,
             depth: 2,
             cls: this.plotlineFilter ? 'sl-nav-plotlines-folder has-filter' : 'sl-nav-plotlines-folder',
+            trailing: (el) => {
+                const add = el.createSpan('sl-nav-folder-action is-always');
+                setIcon(add, 'plus');
+                attachTooltip(add, t('New Plotline'));
+                add.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    this.promptNewPlotline();
+                });
+            },
         });
         if (!plotNode.expanded || !plotNode.body) return;
 
@@ -347,10 +359,26 @@ export class NavigatorView extends ItemView {
         if (!this.plotlineFilter) allRow.addClass('is-active');
         paintPlotlineRow(allRow, 'var(--text-faint)');
         allRow.createSpan({ text: t('All'), cls: 'sl-nav-plotline-name' });
+        allRow.createSpan({ text: String(draftScenes.length), cls: 'sl-nav-plotline-count' });
         allRow.addEventListener('click', () => {
             this.plotlineFilter = null;
             this.renderList();
         });
+
+        const unassigned = draftScenes.filter(scene => !scene.tags || scene.tags.length === 0);
+        const unassignedRow = list.createDiv('sl-nav-plotline-item sl-nav-plotline-unassigned');
+        if (this.plotlineFilter === UNASSIGNED_PLOTLINE_FILTER) unassignedRow.addClass('is-active');
+        paintPlotlineRow(unassignedRow, 'var(--text-faint)');
+        unassignedRow.createSpan({ text: t('Unassigned'), cls: 'sl-nav-plotline-name' });
+        unassignedRow.createSpan({ text: String(unassigned.length), cls: 'sl-nav-plotline-count' });
+        unassignedRow.addEventListener('click', () => {
+            this.plotlineFilter = this.plotlineFilter === UNASSIGNED_PLOTLINE_FILTER
+                ? null
+                : UNASSIGNED_PLOTLINE_FILTER;
+            this.collapsedNodes.delete('plotlines');
+            this.renderList();
+        });
+        this.makePlotlineDropTarget(unassignedRow, null);
 
         for (let i = 0; i < tags.length; i++) {
             const tag = tags[i];
@@ -368,6 +396,7 @@ export class NavigatorView extends ItemView {
                 this.collapsedNodes.delete('plotlines');
                 this.renderList();
             });
+            this.makePlotlineDropTarget(row, tag);
         }
     }
 
@@ -382,8 +411,22 @@ export class NavigatorView extends ItemView {
         const drafts = this.sceneManager.getDrafts();
         const activeDraft = this.sceneManager.getActiveDraft();
 
-        let scenes = this.sceneManager.getScenesForDraft();
-        if (this.plotlineFilter) {
+        const draftScenes = this.sceneManager.getScenesForDraft();
+        const availablePlotlines = new Set(this.sceneManager.getPlotlines());
+        if (
+            this.plotlineFilter
+            && this.plotlineFilter !== UNASSIGNED_PLOTLINE_FILTER
+            && !availablePlotlines.has(this.plotlineFilter)
+        ) {
+            // A deleted plotline or project switch must not leave the scene list
+            // permanently hidden behind an invisible stale filter.
+            this.plotlineFilter = null;
+        }
+
+        let scenes = draftScenes;
+        if (this.plotlineFilter === UNASSIGNED_PLOTLINE_FILTER) {
+            scenes = scenes.filter(scene => !scene.tags || scene.tags.length === 0);
+        } else if (this.plotlineFilter) {
             scenes = scenes.filter(s => s.tags?.includes(this.plotlineFilter!));
         }
         if (this.filterText) {
@@ -393,7 +436,14 @@ export class NavigatorView extends ItemView {
                 (s.tags?.some(tag => tag.toLowerCase().includes(this.filterText)))
             );
         }
-        scenes = this.sortScenes(scenes);
+        if (this.plotlineFilter && this.plotlineFilter !== UNASSIGNED_PLOTLINE_FILTER) {
+            scenes = this.sceneManager.orderScenesForPlotline(this.plotlineFilter, scenes);
+            const pinned = scenes.filter(s => this.pinnedScenes.has(s.filePath));
+            const unpinned = scenes.filter(s => !this.pinnedScenes.has(s.filePath));
+            scenes = [...pinned, ...unpinned];
+        } else {
+            scenes = this.sortScenes(scenes);
+        }
 
         // Always "Scenes" — draft variants are equal; switch via the layers menu when needed.
         const scenesNode = this.renderFolderHeader(parent, {
@@ -406,17 +456,31 @@ export class NavigatorView extends ItemView {
             onContextMenu: (e) => this.showScenesFolderMenu(e),
             trailing: (el) => {
                 if (drafts.length > 1) {
-                    const draftBtn = el.createSpan('sl-nav-folder-action is-always');
-                    setIcon(draftBtn, 'layers');
                     const activeLabel = activeDraft
                         ? t(this.sceneManager.draftDisplayTitle(activeDraft))
                         : t('Drafts');
-                    attachTooltip(draftBtn, activeLabel);
-                    draftBtn.addEventListener('click', (ev) => {
-                        ev.stopPropagation();
-                        this.showDraftPickerMenu(ev as MouseEvent);
+                    const draftLabel = el.createSpan({
+                        cls: 'sl-nav-draft-active-label',
+                        text: activeLabel,
+                        attr: { title: activeLabel },
                     });
+                    const draftBtn = el.createSpan('sl-nav-folder-action is-always');
+                    setIcon(draftBtn, 'layers');
+                    attachTooltip(draftBtn, activeLabel);
+                    const openDraftMenu = (ev: MouseEvent) => {
+                        ev.stopPropagation();
+                        this.showDraftPickerMenu(ev);
+                    };
+                    draftLabel.addEventListener('click', openDraftMenu);
+                    draftBtn.addEventListener('click', openDraftMenu);
                 }
+                const addDraft = el.createSpan('sl-nav-folder-action is-always');
+                setIcon(addDraft, 'copy-plus');
+                attachTooltip(addDraft, t('New draft'));
+                addDraft.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    this.promptNewDraft();
+                });
                 const add = el.createSpan('sl-nav-folder-action is-always');
                 setIcon(add, 'plus');
                 attachTooltip(add, t('Create new scene'));
@@ -429,7 +493,7 @@ export class NavigatorView extends ItemView {
         if (!scenesNode.expanded || !scenesNode.body) return;
 
         // Plotline filter stays nested under Scenes (secondary)
-        this.renderPlotlinesFolder(scenesNode.body);
+        this.renderPlotlinesFolder(scenesNode.body, draftScenes);
 
         if (scenes.length === 0) {
             const empty = scenesNode.body.createDiv('sl-nav-empty');
@@ -497,7 +561,7 @@ export class NavigatorView extends ItemView {
     }
 
     private renderNotesFolder(parent: HTMLElement): void {
-        let notes = this.sceneManager.getAllScenes().filter(s => s.corkboardNote);
+        let notes = this.sceneManager.getAllScenes().filter(s => s.corkboardNote && !s.inactive);
         if (this.filterText) {
             notes = notes.filter(s =>
                 s.title.toLowerCase().includes(this.filterText) ||
@@ -766,12 +830,132 @@ export class NavigatorView extends ItemView {
         }).open();
     }
 
+    private promptNewPlotline(): void {
+        new DraftNameModal(this.app, t('New Plotline'), '', async (name) => {
+            const normalized = name
+                .trim()
+                .toLowerCase()
+                .replace(/\s+/g, '-')
+                .replace(/[#[\]|\\^?!,;:<>{}'"*`~@&%]+/g, '')
+                .replace(/-+/g, '-')
+                .replace(/^-|-$/g, '');
+            if (!normalized) {
+                new Notice(t('Plotline name has no valid characters. Avoid ? # [ ] and similar symbols.'));
+                return;
+            }
+            const created = await this.sceneManager.addPlotline(normalized);
+            if (!created) {
+                new Notice(t('A plotline with this name already exists.'));
+                return;
+            }
+            this.collapsedNodes.delete('plotlines');
+            this.plotlineFilter = UNASSIGNED_PLOTLINE_FILTER;
+            this.renderList();
+            // Storyline / Board views also read project.plotlines — refresh them.
+            this.plugin.refreshOpenViews();
+        }).open();
+    }
+
     private promptRenameDraft(draft: ProjectDraft): void {
         const current = this.sceneManager.draftDisplayTitle(draft);
         new DraftNameModal(this.app, t('Rename draft'), current, async (name) => {
             await this.sceneManager.renameDraft(draft.id, name);
             this.plugin.refreshOpenViews();
         }).open();
+    }
+
+    private getDraggedScenePath(event?: DragEvent): string {
+        if (this.draggingScenePath) return this.draggingScenePath;
+        if (!event?.dataTransfer) return '';
+        return event.dataTransfer.getData(SCENE_DRAG_MIME)
+            || event.dataTransfer.getData('text/plain')
+            || '';
+    }
+
+    private isSceneDrag(event: DragEvent): boolean {
+        if (this.draggingScenePath) return true;
+        const types = event.dataTransfer?.types;
+        if (!types) return false;
+        const listed = Array.from(types as ArrayLike<string>);
+        return listed.includes(SCENE_DRAG_MIME) || listed.includes('text/plain');
+    }
+
+    private makePlotlineDropTarget(row: HTMLElement, plotline: string | null): void {
+        row.addEventListener('dragover', (event) => {
+            if (!this.isSceneDrag(event)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+            row.addClass('is-drag-over');
+        });
+        row.addEventListener('dragleave', (event) => {
+            // Ignore transitions into child nodes inside the same row.
+            const related = event.relatedTarget as Node | null;
+            if (related && row.contains(related)) return;
+            row.removeClass('is-drag-over');
+        });
+        row.addEventListener('drop', (event) => {
+            const scenePath = this.getDraggedScenePath(event);
+            if (!scenePath) return;
+            event.preventDefault();
+            event.stopPropagation();
+            row.removeClass('is-drag-over');
+            void (async () => {
+                const scene = this.sceneManager.getScene(scenePath);
+                if (!scene) return;
+                try {
+                    if (plotline) {
+                        await this.sceneManager.assignSceneToPlotline(scenePath, plotline);
+                        this.plotlineFilter = plotline;
+                    } else {
+                        await this.sceneManager.updateSceneTags(scenePath, []);
+                    }
+                    this.renderList();
+                } catch (error) {
+                    console.error('[NarrativeLab] Failed to assign scene to plotline', scenePath, error);
+                    new Notice(t('Failed to create plotline: {err}', {
+                        err: error instanceof Error ? error.message : String(error),
+                    }));
+                }
+            })();
+        });
+    }
+
+    private async reorderSceneFromDrop(
+        draggedPath: string,
+        targetPath: string,
+        placeAfter: boolean,
+    ): Promise<void> {
+        if (!draggedPath || draggedPath === targetPath) return;
+
+        if (this.plotlineFilter && this.plotlineFilter !== UNASSIGNED_PLOTLINE_FILTER) {
+            const plotlineId = this.plotlineFilter;
+            const ordered = this.sceneManager.getScenesOrderedForPlotline(plotlineId);
+            const dragged = ordered.find(scene => scene.filePath === draggedPath);
+            const target = ordered.find(scene => scene.filePath === targetPath);
+            if (!dragged || !target) return;
+            const withoutDragged = ordered.filter(scene => scene.filePath !== draggedPath);
+            const targetIndex = withoutDragged.findIndex(scene => scene.filePath === targetPath);
+            withoutDragged.splice(targetIndex + (placeAfter ? 1 : 0), 0, dragged);
+            await this.sceneManager.setPlotlineSceneOrder(
+                plotlineId,
+                withoutDragged.map(scene => scene.filePath),
+            );
+            this.renderList();
+            return;
+        }
+
+        const ordered = this.sceneManager.getScenesForDraft()
+            .slice()
+            .sort((a, b) => (a.sequence ?? Number.MAX_SAFE_INTEGER) - (b.sequence ?? Number.MAX_SAFE_INTEGER));
+        const dragged = ordered.find(scene => scene.filePath === draggedPath);
+        const target = ordered.find(scene => scene.filePath === targetPath);
+        if (!dragged || !target) return;
+        const withoutDragged = ordered.filter(scene => scene.filePath !== draggedPath);
+        const targetIndex = withoutDragged.findIndex(scene => scene.filePath === targetPath);
+        withoutDragged.splice(targetIndex + (placeAfter ? 1 : 0), 0, dragged);
+        await this.sceneManager.resequenceScenes(withoutDragged.map(scene => scene.filePath));
+        this.renderList();
     }
 
     private renderGroupedByAct(scenes: Scene[], parent: HTMLElement, depth = 0): void {
@@ -883,6 +1067,7 @@ export class NavigatorView extends ItemView {
     private renderSceneRow(parent: HTMLElement, scene: Scene, depth = 0): void {
         const row = parent.createDiv('sl-nav-row');
         row.dataset.scenePath = scene.filePath;
+        row.draggable = true;
         this.setNavDepth(row, depth);
         const isPinned = this.pinnedScenes.has(scene.filePath);
         if (isPinned) row.addClass('is-pinned');
@@ -911,6 +1096,44 @@ export class NavigatorView extends ItemView {
                 ? `${(scene.wordcount / 1000).toFixed(1)}k`
                 : `${scene.wordcount}`;
         }
+
+        row.addEventListener('dragstart', (event) => {
+            if (!event.dataTransfer) return;
+            this.draggingScenePath = scene.filePath;
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData(SCENE_DRAG_MIME, scene.filePath);
+            event.dataTransfer.setData('text/plain', scene.filePath);
+            row.addClass('is-dragging');
+        });
+        row.addEventListener('dragend', () => {
+            this.draggingScenePath = null;
+            row.removeClass('is-dragging', 'is-drop-before', 'is-drop-after');
+            this.listEl?.querySelectorAll('.is-drag-over, .is-drop-before, .is-drop-after')
+                .forEach(element => element.removeClass('is-drag-over', 'is-drop-before', 'is-drop-after'));
+        });
+        row.addEventListener('dragover', (event) => {
+            if (!this.isSceneDrag(event) || this.draggingScenePath === scene.filePath) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+            const after = event.clientY > row.getBoundingClientRect().top + row.offsetHeight / 2;
+            row.toggleClass('is-drop-before', !after);
+            row.toggleClass('is-drop-after', after);
+        });
+        row.addEventListener('dragleave', (event) => {
+            const related = event.relatedTarget as Node | null;
+            if (related && row.contains(related)) return;
+            row.removeClass('is-drop-before', 'is-drop-after');
+        });
+        row.addEventListener('drop', (event) => {
+            const draggedPath = this.getDraggedScenePath(event);
+            if (!draggedPath || draggedPath === scene.filePath) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const after = row.hasClass('is-drop-after');
+            row.removeClass('is-drop-before', 'is-drop-after');
+            void this.reorderSceneFromDrop(draggedPath, scene.filePath, after);
+        });
 
         // Click: scroll in Manuscript only when that view is active; otherwise open the note.
         // (Previously any existing Manuscript leaf — even hidden in another split — swallowed

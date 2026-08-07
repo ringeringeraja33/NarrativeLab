@@ -9,6 +9,7 @@ import { App, Modal, Notice, PluginSettingTab, Setting, TFolder, TextAreaCompone
 import * as obsidian from 'obsidian';
 import { SUPPORTED_STORYLINE_LOCALES, normalizeStoryLineLocale } from './utils/locale';
 import { localizeElement, t, type UiLanguageSetting } from './utils/i18n';
+import type { CustomSection } from './components/CustomSectionsRenderer';
 
 // ═══════════════════════════════════════════════════════
 //  COLOR PALETTES — Catppuccin + Mood-based
@@ -752,11 +753,14 @@ export interface SceneCardsSettings {
     // are saved into/loaded from the project’s System/plotlines.json
     useProjectColors: boolean;
 
-    // ── Codex settings ─────────────────────────────────
+    // ── Codex settings (active-project working copy) ───
+    // Persisted per project in System/library-categories.json — not shared.
     /** IDs of enabled codex categories (e.g. ['items', 'creatures']) */
     codexEnabledCategories: string[];
     /** User-defined order for all Library tabs, including Characters and Locations. */
     libraryCategoryOrder?: string[];
+    /** Fixed Library categories hidden from the tab bar (their definitions remain available). */
+    libraryHiddenFixedCategories?: string[];
     /** User-created categories plus optional label/icon overrides for presets. */
     codexCustomCategories: Array<{
         id: string;
@@ -793,23 +797,11 @@ export interface SceneCardsSettings {
     //
     // Field values still live in `<entity>.custom` keyed by the composite
     // `${sectionTitle} :: ${fieldName}` so existing data round-trips cleanly.
-    codexCategoryCustomSections?: Record<string, Array<{
-        title: string;
-        fields: Array<string | { name: string; type?: string; placeholder?: string; options?: string[] }>;
-        position?: number;
-    }>>;
+    codexCategoryCustomSections?: Record<string, CustomSection[]>;
     /** User-defined custom sections shared across all characters (#120 / v1.10.17). */
-    characterCustomSections?: Array<{
-        title: string;
-        fields: Array<string | { name: string; type?: string; placeholder?: string; options?: string[] }>;
-        position?: number;
-    }>;
+    characterCustomSections?: CustomSection[];
     /** User-defined custom sections shared across all locations / worlds (#120 / v1.10.17). */
-    locationCustomSections?: Array<{
-        title: string;
-        fields: Array<string | { name: string; type?: string; placeholder?: string; options?: string[] }>;
-        position?: number;
-    }>;
+    locationCustomSections?: CustomSection[];
     /** Which codex category IDs should appear in the Scene Inspector sidebar */
     codexSidebarCategories: string[];
     /** Series name — groups projects that share a common universe / codex */
@@ -1005,8 +997,9 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
 
     useProjectColors: false,
 
-    codexEnabledCategories: ['items'],
+    codexEnabledCategories: [],
     libraryCategoryOrder: [],
+    libraryHiddenFixedCategories: [],
     codexCustomCategories: [],
     codexDeletedPresetCategories: [],
     libraryBrowseLayout: {},
@@ -1047,7 +1040,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
 };
 
 /** Settings page horizontal tab ids */
-type NarrativeLabSettingsTabId = 'general' | 'scenes' | 'display' | 'colors' | 'writing' | 'export';
+type NarrativeLabSettingsTabId = 'general' | 'scenes' | 'templates' | 'display' | 'colors' | 'writing' | 'export';
 
 /**
  * Settings tab for the NarrativeLab plugin
@@ -1077,6 +1070,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         const tabs: Array<{ id: NarrativeLabSettingsTabId; label: string }> = [
             { id: 'general', label: 'General' },
             { id: 'scenes', label: 'Scenes' },
+            { id: 'templates', label: 'Templates' },
             { id: 'display', label: 'Display' },
             { id: 'colors', label: 'Colors' },
             { id: 'writing', label: 'Writing' },
@@ -1100,6 +1094,9 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         switch (this.settingsTabId) {
             case 'scenes':
                 this.renderScenesSettingsTab(panel);
+                break;
+            case 'templates':
+                this.renderTemplatesSettingsTab(panel);
                 break;
             case 'display':
                 this.renderDisplaySettingsTab(panel);
@@ -1149,7 +1146,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         new Setting(panel)
             .setName(t('Project attachment folder'))
-            .setDesc(t('Folder inside each project where imported images and attachments are saved. Default: Attachments (e.g. MyProject/Attachments/).'))
+            .setDesc(t('Folder inside each project for scene and general attachments (default: Attachments). Library card images are stored under Library/<category>/Attachments instead.'))
             .addText(text => text
                 .setPlaceholder(t('Attachments'))
                 .setValue(this.plugin.settings.projectAttachmentFolder || 'Attachments')
@@ -1442,31 +1439,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         renderCustomTypes();
 
         // ═══════════════════════════════════════════
-        //  Scene Templates
-        // ═══════════════════════════════════════════
-        new Setting(panel).setName(t('Scene Templates')).setHeading();
-        panel.createEl('p', {
-            text: t('Custom templates pre-fill fields and body text when creating new scenes. Built-in templates are always available.'),
-            cls: 'setting-item-description',
-        });
-
-        const templateListEl = panel.createDiv('story-line-template-list');
-        this.renderTemplateList(templateListEl);
-
-        new Setting(panel)
-            .addButton(btn => btn
-                .setButtonText(t('Add Template'))
-                .setCta()
-                .onClick(() => {
-                    const blank: SceneTemplate = { name: '', description: '', defaultFields: {}, bodyTemplate: '' };
-                    new TemplateEditorModal(this.app, blank, async (tpl) => {
-                        this.plugin.settings.sceneTemplates.push(tpl);
-                        await this.plugin.saveSettings();
-                        this.renderTemplateList(templateListEl);
-                    }).open();
-                }));
-
-        // ═══════════════════════════════════════════
         //  Custom Scene Fields
         // ═══════════════════════════════════════════
         new Setting(panel).setName(t('Custom Scene Fields')).setHeading();
@@ -1499,6 +1471,40 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     modal.open();
                 }));
 
+    }
+
+    private renderTemplatesSettingsTab(panel: HTMLElement): void {
+        new Setting(panel).setName(t('Scene Templates')).setHeading();
+        panel.createEl('p', {
+            text: t('Create and manage multiple scene templates. Each template can pre-fill scene fields and insert reusable Markdown into the new scene.'),
+            cls: 'setting-item-description',
+        });
+
+        const addTemplate = (templateListEl: HTMLElement): void => {
+            const blank: SceneTemplate = {
+                name: '',
+                description: '',
+                defaultFields: {},
+                bodyTemplate: '',
+            };
+            new TemplateEditorModal(this.app, blank, async (tpl) => {
+                this.plugin.settings.sceneTemplates.push(tpl);
+                await this.plugin.saveSettings();
+                this.renderTemplateList(templateListEl);
+            }).open();
+        };
+
+        const templateListEl = panel.createDiv('story-line-template-list');
+        this.renderTemplateList(templateListEl);
+
+        new Setting(panel)
+            .setName(t('Create a template'))
+            .setDesc(t('Custom templates appear immediately in the Template dropdown when creating a scene.'))
+            .addButton(btn => btn
+                .setButtonText(t('Add Template'))
+                .setIcon('plus')
+                .setCta()
+                .onClick(() => addTemplate(templateListEl)));
     }
 
     private renderDisplaySettingsTab(panel: HTMLElement): void {
@@ -3541,6 +3547,16 @@ class TemplateEditorModal extends Modal {
                 .onChange(v => {
                     if (v) this.template.defaultFields.emotion = v;
                     else delete this.template.defaultFields.emotion;
+                }));
+
+        new Setting(contentEl)
+            .setName(t('Default conflict'))
+            .addText(text => text
+                .setPlaceholder(t('What is the main conflict?'))
+                .setValue(this.template.defaultFields.conflict || '')
+                .onChange(v => {
+                    if (v) this.template.defaultFields.conflict = v;
+                    else delete this.template.defaultFields.conflict;
                 }));
 
         new Setting(contentEl)

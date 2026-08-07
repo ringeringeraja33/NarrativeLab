@@ -25,7 +25,7 @@ import { t } from '../utils/i18n';
 
 // ── Types ─────────────────────────────────────────────
 
-export type StoryGraphEntityType = 'scene' | 'character' | 'location' | 'other' | 'prop';
+export type StoryGraphEntityType = 'scene' | 'character' | 'location' | 'codex' | 'other' | 'prop';
 type EntityType = StoryGraphEntityType;
 
 /** Edge subtypes — character-to-character relationships */
@@ -47,6 +47,7 @@ export interface StoryGraphFilterState {
     showScenes: boolean;
     showCharacters: boolean;
     showLocations: boolean;
+    showCodex: boolean;
     showRelationships: boolean;
     showProps: boolean;
     showOther: boolean;
@@ -115,6 +116,7 @@ function getEntityColors(): Record<EntityType, string> {
         scene: resolveColor('--sl-sg-scene', '#7C3AED'),
         character: resolveColor('--sl-sg-character', '#2196F3'),
         location: resolveColor('--sl-sg-location', '#4CAF50'),
+        codex: resolveColor('--sl-sg-codex', '#0EA5E9'),
         other: resolveColor('--sl-sg-other', '#FF9800'),
         prop: resolveColor('--sl-sg-prop', '#E91E63'),
     };
@@ -206,6 +208,7 @@ export class StoryGraph {
     private showScenes = true;
     private showCharacters = true;
     private showLocations = true;
+    private showCodex = true;
     private showOther = true;
     private showRelationships = true;
     private showProps = true;
@@ -261,6 +264,7 @@ export class StoryGraph {
             if (filters.showScenes !== undefined) this.showScenes = filters.showScenes;
             if (filters.showCharacters !== undefined) this.showCharacters = filters.showCharacters;
             if (filters.showLocations !== undefined) this.showLocations = filters.showLocations;
+            if (filters.showCodex !== undefined) this.showCodex = filters.showCodex;
             if (filters.showRelationships !== undefined) this.showRelationships = filters.showRelationships;
             if (filters.showProps !== undefined) this.showProps = filters.showProps;
             if (filters.showOther !== undefined) this.showOther = filters.showOther;
@@ -272,6 +276,7 @@ export class StoryGraph {
             showScenes: this.showScenes,
             showCharacters: this.showCharacters,
             showLocations: this.showLocations,
+            showCodex: this.showCodex,
             showRelationships: this.showRelationships,
             showProps: this.showProps,
             showOther: this.showOther,
@@ -414,6 +419,7 @@ export class StoryGraph {
         makeToggle(t('Scenes'), 'clapperboard', this.showScenes, v => { this.showScenes = v; });
         makeToggle(t('Characters'), 'user', this.showCharacters, v => { this.showCharacters = v; });
         makeToggle(t('Locations'), 'map-pin', this.showLocations, v => { this.showLocations = v; });
+        makeToggle(t('Codex'), 'book-open', this.showCodex, v => { this.showCodex = v; });
         makeToggle(t('Relationships'), 'heart-handshake', this.showRelationships, v => { this.showRelationships = v; });
         makeToggle(t('Props'), 'tag', this.showProps, v => { this.showProps = v; });
         makeToggle(t('Other'), 'file-text', this.showOther, v => { this.showOther = v; });
@@ -438,6 +444,7 @@ export class StoryGraph {
             ['Scene', 'book-open', 'scene'],
             ['Character', 'user', 'character'],
             ['Location', 'map-pin', 'location'],
+            ['Codex', 'book-open', 'codex'],
             ['Prop', 'tag', 'prop'],
             ['Other', 'file-text', 'other'],
         ];
@@ -507,6 +514,7 @@ export class StoryGraph {
             if (entityType === 'scene') return this.showScenes;
             if (entityType === 'character') return this.showCharacters;
             if (entityType === 'location') return this.showLocations;
+            if (entityType === 'codex') return this.showCodex;
             if (entityType === 'prop') return this.showProps;
             return this.showOther;
         };
@@ -576,9 +584,10 @@ export class StoryGraph {
 
                 for (const link of result.links) {
                     const configuredType = this.tagTypeOverrides[link.name.toLowerCase()] || link.type;
-                    const resolvedType = (configuredType === 'codex' ? 'other' : configuredType) as EntityType;
+                    const resolvedType = (configuredType === 'codex' ? 'codex' : configuredType) as EntityType;
                     if (resolvedType === 'character' && !this.showCharacters) continue;
                     if (resolvedType === 'location' && !this.showLocations) continue;
+                    if (resolvedType === 'codex' && !this.showCodex) continue;
                     if (resolvedType === 'other' && !this.showOther) continue;
                     if (resolvedType === 'prop' && !this.showProps) continue;
 

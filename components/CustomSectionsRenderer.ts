@@ -570,7 +570,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                         suggestList.empty();
                         suggestList.removeClass('is-hidden');
                         for (const m of matches) {
-                            const item = suggestList.createDiv('codex-custom-multi-suggest-item', { text: m });
+                            const item = suggestList.createDiv({ cls: 'codex-custom-multi-suggest-item', text: m });
                             item.addEventListener('click', (ev) => {
                                 ev.stopPropagation();
                                 if (!values.includes(m)) {
@@ -968,10 +968,10 @@ export class AddSectionFieldModal extends Modal {
         new Setting(this.contentEl)
             .setName(t('Placeholder'))
             .setDesc(t('Hint text shown in empty inputs (optional).'))
-            .addText(t => {
-                t.setPlaceholder(t('e.g. “What does this character lie to themselves about?”'));
-                t.setValue(placeholder);
-                t.onChange(v => { placeholder = v; });
+            .addText(text => {
+                text.setPlaceholder(t('e.g. “What does this character lie to themselves about?”'));
+                text.setValue(placeholder);
+                text.onChange(v => { placeholder = v; });
             });
 
         const optionsContainer = this.contentEl.createDiv();

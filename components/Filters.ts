@@ -19,6 +19,10 @@ export interface FiltersComponentOptions {
     filterLabel?: string;
     /** Override filter button tooltip (default: scene-oriented help text). */
     filterTooltip?: string;
+    /** Initial host filter, used when a view rebuilds its toolbar. */
+    initialFilter?: SceneFilter;
+    /** Initial host sort, used when a view rebuilds its toolbar. */
+    initialSort?: SortConfig;
 }
 
 /**
@@ -69,6 +73,12 @@ export class FiltersComponent {
         this.searchPlaceholder = options?.searchPlaceholder ?? t('Search scenes...');
         this.filterLabel = options?.filterLabel ?? t('Filter scenes');
         this.filterTooltip = options?.filterTooltip ?? t('Filter scenes by act, chapter, status, and more');
+        if (options?.initialFilter) {
+            this.currentFilter = JSON.parse(JSON.stringify(options.initialFilter)) as SceneFilter;
+        }
+        if (options?.initialSort) {
+            this.currentSort = { ...options.initialSort };
+        }
     }
 
     /**

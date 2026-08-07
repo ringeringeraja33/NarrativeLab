@@ -21,6 +21,17 @@ export interface ISceneStore {
     readonly cacheVersion: number;
 }
 
+export interface SceneStatistics {
+    totalScenes: number;
+    statusCounts: Record<string, number>;
+    totalWords: number;
+    totalTargetWords: number;
+    actCounts: Record<string, number>;
+    povCounts: Record<string, number>;
+    locationCounts: Record<string, number>;
+    orphanedScenes: number;
+}
+
 /**
  * SceneQueryService — extracted from SceneManager.
  *
@@ -31,6 +42,8 @@ export class SceneQueryService {
     private _lastFilterKey = '';
     private _lastVersion = -1;
     private _lastResult: Scene[] = [];
+    private _statisticsVersion = -1;
+    private _statisticsCache = new Map<boolean, SceneStatistics>();
 
     constructor(private sceneStore: ISceneStore) {}
 
@@ -235,7 +248,15 @@ export class SceneQueryService {
     /**
      * Get project statistics
      */
-    getStatistics(excludeArcAnchor = false) {
+    getStatistics(excludeArcAnchor = false): SceneStatistics {
+        const version = this.sceneStore.cacheVersion;
+        if (version !== this._statisticsVersion) {
+            this._statisticsVersion = version;
+            this._statisticsCache.clear();
+        }
+        const cached = this._statisticsCache.get(excludeArcAnchor);
+        if (cached) return cached;
+
         const scenes = this.sceneStore.getWorkbenchScenes?.() ?? this.sceneStore.getAllScenes();
         const activeScenes = scenes.filter(scene => !scene.inactive && !scene.corkboardNote);
         const totalScenes = activeScenes.length;
@@ -281,7 +302,7 @@ export class SceneQueryService {
             }
         }
 
-        return {
+        const result: SceneStatistics = {
             totalScenes,
             statusCounts,
             totalWords,
@@ -291,6 +312,8 @@ export class SceneQueryService {
             locationCounts,
             orphanedScenes,
         };
+        this._statisticsCache.set(excludeArcAnchor, result);
+        return result;
     }
 
     // ── Private helpers ────────────────────────────────────

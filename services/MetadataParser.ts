@@ -138,12 +138,16 @@ export class MetadataParser {
             intensity: frontmatter.intensity,
             wordcount: this.countWords(body),
             charcount: this.countChars(body),
-            target_wordcount: frontmatter.target_wordcount,
+            target_wordcount: this.parsePositiveNumber(
+                frontmatter.target_wordcount ?? frontmatter.targetWordcount,
+            ),
             tags: frontmatter.tags || [],
             setup_scenes: this.parseStringArray(frontmatter.setup_scenes),
             payoff_scenes: this.parseStringArray(frontmatter.payoff_scenes),
             ignored_detections: this.parseStringArray(frontmatter.ignored_detections),
-            inactive: this.parseBooleanFlag(frontmatter.inactive),
+            inactive: Object.prototype.hasOwnProperty.call(frontmatter, 'active')
+                ? !this.parseBooleanFlag(frontmatter.active)
+                : this.parseBooleanFlag(frontmatter.inactive),
             created: frontmatter.created,
             modified: frontmatter.modified,
             body,
@@ -180,6 +184,15 @@ export class MetadataParser {
      * is the single normalization point so downstream code always receives a
      * properly typed value.
      */
+    private static parsePositiveNumber(value: unknown): number | undefined {
+        if (typeof value === 'number' && Number.isFinite(value) && value > 0) return Math.round(value);
+        if (typeof value === 'string') {
+            const parsed = Number(value.trim().replace(/,/g, ''));
+            if (Number.isFinite(parsed) && parsed > 0) return Math.round(parsed);
+        }
+        return undefined;
+    }
+
     private static normalizeFrontmatterString(value: unknown): string | undefined {
         if (value === undefined || value === null) return undefined;
         if (typeof value === 'string') {
@@ -241,7 +254,11 @@ export class MetadataParser {
             if (key === 'color' && !value) { delete frontmatter[key]; continue; }
             if (key === 'beatsheet' && !value) { delete frontmatter[key]; continue; }
             if (key === 'arcAnchor' && !value) { delete frontmatter[key]; continue; }
-            if (key === 'inactive' && !value) { delete frontmatter[key]; continue; }
+            if (key === 'inactive') {
+                frontmatter.active = value !== true;
+                delete frontmatter.inactive;
+                continue;
+            }
             if (key === 'ignored_detections') {
                 if (Array.isArray(value) && value.length > 0) frontmatter[key] = value;
                 else delete frontmatter[key];
@@ -337,6 +354,9 @@ export class MetadataParser {
         fm.status = scene.status || 'idea';
         if (scene.conflict) fm.conflict = scene.conflict;
         if (scene.emotion) fm.emotion = scene.emotion;
+        if (scene.target_wordcount !== undefined && scene.target_wordcount > 0) {
+            fm.target_wordcount = scene.target_wordcount;
+        }
         if (scene.tags?.length) fm.tags = scene.tags;
         if (scene.setup_scenes?.length) fm.setup_scenes = wrapArray(scene.setup_scenes);
         if (scene.payoff_scenes?.length) fm.payoff_scenes = wrapArray(scene.payoff_scenes);
@@ -354,7 +374,7 @@ export class MetadataParser {
         if (scene.color) fm.color = scene.color;
         if (scene.beatsheet) fm.beatsheet = scene.beatsheet;
         if (scene.arcAnchor) fm.arcAnchor = true;
-        if (scene.inactive) fm.inactive = true;
+        fm.active = scene.inactive !== true;
         if (scene.codexLinks && Object.keys(scene.codexLinks).some(k => scene.codexLinks![k]?.length)) {
             fm.codexLinks = scene.codexLinks;
         }

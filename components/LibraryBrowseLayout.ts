@@ -316,6 +316,8 @@ export interface LibraryBrowseToolbarOpts {
     onNew?: (ev: MouseEvent) => void;
     newLabel?: string;
     onLayoutChange: () => void;
+    /** When false, hide list/cards/table switcher (e.g. Character Profiles). */
+    showLayoutToggle?: boolean;
     /** Optional controls after New (e.g. series book filter). */
     appendExtra?: (actionsEl: HTMLElement) => void;
 }
@@ -673,7 +675,9 @@ export function renderLibraryBrowseToolbar(
 
     opts.appendExtra?.(actions);
 
-    renderLibraryLayoutToggle(toolbar, opts.plugin, opts.categoryId, opts.onLayoutChange);
+    if (opts.showLayoutToggle !== false) {
+        renderLibraryLayoutToggle(toolbar, opts.plugin, opts.categoryId, opts.onLayoutChange);
+    }
 
     let searchInput: HTMLInputElement | null = null;
     if (searchShowing) {

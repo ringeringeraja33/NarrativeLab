@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { Modal, App, Notice } from 'obsidian';
+import { Modal, App, Notice, Component } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { openConfirmModal } from './ConfirmModal';
 import { SplitSceneModal } from './SplitMergeModals';
@@ -26,6 +26,8 @@ export class InspectorComponent {
     private onDelete: (scene: Scene) => void;
     private onRefresh: () => void;
     private onStatusChange: (scene: Scene, newStatus: SceneStatus) => void;
+    /** Host Component required by MarkdownRenderer (Inspector is not an ItemView). */
+    private markdownHost = new Component();
 
     /**
      * Format intensity value for display (-10 to +10)
@@ -54,6 +56,7 @@ export class InspectorComponent {
         this.onDelete = callbacks.onDelete;
         this.onRefresh = callbacks.onRefresh;
         this.onStatusChange = callbacks.onStatusChange;
+        this.markdownHost.load();
     }
 
     /**
@@ -895,7 +898,8 @@ export class InspectorComponent {
                 }
             });
         } else if (tpl.type === 'checkbox') {
-            const checked = value === true || value === 'true' || value === 'yes';
+            const raw: unknown = scene.universalFields?.[tpl.id];
+            const checked = raw === true || raw === 'true' || raw === 'yes';
             const wrap = row.createDiv('inspector-universal-checkbox-wrap');
             const cb = wrap.createEl('input', {
                 cls: 'inspector-universal-checkbox',
@@ -903,7 +907,7 @@ export class InspectorComponent {
             });
             cb.checked = !!checked;
             cb.addEventListener('change', async () => {
-                scene.universalFields![tpl.id] = cb.checked;
+                scene.universalFields![tpl.id] = cb.checked ? 'true' : 'false';
                 await this.sceneManager.updateScene(scene.filePath, { universalFields: { ...scene.universalFields } });
             });
         } else {
@@ -1282,12 +1286,12 @@ export class InspectorComponent {
 
         // Rendered markdown preview
         const previewEl = container.createDiv('inspector-notes-live is-preview');
-        obsidian.MarkdownRenderer.render(
+        void obsidian.MarkdownRenderer.render(
             this.plugin.app,
             notesText,
             previewEl,
             scene.filePath,
-            this,
+            this.markdownHost,
         );
 
         // Click on preview → switch to editor (but not on links/checkboxes)

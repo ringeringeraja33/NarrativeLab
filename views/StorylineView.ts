@@ -158,7 +158,7 @@ export class StorylineView extends ItemView {
                 ? `Filtering: ${this.hiddenPlotlines.size} hidden`
                 : 'Filter plotlines');
             filterBtn.addEventListener('click', (e) => {
-                const allTags = this.sceneManager.queryService.getAllTags().sort();
+                const allTags = this.sceneManager.getPlotlines();
                 const menu = new Menu();
                 // Show All / Hide All
                 menu.addItem((item: MenuItem) => {
@@ -748,10 +748,7 @@ export class StorylineView extends ItemView {
         const section = container.createDiv('storyline-section');
         const tagColors = this.plugin.settings.tagColors || {};
         const scheme = this.plugin.settings.colorScheme;
-        const plotlineIdx = allScenes.reduce((tags, s) => {
-            (s.tags || []).forEach(t => { if (!tags.includes(t)) tags.push(t); });
-            return tags;
-        }, [] as string[]).sort().indexOf(plotline);
+        const plotlineIdx = this.sceneManager.getPlotlines().indexOf(plotline);
         const plotlineColor = resolveTagColor(plotline, Math.max(0, plotlineIdx), scheme, tagColors, getPlotlineHSL(this.plugin.settings));
 
         // Collapsible header
@@ -954,7 +951,7 @@ export class StorylineView extends ItemView {
             const tagsEl = node.createDiv('storyline-node-tags');
             const tagColors = this.plugin.settings.tagColors || {};
             const scheme = this.plugin.settings.colorScheme;
-            const allTagsSorted = this.sceneManager.queryService.getAllTags().sort();
+            const allTagsSorted = this.sceneManager.getPlotlines();
             scene.tags.forEach(tag => {
                 const badge = tagsEl.createSpan({ cls: 'storyline-tag-badge', text: tag });
                 const badgeColor = resolveTagColor(tag, Math.max(0, allTagsSorted.indexOf(tag)), scheme, tagColors, getPlotlineHSL(this.plugin.settings));
@@ -982,7 +979,7 @@ export class StorylineView extends ItemView {
      */
     private showTagAssignMenu(scene: Scene, anchorEl: HTMLElement): void {
         const menu = new Menu();
-        const allTags = this.sceneManager.queryService.getAllTags();
+        const allTags = this.sceneManager.getPlotlines();
         const sceneTags = new Set(scene.tags || []);
 
         if (allTags.length > 0) {
@@ -1035,7 +1032,7 @@ export class StorylineView extends ItemView {
                         modal.close();
                         return;
                     }
-                    const count = await this.sceneManager.renameTag(plotline, slug);
+                    const count = await this.sceneManager.renamePlotline(plotline, slug);
                     new Notice(t('Renamed plotline in {count} scene(s)', { count }));
                     this.refresh();
                     modal.close();
@@ -1059,7 +1056,7 @@ export class StorylineView extends ItemView {
             })
             .addButton((btn: ButtonComponent) => {
                 btn.setButtonText(t('Delete')).setClass('mod-warning').onClick(async () => {
-                    const count = await this.sceneManager.deleteTag(plotline);
+                    const count = await this.sceneManager.deletePlotline(plotline);
                     new Notice(t('Removed plotline from {count} scene(s)', { count }));
                     this.refresh();
                     modal.close();
@@ -1195,12 +1192,17 @@ export class StorylineView extends ItemView {
                         return;
                     }
                     const paths = [...selectedPaths];
-                    if (paths.length === 0) {
-                        new Notice(t('Select at least one scene, or create the plotline from a scene’s menu.'));
-                        return;
-                    }
                     btn.setDisabled(true);
                     try {
+                        // Persist the plotline on the project even when no scenes
+                        // are selected yet (same contract as Navigator creation).
+                        const registered = await this.sceneManager.addPlotline(slug);
+                        if (!registered && paths.length === 0) {
+                            btn.setDisabled(false);
+                            new Notice(t('A plotline with this name already exists.'));
+                            return;
+                        }
+
                         let assigned = 0;
                         const errors: string[] = [];
                         for (const path of paths) {
@@ -1215,7 +1217,7 @@ export class StorylineView extends ItemView {
                                 console.error('[NarrativeLab] updateSceneTags failed', path, e);
                             }
                         }
-                        if (assigned === 0) {
+                        if (paths.length > 0 && assigned === 0) {
                             btn.setDisabled(false);
                             new Notice(t('Failed to create plotline: {err}', {
                                 err: errors.join(', ') || t('Unknown error'),
@@ -1224,7 +1226,11 @@ export class StorylineView extends ItemView {
                         }
                         modal.close();
                         this.refresh();
-                        new Notice(t('Plotline created on {count} scene(s)', { count: assigned }));
+                        if (assigned > 0) {
+                            new Notice(t('Plotline created on {count} scene(s)', { count: assigned }));
+                        } else {
+                            new Notice(t('Plotline name saved — assign scenes from the plotline menu.'));
+                        }
                         if (errors.length > 0) {
                             new Notice(t('Some scenes failed: {list}', { list: errors.join(', ') }));
                         }
@@ -1310,6 +1316,11 @@ export class StorylineView extends ItemView {
 
     private groupByPlotline(scenes: Scene[]): Map<string, Scene[]> {
         const groups = new Map<string, Scene[]>();
+
+        // Keep empty plotlines created in the Navigator / project frontmatter.
+        for (const name of this.sceneManager.getPlotlines()) {
+            if (!groups.has(name)) groups.set(name, []);
+        }
 
         for (const scene of scenes) {
             if (!scene.tags || scene.tags.length === 0) continue;

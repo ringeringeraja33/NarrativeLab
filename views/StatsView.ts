@@ -38,6 +38,8 @@ export class StatsView extends ItemView {
     private proseCache: { readability: ReadabilityResult; wordFreq: [string, number][] } | null = null;
     private echoCache: { echoes: EchoCluster[]; perScene: SceneEchoReport[] } | null = null;
     private sprintTimerId: number | null = null;
+    private openSections = new Set<string>();
+    private initializedSections = new Set<string>();
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -66,7 +68,7 @@ export class StatsView extends ItemView {
         applyMobileClass(container);
         this.rootContainer = container;
 
-        await this.sceneManager.initialize();
+        await this.sceneManager.ensureInitialized();
         this.renderView(container);
     }
 
@@ -99,35 +101,35 @@ export class StatsView extends ItemView {
         this.renderWritingSprint(content, stats.totalWords);
 
         // 3. Writing History (collapsible, default open)
-        this.renderCollapsible(content, 'calendar', t('Writing History'), true, body =>
+        this.renderCollapsible(content, 'writing-history', 'calendar', t('Writing History'), true, body =>
             this.renderWritingHistory(body));
 
         // 4. Progress Breakdown (collapsible, default open)
-        this.renderCollapsible(content, 'list-checks', t('Progress Breakdown'), true, body =>
+        this.renderCollapsible(content, 'progress-breakdown', 'list-checks', t('Progress Breakdown'), true, body =>
             this.renderProgressBreakdown(body, stats, allScenes));
 
         // 5. Characters & World (collapsible, default collapsed)
-        this.renderCollapsible(content, 'users', t('Characters & World'), false, body =>
+        this.renderCollapsible(content, 'characters-world', 'users', t('Characters & World'), false, body =>
             this.renderCharactersWorld(body, stats, allScenes));
 
         // 5b. Setup & Payoff Map (collapsible, default collapsed)
-        this.renderCollapsible(content, 'link', t('Setup & Payoff Map'), false, body =>
+        this.renderCollapsible(content, 'setup-payoff', 'link', t('Setup & Payoff Map'), false, body =>
             this.renderSetupPayoffMap(body, allScenes));
 
         // 6. Pacing & Tension (collapsible, default collapsed)
-        this.renderCollapsible(content, 'activity', t('Pacing & Tension'), false, body =>
+        this.renderCollapsible(content, 'pacing-tension', 'activity', t('Pacing & Tension'), false, body =>
             this.renderPacingTension(body, allScenes));
 
         // 7. Prose Analysis (collapsible, default collapsed — lazy)
-        this.renderCollapsible(content, 'text', t('Prose Analysis'), false, body =>
+        this.renderCollapsible(content, 'prose-analysis', 'text', t('Prose Analysis'), false, body =>
             this.renderProseAnalysisPlaceholder(body, allScenes));
 
         // 7b. Echo Finder (collapsible, default collapsed — lazy)
-        this.renderCollapsible(content, 'repeat', t('Echo Finder'), false, body =>
+        this.renderCollapsible(content, 'echo-finder', 'repeat', t('Echo Finder'), false, body =>
             this.renderEchoFinderPlaceholder(body, allScenes));
 
         // 8. Warnings & Plot Holes (collapsible, default collapsed)
-        this.renderCollapsible(content, 'alert-triangle', t('Warnings & Plot Holes'), false, body =>
+        this.renderCollapsible(content, 'warnings', 'alert-triangle', t('Warnings & Plot Holes'), false, body =>
             this.renderWarnings(body, allScenes));
     }
 
@@ -137,19 +139,39 @@ export class StatsView extends ItemView {
 
     private renderCollapsible(
         parent: HTMLElement,
+        id: string,
         icon: string,
         title: string,
         defaultOpen: boolean,
         renderFn: (body: HTMLElement) => void,
     ): void {
+        if (!this.initializedSections.has(id)) {
+            this.initializedSections.add(id);
+            if (defaultOpen) this.openSections.add(id);
+        }
+
         const details = parent.createEl('details', { cls: 'stats-collapsible' });
-        if (defaultOpen) details.setAttribute('open', '');
+        if (this.openSections.has(id)) details.setAttribute('open', '');
         const summary = details.createEl('summary', { cls: 'stats-collapsible-summary' });
         const iconEl = summary.createSpan({ cls: 'stats-collapsible-icon' });
         obsidian.setIcon(iconEl, icon);
         summary.createSpan({ text: title });
         const body = details.createDiv('stats-collapsible-body');
-        renderFn(body);
+        let rendered = false;
+        const renderOnce = () => {
+            if (rendered) return;
+            rendered = true;
+            renderFn(body);
+        };
+        if (details.open) renderOnce();
+        details.addEventListener('toggle', () => {
+            if (details.open) {
+                this.openSections.add(id);
+                renderOnce();
+            } else {
+                this.openSections.delete(id);
+            }
+        });
     }
 
     // ════════════════════════════════════════════════════
@@ -275,9 +297,10 @@ export class StatsView extends ItemView {
         // Track whether the sprint-end chime has fired for this sprint
         let sprintEndChimePlayed = false;
 
-        const updateTimerDisplay = () => {
-            const stats = this.sceneManager.queryService.getStatistics();
-            const totalNow = this.sceneManager.queryService.getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true).totalWords;
+        const updateTimerDisplay = (knownTotalWords?: number) => {
+            const totalNow = knownTotalWords ?? this.sceneManager.queryService
+                .getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
+                .totalWords;
             if (tracker.isSprintRunning()) {
                 const remaining = tracker.getSprintRemaining();
                 const mins = Math.floor(remaining / 60_000);
@@ -316,18 +339,22 @@ export class StatsView extends ItemView {
 
         startBtn.addEventListener('click', () => {
             sprintEndChimePlayed = false;
-            const stats = this.sceneManager.queryService.getStatistics();
-            tracker.startSprint(this.sceneManager.queryService.getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true).totalWords);
+            const totalNow = this.sceneManager.queryService
+                .getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
+                .totalWords;
+            tracker.startSprint(totalNow);
             if (this.sprintTimerId) window.clearInterval(this.sprintTimerId);
             this.sprintTimerId = window.setInterval(updateTimerDisplay, 1000);
-            updateTimerDisplay();
+            updateTimerDisplay(totalNow);
         });
 
         stopBtn.addEventListener('click', () => {
-            const stats = this.sceneManager.queryService.getStatistics();
-            const entry = tracker.stopSprint(this.sceneManager.queryService.getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true).totalWords);
+            const totalNow = this.sceneManager.queryService
+                .getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
+                .totalWords;
+            const entry = tracker.stopSprint(totalNow);
             if (this.sprintTimerId) { window.clearInterval(this.sprintTimerId); this.sprintTimerId = null; }
-            updateTimerDisplay();
+            updateTimerDisplay(totalNow);
             // Persist and re-render to show updated log
             this.plugin.saveProjectSystemData();
             this.renderSprintLog(logSection, tracker);
@@ -351,7 +378,7 @@ export class StatsView extends ItemView {
             if (this.sprintTimerId) window.clearInterval(this.sprintTimerId);
             this.sprintTimerId = window.setInterval(updateTimerDisplay, 1000);
         }
-        updateTimerDisplay();
+        updateTimerDisplay(currentTotalWords);
 
         // ── Overall Session Stats ──────────────────────
         section.createEl('h5', { cls: 'stats-subsection-title', text: t('Session (since project opened)') });

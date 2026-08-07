@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- DOM/event handlers and Obsidian dynamic API */
 import * as obsidian from 'obsidian';
+import { Component } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SceneManager } from '../services/SceneManager';
 import { Scene, getStatusOrder, resolveStatusCfg } from '../models/Scene';
@@ -24,12 +25,15 @@ export class InfoPanelComponent {
     private notesLeaf: obsidian.WorkspaceLeaf | null = null;
     private notesPath: string | null = null;
     private notesSaveTimer: number | null = null;
+    /** Host Component required by MarkdownRenderer (InfoPanel is not an ItemView). */
+    private markdownHost = new Component();
 
     constructor(container: HTMLElement, plugin: SceneCardsPlugin, sceneManager: SceneManager, mode: InfoPanelMode = 'full') {
         this.container = container;
         this.plugin = plugin;
         this.sceneManager = sceneManager;
         this.mode = mode;
+        this.markdownHost.load();
     }
 
     show(scene: Scene): void {
@@ -46,6 +50,9 @@ export class InfoPanelComponent {
         this.currentScene = null;
         this.detachNotesEditor();
         this.container.empty();
+        this.markdownHost.unload();
+        this.markdownHost = new Component();
+        this.markdownHost.load();
     }
 
     isVisible(): boolean {
@@ -377,12 +384,12 @@ export class InfoPanelComponent {
 
         // Rendered markdown preview
         const previewEl = container.createDiv('sl-info-notes-live is-preview');
-        obsidian.MarkdownRenderer.render(
+        void obsidian.MarkdownRenderer.render(
             this.plugin.app,
             scene.notes,
             previewEl,
             scene.filePath,
-            this,
+            this.markdownHost,
         );
 
         // Click on preview → switch to editor (but not on links/checkboxes)

@@ -8,6 +8,7 @@ import { isMobile, applyMobileClass } from '../components/MobileAdapter';
 import {
     getLibraryContentMode,
     renderLibraryStoryGraph,
+    setLibraryContentMode,
 } from '../components/LibraryModeBar';
 import type { StoryGraph } from '../components/StoryGraph';
 import { RenameConfirmModal } from '../components/RenameConfirmModal';
@@ -26,9 +27,8 @@ import type SceneCardsPlugin from '../main';
 import { attachTooltip } from '../components/Tooltip';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { renderLibraryFilterChips } from '../components/LibraryFilterChips';
-import { renderNativeLibraryBase } from '../components/NativeLibraryBase';
+import { disposeNativeLibraryBase, renderNativeLibraryBase } from '../components/NativeLibraryBase';
 import {
-    getLibraryBrowseLayout,
     getLibraryFilePropertyOptions,
     getLibraryFilePropertyValue,
     getLibraryNotePropertyOptions,
@@ -46,7 +46,7 @@ import {
     LIBRARY_BROWSE_PAGE_SIZE,
 } from '../components/LibraryBrowseLayout';
 import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
-import { CHARACTER_CATEGORIES, CHARACTER_ROLES, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations } from '../models/Character';
+import { CHARACTER_CATEGORIES, CHARACTER_ROLES, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractAllCharacterTags, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations } from '../models/Character';
 import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
@@ -85,6 +85,8 @@ export class CharacterView extends ItemView {
     private _skipReciprocalSync = false;
     /** Current search/filter text for overview grid */
     private searchText: string = '';
+    /** Characters-specific top-level interface: card profiles, native browse, or graph. */
+    private characterOverviewMode: 'editor' | 'base' | 'story-graph';
     private browseSearchOpen = true;
     private browseFilterOpen = true;
     private _searchTimer: number | null = null;
@@ -114,6 +116,8 @@ export class CharacterView extends ItemView {
     private _overviewGen = 0;
     private _overviewObserver: IntersectionObserver | null = null;
     private _overviewScrollHandler: (() => void) | null = null;
+    /** Invalidate deferred detail side-panel work when navigating away. */
+    private _detailSideGen = 0;
     private static readonly OVERVIEW_BATCH = 36;
     private static readonly OVERVIEW_LITE_THRESHOLD = 36;
 
@@ -127,6 +131,9 @@ export class CharacterView extends ItemView {
         // own instance and re-loaded only from the project Characters
         // folder on every refresh, wiping out externally-scanned entries.
         this.characterManager = plugin.characterManager;
+        this.characterOverviewMode = getLibraryContentMode(plugin) === 'story-graph'
+            ? 'story-graph'
+            : 'editor';
     }
 
     getViewType(): string {
@@ -186,8 +193,63 @@ export class CharacterView extends ItemView {
 
     // ── Main render ────────────────────────────────────
 
+    /** Content pane under toolbar/tabs — prefer this for open/back navigation. */
+    private getContentHost(): HTMLElement | null {
+        const root = this.getViewRoot();
+        return root.querySelector('.story-line-character-content') as HTMLElement | null;
+    }
+
+    /** Stop in-flight overview batch painting (e.g. when opening a card). */
+    private cancelOverviewWork(): void {
+        this._overviewGen++;
+        this._overviewObserver?.disconnect();
+        this._overviewObserver = null;
+        if (this._overviewScrollHandler) {
+            const content = this.getContentHost();
+            if (content) content.removeEventListener('scroll', this._overviewScrollHandler);
+            this._overviewScrollHandler = null;
+        }
+    }
+
+    /**
+     * Swap only the content pane (keep toolbar + category tabs).
+     * Used for card open / back so large libraries don't rebuild chrome.
+     */
+    private renderContentOnly(): void {
+        disposeNativeLibraryBase(this);
+        this.clearPortaledDropdowns();
+        this.cancelOverviewWork();
+        this._detailSideGen++;
+
+        const root = this.getViewRoot();
+        const content = this.getContentHost();
+        if (!content) {
+            this.renderView(root);
+            return;
+        }
+
+        content.empty();
+        if (this.storyGraph) {
+            this.storyGraph.destroy();
+            this.storyGraph = null;
+        }
+
+        if (this.selectedCharacter) {
+            this.renderCharacterDetail(content);
+        } else if (this.characterOverviewMode === 'story-graph' && !isMobile) {
+            this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            });
+        } else {
+            this.renderCharacterOverview(content);
+        }
+    }
+
     private renderView(container: HTMLElement): void {
+        disposeNativeLibraryBase(this);
         this.clearPortaledDropdowns(); // issue #102 — don't leak portaled popups across re-renders
+        this.cancelOverviewWork();
+        this._detailSideGen++;
         container.empty();
 
         // Toolbar
@@ -203,10 +265,10 @@ export class CharacterView extends ItemView {
             activeId: 'characters-pseudo',
             leaf: this.leaf,
             plugin: this.plugin,
-            showModeToggle: !this.selectedCharacter,
-            onModeChange: () => {
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            },
+            showModeToggle: false,
+            renderBeforeModeActions: !this.selectedCharacter
+                ? (actions) => this.renderCharacterOverviewModes(actions)
+                : undefined,
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
@@ -221,7 +283,7 @@ export class CharacterView extends ItemView {
 
         if (this.selectedCharacter) {
             this.renderCharacterDetail(content);
-        } else if (getLibraryContentMode(this.plugin) === 'story-graph' && !isMobile) {
+        } else if (this.characterOverviewMode === 'story-graph' && !isMobile) {
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -230,30 +292,47 @@ export class CharacterView extends ItemView {
         }
     }
 
+    private renderCharacterOverviewModes(parent: HTMLElement): void {
+        // Match the shared Library Browse / Story Graph underline tabs.
+        const toggle = parent.createDiv('library-mode-toggle character-mode-toggle');
+        const modes: Array<{
+            id: 'editor' | 'base' | 'story-graph';
+            label: string;
+            icon: string;
+        }> = [
+            { id: 'editor', label: 'Character Profiles', icon: 'contact-round' },
+            { id: 'base', label: 'Browse', icon: 'layout-grid' },
+            { id: 'story-graph', label: 'Story Graph', icon: 'share-2' },
+        ];
+        for (const mode of modes) {
+            const button = toggle.createEl('button', {
+                cls: `character-mode-btn ${this.characterOverviewMode === mode.id ? 'active' : ''}`,
+                attr: { type: 'button', 'aria-label': t(mode.label), 'data-mode': mode.id },
+            });
+            const icon = button.createSpan();
+            obsidian.setIcon(icon, mode.icon);
+            button.createSpan({ text: t(mode.label) });
+            button.addEventListener('click', () => {
+                if (this.characterOverviewMode === mode.id) return;
+                this.characterOverviewMode = mode.id;
+                setLibraryContentMode(
+                    this.plugin,
+                    mode.id === 'story-graph' ? 'story-graph' : 'browse',
+                );
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            });
+        }
+    }
+
     // ── Overview Grid ──────────────────────────────────
 
     private renderCharacterOverview(container: HTMLElement): void {
         container.empty();
-        if (getLibraryContentMode(this.plugin) === 'browse') {
+        if (this.characterOverviewMode === 'base') {
             void renderNativeLibraryBase(container, this.plugin, 'characters', this);
             return;
         }
         // Tab already says “角色” — skip a redundant page title to free vertical space.
-
-        const availableCharacters = this.characterManager.getAllCharacters();
-        const charProps = [
-            { key: 'role', label: 'role', type: 'note' as const },
-            { key: 'scenes', label: 'scenes', type: 'note' as const },
-            ...getLibraryNotePropertyOptions(
-                this.plugin,
-                availableCharacters.map(character => character.filePath),
-            ).filter(property => property.key !== 'role' && property.key !== 'scenes'),
-            ...getLibraryFilePropertyOptions(),
-        ];
-        const savedCharCols = getLibraryTableColumns(this.plugin, 'characters');
-        const selectedCharProps = savedCharCols !== undefined
-            ? savedCharCols
-            : ['role', 'scenes'];
 
         const { searchInput, chipHost } = renderLibraryBrowseToolbar(container, {
             plugin: this.plugin,
@@ -286,14 +365,10 @@ export class CharacterView extends ItemView {
                 this.browseFilterOpen = open;
                 this.renderCharacterOverview(container);
             },
-            properties: charProps,
-            selectedProperties: selectedCharProps,
-            onPropertiesChange: async (keys) => {
-                await setLibraryTableColumns(this.plugin, 'characters', keys);
-                this.renderCharacterOverview(container);
-            },
             onNew: () => this.promptNewCharacter(),
             newLabel: t('New'),
+            // Character Profiles is card-only; Browse (native Base) owns table/list.
+            showLayoutToggle: false,
             onLayoutChange: () => this.renderCharacterOverview(container),
             appendExtra: (actionsEl) => {
                 const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
@@ -343,9 +418,11 @@ export class CharacterView extends ItemView {
         }
 
         // Collect role + #prop + location tags once (also used for filtering / search).
+        // One extractAllCharacterTags pass per character — avoid props+locations double scan.
         const overrides = this.plugin.settings.tagTypeOverrides;
         const tagLabels = new Map<string, string>();
         const charFilterKeys = new Map<string, string[]>();
+        const tagsByPath = new Map<string, { props: string[]; locations: string[] }>();
         for (const c of fileCharacters) {
             const keys: string[] = [];
             const add = (label: string) => {
@@ -356,9 +433,16 @@ export class CharacterView extends ItemView {
                 if (!tagLabels.has(key)) tagLabels.set(key, trimmed);
             };
             for (const role of getRoleList(c)) add(role);
-            for (const p of extractCharacterProps(c, overrides)) add(p);
-            for (const p of extractCharacterLocationTags(c, overrides)) add(p);
+            const allTags = extractAllCharacterTags(c, overrides);
+            const props: string[] = [];
+            const locations: string[] = [];
+            for (const tag of allTags) {
+                add(tag.name);
+                if (tag.type === 'location') locations.push(tag.name);
+                else props.push(tag.name);
+            }
             charFilterKeys.set(c.filePath, keys);
+            tagsByPath.set(c.filePath, { props, locations });
         }
         renderLibraryFilterChips(chipHost, tagLabels, this.activeTagFilters, () => {
             if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
@@ -455,12 +539,6 @@ export class CharacterView extends ItemView {
         // Frontmatter / POV only — body link-scan is too expensive for large projects.
         const sceneStats = this.precomputeScenePresenceStats(scenes, aliasMap);
 
-        const layout = getLibraryBrowseLayout(this.plugin, 'characters');
-        if (layout === 'list' || layout === 'table') {
-            this.renderCharacterBrowseAlt(container, layout, fileCharacters, sceneStats);
-            return;
-        }
-
         const gen = ++this._overviewGen;
         this._overviewObserver?.disconnect();
         this._overviewObserver = null;
@@ -540,7 +618,10 @@ export class CharacterView extends ItemView {
                 listHost.insertBefore(grid, sentinel);
             }
             if (item.kind === 'file') {
-                this.renderOverviewCard(grid, item.char, sceneStats, aliasMap, { lite });
+                this.renderOverviewCard(grid, item.char, sceneStats, aliasMap, {
+                    lite,
+                    tagCache: tagsByPath.get(item.char.filePath),
+                });
             } else {
                 this.renderUnlinkedCard(grid, item.name, sceneStats, aliasMap);
             }
@@ -574,14 +655,14 @@ export class CharacterView extends ItemView {
             if (!nearBottom) return;
             if (paintBatch()) {
                 // Keep filling while the sentinel stays in range (short viewports).
-                requestAnimationFrame(tryLoadMore);
+                window.requestAnimationFrame(tryLoadMore);
             }
         };
 
         loadMoreBtn.addEventListener('click', (e) => {
             e.preventDefault();
             paintBatch();
-            requestAnimationFrame(tryLoadMore);
+            window.requestAnimationFrame(tryLoadMore);
         });
 
         this._overviewScrollHandler = () => tryLoadMore();
@@ -600,7 +681,7 @@ export class CharacterView extends ItemView {
             { root: null, rootMargin: '400px 0px' },
         );
         this._overviewObserver.observe(sentinel);
-        requestAnimationFrame(tryLoadMore);
+        window.requestAnimationFrame(tryLoadMore);
     }
 
     /** List / table layouts for Character browse (cards keep the existing grid). */
@@ -709,9 +790,10 @@ export class CharacterView extends ItemView {
                     });
                     for (const key of cols) {
                         const value = valueForColumn(char, key);
-                        tr.createEl('td', {
-                            text: Array.isArray(value) ? value.join(', ') : String(value ?? ''),
-                        });
+                        const text = Array.isArray(value)
+                            ? value.map(item => coerceString(item).trim()).filter(Boolean).join(', ')
+                            : coerceString(value);
+                        tr.createEl('td', { text });
                     }
                 }
             }
@@ -824,7 +906,7 @@ export class CharacterView extends ItemView {
         char: Character,
         sceneStats: Map<string, ScenePresenceStats>,
         aliasMap?: Map<string, string>,
-        opts?: { lite?: boolean },
+        opts?: { lite?: boolean; tagCache?: { props: string[]; locations: string[] } },
     ): HTMLElement {
         const lite = !!opts?.lite;
         const card = grid.createDiv('character-overview-card');
@@ -904,8 +986,9 @@ export class CharacterView extends ItemView {
             completeness.createSpan({ cls: 'character-completeness-label', text: t('{pct}% complete', { pct }) });
 
             const overrides = this.plugin.settings.tagTypeOverrides;
-            const charProps = extractCharacterProps(char, overrides);
-            const charLocTags = extractCharacterLocationTags(char, overrides);
+            const cached = opts?.tagCache;
+            const charProps = cached?.props ?? extractCharacterProps(char, overrides);
+            const charLocTags = cached?.locations ?? extractCharacterLocationTags(char, overrides);
             if (charLocTags.length > 0 || charProps.length > 0) {
                 const propsRow = card.createDiv('character-card-props');
                 charLocTags.forEach(p => {
@@ -967,7 +1050,7 @@ export class CharacterView extends ItemView {
         }
 
         this.selectedCharacter = char.filePath;
-        this.renderView(this.getViewRoot());
+        this.renderContentOnly();
     }
 
     private renderUnlinkedCard(
@@ -1090,29 +1173,42 @@ export class CharacterView extends ItemView {
 
     /**
      * Check if a character (identified by a set of lowercased aliases) is
-     * present in a scene — either via frontmatter characters/pov OR via
-     * LinkScanner body-text detection.
+     * present in a scene — frontmatter characters/pov by default.
+     * Optional bodyScan consults LinkScanner (expensive on large libraries).
      */
-    private isCharInScene(scene: Scene, charAliases: Set<string>): { isPov: boolean; isPresent: boolean } {
+    private isCharInScene(
+        scene: Scene,
+        charAliases: Set<string>,
+        opts?: { bodyScan?: boolean },
+    ): { isPov: boolean; isPresent: boolean } {
         const isPov = !!(scene.pov && charAliases.has(scene.pov.toLowerCase()));
         const fmPresent = scene.characters?.some(c => charAliases.has(c.toLowerCase())) ?? false;
 
-        // Check LinkScanner results for body-text mentions
         let scanPresent = false;
-        try {
-            const scanResult = this.plugin.linkScanner?.getResult(scene.filePath);
-            if (scanResult?.characters) {
-                scanPresent = scanResult.characters.some(c => charAliases.has(c.toLowerCase()));
-            }
-        } catch { /* scanner not ready */ }
+        if (opts?.bodyScan) {
+            try {
+                const scanResult = this.plugin.linkScanner?.getResult(scene.filePath);
+                if (scanResult?.characters) {
+                    scanPresent = scanResult.characters.some(c => charAliases.has(c.toLowerCase()));
+                }
+            } catch { /* scanner not ready */ }
+        }
 
         return { isPov, isPresent: isPov || fmPresent || scanPresent };
     }
 
     // ── Character Detail ───────────────────────────────
 
+    /** Re-render detail into the content pane (never wipe toolbar/tabs). */
+    private rerenderCharacterDetail(): void {
+        if (!this.selectedCharacter) return;
+        const host = this.getContentHost() || this.rootContainer;
+        if (host) this.renderCharacterDetail(host);
+    }
+
     private renderCharacterDetail(container: HTMLElement): void {
         container.empty();
+        container.addClass('character-detail--board');
         const selectedPath = this.selectedCharacter ? normalizePath(this.selectedCharacter) : '';
         const basename = selectedPath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
         let character =
@@ -1124,18 +1220,27 @@ export class CharacterView extends ItemView {
             return;
         }
         // Keep selection keyed to the canonical path from the manager.
-        this.selectedCharacter = character.filePath;
+        // Narrow to a const so click handlers don't re-widen to Character | undefined.
+        const selected = character;
+        this.selectedCharacter = selected.filePath;
 
         // Working copy for editing
-        const draft: Character = { ...character, custom: { ...(character.custom || {}) }, universalFields: { ...(character.universalFields || {}) } };
+        const draft: Character = { ...selected, custom: { ...(selected.custom || {}) }, universalFields: { ...(selected.universalFields || {}) } };
         // Snapshot for undo — taken once when the detail view opens
-        this.undoSnapshot = { ...character, custom: { ...(character.custom || {}) }, universalFields: { ...(character.universalFields || {}) } };
+        this.undoSnapshot = { ...selected, custom: { ...(selected.custom || {}) }, universalFields: { ...(selected.universalFields || {}) } };
         // Track original name for cascade rename detection
-        this.originalCharacterName = character.name;
+        this.originalCharacterName = selected.name;
         // Snapshot relations for reciprocal sync diffing
-        this._lastSavedRelations = normalizeCharacterRelations(character.relations).map(r => ({ ...r }));
+        this._lastSavedRelations = normalizeCharacterRelations(selected.relations).map(r => ({ ...r }));
 
-        // Back button + character name header
+        // Board mode shows every section as a column — expand built-ins / custom.
+        for (const cat of CHARACTER_CATEGORIES) this.collapsedSections.delete(cat.title);
+        this.collapsedSections.delete('Custom Fields');
+        for (const key of [...this.collapsedSections]) {
+            if (key.startsWith('custom-section::character::')) this.collapsedSections.delete(key);
+        }
+
+        // Back + actions
         const header = container.createDiv('character-detail-header');
         const backBtn = header.createEl('span', { cls: 'codex-nav-back-link' });
         const backIcon = backBtn.createSpan();
@@ -1143,12 +1248,11 @@ export class CharacterView extends ItemView {
         backBtn.createSpan({ text: t(' All Characters') });
         backBtn.addEventListener('click', () => {
             this.selectedCharacter = null;
-            this.renderView(this.rootContainer!);
+            this.renderContentOnly();
         });
 
         const headerRight = header.createDiv('character-detail-header-right');
 
-        // Open file button
         const openBtn = headerRight.createEl('button', {
             cls: 'codex-detail-action-btn',
             attr: { 'aria-label': t('Open character file') },
@@ -1156,9 +1260,8 @@ export class CharacterView extends ItemView {
         const openIcon = openBtn.createSpan();
         obsidian.setIcon(openIcon, 'file');
         attachTooltip(openBtn, t('Open character file'));
-        openBtn.addEventListener('click', () => this.openCharacterFile(character));
+        openBtn.addEventListener('click', () => this.openCharacterFile(selected));
 
-        // Delete button
         const deleteBtn = headerRight.createEl('button', {
             cls: 'codex-detail-action-btn codex-detail-delete-btn',
             attr: { 'aria-label': t('Delete character') },
@@ -1166,30 +1269,31 @@ export class CharacterView extends ItemView {
         const deleteIcon = deleteBtn.createSpan();
         obsidian.setIcon(deleteIcon, 'trash');
         attachTooltip(deleteBtn, t('Delete character'));
-        deleteBtn.addEventListener('click', () => this.confirmDeleteCharacter(character));
+        deleteBtn.addEventListener('click', () => this.confirmDeleteCharacter(selected));
 
-        // Portrait area (detail view — larger, clickable to change)
-        const portraitArea = container.createDiv('character-detail-portrait');
+        // Compact identity strip (portrait lives here; gallery keeps full images)
+        const hero = container.createDiv('character-detail-hero');
+        const portraitArea = hero.createDiv('character-detail-hero-portrait');
         const renderPortrait = () => {
             portraitArea.empty();
             if (draft.image) {
                 const imgSrc = resolveImagePath(this.app, draft.image);
                 if (imgSrc) {
                     const img = portraitArea.createEl('img', {
-                        cls: 'character-detail-portrait-img',
-                        attr: { src: imgSrc, alt: draft.name }
+                        cls: 'character-detail-hero-portrait-img',
+                        attr: { src: imgSrc, alt: draft.name },
                     });
                     img.onerror = () => {
                         img.remove();
-                        const ph = portraitArea.createDiv('character-detail-portrait-placeholder');
+                        const ph = portraitArea.createDiv('character-detail-hero-portrait-placeholder');
                         obsidian.setIcon(ph, 'circle-user-round');
                     };
                 } else {
-                    const ph = portraitArea.createDiv('character-detail-portrait-placeholder');
+                    const ph = portraitArea.createDiv('character-detail-hero-portrait-placeholder');
                     obsidian.setIcon(ph, 'circle-user-round');
                 }
             } else {
-                const ph = portraitArea.createDiv('character-detail-portrait-placeholder');
+                const ph = portraitArea.createDiv('character-detail-hero-portrait-placeholder');
                 obsidian.setIcon(ph, 'circle-user-round');
             }
             const changeLabel = portraitArea.createDiv('character-portrait-change-label');
@@ -1206,46 +1310,83 @@ export class CharacterView extends ItemView {
             });
         });
 
-        // Layout: form on left, scene panel on right
-        const layout = container.createDiv('character-detail-layout');
-        const formPanel = layout.createDiv('character-detail-form');
+        const heroMeta = hero.createDiv('character-detail-hero-meta');
+        heroMeta.createEl('h2', { cls: 'character-detail-hero-name', text: draft.name });
+        const heroSub = heroMeta.createDiv('character-detail-hero-sub');
+        const roleText = getRoleDisplay(draft.role);
+        if (roleText) heroSub.createSpan({ cls: 'character-detail-hero-chip', text: roleText });
+        if (draft.occupation) {
+            heroSub.createSpan({ cls: 'character-detail-hero-chip is-muted', text: draft.occupation });
+        }
+        if (draft.residency) {
+            const residencySnippet = coerceString(draft.residency).replace(/\s+/g, ' ').trim();
+            if (residencySnippet) {
+                heroSub.createSpan({
+                    cls: 'character-detail-hero-chip is-muted',
+                    text: residencySnippet.length > 48 ? `${residencySnippet.slice(0, 48)}…` : residencySnippet,
+                });
+            }
+        }
+
+        // Layout: horizontal section board + sticky side rail
+        const layout = container.createDiv('character-detail-layout character-detail-layout--board');
+        const formPanel = layout.createDiv('character-detail-form character-detail-board-track');
         const sidePanel = layout.createDiv('character-detail-side');
 
-        // ── Form sections + interleaved user-defined custom sections (#120) ──
+        // Wheel on the board gutter / headers pans columns; column bodies keep vertical scroll.
+        // Shift+wheel always pans horizontally.
+        formPanel.addEventListener('wheel', (e) => {
+            if (e.deltaY === 0) return;
+            if (formPanel.scrollWidth <= formPanel.clientWidth + 1) return;
+            const inColumnBody = !!(e.target as HTMLElement | null)?.closest?.('.character-section-body');
+            if (inColumnBody && !e.shiftKey) return;
+            e.preventDefault();
+            formPanel.scrollLeft += e.deltaY + e.deltaX;
+        }, { passive: false });
+
+        // ── Form sections as board columns (+ interleaved custom sections) ──
         const customHost = this.buildCustomSectionsHost(draft);
-        // Slot 0: any custom sections positioned above the first built-in.
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
         for (let i = 0; i < CHARACTER_CATEGORIES.length; i++) {
-            this.renderCategory(formPanel, CHARACTER_CATEGORIES[i], draft);
-            // Slot i+1: any custom sections after the i-th built-in.
+            this.renderCategory(formPanel, CHARACTER_CATEGORIES[i], draft, { board: true });
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
-        // ── Custom fields section ──
-        this.renderCustomFields(formPanel, draft);
-
-        // ── "+ Add custom section" button at the bottom ──
+        this.renderCustomFields(formPanel, draft, { board: true });
         renderAddCustomSectionButton(formPanel, customHost);
 
-        // ── Side panel: gallery + scene info + references + notes ──
+        // ── Side panel: gallery first; defer scene/refs so the board paints immediately ──
         this.renderGallery(sidePanel, draft);
-        this.renderScenePanel(sidePanel, character.name);
-        this.renderLinkedAliasesPanel(sidePanel, character.name);
-        this.renderReferencesPanel(sidePanel, character.name);
-        this.renderNotesSection(sidePanel, draft);
+        const deferredHost = sidePanel.createDiv('character-detail-side-deferred');
+        const sideGen = ++this._detailSideGen;
+        const selectedPathForSide = selected.filePath;
+        const characterName = selected.name;
+        window.requestAnimationFrame(() => {
+            if (sideGen !== this._detailSideGen) return;
+            if (this.selectedCharacter !== selectedPathForSide) return;
+            deferredHost.empty();
+            this.renderScenePanel(deferredHost, characterName);
+            this.renderLinkedAliasesPanel(deferredHost, characterName);
+            this.renderReferencesPanel(deferredHost, characterName);
+            this.renderNotesSection(deferredHost, draft);
+        });
     }
 
     private renderCategory(
         parent: HTMLElement,
         category: { title: string; icon: string; fields: CharacterFieldDef[] },
-        draft: Character
+        draft: Character,
+        opts?: { board?: boolean },
     ): void {
+        const board = !!opts?.board;
         const section = parent.createDiv('character-section');
-        const isCollapsed = this.collapsedSections.has(category.title);
+        if (board) section.addClass('character-board-column');
+        const isCollapsed = board ? false : this.collapsedSections.has(category.title);
 
-        // Section header (clickable to collapse)
+        // Section header (collapsible in stacked mode; sticky title in board mode)
         const sectionHeader = section.createDiv('character-section-header');
         const chevron = sectionHeader.createSpan('character-section-chevron');
+        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('character-section-icon');
         obsidian.setIcon(icon, category.icon);
@@ -1281,9 +1422,7 @@ export class CharacterView extends ItemView {
                         );
                     }
                     // Re-render the detail view to show the new field
-                    if (this.selectedCharacter && this.rootContainer) {
-                        this.renderCharacterDetail(this.rootContainer);
-                    }
+                    this.rerenderCharacterDetail();
                 },
                 undefined,
                 undefined,
@@ -1295,66 +1434,78 @@ export class CharacterView extends ItemView {
         const sectionBody = section.createDiv('character-section-body');
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
-        sectionHeader.addEventListener('click', (e) => {
-            // Ignore clicks on the add-field button
-            if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
-            if (this.collapsedSections.has(category.title)) {
-                this.collapsedSections.delete(category.title);
-                sectionBody.setCssStyles({ display: '' });
-                obsidian.setIcon(chevron, 'chevron-down');
-            } else {
-                this.collapsedSections.add(category.title);
-                sectionBody.setCssStyles({ display: 'none' });
-                obsidian.setIcon(chevron, 'chevron-right');
-            }
-        });
+        // Lazy-build field DOM only when the section is (or becomes) expanded.
+        let bodyBuilt = false;
+        const ensureBody = () => {
+            if (bodyBuilt) return;
+            bodyBuilt = true;
 
-        // Built-in fields (skip hidden ones)
-        const hiddenKeys = this.plugin.settings.hiddenFields['character'] ?? [];
-        const visibleFields = category.fields.filter(f => !hiddenKeys.includes(f.key));
-        const hiddenFieldsInCat = category.fields.filter(f => hiddenKeys.includes(f.key));
+            // Built-in fields (skip hidden ones)
+            const hiddenKeys = this.plugin.settings.hiddenFields['character'] ?? [];
+            const visibleFields = category.fields.filter(f => !hiddenKeys.includes(f.key));
+            const hiddenFieldsInCat = category.fields.filter(f => hiddenKeys.includes(f.key));
 
-        // Render fields in user-defined merged order (built-in + universal).
-        const universalFields = this.plugin.fieldTemplates.getBySection(category.title, 'character');
-        const fieldMap = new Map(visibleFields.map(f => [f.key, f]));
-        const tplMap = new Map(universalFields.map(tpl => [tpl.id, tpl]));
-        const builtInKeys = visibleFields.map(f => f.key);
-        const merged = this.plugin.fieldTemplates.getMergedOrder(category.title, 'character', builtInKeys);
-        for (const entry of merged) {
-            if (entry.kind === 'builtin') {
-                const f = fieldMap.get(entry.key);
-                if (f) this.renderField(sectionBody, f, draft, category.title, builtInKeys);
-            } else {
-                const tplEntry = tplMap.get(entry.key);
-                if (tplEntry) this.renderUniversalField(sectionBody, tplEntry, draft, builtInKeys);
+            // Render fields in user-defined merged order (built-in + universal).
+            const universalFields = this.plugin.fieldTemplates.getBySection(category.title, 'character');
+            const fieldMap = new Map<string, CharacterFieldDef>(visibleFields.map(f => [String(f.key), f]));
+            const tplMap = new Map(universalFields.map(tpl => [tpl.id, tpl]));
+            const builtInKeys = visibleFields.map(f => String(f.key));
+            const merged = this.plugin.fieldTemplates.getMergedOrder(category.title, 'character', builtInKeys);
+            for (const entry of merged) {
+                if (entry.kind === 'builtin') {
+                    const f = fieldMap.get(entry.key);
+                    if (f) this.renderField(sectionBody, f, draft, category.title, builtInKeys);
+                } else {
+                    const tplEntry = tplMap.get(entry.key);
+                    if (tplEntry) this.renderUniversalField(sectionBody, tplEntry, draft, builtInKeys);
+                }
             }
-        }
 
-        // Show toggle for hidden fields
-        if (hiddenFieldsInCat.length > 0) {
-            const toggleEl = sectionBody.createDiv('hidden-fields-toggle');
-            toggleEl.createEl('a', {
-                text: hiddenFieldsInCat.length > 1
-                    ? t('Show {count} hidden fields', { count: hiddenFieldsInCat.length })
-                    : t('Show {count} hidden field', { count: hiddenFieldsInCat.length }),
-                cls: 'hidden-fields-toggle-link',
-            });
-            const hiddenContainer = sectionBody.createDiv('hidden-fields-container');
-            hiddenContainer.setCssStyles({ display: 'none' });
-            for (const field of hiddenFieldsInCat) {
-                this.renderField(hiddenContainer, field, draft);
-            }
-            let showing = false;
-            toggleEl.addEventListener('click', () => {
-                showing = !showing;
-                hiddenContainer.setCssStyles({ display: showing ? '' : 'none' });
-                toggleEl.querySelector('a')!.textContent = showing
-                    ? (hiddenFieldsInCat.length > 1
-                        ? t('Hide {count} hidden fields', { count: hiddenFieldsInCat.length })
-                        : t('Hide {count} hidden field', { count: hiddenFieldsInCat.length }))
-                    : (hiddenFieldsInCat.length > 1
+            // Show toggle for hidden fields
+            if (hiddenFieldsInCat.length > 0) {
+                const toggleEl = sectionBody.createDiv('hidden-fields-toggle');
+                toggleEl.createEl('a', {
+                    text: hiddenFieldsInCat.length > 1
                         ? t('Show {count} hidden fields', { count: hiddenFieldsInCat.length })
-                        : t('Show {count} hidden field', { count: hiddenFieldsInCat.length }));
+                        : t('Show {count} hidden field', { count: hiddenFieldsInCat.length }),
+                    cls: 'hidden-fields-toggle-link',
+                });
+                const hiddenContainer = sectionBody.createDiv('hidden-fields-container');
+                hiddenContainer.setCssStyles({ display: 'none' });
+                for (const field of hiddenFieldsInCat) {
+                    this.renderField(hiddenContainer, field, draft);
+                }
+                let showing = false;
+                toggleEl.addEventListener('click', () => {
+                    showing = !showing;
+                    hiddenContainer.setCssStyles({ display: showing ? '' : 'none' });
+                    toggleEl.querySelector('a')!.textContent = showing
+                        ? (hiddenFieldsInCat.length > 1
+                            ? t('Hide {count} hidden fields', { count: hiddenFieldsInCat.length })
+                            : t('Hide {count} hidden field', { count: hiddenFieldsInCat.length }))
+                        : (hiddenFieldsInCat.length > 1
+                            ? t('Show {count} hidden fields', { count: hiddenFieldsInCat.length })
+                            : t('Show {count} hidden field', { count: hiddenFieldsInCat.length }));
+                });
+            }
+        };
+
+        if (!isCollapsed) ensureBody();
+
+        if (!board) {
+            sectionHeader.addEventListener('click', (e) => {
+                // Ignore clicks on the add-field button
+                if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
+                if (this.collapsedSections.has(category.title)) {
+                    this.collapsedSections.delete(category.title);
+                    ensureBody();
+                    sectionBody.setCssStyles({ display: '' });
+                    obsidian.setIcon(chevron, 'chevron-down');
+                } else {
+                    this.collapsedSections.add(category.title);
+                    sectionBody.setCssStyles({ display: 'none' });
+                    obsidian.setIcon(chevron, 'chevron-right');
+                }
             });
         }
     }
@@ -1390,7 +1541,7 @@ export class CharacterView extends ItemView {
                 }
                 await this.plugin.saveSettings();
                 if (this.selectedCharacter && this.rootContainer) {
-                    this.renderCharacterDetail(this.rootContainer);
+                    this.rerenderCharacterDetail();
                 }
             });
         }
@@ -1520,7 +1671,7 @@ export class CharacterView extends ItemView {
         upBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
             await this.plugin.fieldTemplates.moveEntryUp(section, category, builtInKeys, 'builtin', fieldKey);
-            if (this.selectedCharacter && this.rootContainer) this.renderCharacterDetail(this.rootContainer);
+            if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
         });
 
         const downBtn = labelEl.createEl('span', {
@@ -1531,7 +1682,7 @@ export class CharacterView extends ItemView {
         downBtn.addEventListener('click', async (e) => {
             e.stopPropagation();
             await this.plugin.fieldTemplates.moveEntryDown(section, category, builtInKeys, 'builtin', fieldKey);
-            if (this.selectedCharacter && this.rootContainer) this.renderCharacterDetail(this.rootContainer);
+            if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
         });
     }
 
@@ -1576,14 +1727,14 @@ export class CharacterView extends ItemView {
                         );
                     }
                     if (this.selectedCharacter && this.rootContainer) {
-                        this.renderCharacterDetail(this.rootContainer);
+                        this.rerenderCharacterDetail();
                     }
                 },
                 async () => {
                     await this.plugin.fieldTemplates.remove(tpl.id);
                     // Optionally clean up universalFields[tpl.id] from all characters
                     if (this.selectedCharacter && this.rootContainer) {
-                        this.renderCharacterDetail(this.rootContainer);
+                        this.rerenderCharacterDetail();
                     }
                 },
                 undefined,
@@ -1603,7 +1754,7 @@ export class CharacterView extends ItemView {
             await this.plugin.fieldTemplates.moveEntryUp(
                 tpl.section, tpl.category, builtInKeys ?? [], 'universal', tpl.id,
             );
-            if (this.selectedCharacter && this.rootContainer) this.renderCharacterDetail(this.rootContainer);
+            if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
         });
 
         const moveDownBtn = labelWrap.createEl('span', {
@@ -1616,7 +1767,7 @@ export class CharacterView extends ItemView {
             await this.plugin.fieldTemplates.moveEntryDown(
                 tpl.section, tpl.category, builtInKeys ?? [], 'universal', tpl.id,
             );
-            if (this.selectedCharacter && this.rootContainer) this.renderCharacterDetail(this.rootContainer);
+            if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
         });
 
         // Input control based on template type
@@ -1766,7 +1917,8 @@ export class CharacterView extends ItemView {
                 autoGrow();
             });
         } else if (tpl.type === 'checkbox') {
-            const checked = value === true || value === 'true' || value === 'yes';
+            const raw: unknown = draft.universalFields?.[tpl.id];
+            const checked = raw === true || raw === 'true' || raw === 'yes';
             const wrap = row.createDiv('character-field-checkbox-wrap');
             const cb = wrap.createEl('input', {
                 cls: 'character-field-checkbox',
@@ -1774,7 +1926,7 @@ export class CharacterView extends ItemView {
             });
             cb.checked = !!checked;
             cb.addEventListener('change', () => {
-                draft.universalFields![tpl.id] = cb.checked;
+                draft.universalFields![tpl.id] = cb.checked ? 'true' : 'false';
                 this.scheduleSave(draft);
             });
         } else {
@@ -2160,13 +2312,16 @@ export class CharacterView extends ItemView {
         renderRows();
     }
 
-    private renderCustomFields(parent: HTMLElement, draft: Character): void {
+    private renderCustomFields(parent: HTMLElement, draft: Character, opts?: { board?: boolean }): void {
+        const board = !!opts?.board;
         const section = parent.createDiv('character-section');
+        if (board) section.addClass('character-board-column');
         const title = 'Custom Fields';
-        const isCollapsed = this.collapsedSections.has(title);
+        const isCollapsed = board ? false : this.collapsedSections.has(title);
 
         const sectionHeader = section.createDiv('character-section-header');
         const chevron = sectionHeader.createSpan('character-section-chevron');
+        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('character-section-icon');
         obsidian.setIcon(icon, 'plus-circle');
@@ -2175,17 +2330,19 @@ export class CharacterView extends ItemView {
         const sectionBody = section.createDiv('character-section-body');
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
-        sectionHeader.addEventListener('click', () => {
-            if (this.collapsedSections.has(title)) {
-                this.collapsedSections.delete(title);
-                sectionBody.setCssStyles({ display: '' });
-                obsidian.setIcon(chevron, 'chevron-down');
-            } else {
-                this.collapsedSections.add(title);
-                sectionBody.setCssStyles({ display: 'none' });
-                obsidian.setIcon(chevron, 'chevron-right');
-            }
-        });
+        if (!board) {
+            sectionHeader.addEventListener('click', () => {
+                if (this.collapsedSections.has(title)) {
+                    this.collapsedSections.delete(title);
+                    sectionBody.setCssStyles({ display: '' });
+                    obsidian.setIcon(chevron, 'chevron-down');
+                } else {
+                    this.collapsedSections.add(title);
+                    sectionBody.setCssStyles({ display: 'none' });
+                    obsidian.setIcon(chevron, 'chevron-right');
+                }
+            });
+        }
 
         const renderAllCustomFields = () => {
             sectionBody.empty();
@@ -2264,7 +2421,7 @@ export class CharacterView extends ItemView {
         if (!this.plugin.settings.characterCustomSections) {
             this.plugin.settings.characterCustomSections = [];
         }
-        const sections = this.plugin.settings.characterCustomSections;
+        const sections = this.plugin.settings.characterCustomSections as import('../components/CustomSectionsRenderer').CustomSection[];
         return {
             app: this.app,
             draft,
@@ -2276,7 +2433,7 @@ export class CharacterView extends ItemView {
             scheduleSave: (d) => this.scheduleSave(d),
             persistSections: () => { void this.plugin.saveSettings(); },
             requestRerender: () => {
-                if (this.rootContainer) this.renderView(this.rootContainer);
+                this.rerenderCharacterDetail();
             },
         };
     }
@@ -2491,14 +2648,14 @@ export class CharacterView extends ItemView {
             }
         }
 
-        const povScenes = scenes.filter(s => {
-            const { isPov } = this.isCharInScene(s, charAliases);
-            return isPov;
-        });
-        const presentScenes = scenes.filter(s => {
+        // Single pass + frontmatter-only (body scan is too slow on large libraries).
+        const povScenes: Scene[] = [];
+        const presentScenes: Scene[] = [];
+        for (const s of scenes) {
             const { isPov, isPresent } = this.isCharInScene(s, charAliases);
-            return !isPov && isPresent;
-        });
+            if (isPov) povScenes.push(s);
+            else if (isPresent) presentScenes.push(s);
+        }
         const allCharScenes = [...povScenes, ...presentScenes];
 
         // Stats summary
@@ -2953,7 +3110,7 @@ export class CharacterView extends ItemView {
                         await this.characterManager.deleteCharacter(character.filePath);
                         this.selectedCharacter = null;
                         modal.close();
-                        this.renderView(this.rootContainer!);
+                        this.renderContentOnly();
                         new Notice(t('"{name}" deleted', { name: character.name }));
                     });
             })
@@ -3333,7 +3490,7 @@ export class CharacterView extends ItemView {
      * Returns the vault-relative path of the chosen file, empty string to clear, or undefined if cancelled.
      */
     private pickImage(currentImage?: string): Promise<string | undefined> {
-        const attachmentSourcePath = this.sceneManager.getAttachmentSourcePath();
+        const attachmentSourcePath = this.sceneManager.getLibraryAttachmentFolder('characters');
         return pickImageModal(this.app, attachmentSourcePath, currentImage);
     }
 
