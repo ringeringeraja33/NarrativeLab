@@ -37,7 +37,17 @@ export type CorkboardPos = { x: number; y: number; z?: number; w?: number; h?: n
 
 const DEFAULT_W = 280;
 const DEFAULT_H = 200;
-const CORKBOARD_CANVAS_NAME = 'corkboard.canvas';
+/** Legacy fixed name — migrated to `{project title}.canvas`. */
+const LEGACY_CORKBOARD_CANVAS_NAME = 'corkboard.canvas';
+
+function sanitizeCanvasFileBase(name: string): string {
+    const cleaned = name
+        .replace(/[\\/:*?"<>|]/g, '-')
+        .replace(/\.canvas$/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cleaned || 'corkboard';
+}
 
 /** Stable node id from vault path so remounts don't reshuffle edges. */
 export function corkboardNodeIdForPath(path: string): string {
@@ -59,24 +69,44 @@ function canonicalizeCanvasPayload(data: CorkboardCanvasData): string {
 
 /**
  * Bidirectional bridge between NarrativeLab board.json positions and a native
- * Obsidian `Canvas/corkboard.canvas` file (file nodes for NL items).
+ * Obsidian `{project}/Canvas/{project title}.canvas` file (file nodes for NL items).
  */
 export class CorkboardCanvasService {
     constructor(private app: App, private plugin: SceneCardsPlugin) {}
 
-    /** Canonical corkboard canvas: `{project}/Canvas/corkboard.canvas`. */
+    /** Filename for the tiled corkboard canvas: `{project title}.canvas`. */
+    getCanvasFileName(): string | null {
+        const project = this.plugin.sceneManager?.activeProject;
+        if (!project?.filePath) return null;
+        const fromTitle = String(project.title || '').trim();
+        const fromManifest = project.filePath.split('/').pop()?.replace(/\.md$/i, '')?.trim() || '';
+        return `${sanitizeCanvasFileBase(fromTitle || fromManifest)}.canvas`;
+    }
+
+    /** Canonical corkboard canvas: `{project}/Canvas/{project title}.canvas`. */
     getCanvasPath(): string | null {
         const project = this.plugin.sceneManager?.activeProject;
         if (!project?.filePath) return null;
+        const fileName = this.getCanvasFileName();
+        if (!fileName) return null;
         const { canvasFolder } = deriveProjectFoldersFromFilePath(project.filePath);
-        return normalizePath(`${canvasFolder}/${CORKBOARD_CANVAS_NAME}`);
+        return normalizePath(`${canvasFolder}/${fileName}`);
     }
 
-    /** Older location before Canvas/ move. */
-    getLegacySystemCanvasPath(): string | null {
+    /** Older locations: Canvas/corkboard.canvas and System/corkboard.canvas. */
+    getLegacyCanvasPaths(): string[] {
+        const project = this.plugin.sceneManager?.activeProject;
+        if (!project?.filePath) return [];
+        const { canvasFolder } = deriveProjectFoldersFromFilePath(project.filePath);
+        const paths = [normalizePath(`${canvasFolder}/${LEGACY_CORKBOARD_CANVAS_NAME}`)];
         const sys = this.plugin.getProjectSystemFolder?.();
-        if (!sys) return null;
-        return normalizePath(`${sys}/${CORKBOARD_CANVAS_NAME}`);
+        if (sys) paths.push(normalizePath(`${sys}/${LEGACY_CORKBOARD_CANVAS_NAME}`));
+        return paths;
+    }
+
+    /** @deprecated Use getLegacyCanvasPaths — kept for call-site compatibility. */
+    getLegacySystemCanvasPath(): string | null {
+        return this.getLegacyCanvasPaths()[1] ?? this.getLegacyCanvasPaths()[0] ?? null;
     }
 
     /** Paths NL may sync onto the corkboard (Scenes / Notes / Research / …). */
@@ -246,7 +276,7 @@ export class CorkboardCanvasService {
         return await this.writeCanvas(canvasPath, { nodes, edges });
     }
 
-    /** Ensure corkboard.canvas exists; migrate from System/ on first run. */
+    /** Ensure project-named .canvas exists; migrate legacy corkboard.canvas if needed. */
     async ensureCanvasFile(
         visiblePaths: string[],
         positions: Record<string, CorkboardPos>
@@ -254,24 +284,41 @@ export class CorkboardCanvasService {
         const path = this.getCanvasPath();
         if (!path) return null;
 
-        const existing = this.app.vault.getAbstractFileByPath(path);
-        if (!(existing instanceof TFile)) {
-            const legacy = this.getLegacySystemCanvasPath();
-            if (legacy && legacy !== path) {
-                const legacyFile = this.app.vault.getAbstractFileByPath(legacy);
-                if (legacyFile instanceof TFile) {
-                    try {
-                        await this.ensureFolderFor(path);
-                        await this.app.vault.rename(legacyFile, path);
-                    } catch {
-                        // If rename fails (dest exists / sync), copy contents instead.
-                        const data = await this.readCanvas(legacy);
-                        await this.writeCanvas(path, data);
-                    }
+        await this.migrateLegacyCanvasIfNeeded(path);
+
+        return await this.syncVisibleFiles(path, visiblePaths, positions);
+    }
+
+    /**
+     * Rename/copy legacy `corkboard.canvas` (Canvas/ or System/) onto the
+     * project-titled path when the destination is missing.
+     */
+    private async migrateLegacyCanvasIfNeeded(targetPath: string): Promise<void> {
+        const existing = this.app.vault.getAbstractFileByPath(targetPath);
+        if (existing instanceof TFile) return;
+
+        for (const legacy of this.getLegacyCanvasPaths()) {
+            if (!legacy || legacy === targetPath) continue;
+            const legacyFile = this.app.vault.getAbstractFileByPath(legacy);
+            if (!(legacyFile instanceof TFile)) continue;
+            try {
+                await this.ensureFolderFor(targetPath);
+                const suppress = this.plugin.beginSuppressVaultRefresh?.(targetPath);
+                try {
+                    await this.app.vault.rename(legacyFile, targetPath);
+                } finally {
+                    suppress?.();
+                }
+                return;
+            } catch {
+                try {
+                    const data = await this.readCanvas(legacy);
+                    await this.writeCanvas(targetPath, data);
+                    return;
+                } catch (err) {
+                    console.warn('[NarrativeLab] corkboard canvas migrate failed:', legacy, err);
                 }
             }
         }
-
-        return await this.syncVisibleFiles(path, visiblePaths, positions);
     }
 }

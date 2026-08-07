@@ -112,6 +112,8 @@ const ZH_CORE: Record<string, string> = {
     'CSV (.csv)': 'CSV (.csv)',
     'JSON (.json)': 'JSON (.json)',
     'Confirm': '确认',
+    'Failed to load Narrative Canvas.': '无法加载 Narrative Canvas。',
+    'Loading Narrative Canvas…': '正在加载 Narrative Canvas…',
     'Scene {n}': '场景 {n}',
     'Project: {title}': '项目：{title}',
     'Open help': '打开帮助',

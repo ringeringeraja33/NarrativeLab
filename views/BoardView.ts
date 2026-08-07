@@ -562,7 +562,7 @@ export class BoardView extends ItemView {
 
     /**
      * Corkboard mode: host Obsidian's native Canvas editor
-     * (`Canvas/corkboard.canvas`) inline — real CanvasView, not a DOM mock.
+     * (`Canvas/{project title}.canvas`) inline — real CanvasView, not a DOM mock.
      * Falls back to the legacy DOM corkboard only if Canvas cannot be mounted.
      */
     private renderCorkboard(): void {
@@ -660,7 +660,7 @@ export class BoardView extends ItemView {
                 });
             }
         } catch (e) {
-            console.warn('[NarrativeLab] Failed to read corkboard.canvas positions:', e);
+            console.warn('[NarrativeLab] Failed to read corkboard canvas positions:', e);
         }
     }
 
@@ -692,7 +692,7 @@ export class BoardView extends ItemView {
 
         const existing = this.app.vault.getAbstractFileByPath(canvasPath);
         // Fast path: already hosting this canvas and membership unchanged — do not
-        // rewrite corkboard.canvas (that remounts every file-card preview).
+        // rewrite the corkboard .canvas (that remounts every file-card preview).
         if (!opts?.force
             && !visibilityChanged
             && existing instanceof TFile
@@ -4398,7 +4398,7 @@ export class BoardView extends ItemView {
         await this.refreshCorkboardAfterNoteCreate();
     }
 
-    /** After creating a Notes/ sticky, sync Canvas/corkboard.canvas and remount if needed. */
+    /** After creating a Notes/ sticky, sync the project corkboard .canvas and remount if needed. */
     private async refreshCorkboardAfterNoteCreate(): Promise<void> {
         if (this.boardMode === 'corkboard' && !this.corkboardNativeFailed) {
             this.corkboardVisibilityKey = ''; // membership changed

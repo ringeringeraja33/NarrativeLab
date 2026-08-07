@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { App, ButtonComponent, DropdownComponent, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
+import { App, ButtonComponent, DropdownComponent, FileSystemAdapter, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
 import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './settings';
 import { asRecord, asString, asNumber, asBool, isRecord } from './utils/narrow';
 import type { FilterPreset } from './models/Scene';
@@ -140,6 +140,67 @@ type EmbeddedCanvasConstructor = new (app: App, manifest: Plugin['manifest']) =>
  *
  * Transforms your vault into a powerful book planning tool.
  */
+
+/** Temporary host while Narrative Canvas module loads after a .ncanvas click. */
+class NcanvasBootstrapView extends ItemView {
+    private plugin: SceneCardsPlugin;
+    private booting = false;
+
+    constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin) {
+        super(leaf);
+        this.plugin = plugin;
+    }
+
+    getViewType(): string {
+        return NARRATIVE_CANVAS_VIEW_TYPE;
+    }
+
+    getDisplayText(): string {
+        return t('Canvas');
+    }
+
+    getIcon(): string {
+        return 'layout-dashboard';
+    }
+
+    async onOpen(): Promise<void> {
+        const { contentEl } = this;
+        contentEl.empty();
+        contentEl.createEl('p', { text: t('Loading Narrative Canvas…') });
+        if (this.booting) return;
+        this.booting = true;
+        try {
+            const canvas = await this.plugin.ensureCanvasModuleReady();
+            if (!canvas) {
+                contentEl.empty();
+                contentEl.createEl('p', { text: t('Failed to load Narrative Canvas.') });
+                return;
+            }
+            const state = this.leaf.getViewState();
+            const filePath = typeof (state.state as { file?: unknown } | undefined)?.file === 'string'
+                ? String((state.state as { file: string }).file)
+                : '';
+            const file = filePath
+                ? this.app.vault.getAbstractFileByPath(normalizePath(filePath))
+                : null;
+            if (file instanceof TFile) {
+                // Module re-registered the real view factory — reopen so Canvas mounts.
+                await this.leaf.openFile(file);
+            } else {
+                await this.plugin.openNarrativeCanvas();
+            }
+        } catch (err) {
+            console.error('[NarrativeLab] ncanvas bootstrap failed:', err);
+            contentEl.empty();
+            contentEl.createEl('p', {
+                text: t('Failed to open Narrative Canvas: {err}', { err: String(err) }),
+            });
+        } finally {
+            this.booting = false;
+        }
+    }
+}
+
 export default class SceneCardsPlugin extends Plugin {
     settings: SceneCardsSettings = DEFAULT_SETTINGS;
     sceneManager!: SceneManager;
@@ -351,7 +412,21 @@ export default class SceneCardsPlugin extends Plugin {
             new ResearchView(leaf, this, this.researchManager)
         );
 
-        // Narrative Canvas (~1.9MB) loads lazily on first ncanvas open — not at startup.
+        // Register .ncanvas immediately so file-explorer clicks stay inside Obsidian.
+        // The real NarrativeCanvasView replaces this bootstrap factory once the
+        // vendored module finishes loading (~1.9MB, kept out of the critical path).
+        this.registerView(NARRATIVE_CANVAS_VIEW_TYPE, (leaf) =>
+            new NcanvasBootstrapView(leaf, this)
+        );
+        try {
+            this.registerExtensions(['ncanvas', 'narrativecanvas'], NARRATIVE_CANVAS_VIEW_TYPE);
+        } catch (e) {
+            console.warn('[NarrativeLab] ncanvas extension registration:', e);
+        }
+        // Warm the canvas module in the background after views are registered.
+        void this.ensureCanvasModuleReady().catch((err) => {
+            console.warn('[NarrativeLab] Background Narrative Canvas load failed:', err);
+        });
 
         // Wait for the workspace layout to be ready, then bootstrap projects
         this.app.workspace.onLayoutReady(async () => {
@@ -2759,6 +2834,35 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
+     * Resolve and require the vendored Narrative Canvas CJS bundle.
+     * Relative `./canvas-runtime/...` fails under Electron's renderer require;
+     * use an absolute filesystem path via FileSystemAdapter.
+     */
+    private requireCanvasRuntime(): EmbeddedCanvasConstructor {
+        const rel = normalizePath(`${this.manifest.dir || ''}/canvas-runtime/main.js`);
+        const adapter = this.app.vault.adapter;
+        let modulePath = rel;
+        if (adapter instanceof FileSystemAdapter) {
+            modulePath = adapter.getFullPath(rel);
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any, no-undef -- Electron/Obsidian CJS require
+        const req = (typeof require === 'function' ? require : (window as any).require) as
+            ((id: string) => unknown) | undefined;
+        if (typeof req !== 'function') {
+            throw new Error('require() is unavailable; Narrative Canvas needs the desktop app.');
+        }
+        try {
+            return req(modulePath) as EmbeddedCanvasConstructor;
+        } catch (err) {
+            try {
+                return req('./canvas-runtime/main.js') as EmbeddedCanvasConstructor;
+            } catch {
+                throw err instanceof Error ? err : new Error(String(err));
+            }
+        }
+    }
+
+    /**
      * Boot Narrative Canvas inside this plugin while keeping its settings in a
      * dedicated namespace. This prevents the embedded module from overwriting
      * NarrativeLab's database settings in data.json.
@@ -2770,9 +2874,8 @@ export default class SceneCardsPlugin extends Plugin {
             return;
         }
         this._canvasModuleLoading = (async () => {
-            // Lazy-load vendored Narrative Canvas (~1.9MB) only when ncanvas is used.
-            // eslint-disable-next-line @typescript-eslint/no-require-imports, no-undef -- CJS require for vendored canvas bundle
-            const EmbeddedNarrativeCanvas = require('./canvas-runtime/main.js') as EmbeddedCanvasConstructor;
+            // Lazy-load vendored Narrative Canvas (~1.9MB) from the plugin folder.
+            const EmbeddedNarrativeCanvas = this.requireCanvasRuntime();
             const canvas = new EmbeddedNarrativeCanvas(this.app, this.manifest);
             canvas.loadData = async () => this.settings.narrativeCanvasData ?? {};
             canvas.saveData = async (data: Record<string, unknown>) => {
@@ -2961,7 +3064,7 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
-    private async ensureCanvasModuleReady(): Promise<EmbeddedCanvasModule | null> {
+    async ensureCanvasModuleReady(): Promise<EmbeddedCanvasModule | null> {
         if (!this.canvasModule) {
             try {
                 await this.loadEmbeddedCanvas();
@@ -3049,12 +3152,10 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     async openNarrativeCanvas(preferredPath?: string): Promise<void> {
-        if (!this.canvasModule) {
-            new Notice(t('Narrative Canvas is still loading.'));
-            return;
-        }
+        const canvas = await this.ensureCanvasModuleReady();
+        if (!canvas) return;
         const project = this.sceneManager.activeProject;
-        if (project && this.canvasModule.openOrCreateProjectAtPath) {
+        if (project && canvas.openOrCreateProjectAtPath) {
             const { canvasFolder, candidates } = this.getNcanvasPathsForProject(project);
             const adapter = this.app.vault.adapter;
             await this.ensureVaultFolder(canvasFolder);
@@ -3074,11 +3175,11 @@ export default class SceneCardsPlugin extends Plugin {
             const path = (normalizedPreferred && preferredBelongsToProject && await adapter.exists(normalizedPreferred))
                 ? normalizedPreferred
                 : candidates[0] ?? normalizePath(`${canvasFolder}/${safeTitle}.ncanvas`);
-            await this.canvasModule.openOrCreateProjectAtPath(path, project.title);
+            await canvas.openOrCreateProjectAtPath(path, project.title);
             await this.rememberNcanvasPath(project, path);
             return;
         }
-        await this.canvasModule.openCanvas?.();
+        await canvas.openCanvas?.();
     }
 
     /** Open the per-project NCanvas manager (preferred over the vault-wide canvas picker). */
