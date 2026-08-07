@@ -10,7 +10,9 @@ import { FilterPreset } from './Scene';
  *   Writing/My Novel/Scenes/          (writer-facing)
  *   Writing/My Novel/Library/…        (writer-facing)
  *   Writing/My Novel/Notes/…          (writer-facing)
- *   Writing/My Novel/System/          (plugin data: plotgrid, board, ncanvas, …)
+ *   Writing/My Novel/Canvas/          (authored .ncanvas boards)
+ *   Writing/My Novel/Bases/           (Obsidian Base view files for Library)
+ *   Writing/My Novel/System/          (plugin data: plotgrid, board.json, …)
  *
  * Legacy projects may have Characters/ and Locations/ at the project root;
  * the runtime detects this and uses the old paths transparently.
@@ -127,16 +129,51 @@ export interface SeriesMetadata {
 }
 
 /**
+ * Subfolder inside each project that stores .ncanvas files.
+ * Authored project content — lives at the project root (not under System/).
+ */
+export const DEFAULT_CANVAS_FOLDER = 'Canvas';
+/** Former root folder name — migrated into Canvas/. */
+export const LEGACY_NCANVAS_FOLDER = 'NCanvas';
+/** Former internal location — migrated to the project-root Canvas/ folder. */
+export const LEGACY_SYSTEM_NCANVAS_FOLDER = 'System/NCanvas';
+/**
+ * @deprecated Alias of {@link LEGACY_NCANVAS_FOLDER}. Older code used
+ * `LEGACY_CANVAS_FOLDER = 'Canvas'` when the canonical folder was `NCanvas`.
+ */
+export const LEGACY_CANVAS_FOLDER = LEGACY_NCANVAS_FOLDER;
+/** Obsidian Bases view files for Library browse — project root, not System/. */
+export const DEFAULT_BASES_FOLDER = 'Bases';
+/** Former Bases location under System/ — migrated to project-root Bases/. */
+export const LEGACY_SYSTEM_BASES_FOLDER = 'System/Bases';
+/** Default attachment folder name inside each project root */
+export const DEFAULT_ATTACHMENT_FOLDER = 'Attachments';
+
+/**
  * Build derived folder paths from a root folder and project title.
  */
 export function deriveProjectFolders(
     rootFolder: string,
     title: string
-): { sceneFolder: string; characterFolder: string; locationFolder: string; codexFolder: string; notesFolder: string; sceneNotesFolder: string; archiveFolder: string; researchFolder: string } {
+): {
+    baseFolder: string;
+    sceneFolder: string;
+    characterFolder: string;
+    locationFolder: string;
+    codexFolder: string;
+    notesFolder: string;
+    sceneNotesFolder: string;
+    archiveFolder: string;
+    researchFolder: string;
+    canvasFolder: string;
+    basesFolder: string;
+    attachmentFolder: string;
+} {
     const base = [rootFolder.replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''), title]
         .filter(Boolean)
         .join('/');
     return {
+        baseFolder: base,
         sceneFolder: `${base}/Scenes`,
         characterFolder: `${base}/Library/Characters`,
         locationFolder: `${base}/Library/Locations`,
@@ -145,6 +182,9 @@ export function deriveProjectFolders(
         sceneNotesFolder: `${base}/SceneNotes`,
         archiveFolder: `${base}/Archive`,
         researchFolder: `${base}/Research`,
+        canvasFolder: `${base}/${DEFAULT_CANVAS_FOLDER}`,
+        basesFolder: `${base}/${DEFAULT_BASES_FOLDER}`,
+        attachmentFolder: `${base}/${DEFAULT_ATTACHMENT_FOLDER}`,
     };
 }
 
@@ -156,21 +196,22 @@ export function deriveProjectFolders(
  *  - New layout:  `Any/Path/MyNovel/MyNovel.md`  → base = `Any/Path/MyNovel`
  *  - Legacy:      `Any/Path/MyNovel.md`           → base = `Any/Path/MyNovel`
  */
-/**
- * Subfolder inside each project that stores .ncanvas files.
- * NCanvas files are authored project content and live at the project root.
- */
-export const DEFAULT_CANVAS_FOLDER = 'NCanvas';
-/** Former internal location — migrated back to the project NCanvas folder. */
-export const LEGACY_SYSTEM_NCANVAS_FOLDER = 'System/NCanvas';
-/** Older canvas folder name — still resolved for existing projects */
-export const LEGACY_CANVAS_FOLDER = 'Canvas';
-/** Default attachment folder name inside each project root */
-export const DEFAULT_ATTACHMENT_FOLDER = 'Attachments';
-
 export function deriveProjectFoldersFromFilePath(
     filePath: string
-): { baseFolder: string; sceneFolder: string; characterFolder: string; locationFolder: string; codexFolder: string; notesFolder: string; sceneNotesFolder: string; archiveFolder: string; researchFolder: string; canvasFolder: string; attachmentFolder: string } {
+): {
+    baseFolder: string;
+    sceneFolder: string;
+    characterFolder: string;
+    locationFolder: string;
+    codexFolder: string;
+    notesFolder: string;
+    sceneNotesFolder: string;
+    archiveFolder: string;
+    researchFolder: string;
+    canvasFolder: string;
+    basesFolder: string;
+    attachmentFolder: string;
+} {
     const lastSlash = filePath.lastIndexOf('/');
     const parentDir = lastSlash >= 0 ? filePath.substring(0, lastSlash) : '';
     const basename = (filePath.split('/').pop() ?? '').replace(/\.md$/i, '');
@@ -191,6 +232,7 @@ export function deriveProjectFoldersFromFilePath(
         archiveFolder: `${baseFolder}/Archive`,
         researchFolder: `${baseFolder}/Research`,
         canvasFolder: `${baseFolder}/${DEFAULT_CANVAS_FOLDER}`,
+        basesFolder: `${baseFolder}/${DEFAULT_BASES_FOLDER}`,
         attachmentFolder: `${baseFolder}/${DEFAULT_ATTACHMENT_FOLDER}`,
     };
 }

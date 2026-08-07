@@ -10,7 +10,7 @@ export const BEATS_ZH: Record<string, string> = {
     '{count} scenes': '{count} 个场景',
     'Added {n} act(s)': '已添加 {n} 幕',
     'Added {n} chapter(s) with empty scenes — visible in all views.': '已添加 {n} 章（含空场景）— 可在所有视图中看到。',
-    'Added {n} chapter(s). Group by Chapter in Kanban to see them.': '已添加 {n} 章。在列式看板中按章节分组即可看到。',
+    'Added {n} chapter(s). Group by Chapter in Kanban to see them.': '已添加 {n} 章。在列式白板中按章节分组即可看到。',
     'Created {acts} acts, {chapters} chapters, {scenes} placeholder scene(s).': '已创建 {acts} 幕、{chapters} 章、{scenes} 个占位场景。',
     'Created {acts} acts and {chapters} chapters.': '已创建 {acts} 幕和 {chapters} 章。',
     'Remove {label}': '移除 {label}',

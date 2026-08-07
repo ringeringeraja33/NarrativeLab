@@ -131,9 +131,14 @@ export class CharacterView extends ItemView {
         // own instance and re-loaded only from the project Characters
         // folder on every refresh, wiping out externally-scanned entries.
         this.characterManager = plugin.characterManager;
-        this.characterOverviewMode = getLibraryContentMode(plugin) === 'story-graph'
-            ? 'story-graph'
-            : 'editor';
+        {
+            const mode = getLibraryContentMode(plugin);
+            this.characterOverviewMode = mode === 'story-graph'
+                ? 'story-graph'
+                : mode === 'browse'
+                    ? 'base'
+                    : 'editor';
+        }
     }
 
     getViewType(): string {
@@ -3341,6 +3346,17 @@ export class CharacterView extends ItemView {
             this.selectedCharacter &&
             Date.now() - this._lastSaveTime < CharacterView.SAVE_REFRESH_GRACE_MS
         ) {
+            return;
+        }
+        // Keep the native Bases embed mounted — remounting flashes the table.
+        if (
+            !this.selectedCharacter
+            && this.characterOverviewMode === 'base'
+            && this.containerEl.querySelector('.library-native-base-embed')
+        ) {
+            const title = this.plugin.getActiveProjectDisplayName();
+            this.containerEl.querySelectorAll('.story-line-view-title')
+                .forEach(el => { el.textContent = title; });
             return;
         }
         this.renderView(this.getViewRoot());

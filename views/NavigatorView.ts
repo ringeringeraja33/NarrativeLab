@@ -208,7 +208,16 @@ export class NavigatorView extends ItemView {
     /** Fixed gutter so folder / file titles at the same depth share one text column. */
     private appendNavToggle(parent: HTMLElement, glyph: string): HTMLElement {
         const el = parent.createSpan('sl-nav-gutter-toggle');
-        el.textContent = glyph;
+        // Lucide chevrons scale more reliably than ▸/▾ glyphs (which read smaller than leaf dots).
+        if (glyph === '▾') {
+            el.addClass('is-expanded');
+            setIcon(el, 'chevron-down');
+        } else if (glyph === '▸') {
+            el.addClass('is-collapsed');
+            setIcon(el, 'chevron-right');
+        } else {
+            el.addClass('is-spacer');
+        }
         return el;
     }
 
@@ -319,6 +328,18 @@ export class NavigatorView extends ItemView {
     private renderPlotlinesFolder(parent: HTMLElement, draftScenes: Scene[]): void {
         const tags = this.sceneManager.getPlotlines();
 
+        // Counts must use the active draft only — getAllScenes() also includes
+        // Primary-draft files and makes badges disagree with the list below.
+        const countForPlotline = (tag: string | null): number => {
+            if (tag === UNASSIGNED_PLOTLINE_FILTER) {
+                return draftScenes.filter(scene => !scene.tags || scene.tags.length === 0).length;
+            }
+            if (tag) {
+                return draftScenes.filter(scene => scene.tags?.includes(tag)).length;
+            }
+            return draftScenes.length;
+        };
+
         const label = this.plotlineFilter
             ? `${t('Plotlines')}: ${this.plotlineFilter === UNASSIGNED_PLOTLINE_FILTER ? t('Unassigned') : this.plotlineFilter}`
             : t('Plotlines');
@@ -326,7 +347,7 @@ export class NavigatorView extends ItemView {
             key: 'plotlines',
             label,
             icon: 'waypoints',
-            count: tags.length,
+            count: countForPlotline(this.plotlineFilter),
             depth: 2,
             cls: this.plotlineFilter ? 'sl-nav-plotlines-folder has-filter' : 'sl-nav-plotlines-folder',
             trailing: (el) => {
@@ -359,18 +380,20 @@ export class NavigatorView extends ItemView {
         if (!this.plotlineFilter) allRow.addClass('is-active');
         paintPlotlineRow(allRow, 'var(--text-faint)');
         allRow.createSpan({ text: t('All'), cls: 'sl-nav-plotline-name' });
-        allRow.createSpan({ text: String(draftScenes.length), cls: 'sl-nav-plotline-count' });
+        allRow.createSpan({ text: String(countForPlotline(null)), cls: 'sl-nav-plotline-count' });
         allRow.addEventListener('click', () => {
             this.plotlineFilter = null;
             this.renderList();
         });
 
-        const unassigned = draftScenes.filter(scene => !scene.tags || scene.tags.length === 0);
         const unassignedRow = list.createDiv('sl-nav-plotline-item sl-nav-plotline-unassigned');
         if (this.plotlineFilter === UNASSIGNED_PLOTLINE_FILTER) unassignedRow.addClass('is-active');
         paintPlotlineRow(unassignedRow, 'var(--text-faint)');
         unassignedRow.createSpan({ text: t('Unassigned'), cls: 'sl-nav-plotline-name' });
-        unassignedRow.createSpan({ text: String(unassigned.length), cls: 'sl-nav-plotline-count' });
+        unassignedRow.createSpan({
+            text: String(countForPlotline(UNASSIGNED_PLOTLINE_FILTER)),
+            cls: 'sl-nav-plotline-count',
+        });
         unassignedRow.addEventListener('click', () => {
             this.plotlineFilter = this.plotlineFilter === UNASSIGNED_PLOTLINE_FILTER
                 ? null
@@ -387,9 +410,7 @@ export class NavigatorView extends ItemView {
             if (this.plotlineFilter === tag) row.addClass('is-active');
             paintPlotlineRow(row, color);
             row.createSpan({ text: tag, cls: 'sl-nav-plotline-name' });
-            const count = this.sceneManager.getAllScenes()
-                .filter(s => !s.corkboardNote && !s.inactive && s.tags?.includes(tag)).length;
-            row.createSpan({ text: String(count), cls: 'sl-nav-plotline-count' });
+            row.createSpan({ text: String(countForPlotline(tag)), cls: 'sl-nav-plotline-count' });
             row.addEventListener('click', () => {
                 this.plotlineFilter = this.plotlineFilter === tag ? null : tag;
                 // Keep plotlines open while a filter is active

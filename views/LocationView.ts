@@ -121,9 +121,14 @@ export class LocationView extends ItemView {
         // Use the plugin's shared LocationManager so entries scanned from
         // Additional Source Folders survive view refreshes.
         this.locationManager = plugin.locationManager;
-        this.locationOverviewMode = getLibraryContentMode(plugin) === 'story-graph'
-            ? 'story-graph'
-            : 'editor';
+        {
+            const mode = getLibraryContentMode(plugin);
+            this.locationOverviewMode = mode === 'story-graph'
+                ? 'story-graph'
+                : mode === 'browse'
+                    ? 'base'
+                    : 'editor';
+        }
     }
 
     getViewType(): string { return LOCATION_VIEW_TYPE; }
@@ -2343,6 +2348,17 @@ export class LocationView extends ItemView {
             this.selectedItem &&
             Date.now() - this._lastSaveTime < LocationView.SAVE_REFRESH_GRACE_MS
         ) {
+            return;
+        }
+        // Keep the native Bases embed mounted — remounting flashes the table.
+        if (
+            !this.selectedItem
+            && this.locationOverviewMode === 'base'
+            && this.rootContainer?.querySelector('.library-native-base-embed')
+        ) {
+            const title = this.plugin.getActiveProjectDisplayName();
+            this.rootContainer.querySelectorAll('.story-line-view-title')
+                .forEach(el => { el.textContent = title; });
             return;
         }
         if (this.rootContainer) {

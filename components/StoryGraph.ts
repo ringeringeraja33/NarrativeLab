@@ -12,7 +12,7 @@
  * - Prop nodes: hexagons (pink)
  * - Edges: scene → entity, character ↔ character relationships, character → prop
  *
- * Uses the same spring-physics layout pattern as RelationshipMap.
+ * Force-directed spring layout for Library Story Graph.
  */
 
 import * as obsidian from 'obsidian';

@@ -269,6 +269,18 @@ export class CodexView extends ItemView {
         if (this.selectedEntry && (Date.now() - this._lastSaveTime) < CodexView.SAVE_REFRESH_GRACE_MS) {
             return;
         }
+        // Native Bases already live-update rows. Remounting the embed on every
+        // vault event makes the whole Library table flash.
+        if (
+            !this.selectedEntry
+            && getLibraryContentMode(this.plugin) === 'browse'
+            && this.rootContainer?.querySelector('.library-native-base-embed')
+        ) {
+            const title = this.plugin.getActiveProjectDisplayName();
+            this.rootContainer.querySelectorAll('.story-line-view-title')
+                .forEach(el => { el.textContent = title; });
+            return;
+        }
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 
@@ -2190,6 +2202,71 @@ export class CodexView extends ItemView {
     //  Category management modal
     // ══════════════════════════════════════════════════
 
+    /**
+     * Icon button + popover grid of Lucide icons (shows the glyph, not the name).
+     */
+    private bindCodexIconPicker(
+        host: HTMLElement,
+        getValue: () => string,
+        setValue: (icon: string) => void,
+    ): HTMLButtonElement {
+        host.empty();
+        const btn = host.createEl('button', {
+            cls: 'codex-category-manager-icon-btn clickable-icon',
+            attr: { type: 'button', 'aria-label': t('Icon') },
+        });
+        const paint = () => {
+            btn.empty();
+            obsidian.setIcon(btn, getValue() || 'file-text');
+        };
+        paint();
+
+        btn.addEventListener('click', (evt) => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            activeDocument.querySelectorAll('.codex-icon-picker-pop').forEach(el => el.remove());
+
+            const pop = activeDocument.body.createDiv('codex-icon-picker-pop');
+            const current = getValue() || 'file-text';
+            for (const option of CODEX_ICON_OPTIONS) {
+                const optBtn = pop.createEl('button', {
+                    cls: `codex-icon-picker-option${option.value === current ? ' is-active' : ''}`,
+                    attr: {
+                        type: 'button',
+                        'aria-label': option.label,
+                        title: option.label,
+                    },
+                });
+                obsidian.setIcon(optBtn, option.value);
+                optBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setValue(option.value);
+                    paint();
+                    pop.remove();
+                });
+            }
+
+            const rect = btn.getBoundingClientRect();
+            const pad = 8;
+            pop.setCssStyles({
+                left: `${Math.min(rect.left, window.innerWidth - 280)}px`,
+                top: `${Math.min(rect.bottom + 4, window.innerHeight - 220)}px`,
+            });
+
+            const dismiss = (e: MouseEvent) => {
+                if (e.target instanceof Node && (pop.contains(e.target) || btn.contains(e.target))) return;
+                pop.remove();
+                activeDocument.removeEventListener('mousedown', dismiss, true);
+            };
+            window.setTimeout(() => {
+                activeDocument.addEventListener('mousedown', dismiss, true);
+            }, pad);
+        });
+
+        return btn;
+    }
+
     private openManageCategoriesModal(): void {
         const modal = new Modal(this.app);
         modal.modalEl.addClass('codex-category-manager-modal');
@@ -2363,17 +2440,15 @@ export class CodexView extends ItemView {
                 return draft;
             };
 
-            const iconSelect = row.createEl('select', {
+            const iconHost = row.createDiv({
                 cls: 'codex-category-manager-icon-select',
                 attr: { 'aria-label': t('Icon') },
             });
-            for (const option of CODEX_ICON_OPTIONS) {
-                iconSelect.createEl('option', { text: option.label, value: option.value });
-            }
-            iconSelect.value = category.icon;
-            iconSelect.addEventListener('change', () => {
-                ensureDraft().icon = iconSelect.value;
-            });
+            this.bindCodexIconPicker(
+                iconHost,
+                () => ensureDraft().icon || category.icon,
+                (icon) => { ensureDraft().icon = icon; },
+            );
 
             const nameInput = row.createEl('input', {
                 cls: 'codex-category-manager-name',
@@ -2479,15 +2554,14 @@ export class CodexView extends ItemView {
                 newLabelInput = text.inputEl;
             });
 
-        new Setting(addSection)
-            .setName(t('Icon'))
-            .addDropdown(dd => {
-                for (const opt of CODEX_ICON_OPTIONS) {
-                    dd.addOption(opt.value, opt.label);
-                }
-                dd.setValue(newIcon);
-                dd.onChange(v => { newIcon = v; });
-            });
+        const iconSetting = new Setting(addSection).setName(t('Icon'));
+        iconSetting.controlEl.empty();
+        const addIconHost = iconSetting.controlEl.createDiv('codex-category-manager-icon-select');
+        this.bindCodexIconPicker(
+            addIconHost,
+            () => newIcon,
+            (icon) => { newIcon = icon; },
+        );
 
         new Setting(addSection)
             .addButton(btn => btn

@@ -13,7 +13,7 @@ export const EXTRA_ZH: Record<string, string> = {
     'Add to "{book}"': '加入「{book}」',
     'Add {kind}…': '添加{kind}…',
     'Added Chapter {n}. Group by Chapter to see it.': '已添加第 {n} 章。切换到按章分组即可看到。',
-    'Added {n} chapter(s). Switch to Board view → Kanban → Group by Chapter to see them.': '已添加 {n} 章。切换到白板 → 列式看板 → 按章分组即可看到。',
+    'Added {n} chapter(s). Switch to Board view → Kanban → Group by Chapter to see them.': '已添加 {n} 章。切换到白板 → 列式白板 → 按章分组即可看到。',
     'Applied "{name}" template': '已应用「{name}」模板',
     'Applied "{name}" — created {count} placeholder scene(s)': '已应用「{name}」——创建了 {count} 个占位场景',
     'Applying "{name}" will merge its acts, chapters, and labels into your existing structure. Existing scenes are not modified. Continue?': '应用「{name}」会将其幕、章与标签合并到现有结构。不会修改已有场景。继续？',

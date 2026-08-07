@@ -7,8 +7,10 @@ const LEGACY_JSON_EXTENSION = "json";
 const DEFAULT_PROJECT_EXTENSION = "ncanvas";
 const DEFAULT_LIBRARY_FOLDER_NAME = "Library";
 const LEGACY_CODEX_FOLDER_NAME = "Codex";
-const DEFAULT_CANVAS_FOLDER_NAME = "NCanvas";
-const LEGACY_CANVAS_FOLDER_NAME = "Canvas";
+/** Authored boards / .ncanvas live at project-root Canvas/ (matches NarrativeLab). */
+const DEFAULT_CANVAS_FOLDER_NAME = "Canvas";
+/** Former root folder name — still accepted when resolving project roots. */
+const LEGACY_CANVAS_FOLDER_NAME = "NCanvas";
 const DEFAULT_ATTACHMENT_FOLDER_NAME = "Attachments";
 const SAVED_STATE_VERSION = 1;
 const DEFAULT_FILENAME_TEMPLATE = "{{project title}}-{{YYYY-MM-DD HHmmss}}.ncanvas";
@@ -766,10 +768,28 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
   }
 
   getEffectiveLanguage() {
+    // When embedded in NarrativeLab, always follow NL's shared interface language.
     if (typeof this.getNarrativeLabInterfaceLanguage === "function") {
-      return normalizeUiLanguage(this.getNarrativeLabInterfaceLanguage());
+      try {
+        return normalizeUiLanguage(this.getNarrativeLabInterfaceLanguage());
+      } catch (error) {
+        console.error("[NarrativeCanvas] getNarrativeLabInterfaceLanguage failed:", error);
+      }
     }
     return resolvePluginLanguage(this.settings?.language, this.app);
+  }
+
+  getEffectiveTheme() {
+    // When embedded in NarrativeLab, follow the project's light/dark theme.
+    if (typeof this.getNarrativeLabUiTheme === "function") {
+      try {
+        const theme = this.getNarrativeLabUiTheme();
+        return theme === "light" ? "light" : "dark";
+      } catch (error) {
+        console.error("[NarrativeCanvas] getNarrativeLabUiTheme failed:", error);
+      }
+    }
+    return document.body?.classList?.contains("theme-dark") ? "dark" : "light";
   }
 
   getContentFontCssValue() {
@@ -805,6 +825,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     this.applyContentFontSettings();
     window.NarrativeCanvasApp?.configureAutoSave?.();
     window.NarrativeCanvasApp?.setLanguage?.(this.getEffectiveLanguage());
+    window.NarrativeCanvasApp?.setTheme?.(this.getEffectiveTheme(), { force: true, fromHost: true });
     window.NarrativeCanvasApp?.applySpellCheckSetting?.();
   }
 
@@ -1446,16 +1467,41 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     return "";
   }
 
+  /**
+   * Project-root Canvas/ for native .canvas boards (and .ncanvas).
+   * Prefers an existing Canvas/ or legacy NCanvas/; otherwise creates Canvas/.
+   */
+  getCanvasFolderForProject(projectPath = this.getCurrentProjectPath()) {
+    let projectRoot = getProjectRootFolder(projectPath);
+    if (!projectRoot) {
+      // When Playmode isn't pointing at a .ncanvas yet, derive from the Library note.
+      projectRoot = "";
+    }
+    if (!projectRoot) return "";
+    const canvasFolder = joinVaultPath(projectRoot, DEFAULT_CANVAS_FOLDER_NAME);
+    const legacyFolder = joinVaultPath(projectRoot, LEGACY_CANVAS_FOLDER_NAME);
+    if (getVaultFolder(this.app, canvasFolder)) return canvasFolder;
+    if (getVaultFolder(this.app, legacyFolder)) return legacyFolder;
+    return canvasFolder;
+  }
+
   // Creates a native Obsidian .canvas board for a library entry, seeded with the
   // entry's current preview images and linked files, and embeds it at the end of
-  // the entry's markdown body.
+  // the entry's markdown body. Boards are stored under the project's Canvas/ folder.
   async createCodexCanvas(entry) {
     const name = String(entry?.name || "Board").trim() || "Board";
     const codexFile = normalizeVaultPath(entry?.codexFile);
-    const folder = codexFile.includes("/")
-      ? codexFile.split("/").slice(0, -1).join("/")
-      : this.getCodexFolderForProject();
-    if (folder) await ensureVaultFolder(this.app, folder);
+    let folder = this.getCanvasFolderForProject();
+    if (!folder) {
+      const rootFromCodex = getProjectRootFromCodexFile(codexFile);
+      folder = rootFromCodex
+        ? joinVaultPath(rootFromCodex, DEFAULT_CANVAS_FOLDER_NAME)
+        : "";
+    }
+    if (!folder) {
+      throw new Error("Could not resolve the project Canvas folder for this entry.");
+    }
+    await ensureVaultFolder(this.app, folder);
     const canvasPath = await this.uniqueProjectPath(joinVaultPath(folder, `${sanitizeFileName(name) || "Board"}.canvas`));
     const nodes = [];
     let nodeId = 0;
@@ -2083,6 +2129,12 @@ class NarrativeCanvasView extends ItemView {
         saveProject: (savedStateJson) => this.plugin.saveProjectFile(savedStateJson),
         getAutoSaveIntervalMs: () => this.plugin.getAutoSaveIntervalMs(),
         getLanguage: () => this.plugin.getEffectiveLanguage(),
+        getTheme: () => this.plugin.getEffectiveTheme(),
+        onNarrativeLabUiThemeChanged: (theme) => {
+          if (typeof this.plugin.onNarrativeLabUiThemeChanged === "function") {
+            this.plugin.onNarrativeLabUiThemeChanged(theme);
+          }
+        },
         getRichTextFormat: () => normalizeRichTextFormatSetting(this.plugin.settings?.richTextFormat),
         setRichTextFormat: (format) => this.plugin.updateRichTextFormatSetting(format, { applyToCanvas: false }),
         getSpellCheck: () => Boolean(this.plugin.settings?.spellCheck),
@@ -2116,6 +2168,9 @@ class NarrativeCanvasView extends ItemView {
       if (!canvasApp?.init) throw new Error("Canvas app did not register an initializer.");
       const started = await canvasApp.init();
       if (started === false) throw new Error("Canvas app initialization failed.");
+      // Re-assert host language + theme after init (NL project settings are source of truth).
+      canvasApp.setLanguage?.(this.plugin.getEffectiveLanguage(), { force: true });
+      canvasApp.setTheme?.(this.plugin.getEffectiveTheme(), { force: true, fromHost: true });
     } catch (error) {
       console.error(error);
       const failure = document.createElement("div");
@@ -2573,9 +2628,15 @@ function normalizeRichTextFormatSetting(value) {
   return RICH_TEXT_FORMAT_SETTING_VALUES.has(normalized) ? normalized : DEFAULT_RICH_TEXT_FORMAT_SETTING;
 }
 
+/** Module-scope helper — must stay outside the canvas app IIFE (Plugin methods use it). */
+function normalizeUiLanguage(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized.startsWith("zh") ? "zh" : "en";
+}
+
 function resolvePluginLanguage(setting, app) {
   const normalized = normalizeLanguageSetting(setting);
-  if (normalized !== "auto") return normalized;
+  if (normalized !== "auto") return normalizeUiLanguage(normalized);
   return getObsidianInterfaceLanguage(app);
 }
 
@@ -2804,6 +2865,19 @@ function getProjectRootFolder(projectPath) {
 function getProjectCanvasFolder(projectPath) {
   const projectRoot = getProjectRootFolder(projectPath);
   return projectRoot ? joinVaultPath(projectRoot, DEFAULT_CANVAS_FOLDER_NAME) : "";
+}
+
+/** Walk up from Library/Characters/….md (or Codex/) to the project root. */
+function getProjectRootFromCodexFile(codexPath) {
+  let current = getVaultParentPath(normalizeVaultPath(codexPath));
+  while (current) {
+    const leaf = current.split("/").pop() || "";
+    if (leaf === DEFAULT_LIBRARY_FOLDER_NAME || leaf === LEGACY_CODEX_FOLDER_NAME) {
+      return getVaultParentPath(current);
+    }
+    current = getVaultParentPath(current);
+  }
+  return "";
 }
 
 async function ensureVaultFolder(app, folder) {
@@ -16357,6 +16431,17 @@ function installNarrativeCanvasApp() {
     }
   }
 
+  function getHostTheme() {
+    const host = window.NarrativeCanvasHost;
+    try {
+      const value = host?.getTheme?.();
+      return value === "light" || value === "dark" ? value : "";
+    } catch (error) {
+      console.error(error);
+      return "";
+    }
+  }
+
   const validPanels = new Set(["project", "node", "story"]);
 
   function createInitialRuntimeState() {
@@ -16556,6 +16641,8 @@ function installNarrativeCanvasApp() {
     configureAutoSave,
     setLanguage,
     getLanguage: () => state.language,
+    setTheme,
+    getTheme: () => state.theme,
     createSampleProjectFile,
     createSampleProjectAtPath,
     ensureVaultFile: ensureVaultProjectFile,
@@ -16671,6 +16758,8 @@ function installNarrativeCanvasApp() {
       }
       initialized = true;
       state.language = getInitialLanguage();
+      const hostTheme = getHostTheme();
+      if (hostTheme) state.theme = hostTheme;
       const restoredView = await loadSavedState(false);
       resetHistory();
       renderAll();
@@ -17177,6 +17266,30 @@ function installNarrativeCanvasApp() {
     invalidateDocumentSurfaces();
     invalidateCharacterRenderContext();
     if (initialized) renderAll();
+    return true;
+  }
+
+  function normalizeUiTheme(theme) {
+    return theme === "light" ? "light" : "dark";
+  }
+
+  /** Host / settings entry point — keep NarrativeLab project theme in lockstep. */
+  function setTheme(theme, options = {}) {
+    const nextTheme = normalizeUiTheme(theme);
+    if (state.theme === nextTheme && !options.force) return true;
+    state.theme = nextTheme;
+    if (initialized) {
+      renderShellState();
+      renderTransform();
+      updateGridPosition();
+    }
+    if (options.persist !== false && options.fromHost !== true) {
+      try {
+        setProjectDirty?.(true);
+      } catch {
+        // setProjectDirty may not be ready during early boot
+      }
+    }
     return true;
   }
 
@@ -36065,10 +36178,14 @@ function installNarrativeCanvasApp() {
   }
 
   function toggleTheme() {
-    state.theme = state.theme === "light" ? "dark" : "light";
-    renderShellState();
-    renderTransform();
-    updateGridPosition();
+    const nextTheme = state.theme === "light" ? "dark" : "light";
+    setTheme(nextTheme, { persist: true });
+    // Notify NarrativeLab so project System/plotlines.json stays aligned
+    try {
+      window.NarrativeCanvasHost?.onNarrativeLabUiThemeChanged?.(nextTheme);
+    } catch (error) {
+      console.error("[NarrativeCanvas] onNarrativeLabUiThemeChanged failed:", error);
+    }
   }
 
   function snapCanvasValue(value, options = {}) {
@@ -36547,7 +36664,9 @@ function installNarrativeCanvasApp() {
     state.selectedLinkId = getValidSavedLinkId(ui.selectedLinkId);
     state.panel = getValidSavedPanel(ui.panel, state.selectedNodeId);
     state.activeFileId = fileViews[ui.activeFileId] ? ui.activeFileId : "adventure";
-    state.theme = ui.theme === "light" ? "light" : "dark";
+    // When embedded in NarrativeLab, project uiTheme is the source of truth.
+    const hostTheme = getHostTheme();
+    state.theme = hostTheme || (ui.theme === "light" ? "light" : "dark");
     state.exportImageScale = normalizeExportImageScale(ui.exportImageScale);
     state.snapToGrid = Boolean(ui.snapToGrid);
     applySavedSidebarState(ui.sidebar);

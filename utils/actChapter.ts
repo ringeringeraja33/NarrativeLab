@@ -71,16 +71,6 @@ export function getActDisplayLabel(act: ActChapterValue): string {
 }
 
 /**
- * Returns the act display label with an optional subtitle (e.g. act label).
- * Example: "Prologue: Before the Storm" or "Act 1: Setup"
- */
-export function getActLabelWithSubtitle(act: ActChapterValue, subtitle?: string): string {
-    const label = getActDisplayLabel(act);
-    if (!label) return '';
-    return subtitle ? `${label}: ${subtitle}` : label;
-}
-
-/**
  * Characters that are illegal in folder/file names on Windows.
  * Used by {@link sanitizeActChapterForPath}.
  */

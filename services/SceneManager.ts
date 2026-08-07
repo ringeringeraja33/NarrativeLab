@@ -7,7 +7,7 @@ import { SceneQueryService, ISceneStore } from './SceneQueryService';
 import { formatActChapterPrefix, sanitizeActChapterForPath, compareActChapter } from '../utils/actChapter';
 import type SceneCardsPlugin from '../main';
 import { App, Notice, TFile, TFolder, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
-import { BeatSheetTemplate, FilterPreset, Scene, SceneFilter, SceneStatus, SortConfig, getStatusOrder } from '../models/Scene';
+import { BeatSheetTemplate, FilterPreset, Scene, SceneStatus, getStatusOrder } from '../models/Scene';
 
 /**
  * Normalize a frontmatter `acts` / `chapters` value into a clean sorted
@@ -169,6 +169,24 @@ export class SceneManager implements ISceneStore {
         return this._activeProject;
     }
 
+    /**
+     * Temporarily point `activeProject` at another project without a full
+     * switch (no save/reload). Used by one-shot migrations that resolve paths
+     * via the active project helpers.
+     */
+    async withActiveProject<T>(
+        project: StoryLineProject | null,
+        fn: () => Promise<T>,
+    ): Promise<T> {
+        const previous = this._activeProject;
+        this._activeProject = project;
+        try {
+            return await fn();
+        } finally {
+            this._activeProject = previous;
+        }
+    }
+
     /** Computed scene folder for the active project (falls back to derived default) */
     getSceneFolder(): string {
         if (this._activeProject) return this._activeProject.sceneFolder;
@@ -186,7 +204,7 @@ export class SceneManager implements ISceneStore {
         return this.plugin.settings.storyLineRoot || '';
     }
 
-    /** Computed NCanvas (.ncanvas) folder at the active project root. */
+    /** Computed Canvas/ (.ncanvas) folder at the active project root. */
     getCanvasFolder(): string {
         const base = this.getProjectBaseFolder();
         return base ? `${base}/${DEFAULT_CANVAS_FOLDER}` : DEFAULT_CANVAS_FOLDER;
@@ -413,7 +431,7 @@ export class SceneManager implements ISceneStore {
                     // Skip internal folders that never contain project files
                     const folderName = sub.split('/').pop() ?? '';
                     if (folderName.startsWith('.')
-                        || ['System', 'Scenes', 'Characters', 'Locations', 'Library', 'Codex', 'Notes', 'Archive', 'Research', 'NCanvas', 'Canvas', 'Attachments', 'SceneNotes'].includes(folderName)) continue;
+                        || ['System', 'Scenes', 'Characters', 'Locations', 'Library', 'Codex', 'Notes', 'Archive', 'Research', 'NCanvas', 'Canvas', 'Bases', 'Attachments', 'SceneNotes'].includes(folderName)) continue;
                     await scanFolder(sub);
                 }
             } catch { /* folder unreadable — skip */ }
@@ -577,6 +595,10 @@ export class SceneManager implements ISceneStore {
             const systemFolder = normalizePath(`${baseFolder}/System`);
             await this.ensureFolder(systemFolder);
 
+            // Authored content folders at project root (not under System/)
+            await this.ensureFolder(normalizePath(folders.basesFolder));
+            await this.ensureFolder(normalizePath(folders.canvasFolder));
+
             // Create default data files inside System/
             const viewFiles = ['plotgrid.json', 'timeline.json', 'board.json', 'plotlines.json', 'stats.json', 'characters.json'];
             const createdFiles: string[] = [];
@@ -652,6 +674,11 @@ export class SceneManager implements ISceneStore {
         await this.initialize();
         await this.migrateDraftFoldersIfNeeded();
         await this.reconcileDraftFolders();
+        // Ensure Bases/ sits at project root (not System/ or Library/)
+        try {
+            const { migrateNativeLibraryBasesForActiveProject } = await import('../components/NativeLibraryBase');
+            await migrateNativeLibraryBasesForActiveProject(this.plugin);
+        } catch { /* non-fatal */ }
         await this.plugin.plotlineManager.ensureSeeded();
         await this.plugin.syncNarrativeCanvasToActiveProject();
         // Ask the plugin to refresh any open NarrativeLab views so the UI updates
@@ -1116,26 +1143,6 @@ export class SceneManager implements ISceneStore {
      */
     getScene(filePath: string): Scene | undefined {
         return this.scenes.get(filePath);
-    }
-
-    /**
-     * Apply filters and sorting to scenes
-     * @deprecated Use queryService.getFilteredScenes() directly
-     */
-    getFilteredScenes(filter?: SceneFilter, sort?: SortConfig): Scene[] {
-        return this.queryService.getFilteredScenes(filter, sort);
-    }
-
-    /**
-     * Get scenes grouped by a field (for board view columns)
-     * @deprecated Use queryService.getScenesGroupedBy() directly
-     */
-    getScenesGroupedBy(
-        field: string,
-        filter?: SceneFilter,
-        sort?: SortConfig
-    ): Map<string, Scene[]> {
-        return this.queryService.getScenesGroupedBy(field, filter, sort);
     }
 
     /**
@@ -1884,30 +1891,6 @@ export class SceneManager implements ISceneStore {
         }
     }
 
-    /**
-     * Get unique values for a field (for filter dropdowns)
-     * @deprecated Use queryService.getUniqueValues() directly
-     */
-    getUniqueValues(field: 'act' | 'chapter' | 'pov' | 'status' | 'emotion' | 'location'): string[] {
-        return this.queryService.getUniqueValues(field);
-    }
-
-    /**
-     * Get all unique characters across scenes
-     * @deprecated Use queryService.getAllCharacters() directly
-     */
-    getAllCharacters(): string[] {
-        return this.queryService.getAllCharacters();
-    }
-
-    /**
-     * Get all unique tags
-     * @deprecated Use queryService.getAllTags() directly
-     */
-    getAllTags(): string[] {
-        return this.queryService.getAllTags();
-    }
-
     /** Plotlines defined for the project, including currently empty plotlines. */
     getPlotlines(): string[] {
         const mgr = this.plugin.plotlineManager;
@@ -2088,14 +2071,6 @@ export class SceneManager implements ISceneStore {
             await this.saveProjectFrontmatter(this._activeProject);
         }
         return count;
-    }
-
-    /**
-     * Get project statistics
-     * @deprecated Use queryService.getStatistics() directly
-     */
-    getStatistics() {
-        return this.queryService.getStatistics();
     }
 
     // ────────────────────────────────────
@@ -3379,25 +3354,6 @@ export class SceneManager implements ISceneStore {
             return ordered;
         }
         return this.sortScenesReadingOrder(candidates);
-    }
-
-    /**
-     * Get scenes grouped by field, including empty groups for defined acts/chapters
-     */
-    /**
-     * Get scenes grouped by field, including empty groups for defined acts/chapters
-     * @deprecated Use queryService.getScenesGroupedByWithEmpty() directly
-     */
-    getScenesGroupedByWithEmpty(
-        field: string,
-        filter?: SceneFilter,
-        sort?: SortConfig
-    ): Map<string, Scene[]> {
-        return this.queryService.getScenesGroupedByWithEmpty(
-            field, filter, sort,
-            this.getDefinedActs(),
-            this.getDefinedChapters()
-        );
     }
 
     // --- Private helpers ---

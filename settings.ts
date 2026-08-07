@@ -753,6 +753,13 @@ export interface SceneCardsSettings {
     // are saved into/loaded from the project’s System/plotlines.json
     useProjectColors: boolean;
 
+    /**
+     * Shell theme for NarrativeLab + Narrative Canvas.
+     * `auto` follows Obsidian; `light` / `dark` override for this project.
+     * Persisted in System/plotlines.json (`uiTheme`).
+     */
+    uiTheme: 'auto' | 'light' | 'dark';
+
     // ── Codex settings (active-project working copy) ───
     // Persisted per project in System/library-categories.json — not shared.
     /** IDs of enabled codex categories (e.g. ['items', 'creatures']) */
@@ -997,6 +1004,8 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
 
     useProjectColors: false,
 
+    uiTheme: 'auto' as 'auto' | 'light' | 'dark',
+
     codexEnabledCategories: [],
     libraryCategoryOrder: [],
     libraryHiddenFixedCategories: [],
@@ -1074,7 +1083,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             { id: 'display', label: 'Display' },
             { id: 'colors', label: 'Colors' },
             { id: 'writing', label: 'Writing' },
-            { id: 'export', label: 'Export & Advanced' },
+            { id: 'export', label: 'Converter / Export & Import' },
         ];
         const tabBar = containerEl.createDiv('nl-settings-tabs');
         for (const tab of tabs) {
@@ -1889,6 +1898,34 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         // ═══════════════════════════════════════════
         new Setting(panel).setName(t('Colors')).setHeading();
 
+        // Auto / light / dark — shared by NarrativeLab chrome and Narrative Canvas
+        const themeSetting = new Setting(panel)
+            .setName(t('Interface theme'))
+            .setDesc(t('Follows Obsidian by default. Choose Light or Dark to override for this project and Narrative Canvas.'));
+        const themeRow = themeSetting.controlEl.createDiv({ cls: 'nl-ui-theme-toggle' });
+        themeRow.setCssStyles({ display: 'inline-flex', gap: '6px', flexWrap: 'wrap' });
+        const currentTheme = this.plugin.settings.uiTheme === 'light' || this.plugin.settings.uiTheme === 'dark'
+            ? this.plugin.settings.uiTheme
+            : 'auto';
+        const themeModes: Array<{ id: 'auto' | 'light' | 'dark'; label: string }> = [
+            { id: 'auto', label: t('Auto (follow Obsidian)') },
+            { id: 'light', label: t('Light') },
+            { id: 'dark', label: t('Dark') },
+        ];
+        for (const mode of themeModes) {
+            const btn = themeRow.createEl('button', {
+                cls: `mod-cta nl-ui-theme-btn${currentTheme === mode.id ? ' is-active' : ''}`,
+                text: mode.label,
+                attr: { type: 'button' },
+            });
+            if (currentTheme !== mode.id) btn.removeClass('mod-cta');
+            btn.addEventListener('click', async () => {
+                if (this.plugin.settings.uiTheme === mode.id) return;
+                await this.plugin.setUiTheme(mode.id);
+                this.refreshSettingsView();
+            });
+        }
+
         // --- Tag / Plotline Colors (collapsible) ---
         const colorDetails = panel.createEl('details', { cls: 'story-line-color-section' });
         colorDetails.createEl('summary', { text: t('Plotline Color Scheme') });
@@ -2418,7 +2455,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         // ═══════════════════════════════════════════
         //  Export & Import
         // ═══════════════════════════════════════════
-        new Setting(panel).setName(t('Export & Import')).setHeading();
+        new Setting(panel).setName(t('Converter / Export & Import')).setHeading();
 
         new Setting(panel)
             .setName(t('Scene separator'))

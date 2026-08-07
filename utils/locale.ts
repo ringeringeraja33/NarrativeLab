@@ -337,10 +337,6 @@ export function isCjkStoryLineLocale(locale: StoryLineLocale): boolean {
     return getLocaleProfile(locale).script === 'cjk';
 }
 
-export function hasCjkCharacters(text: string): boolean {
-    return CJK_RANGE.test(text);
-}
-
 export function countReadingCharacters(text: string): number {
     return (text.match(CJK_RANGE_G) || []).length;
 }

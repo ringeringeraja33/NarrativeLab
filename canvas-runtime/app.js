@@ -2352,6 +2352,17 @@ function getHostLanguage() {
   }
 }
 
+function getHostTheme() {
+  const host = window.NarrativeCanvasHost;
+  try {
+    const value = host?.getTheme?.();
+    return value === "light" || value === "dark" ? value : "";
+  } catch (error) {
+    console.error(error);
+    return "";
+  }
+}
+
 const validPanels = new Set(["project", "node", "story"]);
 
 function createInitialRuntimeState() {
@@ -2551,6 +2562,8 @@ window.NarrativeCanvasApp = {
   configureAutoSave,
   setLanguage,
   getLanguage: () => state.language,
+  setTheme,
+  getTheme: () => state.theme,
   createSampleProjectFile,
   ensureVaultFile: ensureVaultProjectFile,
   loadVaultProject: loadCurrentVaultProject,
@@ -2665,6 +2678,8 @@ async function initNarrativeCanvas() {
     }
     initialized = true;
     state.language = getInitialLanguage();
+    const hostTheme = getHostTheme();
+    if (hostTheme) state.theme = hostTheme;
     const restoredView = await loadSavedState(false);
     resetHistory();
     renderAll();
@@ -3171,6 +3186,30 @@ function setLanguage(language, options = {}) {
   invalidateDocumentSurfaces();
   invalidateCharacterRenderContext();
   if (initialized) renderAll();
+  return true;
+}
+
+function normalizeUiTheme(theme) {
+  return theme === "light" ? "light" : "dark";
+}
+
+/** Host / settings entry point — keep NarrativeLab project theme in lockstep. */
+function setTheme(theme, options = {}) {
+  const nextTheme = normalizeUiTheme(theme);
+  if (state.theme === nextTheme && !options.force) return true;
+  state.theme = nextTheme;
+  if (initialized) {
+    renderShellState();
+    renderTransform();
+    updateGridPosition();
+  }
+  if (options.persist !== false && options.fromHost !== true) {
+    try {
+      setProjectDirty?.(true);
+    } catch {
+      // setProjectDirty may not be ready during early boot
+    }
+  }
   return true;
 }
 
@@ -22099,10 +22138,14 @@ function setZoom(value) {
 }
 
 function toggleTheme() {
-  state.theme = state.theme === "light" ? "dark" : "light";
-  renderShellState();
-  renderTransform();
-  updateGridPosition();
+  const nextTheme = state.theme === "light" ? "dark" : "light";
+  setTheme(nextTheme, { persist: true });
+  // Notify NarrativeLab so project System/plotlines.json stays aligned
+  try {
+    window.NarrativeCanvasHost?.onNarrativeLabUiThemeChanged?.(nextTheme);
+  } catch (error) {
+    console.error("[NarrativeCanvas] onNarrativeLabUiThemeChanged failed:", error);
+  }
 }
 
 function snapCanvasValue(value, options = {}) {
@@ -22551,7 +22594,9 @@ function applySavedState(saved) {
   state.selectedLinkId = getValidSavedLinkId(ui.selectedLinkId);
   state.panel = getValidSavedPanel(ui.panel, state.selectedNodeId);
   state.activeFileId = fileViews[ui.activeFileId] ? ui.activeFileId : "adventure";
-  state.theme = ui.theme === "light" ? "light" : "dark";
+  // When embedded in NarrativeLab, project uiTheme is the source of truth.
+  const hostTheme = getHostTheme();
+  state.theme = hostTheme || (ui.theme === "light" ? "light" : "dark");
   state.exportImageScale = normalizeExportImageScale(ui.exportImageScale);
   state.snapToGrid = Boolean(ui.snapToGrid);
   applySavedSidebarState(ui.sidebar);

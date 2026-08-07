@@ -21,7 +21,7 @@ export class NCanvasManagerModal extends Modal {
     constructor(app: App, plugin: SceneCardsPlugin) {
         super(app);
         this.plugin = plugin;
-        this.titleEl.setText(t('NCanvas files'));
+        this.titleEl.setText(t('Canvas files'));
     }
 
     onOpen(): void {
@@ -51,7 +51,7 @@ export class NCanvasManagerModal extends Modal {
 
         new Setting(createSection)
             .setName(t('File name'))
-            .setDesc(t('Creates a blank canvas in this project’s NCanvas folder.'))
+            .setDesc(t('Creates a blank canvas in this project’s Canvas folder.'))
             .addText((text) => {
                 text.setPlaceholder(t('Untitled Canvas'));
                 text.onChange((value) => {
@@ -65,6 +65,22 @@ export class NCanvasManagerModal extends Modal {
                         void this.createBlank();
                     });
             });
+
+        const plotlineSection = contentEl.createDiv({ cls: 'ncanvas-sample-section' });
+        plotlineSection.createEl('h3', { text: t('From plotlines') });
+        plotlineSection.createEl('p', {
+            cls: 'ncanvas-modal-hint',
+            text: t('Turn selected NarrativeLab plotlines into Location Frames and fillable Story Sequences.'),
+        });
+        const fromPlotlinesBtn = plotlineSection.createEl('button', {
+            text: t('Generate from plotlines…'),
+            cls: 'mod-cta',
+            attr: { type: 'button' },
+        });
+        fromPlotlinesBtn.addEventListener('click', () => {
+            this.close();
+            this.plugin.openConverter({ tab: 'plotline' });
+        });
 
         const sampleSection = contentEl.createDiv({ cls: 'ncanvas-sample-section' });
         sampleSection.createEl('h3', { text: t('Guide samples') });

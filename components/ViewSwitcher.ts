@@ -2,7 +2,7 @@
 import { WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
-import { ExportModal } from './ExportModal';
+import { ConverterModal } from './ConverterModal';
 import { isMobile, DESKTOP_ONLY_VIEWS } from './MobileAdapter';
 import { attachTooltip } from './Tooltip';
 import {
@@ -156,13 +156,13 @@ export function renderViewSwitcher(
         cls: 'story-line-view-tab',
         attr: { type: 'button' },
     });
-    attachTooltip(exportTab, t('Export'));
+    attachTooltip(exportTab, t('Converter'));
     const exportIcon = exportTab.createSpan({ cls: 'view-tab-icon' });
-    obsidian.setIcon(exportIcon, 'download');
-    exportTab.createSpan({ cls: 'view-tab-label', text: t('Export') });
+    obsidian.setIcon(exportIcon, 'arrow-left-right');
+    exportTab.createSpan({ cls: 'view-tab-label', text: t('Converter') });
     exportTab.addEventListener('click', (e) => {
         e.preventDefault();
-        new ExportModal(plugin).open();
+        new ConverterModal(plugin).open();
     });
 
     const playmodeActive = activeViewType === NARRATIVE_CANVAS_VIEW_TYPE;

@@ -13,12 +13,6 @@ import { Platform } from 'obsidian';
 /** True on iOS, iPadOS, or Android (Obsidian mobile app) */
 export const isMobile: boolean = Platform.isMobile;
 
-/** True only on iOS / iPadOS */
-export const isIOS: boolean = ((Platform as unknown as Record<string, unknown>).isIos as boolean | undefined) ?? false;
-
-/** True only on Android */
-export const isAndroid: boolean = ((Platform as unknown as Record<string, unknown>).isAndroid as boolean | undefined) ?? false;
-
 /** True on tablet-sized screens (iPad, Android tablets) */
 export const isTablet: boolean = ((Platform as unknown as Record<string, unknown>).isTablet as boolean | undefined) ?? false;
 
@@ -40,14 +34,6 @@ export const DESKTOP_ONLY_VIEWS: Set<string> = new Set([
     PLOTGRID_VIEW_TYPE,
 ]);
 
-/**
- * Character sub-modes that are desktop-only.
- * Browse mode works on mobile; Story Graph is desktop-only.
- */
-export const DESKTOP_ONLY_CHARACTER_MODES: Set<string> = new Set([
-    'story-graph',
-]);
-
 // ── Helpers ───────────────────────────────────────────
 
 /**
@@ -61,11 +47,6 @@ export function applyMobileClass(el: HTMLElement): void {
         if (isTablet) el.addClass('sl-tablet');
     }
 }
-
-/**
- * Minimum touch-target size (px) per Apple HIG / Material Design.
- */
-export const TOUCH_TARGET_PX = 44;
 
 /**
  * Attach touch-based drag-and-drop to a card element on mobile.

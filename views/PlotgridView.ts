@@ -424,11 +424,15 @@ export class PlotgridView extends ItemView {
             this.filtersComponent.render();
         }
 
-        this.scrollAreaEl = this.wrapperEl.createDiv('plot-grid-scroll-area');
+        // Work row: grid scroll + docked cell inspector side-by-side (no overlay).
+        const workArea = this.wrapperEl.createDiv('plot-grid-work-area');
+
+        this.scrollAreaEl = workArea.createDiv('plot-grid-scroll-area');
         this.scrollAreaEl.setCssStyles({
             flex: '1 1 auto',
             overflow: 'auto',
             position: 'relative',
+            minWidth: '0',
         });
         enableDragToPan(this.scrollAreaEl);
 
@@ -440,8 +444,8 @@ export class PlotgridView extends ItemView {
             boxSizing: 'border-box',
         });
 
-        // Inspector sidebar (same pattern as BoardView)
-        this.inspectorEl = this.wrapperEl.createDiv('story-line-inspector-panel');
+        // Docked inspector — shrinks the grid instead of covering cells
+        this.inspectorEl = workArea.createDiv('story-line-inspector-panel pg-cell-inspector');
         this.inspectorEl.setCssStyles({ display: 'none' });
         const sceneManager = this.plugin?.sceneManager as SceneManager | undefined;
         if (sceneManager && this.plugin) {
@@ -1869,11 +1873,7 @@ export class PlotgridView extends ItemView {
                         }));
                         menu.addItem((it) => it.setTitle(t('Edit Cell Text')).onClick(() => this.enterEditMode(cellEl, cell, contentEl)));
                         menu.addItem((it) => it.setTitle(t('Unlink Note')).setIcon('unlink').onClick(() => {
-                            const c = this.data.cells[key];
-                            if (c) c.linkedSceneId = undefined;
-                            this.scheduleSave();
-                            this.renderGrid();
-                            this.refreshOpenCellInspector();
+                            this.unlinkCell(key);
                         }));
                     } else if (linkedScene) {
                         // ── Regular Scene actions ──
@@ -1904,11 +1904,7 @@ export class PlotgridView extends ItemView {
                         }));
                         menu.addItem((it) => it.setTitle(t('Edit Cell Text')).onClick(() => this.enterEditMode(cellEl, cell, contentEl)));
                         menu.addItem((it) => it.setTitle(t('Unlink Scene')).setIcon('unlink').onClick(() => {
-                            const c = this.data.cells[key];
-                            if (c) c.linkedSceneId = undefined;
-                            this.scheduleSave();
-                            this.renderGrid();
-                            this.refreshOpenCellInspector();
+                            this.unlinkCell(key);
                         }));
                         menu.addItem((it) => it.setTitle(t('Delete Scene')).setIcon('trash').onClick(async () => {
                             openConfirmModal(this.app, {
@@ -1920,17 +1916,26 @@ export class PlotgridView extends ItemView {
                                 },
                             });
                         }));
+                    } else if (cell.linkedSceneId) {
+                        // Linked vault file that is not an NL scene/note (e.g. Research, arbitrary .md)
+                        const linkedFile = this.resolveLinkedVaultFile(cell.linkedSceneId);
+                        menu.addItem((it) => it.setTitle(t('Open Note')).setIcon('file-text').onClick(() => {
+                            this.openVaultFile(cell.linkedSceneId as string);
+                        }));
+                        menu.addItem((it) => it.setTitle(t('Edit Cell Text')).onClick(() => this.enterEditMode(cellEl, cell, contentEl)));
+                        menu.addItem((it) => it.setTitle(t('Unlink Note')).setIcon('unlink').onClick(() => {
+                            this.unlinkCell(key);
+                        }));
+                        if (!linkedFile) {
+                            menu.addItem((it) => it.setTitle(t('Linked file not found')).setDisabled(true));
+                        }
                     } else {
                         // No linked scene — edit + link / convert into project folders
                         menu.addItem((it) => it.setTitle(t('Edit Cell')).onClick(() => this.enterEditMode(cellEl, cell, contentEl)));
                         menu.addSeparator();
                         menu.addItem((it) => it.setTitle(t('Link Note…')).setIcon('link').onClick(() => {
                             this.openNoteLinkModal((path) => {
-                                const c = this.data.cells[key];
-                                if (c) c.linkedSceneId = path;
-                                this.scheduleSave();
-                                this.renderGrid();
-                                this.refreshOpenCellInspector();
+                                this.linkFileToCell(this.data.cells[key] ?? cell, path);
                             });
                         }));
                         if (scMgr) {
@@ -3434,13 +3439,40 @@ export class PlotgridView extends ItemView {
         return undefined;
     }
 
+    /** Resolve a cell's linkedSceneId to a vault file (any markdown, not only NL scenes). */
+    private resolveLinkedVaultFile(linkedPath?: string): TFile | null {
+        if (!linkedPath) return null;
+        const f = this.app.vault.getAbstractFileByPath(linkedPath);
+        return f instanceof TFile ? f : null;
+    }
+
+    private ensureCellInData(cell: CellData): CellData {
+        const existing = this.data.cells[cell.id];
+        if (existing) return existing;
+        this.data.cells[cell.id] = cell;
+        return cell;
+    }
+
     private linkFileToCell(cell: CellData, filePath: string): void {
-        const liveCell = this.data.cells[cell.id];
-        if (liveCell) liveCell.linkedSceneId = filePath;
-        else cell.linkedSceneId = filePath;
+        const liveCell = this.ensureCellInData(cell);
+        liveCell.linkedSceneId = filePath;
         this.scheduleSave();
         this.renderGrid();
         this.refreshOpenCellInspector();
+    }
+
+    private unlinkCell(cellKey: string): void {
+        const c = this.data.cells[cellKey];
+        if (c) c.linkedSceneId = undefined;
+        this.scheduleSave();
+        this.renderGrid();
+        this.refreshOpenCellInspector();
+    }
+
+    private openVaultFile(path: string): void {
+        const f = this.resolveLinkedVaultFile(path);
+        if (f) this.app.workspace.getLeaf('tab').openFile(f, { state: { mode: 'source', source: false } });
+        else new Notice(t('Linked file not found'));
     }
 
     /**
@@ -4145,7 +4177,7 @@ export class PlotgridView extends ItemView {
 
         const el = this.inspectorEl;
         el.empty();
-        el.setCssStyles({ display: 'block' });
+        this.openCellInspectorPanel();
         el.addClass('story-line-inspector');
 
         const header = el.createDiv('inspector-header');
@@ -4278,7 +4310,7 @@ export class PlotgridView extends ItemView {
 
         const el = this.inspectorEl;
         el.empty();
-        el.setCssStyles({ display: 'block' });
+        this.openCellInspectorPanel();
         el.addClass('story-line-inspector');
 
         const row = this.data.rows[rowIndex];
@@ -4288,13 +4320,15 @@ export class PlotgridView extends ItemView {
         const cellKey = `${row?.id}-${col?.id}`;
         const getCell = (): CellData => this.data.cells[cellKey] ?? cell;
 
-        // Resolve linked scene from live cell data (auto-note may have just linked it)
+        // Resolve linked scene / vault file from live cell data
         const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
         const liveForLink = this.data.cells[cellKey] ?? cell;
-        const linkedScene = (liveForLink.linkedSceneId && scMgr)
-            ? scMgr.getScene(liveForLink.linkedSceneId)
-            : undefined;
+        const linkedPath = liveForLink.linkedSceneId;
+        const linkedScene = (linkedPath && scMgr) ? scMgr.getScene(linkedPath) : undefined;
+        const linkedVaultFile = this.resolveLinkedVaultFile(linkedPath);
         const isLinkedNote = !!(linkedScene && linkedScene.corkboardNote);
+        // Any linked path counts — not only NL Notes/Scenes (Research / arbitrary .md too)
+        const hasVaultLink = !!linkedPath;
 
         // ── Header ──
         const header = el.createDiv('inspector-header');
@@ -4447,23 +4481,25 @@ export class PlotgridView extends ItemView {
         // ── Linked note / scene + actions ──
         const linkSection = cellBody.createDiv('inspector-section');
         const actions = linkSection.createDiv('pg-cell-link-actions');
-        actions.setCssStyles({
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: '8px',
-            marginTop: '8px',
-        });
 
-        if (linkedScene) {
+        if (linkedScene || hasVaultLink) {
+            const treatAsNote = isLinkedNote || !linkedScene;
             linkSection.createSpan({
                 cls: 'inspector-label',
-                text: isLinkedNote ? t('Linked Note:') : t('Linked Scene:'),
+                text: treatAsNote ? t('Linked Note:') : t('Linked Scene:'),
             });
+            const linkLabel = linkedScene
+                ? (linkedScene.title
+                    || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
+                    || 'Untitled')
+                : (linkedVaultFile?.basename
+                    || linkedPath!.split('/').pop()?.replace(/\.md$/i, '')
+                    || linkedPath!);
             const sceneLink = linkSection.createEl('a', {
                 cls: 'inspector-scene-link',
-                text: linkedScene.title
-                    || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
-                    || 'Untitled',
+                text: linkedVaultFile || linkedScene
+                    ? linkLabel
+                    : `${linkLabel} (${t('Linked file not found')})`,
             });
             sceneLink.setCssStyles({
                 display: 'block',
@@ -4474,29 +4510,25 @@ export class PlotgridView extends ItemView {
             // Keep actions below the link
             linkSection.appendChild(actions);
             sceneLink.addEventListener('click', () => {
-                const f = this.app.vault.getAbstractFileByPath(linkedScene.filePath) as TFile | null;
-                if (f) this.app.workspace.getLeaf('tab').openFile(f, { state: { mode: 'source', source: false } });
+                this.openVaultFile((linkedScene?.filePath || linkedPath) as string);
             });
 
             // Cell tab: only unlink. Deleting the note file lives on the Note/Scene tab
             // (and context menu) so we don't show two near-identical destructive actions here.
             const unlinkBtn = actions.createEl('button', {
-                text: isLinkedNote ? t('Unlink Note') : t('Unlink Scene'),
+                text: treatAsNote ? t('Unlink Note') : t('Unlink Scene'),
                 attr: {
                     type: 'button',
-                    title: isLinkedNote
+                    title: treatAsNote
                         ? t('Keep the note file; only remove it from this cell')
                         : t('Keep the scene file; only remove it from this cell'),
                 },
             });
             unlinkBtn.addEventListener('click', () => {
-                const c = this.data.cells[cellKey];
-                if (c) c.linkedSceneId = undefined;
-                this.scheduleSave();
-                this.renderGrid();
+                this.unlinkCell(cellKey);
                 // Stay on cell details, but drop the Note/Scene tab
                 this.refreshOpenCellInspector();
-                if (isLinkedNote) new Notice(t('Note unlinked from cell'));
+                if (treatAsNote) new Notice(t('Note unlinked from cell'));
             });
         } else {
             // Unlinked cell — link any vault note, or convert into Notes / Scenes / Research
@@ -4507,8 +4539,13 @@ export class PlotgridView extends ItemView {
                 return liveCell;
             };
 
-            const makeAccentBtn = (label: string, title: string, onClick: () => void | Promise<void>) => {
-                const btn = actions.createEl('button', {
+            const makeAccentBtn = (
+                parent: HTMLElement,
+                label: string,
+                title: string,
+                onClick: () => void | Promise<void>,
+            ) => {
+                const btn = parent.createEl('button', {
                     cls: 'mod-cta pg-cell-cta-btn',
                     text: label,
                     attr: { type: 'button', title },
@@ -4517,18 +4554,21 @@ export class PlotgridView extends ItemView {
                 return btn;
             };
 
-            makeAccentBtn(t('Link Note…'), t('Link any markdown file in the vault to this cell'), () => {
+            // Link is its own row — visually separate from convert actions
+            const linkRow = actions.createDiv('pg-cell-link-row');
+            makeAccentBtn(linkRow, t('Link Note…'), t('Link any markdown file in the vault to this cell'), () => {
                 syncTextarea();
                 this.openNoteLinkModal((path) => {
-                    const c = this.data.cells[cellKey] ?? cell;
-                    c.linkedSceneId = path;
-                    this.scheduleSave();
-                    this.renderGrid();
+                    const c = this.ensureCellInData(this.data.cells[cellKey] ?? cell);
+                    this.linkFileToCell(c, path);
                     this.showCellInspector(rowIndex, colIndex, c);
                 });
             });
 
+            // Convert buttons share one group below
+            const convertGroup = actions.createDiv('pg-cell-convert-group');
             makeAccentBtn(
+                convertGroup,
                 t('Convert to Notes'),
                 t('Create a Notes/ file from this cell and link it'),
                 async () => {
@@ -4544,6 +4584,7 @@ export class PlotgridView extends ItemView {
             );
 
             makeAccentBtn(
+                convertGroup,
                 t('Convert to Scene'),
                 t('Create a Scenes/ file from this cell and link it'),
                 async () => {
@@ -4559,6 +4600,7 @@ export class PlotgridView extends ItemView {
             );
 
             makeAccentBtn(
+                convertGroup,
                 t('Convert to Research'),
                 t('Create a Research/ file from this cell and link it'),
                 async () => {
@@ -4689,11 +4731,19 @@ export class PlotgridView extends ItemView {
         }
     }
 
+    /** Show the docked inspector beside the grid (flex row, not overlay). */
+    private openCellInspectorPanel(): void {
+        if (!this.inspectorEl) return;
+        this.inspectorEl.setCssStyles({ display: 'flex' });
+        this.wrapperEl?.addClass('is-inspector-open');
+    }
+
     private hideCellInspector(): void {
         if (this.inspectorEl) {
             this.inspectorEl.empty();
             this.inspectorEl.setCssStyles({ display: 'none' });
         }
+        this.wrapperEl?.removeClass('is-inspector-open');
     }
 }
 

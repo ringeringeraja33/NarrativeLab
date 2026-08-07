@@ -738,16 +738,10 @@ export const BUILTIN_STATUS_CONFIG: Record<string, { label: string; color: strin
     final: { label: 'Final', color: 'var(--sl-status-final, #F44336)', icon: 'check-circle' },
 };
 
-/** @deprecated Use getStatusConfig() for dynamic access. Kept for backward compatibility. */
-export const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string }> = BUILTIN_STATUS_CONFIG;
-
 /**
  * Built-in status order for sorting
  */
 export const BUILTIN_STATUS_ORDER: SceneStatus[] = ['idea', 'outlined', 'draft', 'written', 'revised', 'final'];
-
-/** @deprecated Use getStatusOrder() for dynamic access. Kept for backward compatibility. */
-export const STATUS_ORDER: SceneStatus[] = BUILTIN_STATUS_ORDER;
 
 /**
  * Default fallback config for unknown/custom statuses without explicit config.

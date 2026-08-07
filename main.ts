@@ -91,8 +91,8 @@ import {
     readLibraryCategorySettings,
 } from './services/LibraryCategorySync';
 import { QuickAddModal } from './components/QuickAddModal';
-import { ExportModal } from './components/ExportModal';
-import { migrateNativeLibraryBasesForActiveProject } from './components/NativeLibraryBase';
+import { ConverterModal, type ConverterTab } from './components/ConverterModal';
+import { migrateNativeLibraryBasesForAllProjects } from './components/NativeLibraryBase';
 import { migrateLibraryAttachmentsForAllProjects } from './services/LibraryAttachmentMigration';
 import {
     NCanvasManagerModal,
@@ -128,6 +128,9 @@ type EmbeddedCanvasModule = Plugin & {
     getProjectAttachmentFolderName?: () => string;
     /** NarrativeLab owns the interface language when Canvas is embedded. */
     getNarrativeLabInterfaceLanguage?: () => UiLanguage;
+    /** NarrativeLab owns light/dark UI theme when Canvas is embedded. */
+    getNarrativeLabUiTheme?: () => 'light' | 'dark';
+    onNarrativeLabUiThemeChanged?: (theme: 'light' | 'dark') => void;
 };
 
 type EmbeddedCanvasConstructor = new (app: App, manifest: Plugin['manifest']) => EmbeddedCanvasModule;
@@ -205,9 +208,14 @@ export default class SceneCardsPlugin extends Plugin {
     private spellcheckObserver: MutationObserver | null = null;
     /** Applies the selected language to dynamically rendered NarrativeLab UI. */
     private uiLanguageObserver: MutationObserver | null = null;
+    /** Keeps Narrative Canvas in sync when Obsidian appearance changes (uiTheme = auto). */
+    private uiThemeObserver: MutationObserver | null = null;
+    private lastObservedObsidianTheme: 'light' | 'dark' | null = null;
 
     async onload(): Promise<void> {
         await this.loadSettings();
+        this.applyUiTheme();
+        this.observeObsidianUiTheme();
         setActiveUiLanguage(this.getEffectiveInterfaceLanguage());
         registerCustomStatuses(this.settings.customStatuses || []);
         this.applyImageSizingVariables();
@@ -368,9 +376,9 @@ export default class SceneCardsPlugin extends Plugin {
             await this.sceneManager.initialize();
             // Migrate legacy data from data.json into project frontmatter
             await this.migrateProjectDataFromSettings();
-            // Native Base files are persistent view data; keep them out of
-            // user-facing Library folders and preserve them under System/Bases.
-            await migrateNativeLibraryBasesForActiveProject(this);
+            // Native Base files live at project-root Bases/ (migrated out of
+            // Library/ and legacy System/Bases/) — run for every project.
+            await migrateNativeLibraryBasesForAllProjects(this);
             // Ensure Library/<Category>/Attachments exists, then move
             // library-referenced portraits out of project-root Attachments.
             try {
@@ -397,8 +405,7 @@ export default class SceneCardsPlugin extends Plugin {
             // Scan scene bodies for wikilinks after entities are loaded
             this.linkScanner.rebuildLookups(this.settings.characterAliases);
             this.linkScanner.scanAll(this.sceneManager.getAllScenes());
-            // Ensure a plotgrid file exists for the active project (or default location)", "oldString": "        this.app.workspace.onLayoutReady(async () => {\n            await this.bootstrapProjects();\n            // Ensure a plotgrid file exists for the active project (or default location)
-            // (removed — createPlotGridIfMissing was causing race-condition overwrites)
+            // (createPlotGridIfMissing removed — it caused race-condition overwrites)
 
             // Initialize writing tracker from per-project System/stats.json
             const stats = this.sceneManager.queryService.getStatistics();
@@ -424,7 +431,7 @@ export default class SceneCardsPlugin extends Plugin {
         });
 
         // Ribbon icons — open project chooser (load/create) so users can switch projects
-        this.addRibbonIcon('layout-grid', t('NarrativeLab projects'), () => {
+        this.addRibbonIcon('book-open-text', t('NarrativeLab projects'), () => {
             const modal = new ProjectSelectModal(this.app, this);
             modal.open();
         });
@@ -508,7 +515,7 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.addCommand({
             id: 'manage-ncanvas-files',
-            name: t('Manage NCanvas files'),
+            name: t('Manage Canvas files'),
             callback: () => this.openNCanvasManager(),
         });
 
@@ -591,8 +598,16 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.addCommand({
             id: 'export-project',
-            name: t('Export project'),            callback: () => {
-                new ExportModal(this).open();
+            name: t('Open converter'),
+            callback: () => {
+                this.openConverter();
+            },
+        });
+        this.addCommand({
+            id: 'open-converter',
+            name: t('Open converter'),
+            callback: () => {
+                this.openConverter();
             },
         });
 
@@ -695,42 +710,8 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.addCommand({
             id: 'import-scrivener',
-            name: 'Import scrivener project',
-            callback: async () => {
-                const { ScrivenerImporter } = await import('./services/ScrivenerImporter');
-                if (!ScrivenerImporter.isAvailable()) {
-                    new Notice(t('Scrivener import is only available on desktop.'));
-                    return;
-                }
-                let remote: { dialog: { showOpenDialog: (opts: unknown) => Promise<{ canceled: boolean; filePaths?: string[] }> } } | undefined;
-                const win = window as unknown as { require?: (m: string) => unknown };
-                try { remote = win.require?.('@electron/remote') as typeof remote; }
-                catch { try { remote = (win.require?.('electron') as { remote: typeof remote })?.remote; } catch { /* */ } }
-                if (!remote) { new Notice(t('File dialog not available.')); return; }
-
-                const result = await remote.dialog.showOpenDialog({
-                    title: t('Select Scrivener Project (.scriv)'),
-                    properties: ['openDirectory', 'openFile'],
-                    filters: [
-                        { name: 'Scrivener Project', extensions: ['scriv'] },
-                    ],
-                });
-                if (result.canceled || !result.filePaths?.length) return;
-                const scrivPath = result.filePaths[0];
-                if (!scrivPath.endsWith('.scriv')) {
-                    new Notice(t('Please select a .scriv folder.')); return;
-                }
-                new Notice(t('Importing Scrivener project…'));
-                try {
-                    const importer = new ScrivenerImporter(this.app, this);
-                    const r = await importer.import(scrivPath);
-                    const parts = [`${r.scenesImported} scenes`, `${r.charactersImported} characters`, `${r.locationsImported} locations`];
-                    if (r.filesImported > 0) parts.push(`${r.filesImported} files`);
-                    new Notice(t('Imported "{title}": {parts}', { title: r.projectTitle, parts: parts.join(', ') }), 8000);
-                } catch (err: unknown) {
-                    new Notice(t('Import failed: ') + (err instanceof Error ? err.message : String(err)));
-                }
-            },
+            name: t('Import Scrivener project'),
+            callback: () => { void this.runScrivenerImport(); },
         });
 
         // Issue #83 \u2014 turn an arbitrary markdown note into a scene.
@@ -791,9 +772,16 @@ export default class SceneCardsPlugin extends Plugin {
                 if (file instanceof TFile) {
                     if (file.extension.toLowerCase() === 'base') return;
                     if (this._activeFieldWrites.has(normalizePath(file.path))) return;
+                    const filePath = normalizePath(file.path);
+                    // System/*.json writes must not thrash open views (stats,
+                    // digests, plotlines, etc. are saved during refresh itself).
+                    const systemFolder = normalizePath(this.getProjectSystemFolder() || '');
+                    if (systemFolder
+                        && (filePath === systemFolder || filePath.startsWith(`${systemFolder}/`))) {
+                        return;
+                    }
                     invalidateAllEntityCaches(file.path);
                     const libraryRoot = normalizePath(this.sceneManager.getCodexFolder());
-                    const filePath = normalizePath(file.path);
                     if (file.extension.toLowerCase() === 'md'
                         && libraryRoot
                         && (filePath === libraryRoot || filePath.startsWith(`${libraryRoot}/`))) {
@@ -1262,18 +1250,30 @@ export default class SceneCardsPlugin extends Plugin {
 
     getActiveProjectDisplayName(): string {
         const project = this.sceneManager?.activeProject;
-        const manifestName = project?.filePath
+        if (!project) return t('No project selected');
+        const title = project.title?.trim();
+        if (title) return title;
+        const manifestName = project.filePath
             ?.split('/')
             .pop()
             ?.replace(/\.md$/i, '')
             ?.trim();
-        return manifestName || project?.title?.trim() || 'NarrativeLab';
+        return manifestName || t('No project selected');
     }
 
     async setInterfaceLanguage(value: UiLanguageSetting): Promise<void> {
         this.settings.interfaceLanguage = normalizeUiLanguageSetting(value);
         const language = this.getEffectiveInterfaceLanguage();
         setActiveUiLanguage(language);
+        // Keep embedded Narrative Canvas settings in lockstep with NL.
+        const canvasSettings = (this.settings.narrativeCanvasData as { settings?: { language?: string } } | undefined)?.settings;
+        if (canvasSettings) canvasSettings.language = language;
+        if (this.canvasModule) {
+            const moduleSettings = (this.canvasModule as { settings?: { language?: string } }).settings;
+            if (moduleSettings) moduleSettings.language = language;
+            const notify = (this.canvasModule as { notifyCanvasSettingsChanged?: () => void }).notifyCanvasSettingsChanged;
+            notify?.call(this.canvasModule);
+        }
         await this.saveSettings();
         await this.refreshOpenViews();
         localizePluginSubtree(activeDocument.body);
@@ -1308,6 +1308,10 @@ export default class SceneCardsPlugin extends Plugin {
             this.saveProjectSystemData();
         } catch { /* best effort */ }
 
+        try {
+            activeDocument.body?.classList.remove('narrative-lab-theme-light', 'narrative-lab-theme-dark');
+        } catch { /* best effort */ }
+
         if (this.nativeTooltipObserver) {
             this.nativeTooltipObserver.disconnect();
             this.nativeTooltipObserver = null;
@@ -1319,6 +1323,10 @@ export default class SceneCardsPlugin extends Plugin {
         if (this.uiLanguageObserver) {
             this.uiLanguageObserver.disconnect();
             this.uiLanguageObserver = null;
+        }
+        if (this.uiThemeObserver) {
+            this.uiThemeObserver.disconnect();
+            this.uiThemeObserver = null;
         }
 
         // Clean up any floating lightbox windows left on activeDocument.body
@@ -1531,6 +1539,10 @@ export default class SceneCardsPlugin extends Plugin {
         }
         // Snapshot the global colour settings so we can restore them when
         // switching to a project that has no per-project overrides.
+        // Default UI theme: follow Obsidian unless explicitly light/dark
+        if (this.settings.uiTheme !== 'light' && this.settings.uiTheme !== 'dark' && this.settings.uiTheme !== 'auto') {
+            this.settings.uiTheme = 'auto';
+        }
         this._globalColorDefaults = {
             colorScheme: this.settings.colorScheme,
             plotlineHue: this.settings.plotlineHue,
@@ -1543,6 +1555,7 @@ export default class SceneCardsPlugin extends Plugin {
             stickyNoteOverrides: { ...(this.settings.stickyNoteOverrides || {}) },
             stickyNoteFontColorLight: this.settings.stickyNoteFontColorLight,
             stickyNoteFontColorDark: this.settings.stickyNoteFontColorDark,
+            uiTheme: this.settings.uiTheme,
         };
         // Library categories used to live in global data.json and leaked across
         // projects. Keep one seed for first-time per-project migration.
@@ -1552,7 +1565,7 @@ export default class SceneCardsPlugin extends Plugin {
     /** Per-project field keys that live in System/ files, not data.json */
     private static readonly PROJECT_DATA_KEYS: string[] = [
         'tagColors', 'tagTypeOverrides', 'characterAliases', 'ignoredCharacters',
-        'writingTrackerData', 'useProjectColors',
+        'writingTrackerData', 'useProjectColors', 'uiTheme',
         // Legacy plotgrid data stored directly in data.json (before file-based storage)
         'rows', 'columns', 'cells', 'zoom', 'stickyHeaders',
         // Legacy / per-project keys that don't belong in global settings
@@ -1561,6 +1574,73 @@ export default class SceneCardsPlugin extends Plugin {
         'codexEnabledCategories', 'codexCustomCategories', 'libraryCategoryOrder',
         'libraryHiddenFixedCategories', 'codexDeletedPresetCategories',
     ];
+
+    /** Obsidian appearance → NL/ncanvas light|dark. */
+    detectObsidianUiTheme(): 'light' | 'dark' {
+        return activeDocument.body?.classList.contains('theme-dark') ? 'dark' : 'light';
+    }
+
+    /** Resolved light|dark used by chrome + Narrative Canvas (auto → Obsidian). */
+    getEffectiveUiTheme(): 'light' | 'dark' {
+        if (this.settings.uiTheme === 'light' || this.settings.uiTheme === 'dark') {
+            return this.settings.uiTheme;
+        }
+        return this.detectObsidianUiTheme();
+    }
+
+    /**
+     * Set project UI theme preference (auto / light / dark) and persist.
+     * Canvas toggle passes light|dark and locks the project off auto.
+     */
+    async setUiTheme(theme: 'auto' | 'light' | 'dark', opts?: { skipCanvas?: boolean }): Promise<void> {
+        const next = theme === 'light' || theme === 'dark' || theme === 'auto' ? theme : 'auto';
+        this.settings.uiTheme = next;
+        // Keep global snapshot when not using project-specific colors
+        if (!this.settings.useProjectColors) {
+            this._globalColorDefaults.uiTheme = next;
+        }
+        this.applyUiTheme();
+        if (!opts?.skipCanvas) {
+            const resolved = this.getEffectiveUiTheme();
+            (window as unknown as {
+                NarrativeCanvasApp?: { setTheme?: (t: 'light' | 'dark', o?: { force?: boolean; fromHost?: boolean }) => unknown };
+            }).NarrativeCanvasApp?.setTheme?.(resolved, { force: true, fromHost: true });
+        }
+        // Theme is CSS-driven — do not remount open views (would flash / reset canvas).
+        await this.saveSettings();
+    }
+
+    /**
+     * Apply project theme override classes. In `auto`, remove them so NL
+     * chrome (including sidebars) follows Obsidian’s global appearance.
+     */
+    applyUiTheme(): void {
+        const body = activeDocument.body;
+        if (!body) return;
+        const prefer = this.settings.uiTheme;
+        const override = prefer === 'light' || prefer === 'dark' ? prefer : null;
+        body.classList.toggle('narrative-lab-theme-light', override === 'light');
+        body.classList.toggle('narrative-lab-theme-dark', override === 'dark');
+    }
+
+    /** When uiTheme is auto, push Obsidian appearance changes to Narrative Canvas. */
+    private observeObsidianUiTheme(): void {
+        const body = activeDocument.body;
+        if (!body) return;
+        this.lastObservedObsidianTheme = this.detectObsidianUiTheme();
+        this.uiThemeObserver?.disconnect();
+        this.uiThemeObserver = new MutationObserver(() => {
+            const next = this.detectObsidianUiTheme();
+            if (next === this.lastObservedObsidianTheme) return;
+            this.lastObservedObsidianTheme = next;
+            if (this.settings.uiTheme !== 'auto') return;
+            this.applyUiTheme();
+            (window as unknown as {
+                NarrativeCanvasApp?: { setTheme?: (t: 'light' | 'dark', o?: { force?: boolean; fromHost?: boolean }) => unknown };
+            }).NarrativeCanvasApp?.setTheme?.(next, { force: true, fromHost: true });
+        });
+        this.uiThemeObserver.observe(body, { attributes: true, attributeFilter: ['class'] });
+    }
 
     async saveSettings(): Promise<void> {
         this.applyImageSizingVariables();
@@ -1589,6 +1669,8 @@ export default class SceneCardsPlugin extends Plugin {
             // When using per-project colours, restore global defaults into
             // data.json so the global values are not overwritten by the
             // project-specific ones currently in memory.
+            // uiTheme is always project-scoped — keep a global default for new projects
+            toSave.uiTheme = this._globalColorDefaults.uiTheme ?? 'auto';
             if (this.settings.useProjectColors && Object.keys(this._globalColorDefaults).length > 0) {
                 const g = this._globalColorDefaults;
                 toSave.colorScheme = g.colorScheme;
@@ -1617,6 +1699,7 @@ export default class SceneCardsPlugin extends Plugin {
                     stickyNoteOverrides: { ...(this.settings.stickyNoteOverrides || {}) },
                     stickyNoteFontColorLight: this.settings.stickyNoteFontColorLight,
                     stickyNoteFontColorDark: this.settings.stickyNoteFontColorDark,
+                    uiTheme: this.settings.uiTheme,
                 };
             }
         }
@@ -2012,6 +2095,10 @@ export default class SceneCardsPlugin extends Plugin {
             }
             if (typeof pc.stickyNoteFontColorLight === 'string') this.settings.stickyNoteFontColorLight = pc.stickyNoteFontColorLight;
             if (typeof pc.stickyNoteFontColorDark === 'string') this.settings.stickyNoteFontColorDark = pc.stickyNoteFontColorDark;
+            // Legacy: uiTheme used to live inside projectColors
+            if (pc.uiTheme === 'light' || pc.uiTheme === 'dark' || pc.uiTheme === 'auto') {
+                this.settings.uiTheme = pc.uiTheme;
+            }
         } else {
             // No per-project overrides — restore the global colour defaults
             this.settings.useProjectColors = false;
@@ -2030,6 +2117,33 @@ export default class SceneCardsPlugin extends Plugin {
                 if (g.stickyNoteFontColorDark !== undefined) this.settings.stickyNoteFontColorDark = g.stickyNoteFontColorDark;
             }
         }
+
+        // Project UI theme (NL + ncanvas) — top-level plotlines.json field.
+        // uiThemeVersion < 2 only stored a resolved light|dark (often default dark);
+        // migrate those to auto so chrome follows Obsidian until the user overrides.
+        const themeVersion = typeof plotlines.uiThemeVersion === 'number' ? plotlines.uiThemeVersion : 0;
+        if (themeVersion >= 2 && (plotlines.uiTheme === 'light' || plotlines.uiTheme === 'dark' || plotlines.uiTheme === 'auto')) {
+            this.settings.uiTheme = plotlines.uiTheme;
+        } else if (themeVersion < 2 && (plotlines.uiTheme === 'light' || plotlines.uiTheme === 'dark')) {
+            this.settings.uiTheme = 'auto';
+        } else if (plotlines.uiTheme === 'auto') {
+            this.settings.uiTheme = 'auto';
+        } else {
+            const legacy = isRecord(plotlines.projectColors)
+                ? asRecord(plotlines.projectColors).uiTheme
+                : undefined;
+            if (legacy === 'auto') {
+                this.settings.uiTheme = 'auto';
+            } else if (legacy === 'light' || legacy === 'dark') {
+                this.settings.uiTheme = themeVersion >= 2 ? legacy : 'auto';
+            } else {
+                this.settings.uiTheme = this._globalColorDefaults.uiTheme ?? 'auto';
+            }
+        }
+        this.applyUiTheme();
+        (window as unknown as {
+            NarrativeCanvasApp?: { setTheme?: (t: 'light' | 'dark', o?: { force?: boolean; fromHost?: boolean }) => unknown };
+        }).NarrativeCanvasApp?.setTheme?.(this.getEffectiveUiTheme(), { force: true, fromHost: true });
 
         this.settings.characterAliases = isRecord(characters.characterAliases)
             ? (characters.characterAliases as Record<string, string>)
@@ -2072,6 +2186,10 @@ export default class SceneCardsPlugin extends Plugin {
         const plotlinesPayload: Record<string, unknown> = {
             tagColors: this.settings.tagColors || {},
             tagTypeOverrides: this.settings.tagTypeOverrides || {},
+            uiTheme: this.settings.uiTheme === 'light' || this.settings.uiTheme === 'dark' || this.settings.uiTheme === 'auto'
+                ? this.settings.uiTheme
+                : 'auto',
+            uiThemeVersion: 2,
             definitions: this.plotlineDefinitions.map(d => ({
                 id: d.id,
                 label: d.label,
@@ -2593,6 +2711,10 @@ export default class SceneCardsPlugin extends Plugin {
         canvas.getProjectAttachmentFolderName = () =>
             (this.settings.projectAttachmentFolder || 'Attachments').trim() || 'Attachments';
         canvas.getNarrativeLabInterfaceLanguage = () => this.getEffectiveInterfaceLanguage();
+        canvas.getNarrativeLabUiTheme = () => this.getEffectiveUiTheme();
+        canvas.onNarrativeLabUiThemeChanged = (theme: 'light' | 'dark') => {
+            void this.setUiTheme(theme, { skipCanvas: true });
+        };
         // NarrativeLab owns the single settings page; Canvas remains an internal feature.
         canvas.addSettingTab = () => undefined;
 
@@ -2620,12 +2742,13 @@ export default class SceneCardsPlugin extends Plugin {
         this.canvasModule = canvas;
     }
 
-    /** Resolve .ncanvas paths for a NarrativeLab project (project-root NCanvas). */
+    /** Resolve .ncanvas paths for a NarrativeLab project (project-root Canvas/). */
     getNcanvasPathsForProject(project: StoryLineProject): { canvasFolder: string; candidates: string[] } {
         const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const canvasFolder = normalizePath(folders.canvasFolder);
         const legacySystemNCanvasFolder = normalizePath(`${folders.baseFolder}/${LEGACY_SYSTEM_NCANVAS_FOLDER}`);
-        const legacyCanvasFolder = normalizePath(`${folders.baseFolder}/${LEGACY_CANVAS_FOLDER}`);
+        // LEGACY_CANVAS_FOLDER currently aliases the former root `NCanvas/` name
+        const legacyNCanvasFolder = normalizePath(`${folders.baseFolder}/${LEGACY_CANVAS_FOLDER}`);
         const baseFolder = normalizePath(folders.baseFolder);
         const isNcanvas = (file: TFile) => ['ncanvas', 'narrativecanvas'].includes(file.extension.toLowerCase());
         const belongsToProject = (path: string): boolean => {
@@ -2634,7 +2757,7 @@ export default class SceneCardsPlugin extends Plugin {
             const parent = slash >= 0 ? normalized.slice(0, slash) : '';
             return parent === canvasFolder
                 || parent === legacySystemNCanvasFolder
-                || parent === legacyCanvasFolder
+                || parent === legacyNCanvasFolder
                 || parent === baseFolder;
         };
         const filesInFolder = (folder: string) => this.app.vault.getFiles()
@@ -2648,7 +2771,7 @@ export default class SceneCardsPlugin extends Plugin {
 
         const inCanvasFolder = filesInFolder(canvasFolder);
         const inLegacySystemNCanvas = filesInFolder(legacySystemNCanvasFolder);
-        const inLegacyCanvas = filesInFolder(legacyCanvasFolder);
+        const inLegacyCanvas = filesInFolder(legacyNCanvasFolder);
         const legacyInBase = this.app.vault.getFiles()
             .filter(file => {
                 const slash = file.path.lastIndexOf('/');
@@ -2697,6 +2820,68 @@ export default class SceneCardsPlugin extends Plugin {
             return;
         }
         new NCanvasManagerModal(this.app, this).open();
+    }
+
+    /** Unified converter (manuscript export / project bundle / plotline → ncanvas). */
+    openConverter(opts?: { tab?: ConverterTab }): void {
+        new ConverterModal(this, opts).open();
+    }
+
+    /** Unique path under a canvas folder (public for plotline generator). */
+    async allocateNcanvasPath(folder: string, filename: string): Promise<string> {
+        await this.ensureVaultFolder(folder);
+        return this.uniqueNcanvasPath(folder, filename);
+    }
+
+    /** Write saved-state JSON to a .ncanvas path, remember it, and open the canvas. */
+    async writeAndOpenNcanvas(path: string, savedStateJson: string): Promise<string> {
+        const project = this.sceneManager.activeProject;
+        const canvas = await this.ensureCanvasModuleReady();
+        if (!canvas?.writeAndOpenProjectAtPath) {
+            throw new Error(t('Narrative Canvas is still loading.'));
+        }
+        const parent = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+        if (parent) await this.ensureVaultFolder(parent);
+        const written = await canvas.writeAndOpenProjectAtPath(path, savedStateJson);
+        if (project) await this.rememberNcanvasPath(project, written || path);
+        return written || path;
+    }
+
+    /** Desktop Scrivener import (shared by command + converter). */
+    async runScrivenerImport(): Promise<void> {
+        const { ScrivenerImporter } = await import('./services/ScrivenerImporter');
+        if (!ScrivenerImporter.isAvailable()) {
+            new Notice(t('Scrivener import is only available on desktop.'));
+            return;
+        }
+        let remote: { dialog: { showOpenDialog: (opts: unknown) => Promise<{ canceled: boolean; filePaths?: string[] }> } } | undefined;
+        const win = window as unknown as { require?: (m: string) => unknown };
+        try { remote = win.require?.('@electron/remote') as typeof remote; }
+        catch { try { remote = (win.require?.('electron') as { remote: typeof remote })?.remote; } catch { /* */ } }
+        if (!remote) { new Notice(t('File dialog not available.')); return; }
+
+        const result = await remote.dialog.showOpenDialog({
+            title: t('Select Scrivener Project (.scriv)'),
+            properties: ['openDirectory', 'openFile'],
+            filters: [
+                { name: 'Scrivener Project', extensions: ['scriv'] },
+            ],
+        });
+        if (result.canceled || !result.filePaths?.length) return;
+        const scrivPath = result.filePaths[0];
+        if (!scrivPath.endsWith('.scriv')) {
+            new Notice(t('Please select a .scriv folder.')); return;
+        }
+        new Notice(t('Importing Scrivener project…'));
+        try {
+            const importer = new ScrivenerImporter(this.app, this);
+            const r = await importer.import(scrivPath);
+            const parts = [`${r.scenesImported} scenes`, `${r.charactersImported} characters`, `${r.locationsImported} locations`];
+            if (r.filesImported > 0) parts.push(`${r.filesImported} files`);
+            new Notice(t('Imported "{title}": {parts}', { title: r.projectTitle, parts: parts.join(', ') }), 8000);
+        } catch (err: unknown) {
+            new Notice(t('Import failed: ') + (err instanceof Error ? err.message : String(err)));
+        }
     }
 
     private async ensureCanvasModuleReady(): Promise<EmbeddedCanvasModule | null> {
@@ -3127,6 +3312,7 @@ export default class SceneCardsPlugin extends Plugin {
             RESEARCH_VIEW_TYPE,
         ];
 
+        const projectLabel = this.getActiveProjectDisplayName();
         for (const viewType of viewTypes) {
             const leaves = this.app.workspace.getLeavesOfType(viewType);
             for (const leaf of leaves) {
@@ -3134,6 +3320,11 @@ export default class SceneCardsPlugin extends Plugin {
                 if (view && typeof view.refresh === 'function') {
                     view.refresh();
                 }
+                // Keep in-view toolbar title in sync even when a view's refresh()
+                // only rebuilds content (e.g. Board corkboard) and skips the toolbar.
+                leaf.view.containerEl
+                    .querySelectorAll('.story-line-view-title')
+                    .forEach(el => { el.textContent = projectLabel; });
                 // Update the tab title so it reflects the new project name immediately
                 (leaf as unknown as { updateHeader?: () => void }).updateHeader?.();
             }
@@ -3448,8 +3639,8 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
-     * Move former System/NCanvas/, legacy Canvas/, and loose project-root
-     * files into the project's authored NCanvas/ folder.
+     * Move former System/NCanvas/, root NCanvas/, and loose project-root
+     * .ncanvas files into the project's authored Canvas/ folder.
      */
     private async migrateNCanvasFoldersToProjectRoot(): Promise<void> {
         const adapter = this.app.vault.adapter;
@@ -3460,7 +3651,7 @@ export default class SceneCardsPlugin extends Plugin {
             const baseFolder = normalizePath(folders.baseFolder);
             const legacyFolders = [
                 normalizePath(`${baseFolder}/${LEGACY_SYSTEM_NCANVAS_FOLDER}`),
-                normalizePath(`${baseFolder}/${LEGACY_CANVAS_FOLDER}`),
+                normalizePath(`${baseFolder}/${LEGACY_CANVAS_FOLDER}`), // former root NCanvas/
             ].filter(folder => folder !== destFolder);
 
             const moveFile = async (fromPath: string) => {
@@ -3471,7 +3662,7 @@ export default class SceneCardsPlugin extends Plugin {
                     await this.ensureVaultFolder(destFolder);
                     if (await adapter.exists(toPath)) {
                         // Never discard authored canvases. Preserve both files
-                        // when a root NCanvas file already has the same name.
+                        // when Canvas/ already has the same name.
                         toPath = await this.uniqueNcanvasPath(destFolder, name);
                     }
                     const file = this.app.vault.getAbstractFileByPath(fromPath);

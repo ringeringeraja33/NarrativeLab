@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, Menu, Notice, TFile, Modal, Setting, MarkdownRenderer, normalizePath } from 'obsidian';
+import { ItemView, WorkspaceLeaf, WorkspaceSplit, Menu, Notice, TFile, Modal, Setting, MarkdownRenderer, normalizePath } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { Scene, SceneFilter, SortConfig, BoardGroupBy, SceneStatus, SceneTemplate, BUILTIN_BEAT_SHEETS, getStatusOrder, getStatusConfig, resolveStatusCfg } from '../models/Scene';
 import { openConfirmModal } from '../components/ConfirmModal';
@@ -18,6 +18,7 @@ import { openManageSnapshotsModal } from '../components/ViewSnapshotModal';
 import { cleanStickyNoteColor, resolveStickyNoteColors, resolveStickyNoteFontColor } from '../settings';
 import { attachTooltip } from '../components/Tooltip';
 import { resolveImagePath } from '../components/ImagePicker';
+import { CorkboardCanvasService, type CorkboardPos } from '../services/CorkboardCanvasService';
 import type SceneCardsPlugin from '../main';
 import { compareActChapter, parseActChapterInput, getActDisplayLabel } from '../utils/actChapter';
 import { t, localizeBeatSheet } from '../utils/i18n';
@@ -76,12 +77,28 @@ export class BoardView extends ItemView {
     private editingNotePath: string | null = null;
     /** Corkboard notes the user has expanded this session (default: collapsed). */
     private expandedCorkboardNotes: Set<string> = new Set();
+    /** Native Obsidian Canvas leaf hosted inside corkboard mode (ephemeral). */
+    private corkboardCanvasLeaf: WorkspaceLeaf | null = null;
+    /** Detached WorkspaceSplit that owns the embedded Canvas leaf. */
+    private corkboardCanvasSplit: WorkspaceSplit | null = null;
+    private corkboardCanvasHostEl: HTMLElement | null = null;
+    private corkboardCanvasFilePath: string | null = null;
+    private corkboardCanvasService: CorkboardCanvasService;
+    private corkboardCanvasResizeObserver: ResizeObserver | null = null;
+    /** Unwrap native Canvas delete hooks installed for park-instead-of-delete. */
+    private corkboardCanvasDeleteCleanup: (() => void) | null = null;
+    /** When native Canvas host fails, fall back to the legacy DOM corkboard. */
+    private corkboardNativeFailed = false;
+    private corkboardCanvasSyncTimer: number | null = null;
+    /** Fingerprint of visible paths — remount Canvas when membership changes. */
+    private corkboardVisibilityKey = '';
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
         this.cardComponent = new SceneCardComponent(plugin);
+        this.corkboardCanvasService = new CorkboardCanvasService(plugin.app, plugin);
         // Restore last used board mode and groupBy
         const s = plugin.settings;
         this.boardMode = s.lastBoardMode || (s.defaultBoardMode === 'kanban' ? 'kanban' : 'corkboard');
@@ -93,8 +110,7 @@ export class BoardView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
-        return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
+        return this.plugin?.getActiveProjectDisplayName() || 'NarrativeLab';
     }
 
     getIcon(): string {
@@ -128,6 +144,12 @@ export class BoardView extends ItemView {
             window.clearTimeout(this.corkboardPersistTimer);
             this.corkboardPersistTimer = null;
         }
+        if (this.corkboardCanvasSyncTimer) {
+            window.clearTimeout(this.corkboardCanvasSyncTimer);
+            this.corkboardCanvasSyncTimer = null;
+        }
+        await this.pullPositionsFromNativeCanvas();
+        this.teardownNativeCorkboardCanvas();
         await this.persistCorkboardLayout();
     }
 
@@ -135,6 +157,7 @@ export class BoardView extends ItemView {
      * Render the entire board view
      */
     private renderView(container: HTMLElement): void {
+        this.teardownNativeCorkboardCanvas();
         this.ensureCorkboardLayoutLoaded();
         container.empty();
 
@@ -265,6 +288,7 @@ export class BoardView extends ItemView {
         corkboardBtn.addEventListener('click', () => {
             if (this.boardMode !== 'corkboard') {
                 this.boardMode = 'corkboard';
+                this.corkboardNativeFailed = false; // retry native Canvas host
                 this.plugin.settings.lastBoardMode = 'corkboard';
                 this.plugin.saveSettings();
                 if (this.rootContainer) this.renderView(this.rootContainer);
@@ -344,6 +368,15 @@ export class BoardView extends ItemView {
             attachTooltip(imgBtn, t('New Image Note'));
             imgBtn.addEventListener('click', () => {
                 void this.openImageNotePicker();
+            });
+
+            const openCanvasBtn = controls.createEl('button', {
+                cls: 'clickable-icon',
+            });
+            obsidian.setIcon(openCanvasBtn, 'external-link');
+            attachTooltip(openCanvasBtn, t('Open corkboard Canvas in tab'));
+            openCanvasBtn.addEventListener('click', () => {
+                void this.openCorkboardCanvasInTab();
             });
         }
 
@@ -476,7 +509,9 @@ export class BoardView extends ItemView {
      */
     private renderBoard(): void {
         if (!this.boardEl) return;
+        this.teardownNativeCorkboardCanvas();
         this.boardEl.removeClass('story-line-corkboard');
+        this.boardEl.removeClass('is-native-canvas-host');
         this.boardEl.empty();
 
         // Destroy previous virtual scrollers
@@ -519,7 +554,134 @@ export class BoardView extends ItemView {
         }
     }
 
+    /**
+     * Corkboard mode: host Obsidian's native Canvas editor
+     * (`Canvas/corkboard.canvas`) inline — real CanvasView, not a DOM mock.
+     * Falls back to the legacy DOM corkboard only if Canvas cannot be mounted.
+     */
     private renderCorkboard(): void {
+        if (!this.boardEl) return;
+        for (const vs of this.scrollers) vs.destroy();
+        this.scrollers = [];
+
+        if (this.corkboardNativeFailed) {
+            this.renderLegacyCorkboard();
+            return;
+        }
+
+        void this.ensureNativeCorkboardHost();
+    }
+
+    private getVisibleCorkboardPaths(): string[] {
+        let scenes = this.sceneManager.queryService.getFilteredScenes(this.currentFilter, this.currentSort);
+        if (!this.plugin.settings.showScenesInCorkboard) {
+            scenes = scenes.filter(scene => this.isCorkboardNoteScene(scene));
+        }
+        const researchFiles = this.getCorkboardResearchFiles();
+        return [
+            ...scenes.map(s => s.filePath),
+            ...researchFiles.map(r => r.file.path),
+        ];
+    }
+
+    private positionsRecordFromMap(): Record<string, CorkboardPos> {
+        const payload: Record<string, CorkboardPos> = {};
+        for (const [path, pos] of this.corkboardPositions.entries()) {
+            payload[path] = {
+                x: pos.x,
+                y: pos.y,
+                z: pos.z,
+                ...(pos.w ? { w: pos.w } : {}),
+                ...(pos.h ? { h: pos.h } : {}),
+            };
+        }
+        return payload;
+    }
+
+    private teardownNativeCorkboardCanvas(): void {
+        if (this.corkboardCanvasDeleteCleanup) {
+            try { this.corkboardCanvasDeleteCleanup(); } catch { /* ignore */ }
+            this.corkboardCanvasDeleteCleanup = null;
+        }
+        if (this.corkboardCanvasResizeObserver) {
+            try { this.corkboardCanvasResizeObserver.disconnect(); } catch { /* ignore */ }
+            this.corkboardCanvasResizeObserver = null;
+        }
+        if (this.corkboardCanvasLeaf) {
+            try { this.corkboardCanvasLeaf.detach(); } catch { /* ignore */ }
+            this.corkboardCanvasLeaf = null;
+        }
+        this.corkboardCanvasSplit = null;
+        // Keep hostEl when still connected so callers can remount into it.
+        if (!this.corkboardCanvasHostEl?.isConnected) {
+            this.corkboardCanvasHostEl = null;
+        }
+        this.corkboardCanvasFilePath = null;
+    }
+
+    private kickNativeCorkboardLayout(): void {
+        const view = this.corkboardCanvasLeaf?.view as {
+            onResize?: () => void;
+            canvas?: { requestFrame?: () => void };
+        } | null;
+        try {
+            view?.onResize?.();
+            view?.canvas?.requestFrame?.();
+        } catch { /* best effort */ }
+    }
+
+    private async pullPositionsFromNativeCanvas(): Promise<void> {
+        const path = this.corkboardCanvasService.getCanvasPath();
+        if (!path) return;
+        try {
+            const data = await this.corkboardCanvasService.readCanvas(path);
+            const fromCanvas = this.corkboardCanvasService.positionsFromCanvas(data);
+            for (const [filePath, pos] of Object.entries(fromCanvas)) {
+                this.corkboardPositions.set(filePath, {
+                    x: pos.x,
+                    y: pos.y,
+                    z: pos.z ?? 1,
+                    ...(pos.w ? { w: pos.w } : {}),
+                    ...(pos.h ? { h: pos.h } : {}),
+                });
+            }
+        } catch (e) {
+            console.warn('[NarrativeLab] Failed to read corkboard.canvas positions:', e);
+        }
+    }
+
+    private async syncNativeCorkboardFile(): Promise<TFile | null> {
+        this.ensureCorkboardLayoutLoaded();
+        // Canvas is source of truth for geometry while hosted
+        await this.pullPositionsFromNativeCanvas();
+        const visible = this.getVisibleCorkboardPaths();
+        // Auto-layout missing positions so new notes land on-canvas
+        visible.forEach((path, index) => {
+            if (this.corkboardPositions.has(path)) return;
+            const col = index % 4;
+            const row = Math.floor(index / 4);
+            this.corkboardPositions.set(path, {
+                x: col * 320 + (this.quickNoteChainIndex % 5) * 24,
+                y: row * 230 + (this.quickNoteChainIndex % 5) * 24,
+                z: this.corkboardPositions.size + 1,
+                w: 280,
+                h: 200,
+            });
+        });
+        const visibilityKey = visible.slice().sort().join('\0');
+        if (visibilityKey !== this.corkboardVisibilityKey) {
+            this.corkboardVisibilityKey = visibilityKey;
+            this.corkboardCanvasFilePath = null; // remount after toggle/filter
+        }
+        const file = await this.corkboardCanvasService.ensureCanvasFile(
+            visible,
+            this.positionsRecordFromMap()
+        );
+        if (this._corkboardProjectLoaded) this.schedulePersistCorkboardLayout();
+        return file;
+    }
+
+    private async ensureNativeCorkboardHost(): Promise<void> {
         if (!this.boardEl) return;
 
         if (this.corkboardInteractionCleanup) {
@@ -527,8 +689,377 @@ export class BoardView extends ItemView {
             this.corkboardInteractionCleanup = null;
         }
 
+        if (!this.boardEl.hasClass('is-native-canvas-host') || !this.corkboardCanvasHostEl?.isConnected) {
+            this.teardownNativeCorkboardCanvas();
+            this.boardEl.empty();
+            this.boardEl.addClass('story-line-corkboard');
+            this.boardEl.addClass('is-native-canvas-host');
+            this.corkboardCanvasHostEl = this.boardEl.createDiv('story-line-corkboard-native-host');
+        }
+
+        try {
+            const file = await this.syncNativeCorkboardFile();
+            if (!file) throw new Error('No active project Canvas folder');
+            await this.mountNativeCorkboardCanvas(this.corkboardCanvasHostEl!, file);
+        } catch (err) {
+            console.error('[NarrativeLab] Native corkboard Canvas failed:', err);
+            // Last resort: ephemeral WorkspaceLeaf constructor (unofficial).
+            try {
+                const file = await this.syncNativeCorkboardFile();
+                if (!file || !this.boardEl) throw err;
+                this.boardEl.empty();
+                this.boardEl.addClass('story-line-corkboard');
+                this.boardEl.addClass('is-native-canvas-host');
+                this.corkboardCanvasHostEl = this.boardEl.createDiv('story-line-corkboard-native-host');
+                await this.mountNativeCorkboardCanvasViaLeafCtor(this.corkboardCanvasHostEl, file);
+                return;
+            } catch (err2) {
+                console.error('[NarrativeLab] Corkboard Canvas leaf-ctor fallback failed:', err2);
+            }
+            this.corkboardNativeFailed = true;
+            this.teardownNativeCorkboardCanvas();
+            this.corkboardCanvasHostEl = null;
+            this.boardEl.empty();
+            this.boardEl.removeClass('is-native-canvas-host');
+            const banner = this.boardEl.createDiv('story-line-corkboard-native-fallback');
+            banner.createEl('p', {
+                text: t('Could not embed Obsidian Canvas. Using legacy corkboard. Open the .canvas file in a tab for full Canvas features.'),
+            });
+            const openBtn = banner.createEl('button', {
+                cls: 'mod-cta',
+                text: t('Open corkboard Canvas in tab'),
+            });
+            openBtn.addEventListener('click', () => { void this.openCorkboardCanvasInTab(); });
+            this.renderLegacyCorkboard();
+        }
+    }
+
+    /** Unofficial fallback when WorkspaceSplit embedding is unavailable. */
+    private async mountNativeCorkboardCanvasViaLeafCtor(host: HTMLElement, file: TFile): Promise<void> {
+        this.teardownNativeCorkboardCanvas();
+        host.empty();
+
+        const WorkspaceLeafCtor = (obsidian as unknown as {
+            WorkspaceLeaf?: new (app: typeof this.app) => WorkspaceLeaf;
+        }).WorkspaceLeaf;
+        if (typeof WorkspaceLeafCtor !== 'function') {
+            throw new Error('WorkspaceLeaf constructor unavailable');
+        }
+
+        let leaf: WorkspaceLeaf | null = null;
+        leaf = new WorkspaceLeafCtor(this.app);
+        await leaf.setViewState({
+            type: 'canvas',
+            state: { file: file.path },
+            active: false,
+        });
+        const view = leaf.view as (InstanceType<typeof ItemView> & {
+            containerEl?: HTMLElement;
+            canvas?: { zoomToFit?: () => void };
+        }) | null;
+        const viewEl = view?.containerEl
+            || (leaf as unknown as { containerEl?: HTMLElement }).containerEl;
+        if (!viewEl) throw new Error('Canvas view element not found');
+        if (view?.getViewType?.() !== 'canvas') {
+            throw new Error(`Expected canvas view, got ${view?.getViewType?.() ?? 'none'}`);
+        }
+
+        host.addClass('is-live');
+        host.appendChild(viewEl);
+        this.corkboardCanvasLeaf = leaf;
+        this.corkboardCanvasHostEl = host;
+        this.corkboardCanvasFilePath = file.path;
+        this.markCorkboardCanvasLeaf(leaf);
+        this.installCorkboardCanvasParkHook(leaf);
+
+        if (typeof ResizeObserver !== 'undefined') {
+            this.corkboardCanvasResizeObserver = new ResizeObserver(() => {
+                this.kickNativeCorkboardLayout();
+            });
+            this.corkboardCanvasResizeObserver.observe(host);
+        }
+
+        window.setTimeout(() => {
+            this.kickNativeCorkboardLayout();
+            try { view?.canvas?.zoomToFit?.(); } catch { /* best effort */ }
+            this.installCorkboardCanvasParkHook(leaf);
+        }, 80);
+        this.schedulePullFromNativeCanvas();
+    }
+
+    private async mountNativeCorkboardCanvas(host: HTMLElement, file: TFile): Promise<void> {
+        if (this.corkboardCanvasLeaf && this.corkboardCanvasFilePath === file.path) {
+            // Already hosting this file — membership sync wrote the .canvas;
+            // Obsidian reloads file nodes. Just reflow the embedded view.
+            window.setTimeout(() => this.kickNativeCorkboardLayout(), 40);
+            return;
+        }
+
+        this.teardownNativeCorkboardCanvas();
+        host.empty();
+
+        // Same embedding strategy as ManuscriptView / InfoPanel: a detached
+        // WorkspaceSplit + createLeafInParent + openFile. This hosts the real
+        // CanvasView (pan/zoom/edges/groups), unlike a static canvas embed.
+        const split = new (WorkspaceSplit as unknown as new (
+            workspace: unknown,
+            dir: string
+        ) => WorkspaceSplit)(this.app.workspace, 'vertical');
+        const splitEl = (split as unknown as { containerEl: HTMLElement }).containerEl;
+        splitEl.addClass('story-line-corkboard-native-split');
+        host.addClass('is-live');
+        host.appendChild(splitEl);
+
+        let leaf: WorkspaceLeaf | null = null;
+        try {
+            leaf = this.app.workspace.createLeafInParent(split, 0);
+            await leaf.openFile(file);
+
+            const deferredLeaf = leaf as WorkspaceLeaf & {
+                isDeferred?: boolean;
+                loadIfDeferred?: () => Promise<void>;
+            };
+            if (deferredLeaf.isDeferred && typeof deferredLeaf.loadIfDeferred === 'function') {
+                await deferredLeaf.loadIfDeferred();
+            }
+
+            const viewType = leaf.view?.getViewType?.();
+            if (viewType !== 'canvas') {
+                throw new Error(`Expected canvas view, got ${viewType ?? 'none'}`);
+            }
+
+            this.corkboardCanvasSplit = split;
+            this.corkboardCanvasLeaf = leaf;
+            this.corkboardCanvasHostEl = host;
+            this.corkboardCanvasFilePath = file.path;
+            this.markCorkboardCanvasLeaf(leaf);
+            this.installCorkboardCanvasParkHook(leaf);
+
+            if (typeof ResizeObserver !== 'undefined') {
+                this.corkboardCanvasResizeObserver = new ResizeObserver(() => {
+                    this.kickNativeCorkboardLayout();
+                });
+                this.corkboardCanvasResizeObserver.observe(host);
+            }
+
+            window.setTimeout(() => {
+                this.kickNativeCorkboardLayout();
+                const view = leaf?.view as { canvas?: { zoomToFit?: () => void } } | null;
+                try { view?.canvas?.zoomToFit?.(); } catch { /* best effort */ }
+                // Canvas may finish constructing after openFile — re-bind delete hook.
+                this.installCorkboardCanvasParkHook(leaf);
+            }, 80);
+
+            // Periodically mirror native Canvas geometry back into board.json
+            this.schedulePullFromNativeCanvas();
+        } catch (err) {
+            if (leaf) {
+                try { leaf.detach(); } catch { /* ignore */ }
+            }
+            try { splitEl.remove(); } catch { /* ignore */ }
+            this.corkboardCanvasLeaf = null;
+            this.corkboardCanvasSplit = null;
+            this.corkboardCanvasFilePath = null;
+            throw err instanceof Error ? err : new Error(String(err));
+        }
+    }
+
+    /** Tag corkboard Canvas leaves so CSS can hide Properties on file cards. */
+    private markCorkboardCanvasLeaf(leaf: WorkspaceLeaf | null): void {
+        const candidates: Array<HTMLElement | null | undefined> = [
+            (leaf as unknown as { containerEl?: HTMLElement })?.containerEl
+                ?.querySelector?.('.workspace-leaf-content') as HTMLElement | null,
+            (leaf?.view as { containerEl?: HTMLElement } | null)?.containerEl,
+            this.corkboardCanvasHostEl?.querySelector('.workspace-leaf-content') as HTMLElement | null,
+            this.corkboardCanvasHostEl,
+        ];
+        for (const el of candidates) {
+            el?.addClass('sl-corkboard-canvas-leaf');
+        }
+    }
+
+    /**
+     * On the project corkboard, Canvas "Remove"/Delete should park NL notes
+     * (active: false) instead of deleting vault files or fighting membership sync.
+     */
+    private installCorkboardCanvasParkHook(leaf: WorkspaceLeaf | null): void {
+        if (this.corkboardCanvasDeleteCleanup) {
+            try { this.corkboardCanvasDeleteCleanup(); } catch { /* ignore */ }
+            this.corkboardCanvasDeleteCleanup = null;
+        }
+        const view = leaf?.view as {
+            canvas?: {
+                selection?: Set<unknown> | unknown[];
+                deleteSelection?: (...args: unknown[]) => unknown;
+                [key: string]: unknown;
+            };
+            containerEl?: HTMLElement;
+        } | null;
+        const canvas = view?.canvas;
+        if (!canvas || typeof canvas.deleteSelection !== 'function') return;
+
+        const origDelete = canvas.deleteSelection.bind(canvas);
+        let parking = false;
+
+        const parkThenSync = async (paths: string[]): Promise<void> => {
+            if (parking || paths.length === 0) return;
+            parking = true;
+            try {
+                for (const path of paths) {
+                    await this.parkCorkboardPath(path);
+                }
+                new Notice(
+                    paths.length === 1
+                        ? t('Parked as inactive. File kept in the vault.')
+                        : t('Parked {n} items as inactive. Files kept in the vault.', { n: paths.length }),
+                );
+                this.corkboardVisibilityKey = '';
+                await this.ensureNativeCorkboardHost();
+            } finally {
+                parking = false;
+            }
+        };
+
+        canvas.deleteSelection = (...args: unknown[]) => {
+            const paths = this.getSelectedCorkboardManagedPaths(canvas);
+            if (paths.length > 0) {
+                void parkThenSync(paths);
+                return undefined;
+            }
+            return origDelete(...args);
+        };
+
+        // Capture menu trash ("移除") in case it bypasses deleteSelection.
+        const root = this.corkboardCanvasHostEl ?? view?.containerEl ?? null;
+        const onClickCapture = (event: Event) => {
+            const target = event.target as HTMLElement | null;
+            const btn = target?.closest?.(
+                '.canvas-menu button, .canvas-node-menu button, .menu-item',
+            ) as HTMLElement | null;
+            if (!btn) return;
+            const label = [
+                btn.getAttribute('aria-label'),
+                btn.getAttribute('title'),
+                btn.textContent,
+            ].filter(Boolean).join(' ').toLowerCase();
+            const isRemove = /remove|delete|trash|移除|删除/.test(label)
+                || !!btn.querySelector?.('.lucide-trash, .lucide-trash-2, svg.lucide-trash, svg.lucide-trash-2');
+            if (!isRemove) return;
+            const paths = this.getSelectedCorkboardManagedPaths(canvas);
+            if (paths.length === 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void parkThenSync(paths);
+        };
+        root?.addEventListener('click', onClickCapture, true);
+
+        this.corkboardCanvasDeleteCleanup = () => {
+            if (canvas.deleteSelection !== origDelete) {
+                canvas.deleteSelection = origDelete;
+            }
+            root?.removeEventListener('click', onClickCapture, true);
+        };
+    }
+
+    private getSelectedCorkboardManagedPaths(canvas: {
+        selection?: Set<unknown> | unknown[];
+    }): string[] {
+        const selected = canvas.selection instanceof Set
+            ? [...canvas.selection]
+            : Array.isArray(canvas.selection) ? canvas.selection : [];
+        const paths: string[] = [];
+        for (const node of selected) {
+            const path = this.getCanvasNodeFilePath(node);
+            if (path && this.corkboardCanvasService.isNlManagedPath(path)) {
+                paths.push(path);
+            }
+        }
+        return [...new Set(paths)];
+    }
+
+    private getCanvasNodeFilePath(node: unknown): string | null {
+        if (!node || typeof node !== 'object') return null;
+        const n = node as {
+            file?: string | TFile | { path?: string };
+            unknownData?: { file?: string };
+            type?: string;
+        };
+        if (typeof n.file === 'string' && n.file.trim()) return normalizePath(n.file);
+        if (n.file && typeof n.file === 'object' && typeof n.file.path === 'string') {
+            return normalizePath(n.file.path);
+        }
+        if (typeof n.unknownData?.file === 'string' && n.unknownData.file.trim()) {
+            return normalizePath(n.unknownData.file);
+        }
+        return null;
+    }
+
+    /** Mark a corkboard item inactive; keep the vault file. */
+    private async parkCorkboardPath(path: string): Promise<void> {
+        const normalized = normalizePath(path);
+        const scene = this.sceneManager.getScene(normalized);
+        if (scene) {
+            if (!scene.inactive) {
+                await this.sceneManager.updateScene(normalized, { inactive: true });
+            }
+            return;
+        }
+        const file = this.app.vault.getAbstractFileByPath(normalized);
+        if (!(file instanceof TFile)) return;
+        await this.app.fileManager.processFrontMatter(file, (fm) => {
+            fm.active = false;
+            delete fm.inactive;
+        });
+    }
+
+    private schedulePullFromNativeCanvas(): void {
+        if (this.corkboardCanvasSyncTimer) {
+            window.clearTimeout(this.corkboardCanvasSyncTimer);
+        }
+        this.corkboardCanvasSyncTimer = window.setTimeout(() => {
+            this.corkboardCanvasSyncTimer = null;
+            void (async () => {
+                await this.pullPositionsFromNativeCanvas();
+                await this.persistCorkboardLayout();
+                // Keep polling while corkboard native host is alive
+                if (this.corkboardCanvasLeaf && this.boardMode === 'corkboard') {
+                    this.schedulePullFromNativeCanvas();
+                }
+            })();
+        }, 2000);
+    }
+
+    private async openCorkboardCanvasInTab(): Promise<void> {
+        try {
+            const file = await this.syncNativeCorkboardFile();
+            if (!file) {
+                new Notice(t('No active project'));
+                return;
+            }
+            const leaf = this.app.workspace.getLeaf('tab');
+            await leaf.openFile(file);
+            this.markCorkboardCanvasLeaf(leaf);
+            // Canvas may rebuild its content after openFile — re-tag shortly after.
+            window.setTimeout(() => this.markCorkboardCanvasLeaf(leaf), 100);
+        } catch (e) {
+            new Notice(t('Could not open corkboard Canvas: ') + String(e));
+        }
+    }
+
+    /** Legacy DOM corkboard (pre-native Canvas). Kept as fallback. */
+    private renderLegacyCorkboard(): void {
+        if (!this.boardEl) return;
+
+        if (this.corkboardInteractionCleanup) {
+            this.corkboardInteractionCleanup();
+            this.corkboardInteractionCleanup = null;
+        }
+
+        // When falling back mid-host, preserve banner if present
+        const banner = this.boardEl.querySelector('.story-line-corkboard-native-fallback');
         this.boardEl.empty();
         this.boardEl.addClass('story-line-corkboard');
+        if (banner) this.boardEl.appendChild(banner);
 
         // Destroy previous virtual scrollers (used by Kanban mode)
         for (const vs of this.scrollers) vs.destroy();
@@ -2581,6 +3112,18 @@ export class BoardView extends ItemView {
      * Delete a scene
      */
     private async deleteScene(scene: Scene): Promise<void> {
+        // Corkboard / 平铺画布: trash means park (inactive), never vault-delete.
+        if (this.boardMode === 'corkboard') {
+            await this.parkCorkboardPath(scene.filePath);
+            new Notice(t('Parked as inactive. File kept in the vault.'));
+            this.corkboardVisibilityKey = '';
+            if (!this.corkboardNativeFailed) {
+                await this.ensureNativeCorkboardHost();
+            } else {
+                this.refreshBoard();
+            }
+            return;
+        }
         await this.sceneManager.deleteScene(scene.filePath);
         this.refreshBoard();
     }
@@ -2754,16 +3297,22 @@ export class BoardView extends ItemView {
         });
 
         menu.addItem(item => {
-            item.setTitle(t('Delete Scene'))
-                .setIcon('trash')
-                .onClick(async () => {
-                    openConfirmModal(this.app, {
-                        title: t('Delete Scene'),
-                        message: `Delete scene "${scene.title || 'Untitled'}"?`,
-                        confirmLabel: 'Delete',
-                        onConfirm: () => this.deleteScene(scene),
+            if (this.boardMode === 'corkboard') {
+                item.setTitle(t('Mark Inactive'))
+                    .setIcon('eye-off')
+                    .onClick(async () => { await this.deleteScene(scene); });
+            } else {
+                item.setTitle(t('Delete Scene'))
+                    .setIcon('trash')
+                    .onClick(async () => {
+                        openConfirmModal(this.app, {
+                            title: t('Delete Scene'),
+                            message: `Delete scene "${scene.title || 'Untitled'}"?`,
+                            confirmLabel: 'Delete',
+                            onConfirm: () => this.deleteScene(scene),
+                        });
                     });
-                });
+            }
         });
 
         menu.showAtMouseEvent(event);
@@ -3709,6 +4258,11 @@ export class BoardView extends ItemView {
      */
     refresh(): void {
         if (!this.rootContainer) return;
+        // Always sync the toolbar project label — refreshBoard() does not
+        // rebuild the toolbar, so a stale "NarrativeLab" fallback would stick.
+        this.rootContainer.querySelectorAll('.story-line-view-title').forEach(el => {
+            el.textContent = this.plugin.getActiveProjectDisplayName();
+        });
         // If a corkboard note editor is focused, skip the rebuild — tearing
         // down the textarea mid-edit loses focus and hides the text being
         // typed (issue #190). The cache version is still bumped so the next
@@ -3724,6 +4278,11 @@ export class BoardView extends ItemView {
             this._lastCacheVersion = this.sceneManager.cacheVersion;
             const prevSelectedPath = this.selectedScene?.filePath ?? null;
             const inspectorWasVisible = this.inspectorComponent?.isVisible() ?? false;
+
+            // Re-sync after rAF in case the project finished loading mid-frame.
+            this.rootContainer.querySelectorAll('.story-line-view-title').forEach(el => {
+                el.textContent = this.plugin.getActiveProjectDisplayName();
+            });
 
             if (this.boardEl) {
                 this.refreshBoard();
@@ -3780,6 +4339,22 @@ export class BoardView extends ItemView {
         this.expandedCorkboardNotes.add(file.path);
         this.schedulePersistCorkboardLayout();
 
+        await this.refreshCorkboardAfterNoteCreate();
+    }
+
+    /** After creating a Notes/ sticky, sync Canvas/corkboard.canvas and remount if needed. */
+    private async refreshCorkboardAfterNoteCreate(): Promise<void> {
+        if (this.boardMode === 'corkboard' && !this.corkboardNativeFailed) {
+            this.corkboardVisibilityKey = ''; // membership changed
+            await this.syncNativeCorkboardFile();
+            if (this.corkboardCanvasHostEl) {
+                this.corkboardCanvasFilePath = null; // force remount for new file node
+                await this.ensureNativeCorkboardHost();
+            } else {
+                this.refreshBoard();
+            }
+            return;
+        }
         this.refreshBoard();
     }
 
@@ -4051,7 +4626,7 @@ export class BoardView extends ItemView {
         this.corkboardPositions.set(file.path, pos);
         this.expandedCorkboardNotes.add(file.path);
         this.schedulePersistCorkboardLayout();
-        this.refreshBoard();
+        await this.refreshCorkboardAfterNoteCreate();
     }
 
     /**
@@ -4084,10 +4659,12 @@ export class BoardView extends ItemView {
             x: worldX,
             y: worldY,
             z: this.getCurrentMaxCorkboardZ() + 1,
+            w: 280,
+            h: 200,
         });
         this.expandedCorkboardNotes.add(file.path);
         this.schedulePersistCorkboardLayout();
-        this.refreshBoard();
+        await this.refreshCorkboardAfterNoteCreate();
     }
 
     /**
