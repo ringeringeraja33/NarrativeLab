@@ -51,6 +51,11 @@ import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { t } from '../utils/i18n';
+import {
+    listCustomCharacterRelationTypes,
+    mergeCharacterRelationTypes,
+    upsertCustomCharacterRelationType,
+} from '../utils/storyGraphCharacterRelations';
 
 type ScenePresenceStats = { pov: number; present: number };
 
@@ -2089,13 +2094,30 @@ export class CharacterView extends ItemView {
 
         const relations: CharacterRelation[] = normalizeCharacterRelations(draft.relations);
         const NEW_CUSTOM_TYPE_VALUE = '__custom_new__';
+        const sharedStyles = mergeCharacterRelationTypes(
+            this.plugin.settings.storyGraphCharacterRelationTypes,
+            this.characterManager.getAllCharacters(),
+        );
+        const sharedCustoms = listCustomCharacterRelationTypes(sharedStyles);
+        const sharedCustomIds = new Set(sharedCustoms.map(s => s.id));
 
         const inferCategoryFromType = (type: string): CharacterRelationCategory => {
             for (const category of RELATION_CATEGORIES) {
                 const options = RELATION_TYPES_BY_CATEGORY[category.value];
                 if (options.includes(type)) return category.value;
             }
+            const shared = sharedCustoms.find(s => s.id === type || s.id === type.toLowerCase());
+            if (shared) return shared.category || 'custom';
             return 'custom';
+        };
+
+        const persistSharedCustomType = async (typeId: string, label: string, category: CharacterRelationCategory) => {
+            const next = upsertCustomCharacterRelationType(
+                this.plugin.settings.storyGraphCharacterRelationTypes,
+                { id: typeId, label, category },
+            );
+            this.plugin.settings.storyGraphCharacterRelationTypes = next;
+            await this.plugin.saveSettings();
         };
 
         const buildTypeOptions = (select: HTMLSelectElement, currentType?: string) => {
@@ -2117,11 +2139,27 @@ export class CharacterView extends ItemView {
 
             const customGroup = activeDocument.createElement('optgroup');
             customGroup.label = t('Custom');
+            for (const custom of sharedCustoms) {
+                const opt = activeDocument.createElement('option');
+                opt.value = custom.id;
+                opt.text = custom.label;
+                if (currentType === custom.id || currentType === custom.label) opt.selected = true;
+                customGroup.appendChild(opt);
+            }
             const createOpt = activeDocument.createElement('option');
             createOpt.value = NEW_CUSTOM_TYPE_VALUE;
             createOpt.text = t('New');
             customGroup.appendChild(createOpt);
             select.appendChild(customGroup);
+
+            if (currentType && !select.value) {
+                // Unknown custom still in use on this note — keep it selectable.
+                const orphan = activeDocument.createElement('option');
+                orphan.value = currentType;
+                orphan.text = currentType;
+                orphan.selected = true;
+                customGroup.appendChild(orphan);
+            }
 
             if (!select.value) {
                 const fallback = RELATION_TYPES_BY_CATEGORY.family[0] || 'sibling';
@@ -2175,7 +2213,10 @@ export class CharacterView extends ItemView {
                     }
                 };
 
-                const shouldStartCustomMode = relation.category === 'custom' || relation.type === NEW_CUSTOM_TYPE_VALUE;
+                const shouldStartCustomMode = relation.type === NEW_CUSTOM_TYPE_VALUE
+                    || ((relation.category === 'custom' || !!relation.type)
+                        && !sharedCustomIds.has(relation.type)
+                        && !Object.values(RELATION_TYPES_BY_CATEGORY).some(list => list.includes(relation.type)));
                 setCustomMode(shouldStartCustomMode);
 
                 typeSelect.addEventListener('change', () => {
@@ -2193,6 +2234,23 @@ export class CharacterView extends ItemView {
                     draft.relations = normalizeCharacterRelations(relations);
                     this.scheduleSave(draft);
                     setCustomMode(false);
+                });
+
+                customTypeInput.addEventListener('change', () => {
+                    const rawLabel = customTypeInput.value.trim();
+                    const cleaned = rawLabel.toLowerCase().replace(/\s+/g, '-');
+                    if (!cleaned) {
+                        relation.type = NEW_CUSTOM_TYPE_VALUE;
+                        relation.category = 'custom';
+                        draft.relations = normalizeCharacterRelations(relations);
+                        this.scheduleSave(draft);
+                        return;
+                    }
+                    relation.type = cleaned;
+                    relation.category = 'custom';
+                    draft.relations = normalizeCharacterRelations(relations);
+                    this.scheduleSave(draft);
+                    void persistSharedCustomType(cleaned, rawLabel || cleaned, 'custom');
                 });
 
                 customTypeInput.addEventListener('input', () => {

@@ -365,6 +365,16 @@ export interface CharacterRelation {
     category: CharacterRelationCategory;
     type: string;
     target: string;
+    /**
+     * How this character sees `target` on the surface (Story Graph focus view).
+     * Stored on this character's frontmatter only — asymmetric.
+     */
+    surface?: string;
+    /**
+     * How this character feels about `target` underneath (Story Graph focus view).
+     * Stored on this character's frontmatter only — asymmetric.
+     */
+    deep?: string;
 }
 
 export const RELATION_CATEGORIES: { value: CharacterRelationCategory; label: string }[] = [
@@ -816,7 +826,12 @@ export function normalizeCharacterRelations(relations: CharacterRelation[] | und
         const key = `${category}|${type}|${target.toLowerCase()}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        out.push({ category, type, target });
+        const surface = typeof rel.surface === 'string' ? rel.surface.trim() : '';
+        const deep = typeof rel.deep === 'string' ? rel.deep.trim() : '';
+        const row: CharacterRelation = { category, type, target };
+        if (surface) row.surface = surface;
+        if (deep) row.deep = deep;
+        out.push(row);
     }
     return out;
 }

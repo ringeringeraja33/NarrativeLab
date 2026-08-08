@@ -10,4 +10,6 @@ export interface RelationshipEdgeInfo {
     from: string;
     to: string;
     type: RelationshipType;
+    /** Graph style id when known (custom types / builtins). */
+    styleId?: string;
 }

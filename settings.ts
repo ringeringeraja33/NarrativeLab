@@ -686,9 +686,59 @@ export interface SceneCardsSettings {
     tagTypeOverrides: Record<string, string>;
 
     /** User-defined semantic categories for wikilink edges in the Story Graph. */
-    storyGraphRelationCategories?: Array<{ id: string; label: string; color: string }>;
+    storyGraphRelationCategories?: Array<{
+        id: string;
+        label: string;
+        color: string;
+        /** `single` (default) or `double` arrows on the Story Graph. */
+        arrow?: 'single' | 'double';
+    }>;
     /** Directed source-path → target-path edge keys mapped to a relation category id. */
     storyGraphLinkRelationAssignments?: Record<string, string>;
+    /**
+     * Character↔character relation styles (labels/colors/arrows) for the Story Graph.
+     * Bidirectionally merged with types found on character `relations[]`.
+     */
+    storyGraphCharacterRelationTypes?: Array<{
+        id: string;
+        label: string;
+        color: string;
+        arrow?: 'single' | 'double';
+        baseType: 'ally' | 'enemy' | 'romantic' | 'family' | 'mentor' | 'other';
+        category?: 'family' | 'romantic' | 'social' | 'conflict' | 'guidance' | 'professional' | 'story' | 'custom';
+        builtin?: boolean;
+    }>;
+    /**
+     * Saved Story Graph layouts keyed by project file path (or `__global__`).
+     * Positions use node filePath when available, else stable node id.
+     */
+    storyGraphLayouts?: Record<string, {
+        positions: Record<string, { x: number; y: number }>;
+        /** Optional per-node image overrides (vault-relative paths). */
+        nodeImages?: Record<string, string>;
+        /** Global node size multiplier (default 1). */
+        nodeScale?: number;
+        panX?: number;
+        panY?: number;
+        zoom?: number;
+    }>;
+    /**
+     * Focus-view strand bundles keyed by undirected pair `pathA::pathB`.
+     * Each strand becomes one parallel edge on the Story Graph.
+     */
+    storyGraphFocusBundles?: Record<string, {
+        leftPath: string;
+        rightPath: string;
+        leftName?: string;
+        rightName?: string;
+        strands: Array<{
+            id: string;
+            direction: 'ltr' | 'rtl' | 'both';
+            label: string;
+            color: string;
+            lineStyle: 'solid' | 'dashed' | 'dotted';
+        }>;
+    }>;
 
     // Manual character alias mappings (lowercased alias → canonical character name)
     // e.g. { "sven": "Sven Andersson" } — user-defined via "Link to…" in Characters view
@@ -980,6 +1030,9 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     tagTypeOverrides: {},
     storyGraphRelationCategories: [],
     storyGraphLinkRelationAssignments: {},
+    storyGraphCharacterRelationTypes: [],
+    storyGraphLayouts: {},
+    storyGraphFocusBundles: {},
 
     characterAliases: {},
 

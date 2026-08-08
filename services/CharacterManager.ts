@@ -437,7 +437,12 @@ export class CharacterManager {
             const type = typeof rec.type === 'string' ? rec.type : '';
             const target = typeof rec.target === 'string' ? rec.target : '';
             if (!category || !type || !target) continue;
-            parsed.push({ category: category as CharacterRelationCategory, type, target });
+            const surface = typeof rec.surface === 'string' ? rec.surface.trim() : '';
+            const deep = typeof rec.deep === 'string' ? rec.deep.trim() : '';
+            const row: CharacterRelation = { category: category as CharacterRelationCategory, type, target };
+            if (surface) row.surface = surface;
+            if (deep) row.deep = deep;
+            parsed.push(row);
         }
         return parsed.length ? parsed : undefined;
     }
