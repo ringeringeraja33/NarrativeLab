@@ -53,10 +53,12 @@ export class CodexManager {
                 // Issue #209 — ensure every category exposes the shared
                 // Linking & Matching section (aliases, type, case-sensitivity,
                 // exclude terms) so codex entries are consistent across types.
+                // Folder stays on the built-in/English path unless explicitly set;
+                // label may be a localized/custom display name.
                 this.categoryDefs.set(id, withLinkingSection({
                     ...builtin,
                     label: override?.label || builtin.label,
-                    folder: override?.folder || override?.label || builtin.folder,
+                    folder: override?.folder || builtin.folder,
                     icon: override?.icon || builtin.icon,
                 }));
             } else {
@@ -85,15 +87,16 @@ export class CodexManager {
     }
 
     /**
-     * Keep category label parallel with its Library folder basename.
+     * Update Library folder basename and optional display label.
      * Does not change the stable category id / frontmatter type.
      */
-    setCategoryFolder(id: string, folderName: string): void {
+    setCategoryFolder(id: string, folderName: string, label?: string): void {
         const def = this.categoryDefs.get(id);
         if (!def) return;
         const name = folderName.trim();
         if (!name) return;
-        this.categoryDefs.set(id, { ...def, folder: name, label: name });
+        const nextLabel = (label ?? def.label ?? name).trim() || name;
+        this.categoryDefs.set(id, { ...def, folder: name, label: nextLabel });
     }
 
     // ── Load ───────────────────────────────────────────

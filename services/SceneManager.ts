@@ -8,6 +8,7 @@ import { formatActChapterPrefix, sanitizeActChapterForPath, compareActChapter } 
 import type SceneCardsPlugin from '../main';
 import { App, Notice, TFile, TFolder, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { BeatSheetTemplate, FilterPreset, Scene, SceneStatus, getStatusOrder } from '../models/Scene';
+import { localizeForLanguage } from '../utils/i18n';
 
 /**
  * Normalize a frontmatter `acts` / `chapters` value into a clean sorted
@@ -247,10 +248,10 @@ export class SceneManager implements ISceneStore {
      * Falls back to project.libraryFolders, then custom label, then defaults.
      */
     getLibraryFolderName(categoryId: string): string {
+        // Keep in sync with resolveLibraryFolderName (LibraryCategorySync):
+        // project mapping wins; seeded display labels must not change the path.
         const fromProject = this._activeProject?.libraryFolders?.[categoryId]?.trim();
         if (fromProject) return fromProject;
-        const custom = this.plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
-        if (custom?.label?.trim()) return custom.label.trim();
         const defaults: Record<string, string> = {
             characters: 'Characters',
             locations: 'Locations',
@@ -261,7 +262,21 @@ export class SceneManager implements ISceneStore {
             culture: 'Culture',
             systems: 'Systems',
         };
-        return defaults[categoryId] || categoryId;
+        const defaultName = defaults[categoryId];
+        const custom = this.plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
+        const label = custom?.label?.trim();
+        if (defaultName) {
+            if (!label || label === defaultName) return defaultName;
+            if (
+                label === localizeForLanguage('zh', defaultName)
+                || label === localizeForLanguage('en', defaultName)
+            ) {
+                return defaultName;
+            }
+            return label;
+        }
+        if (label) return label;
+        return categoryId;
     }
 
     /** Computed character folder for the active project (series-aware) */

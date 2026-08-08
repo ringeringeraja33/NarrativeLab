@@ -16,6 +16,7 @@ import {
     type UiLanguage,
     type UiLanguageSetting,
 } from './utils/i18n';
+import { ensureSeededCharacterRelationTypes } from './utils/storyGraphCharacterRelations';
 import { setActiveTemplatesProvider, setTopLevelMirrorEnabled, mirrorUniversalFieldsToTopLevel, hydrateUniversalFieldsFromTopLevel, isReservedTopLevelKey, type FieldTemplateChange } from './services/FieldTemplateService';
 import {
     BOARD_VIEW_TYPE,
@@ -84,6 +85,7 @@ import {
     applyLibraryCategorySettings,
     emptyLibraryCategorySettings,
     ensureLibraryCategoryFolders,
+    ensureSeededLibraryCategoryLabels,
     handleLibraryFolderVaultRename,
     LIBRARY_CATEGORIES_FILENAME,
     libraryCategorySettingsFromUnknown,
@@ -243,6 +245,8 @@ export default class SceneCardsPlugin extends Plugin {
         this.plotlineManager = new PlotlineManager(this, this.sceneManager);
         this.locationManager = new LocationManager(this.app);
         this.characterManager = new CharacterManager(this.app);
+        // One-shot seed for player-editable Story Graph relation labels (Obsidian zh/en).
+        void ensureSeededCharacterRelationTypes(this);
         this.codexManager = new CodexManager(this.app);
         this.snapshotManager = new SnapshotManager(
             this.app,
@@ -2681,7 +2685,8 @@ export default class SceneCardsPlugin extends Plugin {
                 (cc: { id: string; label: string; icon: string }) => makeCustomCodexCategory(cc.id, cc.label, cc.icon)
             );
             this.codexManager.initCategories(this.settings.codexEnabledCategories || [], customDefs);
-            // Tab label === Library folder basename (project overrides win).
+            await ensureSeededLibraryCategoryLabels(this);
+            // Folder path + display label (labels may be seeded zh/en).
             applyCategoryFolderLabels(this);
         }
 

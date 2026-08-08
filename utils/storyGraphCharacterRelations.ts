@@ -10,7 +10,8 @@ import {
     normalizeCharacterRelations,
 } from '../models/Character';
 import type { RelationshipType } from '../components/RelationshipMap';
-import { t } from './i18n';
+import { localizeForLanguage, seedUiLanguage, type UiLanguage } from './i18n';
+import type { App } from 'obsidian';
 
 /** Editable character-relation style shown on the Story Graph + legend. */
 export interface StoryGraphCharacterRelationType {
@@ -63,10 +64,16 @@ const LEGACY_STYLE_TO_CATEGORY: Record<string, CharacterRelationCategory> = {
 
 const CATEGORY_IDS = new Set<string>(RELATION_CATEGORIES.map(c => c.value));
 
-export function defaultCharacterRelationTypes(): StoryGraphCharacterRelationType[] {
+/**
+ * Built-in legend styles. `seedLang` picks the one-shot display labels
+ * (Obsidian zh/en); stored labels are not retranslated later.
+ */
+export function defaultCharacterRelationTypes(
+    seedLang: UiLanguage = 'en',
+): StoryGraphCharacterRelationType[] {
     return RELATION_CATEGORIES.map(cat => ({
         id: cat.value,
-        label: cat.label,
+        label: localizeForLanguage(seedLang, cat.label),
         color: CATEGORY_COLORS[cat.value],
         arrow: 'double' as const,
         baseType: RELATION_BASE_TYPE_BY_CATEGORY[cat.value],
@@ -127,16 +134,48 @@ export function normalizeCharacterRelationType(
     };
 }
 
+/**
+ * True when this legend style is applied on at least one character relation.
+ * Builtin category rows count as used when any relation sits in that category.
+ */
+export function isCharacterRelationTypeInUse(
+    style: StoryGraphCharacterRelationType,
+    characters: Character[],
+): boolean {
+    const id = style.id.trim().toLowerCase();
+    const label = style.label.trim().toLowerCase();
+    for (const character of characters) {
+        for (const rel of normalizeCharacterRelations(character.relations)) {
+            const typeKey = rel.type.trim().toLowerCase();
+            if (typeKey && (typeKey === id || typeKey === label)) return true;
+            if (
+                style.builtin
+                && (rel.category === style.category || rel.category === style.id)
+            ) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 /** Merge saved styles with library categories + types discovered on character notes. */
 export function mergeCharacterRelationTypes(
     saved: Array<Partial<StoryGraphCharacterRelationType> & { id?: string; label?: string }> | undefined,
     characters: Character[],
+    seedLang: UiLanguage = 'en',
 ): StoryGraphCharacterRelationType[] {
-    const defaults = defaultCharacterRelationTypes();
+    const defaults = defaultCharacterRelationTypes(seedLang);
     const byId = new Map<string, StoryGraphCharacterRelationType>();
-    for (const d of defaults) byId.set(d.id, { ...d });
+    const savedList = saved || [];
 
-    for (const raw of saved || []) {
+    // Fresh install / empty settings → show full library category set (seed language).
+    // Once the user has saved a list, respect deletions of unused builtins.
+    if (savedList.length === 0) {
+        for (const d of defaults) byId.set(d.id, { ...d });
+    }
+
+    for (const raw of savedList) {
         const n = normalizeCharacterRelationType(raw);
         if (!n) continue;
         const prev = byId.get(n.id);
@@ -150,6 +189,14 @@ export function mergeCharacterRelationTypes(
             color: n.color || prev?.color || CATEGORY_COLORS[n.category],
             arrow: n.arrow || prev?.arrow || 'double',
         });
+    }
+
+    // Rehydrate builtins that are still applied on character notes.
+    for (const d of defaults) {
+        if (byId.has(d.id)) continue;
+        if (isCharacterRelationTypeInUse(d, characters)) {
+            byId.set(d.id, { ...d });
+        }
     }
 
     // Import custom types found on character notes (not covered by category builtins).
@@ -208,8 +255,39 @@ export function resolveCharacterRelationStyle(
         || defaultCharacterRelationTypes().find(s => s.category === 'custom')!;
 }
 
+/**
+ * Player-editable legend label — show as stored.
+ * Do not run through `t()`: language switches must not overwrite customizations.
+ * Built-in type pickers in CharacterView still use `t()` on stable English ids.
+ */
 export function displayCharacterRelationLabel(style: StoryGraphCharacterRelationType): string {
-    return t(style.label);
+    return style.label?.trim() || style.id;
+}
+
+/**
+ * Persist built-in relation legend labels once, using Obsidian's interface language.
+ * Empty settings → seed zh/en defaults and save. Existing lists are left untouched
+ * so NarrativeLab language switches do not rewrite player-editable labels.
+ */
+export async function ensureSeededCharacterRelationTypes(
+    plugin: {
+        app: App;
+        settings: {
+            storyGraphCharacterRelationTypes?: Array<Partial<StoryGraphCharacterRelationType> & { id?: string; label?: string }>;
+        };
+        saveSettings: () => Promise<void>;
+    },
+    characters: Character[] = [],
+): Promise<StoryGraphCharacterRelationType[]> {
+    const seedLang = seedUiLanguage(plugin.app);
+    const saved = plugin.settings.storyGraphCharacterRelationTypes;
+    if (Array.isArray(saved) && saved.length > 0) {
+        return mergeCharacterRelationTypes(saved, characters, seedLang);
+    }
+    const seeded = defaultCharacterRelationTypes(seedLang);
+    plugin.settings.storyGraphCharacterRelationTypes = seeded;
+    await plugin.saveSettings();
+    return mergeCharacterRelationTypes(seeded, characters, seedLang);
 }
 
 export function makeCharacterRelationTypeId(label: string): string {
@@ -224,9 +302,10 @@ export function makeCharacterRelationTypeId(label: string): string {
 export function upsertCustomCharacterRelationType(
     saved: Array<Partial<StoryGraphCharacterRelationType>> | undefined,
     input: { id?: string; label: string; color?: string; arrow?: 'single' | 'double'; category?: CharacterRelationCategory },
+    seedLang: UiLanguage = 'en',
 ): StoryGraphCharacterRelationType[] {
     const label = input.label.trim();
-    const merged = mergeCharacterRelationTypes(saved, []);
+    const merged = mergeCharacterRelationTypes(saved, [], seedLang);
     if (!label) return merged;
     const id = (input.id || makeCharacterRelationTypeId(label)).trim().toLowerCase();
     if (CATEGORY_IDS.has(id)) return merged;

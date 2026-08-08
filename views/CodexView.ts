@@ -37,7 +37,10 @@ import { coerceString } from '../utils/narrow';
 import {
     applyCategoryFolderLabels,
     ensureLibraryCategoryFolders,
+    ensureSeededLibraryCategoryLabels,
+    isSeedLibraryCategoryLabel,
     renameLibraryCategory,
+    resolveLibraryCategoryLabel,
 } from '../services/LibraryCategorySync';
 import { VirtualScroller } from '../components/VirtualScroller';
 import {
@@ -324,16 +327,7 @@ export class CodexView extends ItemView {
                 newUncategorizedBtn.createSpan({ text: t('New uncategorized entry') });
                 newUncategorizedBtn.addEventListener('click', () => this.promptNewUncategorizedEntry());
             },
-            renderAfterModeActions: this.selectedEntry ? undefined : (actions) => {
-                const manageCategoriesBtn = actions.createEl('button', {
-                    cls: 'character-mode-btn codex-manage-categories-tab',
-                    attr: { type: 'button', 'aria-label': t('Manage categories') },
-                });
-                const icon = manageCategoriesBtn.createSpan();
-                obsidian.setIcon(icon, 'settings');
-                manageCategoriesBtn.createSpan({ text: t('Custom Categories') });
-                manageCategoriesBtn.addEventListener('click', () => this.openManageCategoriesModal());
-            },
+            // Custom Categories button is always rendered by renderCodexCategoryTabs.
         });
 
         // ── Content area ───────────────────────────────
@@ -2267,12 +2261,18 @@ export class CodexView extends ItemView {
         return btn;
     }
 
-    private openManageCategoriesModal(): void {
+    /**
+     * Open the Library category manager modal.
+     * Prefer the module export `openManageLibraryCategoriesModal` from other views.
+     */
+    openManageCategoriesModal(): void {
         const modal = new Modal(this.app);
         modal.modalEl.addClass('codex-category-manager-modal');
         modal.titleEl.setText(t('Manage Library Categories'));
-        this.renderCategoryManager(modal.contentEl, modal);
         modal.open();
+        void ensureSeededLibraryCategoryLabels(this.plugin).then(() => {
+            this.renderCategoryManager(modal.contentEl, modal);
+        });
     }
 
     private renderCategoryManager(
@@ -2302,16 +2302,19 @@ export class CodexView extends ItemView {
             text: t('Show or hide categories, and edit their names, icons, and fields. Preset categories can also be deleted.'),
         });
 
-        const folderLabel = (id: string, fallback: string) =>
-            this.plugin.sceneManager.getLibraryFolderName(id) || fallback;
+        const displayLabel = (id: string, fallback: string) => {
+            const draft = state.categories.find(category => category.id === id)?.label?.trim();
+            if (draft) return draft;
+            return resolveLibraryCategoryLabel(this.plugin, id, fallback);
+        };
         const list = el.createDiv('codex-category-manager-list');
         const header = list.createDiv('codex-category-manager-row codex-category-manager-header');
-        header.createSpan();
+        header.createSpan({ cls: 'codex-category-manager-check', text: '' });
         header.createSpan({ cls: 'codex-category-manager-icon-select', text: t('Icon') });
-        header.createSpan({ text: t('Category name') });
+        header.createSpan({ cls: 'codex-category-manager-name', text: t('Category name') });
         header.createSpan({ cls: 'codex-category-manager-preset', text: t('Type') });
-        header.createSpan({ text: t('Fields') });
-        header.createSpan();
+        header.createSpan({ cls: 'codex-category-manager-fields-col', text: t('Fields') });
+        header.createSpan({ cls: 'codex-category-manager-actions-col', text: '' });
         const rows: Array<{
             id: string;
             label: string;
@@ -2324,8 +2327,7 @@ export class CodexView extends ItemView {
         }> = [
             {
                 id: 'characters',
-                label: state.categories.find(category => category.id === 'characters')?.label
-                    || folderLabel('characters', 'Characters'),
+                label: displayLabel('characters', 'Characters'),
                 icon: state.categories.find(category => category.id === 'characters')?.icon || 'users',
                 preset: true,
                 undeletable: true,
@@ -2339,8 +2341,7 @@ export class CodexView extends ItemView {
             },
             {
                 id: 'locations',
-                label: state.categories.find(category => category.id === 'locations')?.label
-                    || folderLabel('locations', 'Locations'),
+                label: displayLabel('locations', 'Locations'),
                 icon: state.categories.find(category => category.id === 'locations')?.icon || 'map-pin',
                 preset: true,
                 undeletable: true,
@@ -2358,7 +2359,7 @@ export class CodexView extends ItemView {
                     const override = state.categories.find(item => item.id === category.id);
                     return {
                         id: category.id,
-                        label: override?.label || folderLabel(category.id, category.folder),
+                        label: displayLabel(category.id, category.label),
                         icon: override?.icon || category.icon,
                         preset: true,
                         definition: withLinkingSection(category),
@@ -2369,7 +2370,7 @@ export class CodexView extends ItemView {
                 .filter(category => !presetIds.has(category.id) && !fixedIds.has(category.id))
                 .map(category => ({
                     id: category.id,
-                    label: category.label || folderLabel(category.id, category.label),
+                    label: category.label || displayLabel(category.id, category.label),
                     icon: category.icon,
                     preset: false,
                     definition: makeCustomCodexCategory(category.id, category.label, category.icon),
@@ -2377,8 +2378,7 @@ export class CodexView extends ItemView {
                 })),
             {
                 id: UNCATEGORIZED_CATEGORY_ID,
-                label: state.categories.find(category => category.id === UNCATEGORIZED_CATEGORY_ID)?.label
-                    || t('Uncategorized entries'),
+                label: displayLabel(UNCATEGORIZED_CATEGORY_ID, t('Uncategorized entries')),
                 icon: state.categories.find(category => category.id === UNCATEGORIZED_CATEGORY_ID)?.icon
                     || 'file-question',
                 preset: true,
@@ -2526,7 +2526,10 @@ export class CodexView extends ItemView {
             const deletedList = el.createDiv('codex-category-manager-deleted');
             for (const preset of deletedPresets) {
                 const row = deletedList.createDiv('codex-category-manager-row codex-category-manager-deleted-row');
-                row.createSpan({ text: preset.label, cls: 'codex-category-manager-name' });
+                row.createSpan({
+                    text: resolveLibraryCategoryLabel(this.plugin, preset.id, preset.label),
+                    cls: 'codex-category-manager-name',
+                });
                 row.createSpan({ cls: 'codex-category-manager-preset', text: t('Preset') });
                 const restoreBtn = row.createEl('button', {
                     cls: 'codex-category-restore-btn',
@@ -2555,6 +2558,7 @@ export class CodexView extends ItemView {
             });
 
         const iconSetting = new Setting(addSection).setName(t('Icon'));
+        iconSetting.settingEl.addClass('codex-category-manager-add-icon');
         iconSetting.controlEl.empty();
         const addIconHost = iconSetting.controlEl.createDiv('codex-category-manager-icon-select');
         this.bindCodexIconPicker(
@@ -2607,16 +2611,27 @@ export class CodexView extends ItemView {
                 .setButtonText(t('Save'))
                 .setCta()
                 .onClick(async () => {
+                    const project = this.plugin.sceneManager.activeProject;
                     for (const category of state.categories) {
                         if (category.id === UNCATEGORIZED_CATEGORY_ID) continue;
-                        const currentName = this.plugin.sceneManager.getLibraryFolderName(category.id);
+                        const folderName = this.plugin.sceneManager.getLibraryFolderName(category.id);
                         const desiredName = category.label.trim();
-                        if (desiredName && currentName !== desiredName) {
-                            const renamed = await renameLibraryCategory(this.plugin, category.id, desiredName);
-                            if (!renamed
-                                && this.plugin.sceneManager.getLibraryFolderName(category.id) !== desiredName) {
-                                return;
+                        if (!desiredName || desiredName === folderName) continue;
+                        // Seeded zh/en labels are display-only — pin the vault folder mapping
+                        // instead of renaming Library/<English> on Save.
+                        if (isSeedLibraryCategoryLabel(category.id, desiredName)) {
+                            if (project) {
+                                if (!project.libraryFolders) project.libraryFolders = {};
+                                if (!project.libraryFolders[category.id]?.trim()) {
+                                    project.libraryFolders[category.id] = folderName;
+                                }
                             }
+                            continue;
+                        }
+                        const renamed = await renameLibraryCategory(this.plugin, category.id, desiredName);
+                        if (!renamed
+                            && this.plugin.sceneManager.getLibraryFolderName(category.id) !== desiredName) {
+                            return;
                         }
                     }
                     this.plugin.settings.codexCustomCategories = state.categories
@@ -2636,7 +2651,6 @@ export class CodexView extends ItemView {
                     applyCategoryFolderLabels(this.plugin);
 
                     // Persist folder names on the project + create missing folders
-                    const project = this.plugin.sceneManager.activeProject;
                     if (project) {
                         if (!project.libraryFolders) project.libraryFolders = {};
                         project.libraryFolders.characters =
@@ -3025,6 +3039,39 @@ class AddCustomFieldModal extends Modal {
                     }
                 }));
     }
+}
+
+/**
+ * Open the Library “Custom Categories” manager from any Library view
+ * (Characters, Locations, Codex) without requiring an open CodexView leaf.
+ */
+export function openManageLibraryCategoriesModal(
+    plugin: SceneCardsPlugin,
+    onDone?: () => void,
+): void {
+    // Prototype host: private fields are only assignable via a loose cast.
+    const host = Object.create(CodexView.prototype) as {
+        plugin: SceneCardsPlugin;
+        app: App;
+        codexManager: CodexManager;
+        rootContainer: HTMLElement | null;
+        activeCategory: string;
+        selectedEntry: string | null;
+        renderView: (container: HTMLElement) => void;
+        openManageCategoriesModal: () => void;
+    };
+    host.plugin = plugin;
+    host.app = plugin.app;
+    host.codexManager = plugin.codexManager;
+    // Truthy stand-in so save/delete paths that check rootContainer still refresh.
+    host.rootContainer = activeDocument.createElement('div');
+    host.activeCategory = '';
+    host.selectedEntry = null;
+    host.renderView = () => {
+        onDone?.();
+        void plugin.refreshOpenViews();
+    };
+    host.openManageCategoriesModal();
 }
 
 /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

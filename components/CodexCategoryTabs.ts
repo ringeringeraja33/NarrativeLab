@@ -3,14 +3,18 @@
  * Shared Codex category tab bar — rendered in CodexView, CharacterView, and LocationView
  * so the user can switch between categories from any of those views.
  *
- * Tab labels always equal the Library/<folder> basename (not i18n).
- * Right-click a tab to rename the folder + label together.
+ * Tab labels prefer saved/custom display names (seeded from Obsidian language).
+ * Right-click a tab to rename the folder + label together when the user chooses.
  */
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE } from '../constants';
 import { renderLibraryModeToggle } from './LibraryModeBar';
-import { deleteLibraryCategory, renameLibraryCategory } from '../services/LibraryCategorySync';
+import {
+    deleteLibraryCategory,
+    renameLibraryCategory,
+    resolveLibraryCategoryLabel,
+} from '../services/LibraryCategorySync';
 import { t } from '../utils/i18n';
 import { UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
 
@@ -31,6 +35,8 @@ export interface CodexTabsOptions {
     renderAfterModeActions?: (container: HTMLElement) => void;
     /** Called after a successful tab/folder rename (views should re-render) */
     onCategoriesChanged?: () => void;
+    /** Show the Custom Categories gear button (default true). */
+    showManageCategories?: boolean;
 }
 
 /**
@@ -48,6 +54,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         onCategoriesChanged,
         renderBeforeModeActions,
         renderAfterModeActions,
+        showManageCategories = true,
     } = opts;
 
     const tabs = parent.createDiv('codex-category-tabs');
@@ -55,8 +62,8 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     const hiddenFixed = new Set(plugin.settings.libraryHiddenFixedCategories || []);
     const categoryOverrides = plugin.settings.codexCustomCategories || [];
     const overrideFor = (id: string) => categoryOverrides.find(category => category.id === id);
-    const charName = plugin.sceneManager.getLibraryFolderName('characters');
-    const locName = plugin.sceneManager.getLibraryFolderName('locations');
+    const charName = resolveLibraryCategoryLabel(plugin, 'characters', 'Characters');
+    const locName = resolveLibraryCategoryLabel(plugin, 'locations', 'Locations');
 
     // ── Characters pseudo-tab ──
     if (!hiddenFixed.has('characters')) {
@@ -95,13 +102,14 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         .filter(category => category.id !== UNCATEGORIZED_CATEGORY_ID);
     for (const cat of cats) {
         const isActive = activeId === cat.id;
+        const tabLabel = resolveLibraryCategoryLabel(plugin, cat.id, cat.label);
         const tab = tabs.createEl('button', {
             cls: `codex-tab ${isActive ? 'active' : ''}`,
-            attr: { 'aria-label': cat.label, type: 'button', 'data-category-id': cat.id },
+            attr: { 'aria-label': tabLabel, type: 'button', 'data-category-id': cat.id },
         });
         const icon = tab.createSpan({ cls: 'codex-tab-icon' });
         obsidian.setIcon(icon, cat.icon);
-        tab.createSpan({ cls: 'codex-tab-label', text: cat.label });
+        tab.createSpan({ cls: 'codex-tab-label', text: tabLabel });
         attachRenameMenu(
             tab,
             plugin,
@@ -205,6 +213,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         (showModeToggle !== false && onModeChange)
         || renderBeforeModeActions
         || renderAfterModeActions
+        || showManageCategories
     ) {
         const actions = tabs.createDiv('codex-category-actions');
         renderBeforeModeActions?.(actions);
@@ -212,6 +221,21 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
             renderLibraryModeToggle(actions, plugin, onModeChange);
         }
         renderAfterModeActions?.(actions);
+        if (showManageCategories) {
+            const manageCategoriesBtn = actions.createEl('button', {
+                cls: 'character-mode-btn codex-manage-categories-tab',
+                attr: { type: 'button', 'aria-label': t('Manage categories') },
+            });
+            const icon = manageCategoriesBtn.createSpan();
+            obsidian.setIcon(icon, 'settings');
+            manageCategoriesBtn.createSpan({ text: t('Custom Categories') });
+            manageCategoriesBtn.addEventListener('click', () => {
+                // Lazy import avoids CodexView ↔ CodexCategoryTabs circular init.
+                void import('../views/CodexView').then(({ openManageLibraryCategoriesModal }) => {
+                    openManageLibraryCategoriesModal(plugin, onCategoriesChanged);
+                });
+            });
+        }
     }
 
     return tabs;
@@ -327,7 +351,11 @@ export function promptDeleteCategory(
     categoryId: string,
     onDeleted?: () => void,
 ): void {
-    const name = plugin.sceneManager.getLibraryFolderName(categoryId);
+    const name = resolveLibraryCategoryLabel(
+        plugin,
+        categoryId,
+        plugin.sceneManager.getLibraryFolderName(categoryId),
+    );
     const modal = new obsidian.Modal(plugin.app);
     modal.titleEl.setText(t('Delete Library category'));
     modal.contentEl.createEl('p', {
@@ -365,7 +393,11 @@ function promptRenameCategory(
     categoryId: string,
     onCategoriesChanged?: () => void,
 ): void {
-    const current = plugin.sceneManager.getLibraryFolderName(categoryId);
+    const current = resolveLibraryCategoryLabel(
+        plugin,
+        categoryId,
+        plugin.sceneManager.getLibraryFolderName(categoryId),
+    );
     const modal = new obsidian.Modal(plugin.app);
     modal.titleEl.setText(t('Rename Library tab'));
     modal.contentEl.createEl('p', {

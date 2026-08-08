@@ -14,10 +14,16 @@ import {
     normalizeCharacterRelations,
 } from '../models/Character';
 import {
+    DEFAULT_STORY_GRAPH_ENTITY_FILLS,
+    STORY_GRAPH_ENTITY_TYPES,
     StoryGraph,
+    normalizeStoryGraphHexColor,
     normalizeStoryGraphRelationCategory,
+    resolveStoryGraphEntityColors,
     type StoryGraphConnectNode,
     type StoryGraphDocument,
+    type StoryGraphEntityColorMap,
+    type StoryGraphEntityType,
     type StoryGraphFilterState,
     type StoryGraphLayoutState,
     type StoryGraphLinkEdgeInfo,
@@ -39,14 +45,15 @@ import {
 } from '../utils/storyGraphStrands';
 import {
     DEFAULT_RELATION_TYPE_BY_CATEGORY,
-    defaultCharacterRelationTypes,
     displayCharacterRelationLabel,
+    ensureSeededCharacterRelationTypes,
+    isCharacterRelationTypeInUse,
     makeCharacterRelationTypeId,
     mergeCharacterRelationTypes,
     normalizeCharacterRelationType,
     type StoryGraphCharacterRelationType,
 } from '../utils/storyGraphCharacterRelations';
-import { t } from '../utils/i18n';
+import { localizeForLanguage, seedUiLanguage, t } from '../utils/i18n';
 
 export type LibraryContentMode = 'browse' | 'story-graph';
 
@@ -300,9 +307,13 @@ export function renderLibraryStoryGraph(
         if (bundle) focusBundles[key] = bundle;
     }
 
+    const seedLang = seedUiLanguage(plugin.app);
+    // Fire-and-forget persist on first empty install; merge uses Obsidian seed lang.
+    void ensureSeededCharacterRelationTypes(plugin, characters);
     const characterRelationTypes = mergeCharacterRelationTypes(
         plugin.settings.storyGraphCharacterRelationTypes,
         characters,
+        seedLang,
     );
 
     const openFocusFromRelation = (edge: RelationshipEdgeInfo) => {
@@ -398,10 +409,193 @@ export function renderLibraryStoryGraph(
             onPickNodeImage: async (_node, current) => pickImage(plugin.app, attachmentFolder, current),
             focusBundles,
             characterRelationTypes,
+            entityColors: plugin.settings.storyGraphEntityColors || {},
+            onLegendEditEntity: (type) => openStoryGraphEntityColorModal(plugin, type, onRefresh),
+            onLegendEditCharRelation: () => openStoryGraphRelationCategoriesModal(plugin, onRefresh),
+            onLegendEditLinkCategory: () => openStoryGraphRelationCategoriesModal(plugin, onRefresh),
+            onLegendAdd: (evt) => showStoryGraphLegendAddMenu(plugin, onRefresh, evt),
+            onLegendDeleteCharRelation: async (style) => {
+                const chars = plugin.characterManager.getAllCharacters();
+                if (isCharacterRelationTypeInUse(style, chars)) {
+                    new Notice(t('Cannot delete: used by character relations'));
+                    return;
+                }
+                plugin.settings.storyGraphCharacterRelationTypes = (
+                    plugin.settings.storyGraphCharacterRelationTypes || []
+                ).filter(item => item.id !== style.id);
+                await plugin.saveSettings();
+                onRefresh();
+            },
+            onLegendDeleteLinkCategory: async (category) => {
+                const assignments = plugin.settings.storyGraphLinkRelationAssignments || {};
+                if (Object.values(assignments).includes(category.id)) {
+                    new Notice(t('Cannot delete: category is assigned to links'));
+                    return;
+                }
+                plugin.settings.storyGraphRelationCategories = (
+                    plugin.settings.storyGraphRelationCategories || []
+                ).filter(item => item.id !== category.id);
+                await plugin.saveSettings();
+                onRefresh();
+            },
+            isCharRelationInUse: (style) =>
+                isCharacterRelationTypeInUse(style, plugin.characterManager.getAllCharacters()),
+            isLinkCategoryInUse: (category) =>
+                Object.values(plugin.settings.storyGraphLinkRelationAssignments || {})
+                    .includes(category.id),
         },
     );
     graph.render();
     return graph;
+}
+
+function entityTypeLabelKey(type: StoryGraphEntityType): string {
+    switch (type) {
+        case 'scene': return 'Scenes';
+        case 'character': return 'Characters';
+        case 'location': return 'Locations';
+        case 'codex': return 'Codex';
+        case 'prop': return 'Props';
+        default: return 'Other';
+    }
+}
+
+/** Right-click entity legend → edit fill / border for that node type. */
+function openStoryGraphEntityColorModal(
+    plugin: SceneCardsPlugin,
+    type: StoryGraphEntityType,
+    onDone: () => void,
+): void {
+    const modal = new Modal(plugin.app);
+    modal.titleEl.setText(t('{name} colors', { name: t(entityTypeLabelKey(type)) }));
+    const resolved = resolveStoryGraphEntityColors(plugin.settings.storyGraphEntityColors);
+    let fill = resolved[type].fill;
+    let border = resolved[type].border;
+
+    new Setting(modal.contentEl)
+        .setName(t('Fill'))
+        .addColorPicker(picker => picker.setValue(fill).onChange(v => { fill = v; }));
+    new Setting(modal.contentEl)
+        .setName(t('Border'))
+        .addColorPicker(picker => picker.setValue(border).onChange(v => { border = v; }));
+    new Setting(modal.contentEl)
+        .addButton(btn => btn
+            .setButtonText(t('Save'))
+            .setCta()
+            .onClick(async () => {
+                const map: StoryGraphEntityColorMap = {
+                    ...(plugin.settings.storyGraphEntityColors || {}),
+                };
+                map[type] = {
+                    fill: normalizeStoryGraphHexColor(fill, DEFAULT_STORY_GRAPH_ENTITY_FILLS[type]),
+                    border: normalizeStoryGraphHexColor(
+                        border,
+                        resolveStoryGraphEntityColors({})[type].border,
+                    ),
+                };
+                plugin.settings.storyGraphEntityColors = map;
+                await plugin.saveSettings();
+                modal.close();
+                onDone();
+            }));
+    modal.open();
+}
+
+/** Legend “+” — add character relation, wikilink category, or open full manager. */
+function showStoryGraphLegendAddMenu(
+    plugin: SceneCardsPlugin,
+    onDone: () => void,
+    evt?: MouseEvent,
+): void {
+    const menu = new Menu();
+    menu.addItem(item => {
+        item.setTitle(t('Add character relation'));
+        item.setIcon('heart-handshake');
+        item.onClick(() => openQuickAddCharacterRelationModal(plugin, onDone));
+    });
+    menu.addItem(item => {
+        item.setTitle(t('Add wikilink category'));
+        item.setIcon('link');
+        item.onClick(() => openNewStoryGraphRelationCategoryModal(plugin, async () => {
+            onDone();
+        }));
+    });
+    menu.addSeparator();
+    menu.addItem(item => {
+        item.setTitle(t('Manage all…'));
+        item.setIcon('tags');
+        item.onClick(() => openStoryGraphRelationCategoriesModal(plugin, onDone));
+    });
+    if (evt) menu.showAtMouseEvent(evt);
+    else menu.showAtPosition({ x: Math.round(window.innerWidth / 2 - 80), y: 120 });
+}
+
+function openQuickAddCharacterRelationModal(
+    plugin: SceneCardsPlugin,
+    onDone: () => void,
+): void {
+    const modal = new Modal(plugin.app);
+    modal.titleEl.setText(t('Add character relation'));
+    const seedLang = seedUiLanguage(plugin.app);
+    let label = localizeForLanguage(seedLang, 'New relation');
+    let color = '#6C7AE0';
+    let arrow: 'single' | 'double' = 'double';
+
+    new Setting(modal.contentEl)
+        .setName(t('Name'))
+        .addText(text => {
+            text.setValue(label);
+            text.onChange(v => { label = v; });
+            window.setTimeout(() => {
+                text.inputEl.focus();
+                text.inputEl.select();
+            }, 40);
+        });
+    new Setting(modal.contentEl)
+        .setName(t('Color'))
+        .addColorPicker(picker => picker.setValue(color).onChange(v => { color = v; }));
+    new Setting(modal.contentEl)
+        .setName(t('Arrow style'))
+        .addDropdown(drop => drop
+            .addOption('single', t('Single arrow'))
+            .addOption('double', t('Double arrow'))
+            .setValue(arrow)
+            .onChange(v => { arrow = v === 'double' ? 'double' : 'single'; }));
+    new Setting(modal.contentEl)
+        .addButton(btn => btn
+            .setButtonText(t('Add'))
+            .setCta()
+            .onClick(async () => {
+                const name = label.trim();
+                if (!name) {
+                    new Notice(t('Please enter a name'));
+                    return;
+                }
+                const id = makeCharacterRelationTypeId(name);
+                const next = normalizeCharacterRelationType({
+                    id,
+                    label: name,
+                    color,
+                    arrow,
+                    baseType: 'other',
+                    category: 'custom',
+                    builtin: false,
+                });
+                if (!next) return;
+                const merged = mergeCharacterRelationTypes(
+                    plugin.settings.storyGraphCharacterRelationTypes,
+                    plugin.characterManager.getAllCharacters(),
+                    seedLang,
+                );
+                plugin.settings.storyGraphCharacterRelationTypes = [
+                    ...merged.filter(s => s.id !== next.id),
+                    next,
+                ];
+                await plugin.saveSettings();
+                modal.close();
+                onDone();
+            }));
+    modal.open();
 }
 
 /** Right-click a relationship edge → change type or delete. */
@@ -416,6 +610,7 @@ export function showRelationEdgeMenu(
     const styles = mergeCharacterRelationTypes(
         plugin.settings.storyGraphCharacterRelationTypes,
         plugin.characterManager.getAllCharacters(),
+        seedUiLanguage(plugin.app),
     );
 
     menu.addItem(item => {
@@ -599,13 +794,36 @@ export function openStoryGraphRelationCategoriesModal(
 ): void {
     const modal = new Modal(plugin.app);
     modal.titleEl.setText(t('Relation categories'));
+    const seedLang = seedUiLanguage(plugin.app);
+    void ensureSeededCharacterRelationTypes(plugin, plugin.characterManager.getAllCharacters());
     let charDraft: StoryGraphCharacterRelationType[] = mergeCharacterRelationTypes(
         plugin.settings.storyGraphCharacterRelationTypes,
         plugin.characterManager.getAllCharacters(),
+        seedLang,
     );
     let linkDraft: StoryGraphRelationCategory[] = (plugin.settings.storyGraphRelationCategories || [])
         .map(category => normalizeStoryGraphRelationCategory(category))
         .filter((category): category is StoryGraphRelationCategory => !!category);
+    const entityDraft: StoryGraphEntityColorMap = {};
+    {
+        const resolved = resolveStoryGraphEntityColors(plugin.settings.storyGraphEntityColors);
+        for (const type of STORY_GRAPH_ENTITY_TYPES) {
+            entityDraft[type] = {
+                fill: resolved[type].fill,
+                border: resolved[type].border,
+            };
+        }
+    }
+    const entityLabelKey = (type: StoryGraphEntityType): string => {
+        switch (type) {
+            case 'scene': return 'Scenes';
+            case 'character': return 'Characters';
+            case 'location': return 'Locations';
+            case 'codex': return 'Codex';
+            case 'prop': return 'Props';
+            default: return 'Other';
+        }
+    };
 
     const renderArrowSelect = (
         parent: HTMLElement,
@@ -633,6 +851,77 @@ export function openStoryGraphRelationCategoriesModal(
             cls: 'setting-item-description',
             text: t('Edit character relation styles (synced with character notes) and wikilink categories. Internal multi-strands are set in focus view.'),
         });
+
+        content.createEl('h4', { text: t('Node colors') });
+        content.createEl('p', {
+            cls: 'setting-item-description',
+            text: t('Fill and border colors for Story Graph entity nodes.'),
+        });
+        const nodeColorList = content.createDiv('story-graph-entity-color-list');
+        const nodeHeader = nodeColorList.createDiv(
+            'story-graph-entity-color-row story-graph-entity-color-header',
+        );
+        nodeHeader.createSpan();
+        nodeHeader.createSpan({ text: t('Type') });
+        nodeHeader.createSpan({ text: t('Fill') });
+        nodeHeader.createSpan({ text: t('Border') });
+        for (const type of STORY_GRAPH_ENTITY_TYPES) {
+            const row = nodeColorList.createDiv('story-graph-entity-color-row');
+            const swatch = row.createSpan({ cls: 'story-graph-entity-color-swatch' });
+            const style = entityDraft[type] || {
+                fill: DEFAULT_STORY_GRAPH_ENTITY_FILLS[type],
+                border: '#FFFFFF',
+            };
+            const syncSwatch = () => {
+                swatch.setCssStyles({
+                    backgroundColor: style.fill || DEFAULT_STORY_GRAPH_ENTITY_FILLS[type],
+                    boxShadow: `inset 0 0 0 2px ${style.border || '#FFFFFF'}`,
+                });
+            };
+            syncSwatch();
+            row.createSpan({
+                cls: 'story-graph-entity-color-label',
+                text: t(entityLabelKey(type)),
+            });
+            const fillInput = row.createEl('input', {
+                attr: {
+                    type: 'color',
+                    value: style.fill || DEFAULT_STORY_GRAPH_ENTITY_FILLS[type],
+                    'aria-label': `${t(entityLabelKey(type))} — ${t('Fill')}`,
+                    title: t('Fill'),
+                },
+            }) as HTMLInputElement;
+            fillInput.addEventListener('input', () => {
+                style.fill = fillInput.value;
+                entityDraft[type] = style;
+                syncSwatch();
+            });
+            const borderInput = row.createEl('input', {
+                attr: {
+                    type: 'color',
+                    value: style.border || '#FFFFFF',
+                    'aria-label': `${t(entityLabelKey(type))} — ${t('Border')}`,
+                    title: t('Border'),
+                },
+            }) as HTMLInputElement;
+            borderInput.addEventListener('input', () => {
+                style.border = borderInput.value;
+                entityDraft[type] = style;
+                syncSwatch();
+            });
+        }
+        new Setting(content)
+            .addButton(button => button
+                .setButtonText(t('Reset node colors'))
+                .onClick(() => {
+                    for (const type of STORY_GRAPH_ENTITY_TYPES) {
+                        entityDraft[type] = {
+                            fill: DEFAULT_STORY_GRAPH_ENTITY_FILLS[type],
+                            border: resolveStoryGraphEntityColors({})[type].border,
+                        };
+                    }
+                    render();
+                }));
 
         content.createEl('h4', { text: t('Character relations') });
         content.createEl('p', {
@@ -682,11 +971,25 @@ export function openStoryGraphRelationCategoriesModal(
             renderArrowSelect(row, style.arrow, v => { style.arrow = v; });
             color.addEventListener('input', () => { style.color = color.value; });
             name.addEventListener('input', () => { style.label = name.value; });
-            const remove = row.createEl('button', { attr: { 'aria-label': t('Delete') } });
+            const characters = plugin.characterManager.getAllCharacters();
+            const inUse = isCharacterRelationTypeInUse(style, characters);
+            const remove = row.createEl('button', {
+                attr: {
+                    'aria-label': inUse
+                        ? t('Cannot delete: used by character relations')
+                        : t('Delete'),
+                    title: inUse
+                        ? t('Cannot delete: used by character relations')
+                        : t('Delete'),
+                },
+            });
             obsidian.setIcon(remove, 'trash');
-            remove.disabled = !!style.builtin;
+            remove.disabled = inUse;
             remove.addEventListener('click', () => {
-                if (style.builtin) return;
+                if (isCharacterRelationTypeInUse(style, plugin.characterManager.getAllCharacters())) {
+                    new Notice(t('Cannot delete: used by character relations'));
+                    return;
+                }
                 charDraft = charDraft.filter(item => item.id !== style.id);
                 render();
             });
@@ -696,7 +999,8 @@ export function openStoryGraphRelationCategoriesModal(
             .addButton(button => button
                 .setButtonText(t('Add character relation'))
                 .onClick(() => {
-                    const label = t('New relation');
+                    // Editable seed: Obsidian interface language at creation time.
+                    const label = localizeForLanguage(seedLang, 'New relation');
                     const id = makeCharacterRelationTypeId(`${label}-${Date.now().toString(36)}`);
                     charDraft.push({
                         id,
@@ -758,7 +1062,7 @@ export function openStoryGraphRelationCategoriesModal(
                 .onClick(() => {
                     linkDraft.push({
                         id: `relation-${Date.now().toString(36)}`,
-                        label: t('New relation'),
+                        label: localizeForLanguage(seedLang, 'New relation'),
                         color: '#6C7AE0',
                         arrow: 'single',
                     });
@@ -774,16 +1078,8 @@ export function openStoryGraphRelationCategoriesModal(
                         .filter((category): category is StoryGraphRelationCategory => !!category);
                     const cleanChars = charDraft
                         .map(style => {
-                            // Keep display edits: if user typed a translated label back, store canonical for builtins.
-                            if (style.builtin) {
-                                const cat = RELATION_CATEGORIES.find(c => c.value === style.id || c.value === style.category);
-                                const typed = style.label.trim();
-                                const translated = cat ? t(cat.label) : '';
-                                if (cat && (typed === translated || typed === cat.label)) {
-                                    style.label = cat.label;
-                                }
-                            } else if (style.label.trim()) {
-                                // Stable id from final label when still a placeholder id.
+                            // Player-editable labels stay as typed (including seeded zh/en).
+                            if (!style.builtin && style.label.trim()) {
                                 const trimmed = style.label.trim();
                                 if (style.id.startsWith('char-rel-') || style.id.startsWith('新关联')) {
                                     style.id = makeCharacterRelationTypeId(trimmed);
@@ -792,10 +1088,11 @@ export function openStoryGraphRelationCategoriesModal(
                             return normalizeCharacterRelationType(style);
                         })
                         .filter((style): style is StoryGraphCharacterRelationType => !!style);
-                    // Ensure library category builtins remain
-                    for (const d of defaultCharacterRelationTypes()) {
-                        if (!cleanChars.some(c => c.id === d.id)) {
-                            cleanChars.unshift({ ...d });
+                    // Keep any still-applied styles (e.g. deleted from draft but used on notes).
+                    const chars = plugin.characterManager.getAllCharacters();
+                    for (const kept of mergeCharacterRelationTypes(cleanChars, chars, seedLang)) {
+                        if (!cleanChars.some(c => c.id === kept.id) && isCharacterRelationTypeInUse(kept, chars)) {
+                            cleanChars.push(kept);
                         }
                     }
                     const validIds = new Set(cleanLinks.map(category => category.id));
@@ -806,6 +1103,22 @@ export function openStoryGraphRelationCategoriesModal(
                     plugin.settings.storyGraphRelationCategories = cleanLinks;
                     plugin.settings.storyGraphLinkRelationAssignments = assignments;
                     plugin.settings.storyGraphCharacterRelationTypes = cleanChars;
+                    const cleanEntity: StoryGraphEntityColorMap = {};
+                    for (const type of STORY_GRAPH_ENTITY_TYPES) {
+                        const style = entityDraft[type];
+                        if (!style) continue;
+                        cleanEntity[type] = {
+                            fill: normalizeStoryGraphHexColor(
+                                style.fill,
+                                DEFAULT_STORY_GRAPH_ENTITY_FILLS[type],
+                            ),
+                            border: normalizeStoryGraphHexColor(
+                                style.border,
+                                resolveStoryGraphEntityColors({})[type].border,
+                            ),
+                        };
+                    }
+                    plugin.settings.storyGraphEntityColors = cleanEntity;
                     await plugin.saveSettings();
                     modal.close();
                     onDone();

@@ -160,6 +160,9 @@ const ZH_CORE: Record<string, string> = {
     'Story Graph image exported': '已导出故事图谱图片',
     'Failed to export Story Graph image': '导出故事图谱图片失败',
     'Nothing to export': '没有可导出的内容',
+    'All entity filters are off. Turn some back on above, or reset filters.': '所有实体筛选都已关闭。请在上方重新打开，或重置筛选。',
+    'Nothing matches the current filters. Enable more entity types above, or reset filters.': '当前筛选下没有可显示的内容。请在上方打开更多实体类型，或重置筛选。',
+    'Reset filters': '重置筛选',
     'Set node image': '设置节点图片',
     'Change node image': '更换节点图片',
     'Clear node image': '清除节点图片',
@@ -183,6 +186,8 @@ const ZH_CORE: Record<string, string> = {
     'Drag to connect': '拖拽连线',
     'Drag nodes to rearrange · drag the blue port to add a strand': '拖动节点调整位置 · 从蓝色圆点拖向另一端可添加指向',
     'Drag handles to connect · same handle can host many lines · drop asks about a new handle': '拖拽把手连线 · 同一把手可挂多条线 · 松手时可选择是否新建把手',
+    'Drag handles to connect · drag mid-point to bend · double-click line to edit label': '拖拽把手连线 · 拖动中点弯曲 · 双击连线编辑文字',
+    'Drag to bend': '拖动以弯曲',
     'Add handle': '添加把手',
     'Delete handle': '删除把手',
     'Create new handle?': '新建把手？',
@@ -190,7 +195,9 @@ const ZH_CORE: Record<string, string> = {
     'New handle': '新建把手',
     'Use existing handle': '使用已有把手',
     'Undo': '撤销',
+    'Redo': '重做',
     'Nothing to undo': '没有可撤销的操作',
+    'Nothing to redo': '没有可重做的操作',
     'Secondary strands under "{parent}"': '「{parent}」下的次级指向',
     'internal strands': '条内部指向',
     'Edit character relation styles (synced with character notes) and wikilink categories. Internal multi-strands are set in focus view.': '编辑人物关系样式（与角色笔记双向同步）以及双链类别。关系内部的多重小连线请在聚焦视图中设置。',
@@ -199,6 +206,7 @@ const ZH_CORE: Record<string, string> = {
     'Legend matches library relation categories. Custom types sync with character profile relation entries.': '图鉴与资料库关系分类一致；自定义类型会同步到角色资料的关系条目。',
     'Relation category': '关系分类',
     'Add character relation': '添加人物关系',
+    'Cannot delete: used by character relations': '无法删除：已有角色关系在使用',
     'Wikilink categories': '双链类别',
     'Assign these to Obsidian wikilink edges via right-click on the graph.': '在图谱上右键双链连线即可指定这些类别。',
     'Add wikilink category': '添加双链类别',
@@ -730,11 +738,28 @@ export function getActiveUiLanguage(): UiLanguage {
 }
 
 export function t(source: string, replacements: Record<string, string | number> = {}): string {
-    const translated = activeLanguage === 'zh' ? (ZH[source] ?? source) : source;
+    return localizeForLanguage(activeLanguage, source, replacements);
+}
+
+/**
+ * Translate a chrome string for a specific language without changing the active UI language.
+ * Used when seeding player-editable defaults from Obsidian's interface language.
+ */
+export function localizeForLanguage(
+    language: UiLanguage,
+    source: string,
+    replacements: Record<string, string | number> = {},
+): string {
+    const translated = language === 'zh' ? (ZH[source] ?? source) : source;
     return Object.entries(replacements).reduce(
         (result, [key, value]) => result.split(`{${key}}`).join(String(value)),
         translated,
     );
+}
+
+/** Obsidian UI language for one-shot seeds (zh/en only; anything else → en). */
+export function seedUiLanguage(app: App): UiLanguage {
+    return getObsidianInterfaceLanguage(app);
 }
 
 /** Localize a beat-sheet template for display / apply (name, labels, beat copy). */

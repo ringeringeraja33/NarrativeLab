@@ -50,8 +50,9 @@ import { CHARACTER_CATEGORIES, CHARACTER_ROLES, Character, CharacterFieldDef, Ch
 import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
-import { t } from '../utils/i18n';
+import { seedUiLanguage, t } from '../utils/i18n';
 import {
+    ensureSeededCharacterRelationTypes,
     listCustomCharacterRelationTypes,
     mergeCharacterRelationTypes,
     upsertCustomCharacterRelationType,
@@ -2094,9 +2095,12 @@ export class CharacterView extends ItemView {
 
         const relations: CharacterRelation[] = normalizeCharacterRelations(draft.relations);
         const NEW_CUSTOM_TYPE_VALUE = '__custom_new__';
+        const relationSeedLang = seedUiLanguage(this.plugin.app);
+        void ensureSeededCharacterRelationTypes(this.plugin, this.characterManager.getAllCharacters());
         const sharedStyles = mergeCharacterRelationTypes(
             this.plugin.settings.storyGraphCharacterRelationTypes,
             this.characterManager.getAllCharacters(),
+            relationSeedLang,
         );
         const sharedCustoms = listCustomCharacterRelationTypes(sharedStyles);
         const sharedCustomIds = new Set(sharedCustoms.map(s => s.id));
@@ -2115,6 +2119,7 @@ export class CharacterView extends ItemView {
             const next = upsertCustomCharacterRelationType(
                 this.plugin.settings.storyGraphCharacterRelationTypes,
                 { id: typeId, label, category },
+                relationSeedLang,
             );
             this.plugin.settings.storyGraphCharacterRelationTypes = next;
             await this.plugin.saveSettings();

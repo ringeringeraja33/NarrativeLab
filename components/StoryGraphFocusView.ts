@@ -21,6 +21,7 @@ import {
     type StoryGraphStrand,
     type StoryGraphStrandDirection,
     type StoryGraphStrandLineStyle,
+    type StoryGraphStrandMid,
 } from '../utils/storyGraphStrands';
 import { t } from '../utils/i18n';
 
@@ -87,8 +88,10 @@ export class StoryGraphFocusView {
     /** Detect double-click across redraws that replace the hit path. */
     private lastEdgeClick: { id: string; t: number } | null = null;
     private undoStack: FocusUndoSnapshot[] = [];
+    private redoStack: FocusUndoSnapshot[] = [];
     private static readonly MAX_UNDO = 40;
     private undoBtn: HTMLButtonElement | null = null;
+    private redoBtn: HTMLButtonElement | null = null;
     private onClose: () => void;
     private onSaved?: () => void;
     private nodeDrag: null | {
@@ -101,6 +104,15 @@ export class StoryGraphFocusView {
         fromPortId: string;
         pointerId: number;
         line: SVGLineElement;
+    } = null;
+    private bendDrag: null | {
+        strandId: string;
+        pointerId: number;
+        pushedUndo: boolean;
+        x1: number;
+        y1: number;
+        x2: number;
+        y2: number;
     } = null;
     private boundPointerMove = (e: PointerEvent) => this.onPointerMove(e);
     private boundPointerUp = (e: PointerEvent) => this.onPointerUp(e);
@@ -137,9 +149,16 @@ export class StoryGraphFocusView {
         activeWindow.addEventListener('keydown', this.boundKeyDown, true);
     }
 
+    private cloneStrand(s: StoryGraphStrand): StoryGraphStrand {
+        return {
+            ...s,
+            mid: s.mid ? { ...s.mid } : undefined,
+        };
+    }
+
     private cloneSnapshot(): FocusUndoSnapshot {
         return {
-            strands: this.strands.map(s => ({ ...s })),
+            strands: this.strands.map(s => this.cloneStrand(s)),
             leftPorts: this.leftPorts.map(p => ({ ...p })),
             rightPorts: this.rightPorts.map(p => ({ ...p })),
             leftPos: { ...this.leftPos },
@@ -153,7 +172,22 @@ export class StoryGraphFocusView {
         if (this.undoStack.length > StoryGraphFocusView.MAX_UNDO) {
             this.undoStack.shift();
         }
-        this.syncUndoButton();
+        this.redoStack = [];
+        this.syncUndoRedoButtons();
+    }
+
+    private applyFocusSnapshot(snap: FocusUndoSnapshot): void {
+        this.endEditStrandLabel(false);
+        this.strands = snap.strands.map(s => this.cloneStrand(s));
+        this.leftPorts = snap.leftPorts.map(p => ({ ...p }));
+        this.rightPorts = snap.rightPorts.map(p => ({ ...p }));
+        this.leftPos = { ...snap.leftPos };
+        this.rightPos = { ...snap.rightPos };
+        this.selectedId = snap.selectedId;
+        this.dirty = true;
+        this.syncUndoRedoButtons();
+        this.renderDock();
+        this.redrawCanvas();
     }
 
     private undo(): void {
@@ -162,34 +196,50 @@ export class StoryGraphFocusView {
             new Notice(t('Nothing to undo'));
             return;
         }
-        this.endEditStrandLabel(false);
-        this.strands = snap.strands.map(s => ({ ...s }));
-        this.leftPorts = snap.leftPorts.map(p => ({ ...p }));
-        this.rightPorts = snap.rightPorts.map(p => ({ ...p }));
-        this.leftPos = { ...snap.leftPos };
-        this.rightPos = { ...snap.rightPos };
-        this.selectedId = snap.selectedId;
-        this.dirty = true;
-        this.syncUndoButton();
-        this.renderDock();
-        this.redrawCanvas();
+        this.redoStack.push(this.cloneSnapshot());
+        if (this.redoStack.length > StoryGraphFocusView.MAX_UNDO) {
+            this.redoStack.shift();
+        }
+        this.applyFocusSnapshot(snap);
     }
 
-    private syncUndoButton(): void {
-        if (!this.undoBtn) return;
-        this.undoBtn.disabled = this.undoStack.length === 0;
+    private redo(): void {
+        const snap = this.redoStack.pop();
+        if (!snap) {
+            new Notice(t('Nothing to redo'));
+            return;
+        }
+        this.undoStack.push(this.cloneSnapshot());
+        if (this.undoStack.length > StoryGraphFocusView.MAX_UNDO) {
+            this.undoStack.shift();
+        }
+        this.applyFocusSnapshot(snap);
+    }
+
+    private syncUndoRedoButtons(): void {
+        if (this.undoBtn) this.undoBtn.disabled = this.undoStack.length === 0;
+        if (this.redoBtn) this.redoBtn.disabled = this.redoStack.length === 0;
     }
 
     private onKeyDown(e: KeyboardEvent): void {
         if (!this.root) return;
-        const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
-        if (!isUndo || this.undoStack.length === 0) return;
+        const mod = e.ctrlKey || e.metaKey;
+        const isUndo = mod && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
+        const isRedo = mod && (
+            (e.shiftKey && (e.key === 'z' || e.key === 'Z'))
+            || e.key === 'y'
+            || e.key === 'Y'
+        );
+        if (!isUndo && !isRedo) return;
         const target = e.target as HTMLElement | null;
         if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
         if (!this.root.contains(target) && !this.root.contains(activeDocument.activeElement)) return;
+        if (isUndo && this.undoStack.length === 0) return;
+        if (isRedo && this.redoStack.length === 0) return;
         e.preventDefault();
         e.stopPropagation();
-        this.undo();
+        if (isUndo) this.undo();
+        else this.redo();
     }
 
     private portHasStrands(side: 'left' | 'right', portId: string): boolean {
@@ -284,7 +334,20 @@ export class StoryGraphFocusView {
         undoBtn.createSpan({ text: ` ${t('Undo')}` });
         undoBtn.addEventListener('click', () => this.undo());
         this.undoBtn = undoBtn;
-        this.syncUndoButton();
+
+        const redoBtn = actions.createEl('button', {
+            cls: 'story-graph-focus-redo',
+            attr: {
+                type: 'button',
+                title: t('Redo (Ctrl+Shift+Z)'),
+                'aria-label': t('Redo (Ctrl+Shift+Z)'),
+            },
+        });
+        setIcon(redoBtn.createSpan(), 'redo-2');
+        redoBtn.createSpan({ text: ` ${t('Redo')}` });
+        redoBtn.addEventListener('click', () => this.redo());
+        this.redoBtn = redoBtn;
+        this.syncUndoRedoButtons();
 
         const saveBtn = actions.createEl('button', {
             cls: 'mod-cta',
@@ -297,7 +360,7 @@ export class StoryGraphFocusView {
         this.stage = stage;
         stage.createDiv({
             cls: 'story-graph-focus-hint-bar',
-            text: t('Drag handles to connect · same handle can host many lines · drop asks about a new handle'),
+            text: t('Drag handles to connect · drag mid-point to bend · double-click line to edit label'),
         });
 
         const svg = activeDocument.createElementNS(SVG_NS, 'svg');
@@ -822,6 +885,73 @@ export class StoryGraphFocusView {
         return `M ${x2} ${y2} C ${c2x} ${c2y}, ${c1x} ${c1y}, ${x1} ${y1}`;
     }
 
+    /**
+     * Quadratic bend through a mid handle on the curve (Excalidraw-like),
+     * expressed as an equivalent cubic for SVG path + textPath.
+     */
+    private strandCubicThroughMid(
+        x1: number,
+        y1: number,
+        x2: number,
+        y2: number,
+        sux: number,
+        suy: number,
+        snx: number,
+        sny: number,
+        mid: StoryGraphStrandMid,
+    ): {
+        c1x: number;
+        c1y: number;
+        c2x: number;
+        c2y: number;
+        handleX: number;
+        handleY: number;
+    } {
+        const chordMidX = (x1 + x2) / 2;
+        const chordMidY = (y1 + y2) / 2;
+        const handleX = chordMidX + sux * mid.along + snx * mid.perp;
+        const handleY = chordMidY + suy * mid.along + sny * mid.perp;
+        // Control point so the quadratic passes through the handle at t=0.5.
+        const ctrlX = 2 * handleX - chordMidX;
+        const ctrlY = 2 * handleY - chordMidY;
+        return {
+            c1x: x1 + (2 / 3) * (ctrlX - x1),
+            c1y: y1 + (2 / 3) * (ctrlY - y1),
+            c2x: x2 + (2 / 3) * (ctrlX - x2),
+            c2y: y2 + (2 / 3) * (ctrlY - y2),
+            handleX,
+            handleY,
+        };
+    }
+
+    private midFromPointer(
+        clientX: number,
+        clientY: number,
+        x1: number,
+        y1: number,
+        x2: number,
+        y2: number,
+    ): StoryGraphStrandMid {
+        if (!this.stage) return { along: 0, perp: 0 };
+        const rect = this.stage.getBoundingClientRect();
+        const px = clientX - rect.left;
+        const py = clientY - rect.top;
+        const cdx = x2 - x1;
+        const cdy = y2 - y1;
+        const spanLen = Math.hypot(cdx, cdy) || 1;
+        const sux = cdx / spanLen;
+        const suy = cdy / spanLen;
+        const snx = -suy;
+        const sny = sux;
+        const chordMidX = (x1 + x2) / 2;
+        const chordMidY = (y1 + y2) / 2;
+        const ox = px - chordMidX;
+        const oy = py - chordMidY;
+        const along = Math.max(-800, Math.min(800, ox * sux + oy * suy));
+        const perp = Math.max(-800, Math.min(800, ox * snx + oy * sny));
+        return { along, perp };
+    }
+
     /** Split long labels so they don't crowd a single path line. */
     private wrapPathLabel(
         label: string,
@@ -1100,8 +1230,6 @@ export class StoryGraphFocusView {
         const len = Math.hypot(dx, dy) || 1;
         const ux = dx / len;
         const uy = dy / len;
-        const nx = -uy;
-        const ny = ux;
         const baseSpan = Math.hypot(dx, dy) || 220;
 
         // Stable order: port fan (top→bottom) then dock order, then pack bows by label height.
@@ -1122,7 +1250,7 @@ export class StoryGraphFocusView {
             const leftPortId = strand.leftPortId || this.leftPorts[0]?.id;
             const rightPortId = strand.rightPortId || this.rightPorts[0]?.id;
             const pack = packed.get(strand.id);
-            const bow = pack?.bow || 0;
+            const autoBow = pack?.bow || 0;
             const labelMetrics = pack?.metrics;
 
             const leftAttach = this.portWorldPos('left', leftPortId || this.leftPorts[0].id);
@@ -1133,19 +1261,22 @@ export class StoryGraphFocusView {
             const spanLen = Math.hypot(spanDx, spanDy) || 1;
             const sux = spanDx / spanLen;
             const suy = spanDy / spanLen;
+            const snx = -suy;
+            const sny = sux;
             const clearance = Math.min(FOCUS_PORT_CLEARANCE, spanLen * 0.2);
             const x1 = leftAttach.x + sux * clearance;
             const y1 = leftAttach.y + suy * clearance;
             const x2 = rightAttach.x - sux * clearance;
             const y2 = rightAttach.y - suy * clearance;
 
-            // Bow separates strands; taller labels get a wider reserved band.
+            // Mid bend: manual mid overrides auto label-pack bow (Excalidraw-style).
+            const mid: StoryGraphStrandMid = strand.mid
+                ? { along: strand.mid.along, perp: strand.mid.perp }
+                : { along: 0, perp: autoBow };
+            const geom = this.strandCubicThroughMid(x1, y1, x2, y2, sux, suy, snx, sny, mid);
+            const { c1x, c1y, c2x, c2y, handleX: midX, handleY: midY } = geom;
             const cdx = x2 - x1;
             const cdy = y2 - y1;
-            const c1x = x1 + cdx * 0.33 + nx * bow;
-            const c1y = y1 + cdy * 0.33 + ny * bow;
-            const c2x = x1 + cdx * 0.67 + nx * bow;
-            const c2y = y1 + cdy * 0.67 + ny * bow;
 
             const g = activeDocument.createElementNS(SVG_NS, 'g');
             g.classList.add('story-graph-focus-edge');
@@ -1158,8 +1289,6 @@ export class StoryGraphFocusView {
             hit.setAttribute('stroke', 'transparent');
             hit.setAttribute('stroke-width', '20');
             hit.classList.add('story-graph-focus-edge-hit');
-            const midX = (x1 + x2) / 2 + nx * bow;
-            const midY = (y1 + y2) / 2 + ny * bow;
 
             hit.addEventListener('pointerdown', (e) => {
                 e.stopPropagation();
@@ -1208,10 +1337,9 @@ export class StoryGraphFocusView {
             if (labelText && labelMetrics && labelMetrics.lines.length > 0) {
                 // Mid-tangent of cubic at t≈0.5 (keep glyphs upright when flipped).
                 const midTx = 0.75 * (c2x - c1x) + 0.375 * ((c1x - x1) + (x2 - c2x));
-                // Sit slightly above the stroke; packing already reserved band height.
                 const labelDy = -8;
                 const safeId = `sgf-lbl-${strand.id.replace(/[^a-zA-Z0-9_-]/g, '')}-${index}`;
-                const approxLen = Math.hypot(cdx, cdy) + Math.abs(bow) * 0.6;
+                const approxLen = Math.hypot(cdx, cdy) + Math.hypot(mid.along, mid.perp) * 0.6;
                 this.appendPathLabel(g, d, safeId, labelText, color, {
                     fontSize: 12,
                     dy: labelDy,
@@ -1223,6 +1351,45 @@ export class StoryGraphFocusView {
                 });
             }
 
+            // Mid bend handle (selected strand) — drag like Excalidraw.
+            if (selected) {
+                const midHandle = activeDocument.createElementNS(SVG_NS, 'circle');
+                midHandle.setAttribute('cx', String(midX));
+                midHandle.setAttribute('cy', String(midY));
+                midHandle.setAttribute('r', '6');
+                midHandle.classList.add('story-graph-focus-mid-handle');
+                midHandle.setAttribute('aria-label', t('Drag to bend'));
+                midHandle.addEventListener('pointerdown', (e) => {
+                    if (e.button !== 0) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    this.selectedId = strand.id;
+                    this.bendDrag = {
+                        strandId: strand.id,
+                        pointerId: e.pointerId,
+                        pushedUndo: false,
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                    };
+                    try {
+                        (e.target as Element).setPointerCapture?.(e.pointerId);
+                    } catch { /* ignore */ }
+                });
+                midHandle.addEventListener('dblclick', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Reset to auto-packed bow.
+                    if (!strand.mid) return;
+                    this.pushUndo();
+                    strand.mid = undefined;
+                    this.dirty = true;
+                    this.redrawCanvas();
+                });
+                g.appendChild(midHandle);
+            }
+
             this.svg!.appendChild(g);
         });
 
@@ -1232,6 +1399,25 @@ export class StoryGraphFocusView {
     }
 
     private onPointerMove(e: PointerEvent): void {
+        if (this.bendDrag && this.bendDrag.pointerId === e.pointerId) {
+            const strand = this.strands.find(s => s.id === this.bendDrag!.strandId);
+            if (!strand) return;
+            if (!this.bendDrag.pushedUndo) {
+                this.pushUndo();
+                this.bendDrag.pushedUndo = true;
+            }
+            strand.mid = this.midFromPointer(
+                e.clientX,
+                e.clientY,
+                this.bendDrag.x1,
+                this.bendDrag.y1,
+                this.bendDrag.x2,
+                this.bendDrag.y2,
+            );
+            this.dirty = true;
+            this.redrawCanvas();
+            return;
+        }
         if (this.nodeDrag && this.nodeDrag.pointerId === e.pointerId && this.stage) {
             if (!this.nodeDrag.pushedUndo) {
                 this.pushUndo();
@@ -1257,6 +1443,12 @@ export class StoryGraphFocusView {
     }
 
     private onPointerUp(e: PointerEvent): void {
+        if (this.bendDrag && this.bendDrag.pointerId === e.pointerId) {
+            this.bendDrag = null;
+            this.renderDock();
+            this.redrawCanvas();
+            return;
+        }
         if (this.nodeDrag && this.nodeDrag.pointerId === e.pointerId) {
             this.nodesLayer?.querySelectorAll('.story-graph-focus-node').forEach(n => n.classList.remove('is-dragging'));
             this.nodeDrag = null;
@@ -1503,7 +1695,9 @@ export class StoryGraphFocusView {
         this.nodesLayer = null;
         this.dock = null;
         this.undoBtn = null;
+        this.redoBtn = null;
         this.undoStack = [];
+        this.redoStack = [];
     }
 }
 

@@ -8,7 +8,7 @@ import { App, Notice, TFile, TFolder, normalizePath } from 'obsidian';
 import { BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
 import type { StoryLineProject } from '../models/StoryLineProject';
 import type SceneCardsPlugin from '../main';
-import { t } from '../utils/i18n';
+import { localizeForLanguage, seedUiLanguage, t } from '../utils/i18n';
 import { removeNativeLibraryBase, syncNativeLibraryBase } from '../components/NativeLibraryBase';
 
 /** Default English folder basenames for built-in / special Library tabs. */
@@ -17,6 +17,23 @@ export const DEFAULT_LIBRARY_FOLDER_NAMES: Record<string, string> = {
     locations: 'Locations',
     ...Object.fromEntries(BUILTIN_CODEX_CATEGORIES.map(c => [c.id, c.folder])),
 };
+
+const BUILTIN_LIBRARY_ICONS: Record<string, string> = {
+    characters: 'users',
+    locations: 'map-pin',
+    ...Object.fromEntries(BUILTIN_CODEX_CATEGORIES.map(c => [c.id, c.icon])),
+};
+
+/** True when `label` is only a language seed of the English default (not a user rename). */
+export function isSeedLibraryCategoryLabel(categoryId: string, label: string): boolean {
+    const trimmed = label.trim();
+    if (!trimmed) return false;
+    const english = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId];
+    if (!english) return false;
+    if (trimmed === english) return true;
+    return trimmed === localizeForLanguage('zh', english)
+        || trimmed === localizeForLanguage('en', english);
+}
 
 export function sanitizeLibraryFolderName(raw: string): string {
     return raw.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\s+/g, ' ').trim();
@@ -43,10 +60,102 @@ export function resolveLibraryFolderName(
     const fromProject = project?.libraryFolders?.[categoryId]?.trim();
     if (fromProject) return fromProject;
 
+    const defaultName = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId];
+    const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
+    const label = custom?.label?.trim();
+
+    // Built-ins: keep English (or project-mapped) paths. Seeded zh/en display
+    // labels must not redirect the vault folder.
+    if (defaultName) {
+        if (!label || isSeedLibraryCategoryLabel(categoryId, label)) return defaultName;
+        return label; // legacy rename stored only on custom.label
+    }
+
+    if (label) return label;
+    return categoryId;
+}
+
+/**
+ * Player-visible Library tab / manager label.
+ * Prefers saved custom label; otherwise seeds from Obsidian interface language.
+ */
+export function resolveLibraryCategoryLabel(
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+    fallback = '',
+): string {
+    if (categoryId === UNCATEGORIZED_CATEGORY_ID) {
+        const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
+        return custom?.label?.trim() || t('Uncategorized entries');
+    }
     const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
     if (custom?.label?.trim()) return custom.label.trim();
+    const english = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId] || fallback;
+    if (!english) return fallback || categoryId;
+    return localizeForLanguage(seedUiLanguage(plugin.app), english);
+}
 
-    return DEFAULT_LIBRARY_FOLDER_NAMES[categoryId] || categoryId;
+/**
+ * One-shot: persist display labels for built-in Library categories from Obsidian language.
+ * Pins English folder mappings on the active project so labels can differ from paths.
+ */
+export async function ensureSeededLibraryCategoryLabels(plugin: SceneCardsPlugin): Promise<void> {
+    const seedLang = seedUiLanguage(plugin.app);
+    const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
+    if (!plugin.settings.codexCustomCategories) plugin.settings.codexCustomCategories = [];
+
+    const ids = [
+        'characters',
+        'locations',
+        ...BUILTIN_CODEX_CATEGORIES.map(c => c.id).filter(id => !deleted.has(id)),
+    ];
+
+    let settingsChanged = false;
+    const project = plugin.sceneManager.activeProject;
+    let projectChanged = false;
+    if (project && !project.libraryFolders) {
+        project.libraryFolders = {};
+        projectChanged = true;
+    }
+
+    for (const id of ids) {
+        const english = DEFAULT_LIBRARY_FOLDER_NAMES[id];
+        if (!english) continue;
+        const seedLabel = localizeForLanguage(seedLang, english);
+
+        if (project?.libraryFolders && !project.libraryFolders[id]?.trim()) {
+            project.libraryFolders[id] = english;
+            projectChanged = true;
+        }
+
+        const entry = plugin.settings.codexCustomCategories.find(c => c.id === id);
+        if (!entry) {
+            plugin.settings.codexCustomCategories.push({
+                id,
+                label: seedLabel,
+                icon: BUILTIN_LIBRARY_ICONS[id] || 'file-text',
+                preset: id !== 'characters' && id !== 'locations'
+                    ? true
+                    : undefined,
+            });
+            settingsChanged = true;
+        } else if (!entry.label?.trim() || entry.label.trim() === english) {
+            // Still at English factory default → first-generation seed.
+            if (entry.label?.trim() !== seedLabel) {
+                entry.label = seedLabel;
+                settingsChanged = true;
+            }
+            if (!entry.icon) {
+                entry.icon = BUILTIN_LIBRARY_ICONS[id] || 'file-text';
+                settingsChanged = true;
+            }
+        }
+    }
+
+    if (settingsChanged) await plugin.saveSettings();
+    if (projectChanged && project) {
+        await plugin.sceneManager.saveProjectFrontmatter(project);
+    }
 }
 
 /** Recompute project.characterFolder / locationFolder from libraryFolders. */
@@ -58,12 +167,13 @@ export function applyLibraryFolderPaths(project: StoryLineProject, plugin: Scene
     project.locationFolder = normalizePath(`${lib}/${locName}`);
 }
 
-/** Push resolved folder/label onto CodexManager category defs (label === folder). */
+/** Push resolved folder + display label onto CodexManager category defs. */
 export function applyCategoryFolderLabels(plugin: SceneCardsPlugin): void {
     for (const cat of plugin.codexManager.getCategories()) {
         if (cat.id === UNCATEGORIZED_CATEGORY_ID) continue;
-        const name = resolveLibraryFolderName(plugin, cat.id);
-        plugin.codexManager.setCategoryFolder(cat.id, name);
+        const folder = resolveLibraryFolderName(plugin, cat.id);
+        const label = resolveLibraryCategoryLabel(plugin, cat.id, cat.label || folder);
+        plugin.codexManager.setCategoryFolder(cat.id, folder, label);
     }
 }
 

@@ -709,6 +709,14 @@ export interface SceneCardsSettings {
         builtin?: boolean;
     }>;
     /**
+     * Story Graph node fill/border colors per entity type
+     * (scene, character, location, codex, prop, other).
+     */
+    storyGraphEntityColors?: Partial<Record<
+        'scene' | 'character' | 'location' | 'codex' | 'prop' | 'other',
+        { fill?: string; border?: string }
+    >>;
+    /**
      * Saved Story Graph layouts keyed by project file path (or `__global__`).
      * Positions use node filePath when available, else stable node id.
      */
@@ -1031,6 +1039,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     storyGraphRelationCategories: [],
     storyGraphLinkRelationAssignments: {},
     storyGraphCharacterRelationTypes: [],
+    storyGraphEntityColors: {},
     storyGraphLayouts: {},
     storyGraphFocusBundles: {},
 

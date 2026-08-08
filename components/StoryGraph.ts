@@ -132,6 +132,17 @@ export interface StoryGraphLayoutState {
     zoom?: number;
 }
 
+/** In-session undo snapshot for layout / node images / viewport. */
+interface StoryGraphUndoSnapshot {
+    positions: Record<string, { x: number; y: number }>;
+    nodeImages: Record<string, string>;
+    nodeScale: number;
+    panX: number;
+    panY: number;
+    zoom: number;
+    nodeStates: Record<string, { x: number; y: number; pinned: boolean }>;
+}
+
 /** Optional host wiring for layout save, images, and export helpers. */
 export interface StoryGraphHostOptions {
     layout?: StoryGraphLayoutState;
@@ -148,6 +159,19 @@ export interface StoryGraphHostOptions {
     focusBundles?: Record<string, StoryGraphFocusBundle>;
     /** Character relation styles (synced with character data). */
     characterRelationTypes?: StoryGraphCharacterRelationType[];
+    /** Per-entity fill/border colors for nodes. */
+    entityColors?: StoryGraphEntityColorMap;
+    /** Legend interactions (edit / add / delete) — wired by LibraryModeBar. */
+    onLegendEditEntity?: (type: StoryGraphEntityType) => void;
+    onLegendEditCharRelation?: (style: StoryGraphCharacterRelationType) => void;
+    onLegendEditLinkCategory?: (category: StoryGraphRelationCategory | 'default') => void;
+    onLegendAdd?: (evt?: MouseEvent) => void;
+    onLegendDeleteCharRelation?: (style: StoryGraphCharacterRelationType) => void | Promise<void>;
+    onLegendDeleteLinkCategory?: (category: StoryGraphRelationCategory) => void | Promise<void>;
+    /** Whether a character-relation legend style is in use (gates delete). */
+    isCharRelationInUse?: (style: StoryGraphCharacterRelationType) => boolean;
+    /** Whether a wikilink category is assigned to any edge (gates delete). */
+    isLinkCategoryInUse?: (category: StoryGraphRelationCategory) => boolean;
 }
 
 export interface StoryGraphWikilink {
@@ -196,14 +220,72 @@ function resolveColor(varName: string, fallback: string): string {
     return val || fallback;
 }
 
-function getEntityColors(): Record<EntityType, string> {
+/** Entity types shown in the Story Graph node legend / filter bar. */
+export const STORY_GRAPH_ENTITY_TYPES: StoryGraphEntityType[] = [
+    'scene',
+    'character',
+    'location',
+    'codex',
+    'prop',
+    'other',
+];
+
+export const DEFAULT_STORY_GRAPH_ENTITY_FILLS: Record<StoryGraphEntityType, string> = {
+    scene: '#7C3AED',
+    character: '#2196F3',
+    location: '#4CAF50',
+    codex: '#0EA5E9',
+    prop: '#E91E63',
+    other: '#FF9800',
+};
+
+export interface StoryGraphEntityColorStyle {
+    fill?: string;
+    border?: string;
+}
+
+export type StoryGraphEntityColorMap = Partial<Record<StoryGraphEntityType, StoryGraphEntityColorStyle>>;
+
+export function normalizeStoryGraphHexColor(raw: unknown, fallback: string): string {
+    const value = String(raw ?? '').trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(value)) return value.toUpperCase();
+    if (/^#[0-9a-fA-F]{3}$/.test(value)) {
+        const r = value[1];
+        const g = value[2];
+        const b = value[3];
+        return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
+    }
+    return fallback.toUpperCase();
+}
+
+/** Resolve fill + border for every entity type (settings override CSS vars / defaults). */
+export function resolveStoryGraphEntityColors(
+    saved?: StoryGraphEntityColorMap | null,
+): Record<StoryGraphEntityType, { fill: string; border: string }> {
+    const themeBorder = resolveColor('--background-primary', '#FFFFFF');
+    const result = {} as Record<StoryGraphEntityType, { fill: string; border: string }>;
+    for (const type of STORY_GRAPH_ENTITY_TYPES) {
+        const fillDefault = DEFAULT_STORY_GRAPH_ENTITY_FILLS[type];
+        const cssFill = resolveColor(`--sl-sg-${type}`, fillDefault);
+        const entry = saved?.[type];
+        const fill = normalizeStoryGraphHexColor(entry?.fill, cssFill);
+        const border = entry?.border
+            ? normalizeStoryGraphHexColor(entry.border, themeBorder)
+            : themeBorder;
+        result[type] = { fill, border };
+    }
+    return result;
+}
+
+function getEntityColors(overrides?: StoryGraphEntityColorMap | null): Record<EntityType, string> {
+    const resolved = resolveStoryGraphEntityColors(overrides);
     return {
-        scene: resolveColor('--sl-sg-scene', '#7C3AED'),
-        character: resolveColor('--sl-sg-character', '#2196F3'),
-        location: resolveColor('--sl-sg-location', '#4CAF50'),
-        codex: resolveColor('--sl-sg-codex', '#0EA5E9'),
-        other: resolveColor('--sl-sg-other', '#FF9800'),
-        prop: resolveColor('--sl-sg-prop', '#E91E63'),
+        scene: resolved.scene.fill,
+        character: resolved.character.fill,
+        location: resolved.location.fill,
+        codex: resolved.codex.fill,
+        other: resolved.other.fill,
+        prop: resolved.prop.fill,
     };
 }
 
@@ -251,31 +333,36 @@ interface StoryEdgeDom {
     edge: StoryGraphEdge;
     /** When set, visible line endpoints are inset so arrowheads clear nodes. */
     arrow?: StoryGraphRelationArrow | 'none';
+    /** Stroke width used for tip/port scaling (grows with focus strand count). */
+    strokeWidth: number;
+    /** Focus-style filled arrow tips (scale with strokeWidth). */
+    arrowStart?: SVGPolygonElement;
+    arrowEnd?: SVGPolygonElement;
+    /** Focus-style rim ports at attachment points. */
+    portStart?: SVGCircleElement;
+    portEnd?: SVGCircleElement;
 }
 
-/** Inset a center-to-center segment so markers / strokes clear node shapes. */
-function insetEdgePoints(
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number,
-    padStart: number,
-    padEnd: number,
-): { x1: number; y1: number; x2: number; y2: number } {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const len = Math.hypot(dx, dy) || 1;
-    const maxPad = Math.max(0, (len - 4) / 2);
-    const ps = Math.min(padStart, maxPad);
-    const pe = Math.min(padEnd, maxPad);
-    const ux = dx / len;
-    const uy = dy / len;
-    return {
-        x1: x1 + ux * ps,
-        y1: y1 + uy * ps,
-        x2: x2 - ux * pe,
-        y2: y2 - uy * pe,
-    };
+/** Base sizes at stroke ≈ 2; tips/ports grow with thicker parent edges. */
+const STORY_GRAPH_ARROW_SIZE = 9;
+const STORY_GRAPH_PORT_R = 4.5;
+/** Gap between node rim (port) and arrow tip so the handle stays visible. */
+const STORY_GRAPH_END_CLEARANCE = 7;
+
+/** Arrow length/width scales with stroke — like markerUnits=strokeWidth, capped. */
+function storyGraphArrowSize(strokeWidth: number): number {
+    const sw = Math.max(1.25, strokeWidth);
+    return Math.min(22, Math.max(8, sw * 4.2));
+}
+
+function storyGraphPortRadius(strokeWidth: number): number {
+    const sw = Math.max(1.25, strokeWidth);
+    return Math.min(7.5, Math.max(STORY_GRAPH_PORT_R, 3.2 + sw * 0.65));
+}
+
+function storyGraphEndClearance(strokeWidth: number): number {
+    const sw = Math.max(1.25, strokeWidth);
+    return Math.min(14, Math.max(STORY_GRAPH_END_CLEARANCE, 5 + sw * 1.1));
 }
 
 /** Quadratic path for the i-th parallel strand between two points. */
@@ -328,6 +415,129 @@ function setEdgeGeometry(
         el.setAttribute('d', `M ${x1} ${y1} L ${x2} ${y2}`);
     }
     return { midX: (x1 + x2) / 2, midY: (y1 + y2) / 2 };
+}
+
+/** Focus-style triangle arrow; (dx,dy) points toward the tip. */
+function setArrowPolygon(
+    poly: SVGPolygonElement,
+    tipX: number,
+    tipY: number,
+    dx: number,
+    dy: number,
+    color: string,
+    size = STORY_GRAPH_ARROW_SIZE,
+): void {
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const px = -uy;
+    const py = ux;
+    const baseX = tipX - ux * size;
+    const baseY = tipY - uy * size;
+    poly.setAttribute('points', [
+        `${tipX},${tipY}`,
+        `${baseX + px * size * 0.55},${baseY + py * size * 0.55}`,
+        `${baseX - px * size * 0.55},${baseY - py * size * 0.55}`,
+    ].join(' '));
+    poly.setAttribute('fill', color);
+}
+
+/**
+ * Line + optional focus-style tips/ports. Ports sit on the node rim;
+ * arrow tips stop short so they don't cover the blue handles.
+ * `strokeWidth` drives tip size (more focus strands → thicker line → larger tips).
+ */
+function edgeEndpointLayout(
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    radiusA: number,
+    radiusB: number,
+    arrow: StoryGraphRelationArrow | 'none',
+    strokeWidth = 2,
+): {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    arrowSize: number;
+    portR: number;
+    tipStart?: { x: number; y: number; dx: number; dy: number };
+    tipEnd?: { x: number; y: number; dx: number; dy: number };
+    portStart?: { x: number; y: number };
+    portEnd?: { x: number; y: number };
+} {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const showEnd = arrow === 'single' || arrow === 'double';
+    const showStart = arrow === 'double';
+    const rimA = { x: ax + ux * radiusA, y: ay + uy * radiusA };
+    const rimB = { x: bx - ux * radiusB, y: by - uy * radiusB };
+    const arrowSize = storyGraphArrowSize(strokeWidth);
+    const portR = storyGraphPortRadius(strokeWidth);
+
+    if (arrow === 'none') {
+        return {
+            x1: rimA.x,
+            y1: rimA.y,
+            x2: rimB.x,
+            y2: rimB.y,
+            arrowSize,
+            portR,
+        };
+    }
+
+    const clear = Math.min(
+        storyGraphEndClearance(strokeWidth),
+        Math.max(4, (len - radiusA - radiusB) * 0.15),
+    );
+    const tipStart = showStart
+        ? {
+            x: rimA.x + ux * clear,
+            y: rimA.y + uy * clear,
+            dx: -ux,
+            dy: -uy,
+        }
+        : undefined;
+    const tipEnd = showEnd
+        ? {
+            x: rimB.x - ux * clear,
+            y: rimB.y - uy * clear,
+            dx: ux,
+            dy: uy,
+        }
+        : undefined;
+
+    // Stroke stops at the arrow base so tips don't grow a marker "stem".
+    const x1 = tipStart
+        ? tipStart.x + ux * arrowSize
+        : rimA.x;
+    const y1 = tipStart
+        ? tipStart.y + uy * arrowSize
+        : rimA.y;
+    const x2 = tipEnd
+        ? tipEnd.x - ux * arrowSize
+        : rimB.x;
+    const y2 = tipEnd
+        ? tipEnd.y - uy * arrowSize
+        : rimB.y;
+
+    return {
+        x1,
+        y1,
+        x2,
+        y2,
+        arrowSize,
+        portR,
+        tipStart,
+        tipEnd,
+        portStart: showStart ? rimA : undefined,
+        portEnd: showEnd ? rimB : undefined,
+    };
 }
 
 interface StoryNodeDom {
@@ -393,6 +603,16 @@ export class StoryGraph {
     private onLinkEdgeContextMenu?: (edge: StoryGraphLinkEdgeInfo, event: MouseEvent) => void;
     /** Open the relation-category manager from the graph toolbar. */
     private onManageRelationCategories?: () => void;
+    /** Solo-focus from interactive legend (null = show all enabled filters). */
+    private legendFocus: { kind: 'entity'; type: EntityType } | { kind: 'edge'; key: string } | null = null;
+    private onLegendEditEntity?: (type: StoryGraphEntityType) => void;
+    private onLegendEditCharRelation?: (style: StoryGraphCharacterRelationType) => void;
+    private onLegendEditLinkCategory?: (category: StoryGraphRelationCategory | 'default') => void;
+    private onLegendAdd?: (evt?: MouseEvent) => void;
+    private onLegendDeleteCharRelation?: (style: StoryGraphCharacterRelationType) => void | Promise<void>;
+    private onLegendDeleteLinkCategory?: (category: StoryGraphRelationCategory) => void | Promise<void>;
+    private isCharRelationInUse?: (style: StoryGraphCharacterRelationType) => boolean;
+    private isLinkCategoryInUse?: (category: StoryGraphRelationCategory) => boolean;
     /** Finish a user-drawn connection (wikilink and/or character relation). */
     private onConnectNodes?: (
         from: StoryGraphConnectNode,
@@ -405,6 +625,8 @@ export class StoryGraph {
         fromNode: StoryGraphNode;
         from: StoryGraphConnectNode;
         line: SVGLineElement;
+        tip: SVGPolygonElement;
+        port: SVGCircleElement;
         startClientX: number;
         startClientY: number;
         moved: boolean;
@@ -439,12 +661,20 @@ export class StoryGraph {
     private hasHydratedViewport = false;
     private focusBundles: Record<string, StoryGraphFocusBundle> = {};
     private characterRelationTypes: StoryGraphCharacterRelationType[] = [];
+    private entityColorMap: StoryGraphEntityColorMap = {};
     private isFullscreen = false;
     private fullscreenBtn: HTMLElement | null = null;
     private onFullscreenKeyDown: ((e: KeyboardEvent) => void) | null = null;
     private onNativeFullscreenChange: (() => void) | null = null;
     /** Viewport before entering fullscreen — restored on exit. */
     private preFullscreenView: { panX: number; panY: number; zoom: number } | null = null;
+
+    private undoStack: StoryGraphUndoSnapshot[] = [];
+    private redoStack: StoryGraphUndoSnapshot[] = [];
+    private static readonly MAX_UNDO = 40;
+    private undoBtn: HTMLButtonElement | null = null;
+    private redoBtn: HTMLButtonElement | null = null;
+    private boundGraphKeyDown = (e: KeyboardEvent) => this.onGraphKeyDown(e);
 
     constructor(
         container: HTMLElement,
@@ -493,7 +723,16 @@ export class StoryGraph {
         this.focusBundles = host?.focusBundles || {};
         this.characterRelationTypes = host?.characterRelationTypes?.length
             ? host.characterRelationTypes
-            : mergeCharacterRelationTypes(undefined, characters);
+            : mergeCharacterRelationTypes(undefined, characters, 'en');
+        this.entityColorMap = host?.entityColors || {};
+        this.onLegendEditEntity = host?.onLegendEditEntity;
+        this.onLegendEditCharRelation = host?.onLegendEditCharRelation;
+        this.onLegendEditLinkCategory = host?.onLegendEditLinkCategory;
+        this.onLegendAdd = host?.onLegendAdd;
+        this.onLegendDeleteCharRelation = host?.onLegendDeleteCharRelation;
+        this.onLegendDeleteLinkCategory = host?.onLegendDeleteLinkCategory;
+        this.isCharRelationInUse = host?.isCharRelationInUse;
+        this.isLinkCategoryInUse = host?.isLinkCategoryInUse;
         this.hydrateLayout(host?.layout);
         if (filters) {
             if (filters.showScenes !== undefined) this.showScenes = filters.showScenes;
@@ -584,6 +823,126 @@ export class StoryGraph {
         new Notice(t('Story Graph layout saved'));
     }
 
+    private cloneGraphSnapshot(): StoryGraphUndoSnapshot {
+        this.captureLivePositions();
+        const positions: Record<string, { x: number; y: number }> = {};
+        for (const [key, pos] of this.layoutPositions) {
+            positions[key] = { x: pos.x, y: pos.y };
+        }
+        const nodeImages: Record<string, string> = {};
+        for (const [key, image] of this.layoutImages) {
+            nodeImages[key] = image;
+        }
+        const nodeStates: Record<string, { x: number; y: number; pinned: boolean }> = {};
+        for (const node of this.nodes) {
+            nodeStates[this.layoutKey(node)] = {
+                x: node.x,
+                y: node.y,
+                pinned: !!node.pinned,
+            };
+        }
+        return {
+            positions,
+            nodeImages,
+            nodeScale: this.nodeScale,
+            panX: this.panX,
+            panY: this.panY,
+            zoom: this.zoom,
+            nodeStates,
+        };
+    }
+
+    private pushUndo(): void {
+        this.undoStack.push(this.cloneGraphSnapshot());
+        if (this.undoStack.length > StoryGraph.MAX_UNDO) this.undoStack.shift();
+        this.redoStack = [];
+        this.syncUndoRedoButtons();
+    }
+
+    private applyGraphSnapshot(snap: StoryGraphUndoSnapshot): void {
+        this.layoutPositions.clear();
+        for (const [key, pos] of Object.entries(snap.positions)) {
+            this.layoutPositions.set(key, { x: pos.x, y: pos.y });
+        }
+        this.layoutImages.clear();
+        for (const [key, image] of Object.entries(snap.nodeImages)) {
+            this.layoutImages.set(key, image);
+        }
+        this.nodeScale = snap.nodeScale;
+        this.panX = snap.panX;
+        this.panY = snap.panY;
+        this.zoom = snap.zoom;
+        for (const node of this.nodes) {
+            const saved = snap.nodeStates[this.layoutKey(node)];
+            if (!saved) continue;
+            node.x = saved.x;
+            node.y = saved.y;
+            node.pinned = saved.pinned;
+        }
+        this.scheduleLayoutSave(true);
+        this.syncUndoRedoButtons();
+        if (this.svg) {
+            this.buildSVG();
+            this.updatePositions();
+            this.updateTransform();
+            const sizeInput = this.container.querySelector(
+                '.story-graph-size-control input[type="range"]',
+            ) as HTMLInputElement | null;
+            if (sizeInput) sizeInput.value = String(this.nodeScale);
+        }
+    }
+
+    private undoLayout(): void {
+        const snap = this.undoStack.pop();
+        if (!snap) {
+            new Notice(t('Nothing to undo'));
+            return;
+        }
+        this.redoStack.push(this.cloneGraphSnapshot());
+        if (this.redoStack.length > StoryGraph.MAX_UNDO) this.redoStack.shift();
+        this.applyGraphSnapshot(snap);
+    }
+
+    private redoLayout(): void {
+        const snap = this.redoStack.pop();
+        if (!snap) {
+            new Notice(t('Nothing to redo'));
+            return;
+        }
+        this.undoStack.push(this.cloneGraphSnapshot());
+        if (this.undoStack.length > StoryGraph.MAX_UNDO) this.undoStack.shift();
+        this.applyGraphSnapshot(snap);
+    }
+
+    private syncUndoRedoButtons(): void {
+        if (this.undoBtn) this.undoBtn.disabled = this.undoStack.length === 0;
+        if (this.redoBtn) this.redoBtn.disabled = this.redoStack.length === 0;
+    }
+
+    private onGraphKeyDown(e: KeyboardEvent): void {
+        // Focus sub-canvas handles its own undo/redo.
+        if (this.container.closest('.story-graph-page')?.querySelector('.story-graph-focus')) return;
+        if (this.container.classList.contains('is-focus-hidden')) return;
+        const mod = e.ctrlKey || e.metaKey;
+        const isUndo = mod && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
+        const isRedo = mod && (
+            (e.shiftKey && (e.key === 'z' || e.key === 'Z'))
+            || e.key === 'y'
+            || e.key === 'Y'
+        );
+        if (!isUndo && !isRedo) return;
+        const target = e.target as HTMLElement | null;
+        if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+        const page = this.container.closest('.story-graph-page') || this.container;
+        if (!page.contains(target) && !page.contains(activeDocument.activeElement)) return;
+        if (isUndo && this.undoStack.length === 0) return;
+        if (isRedo && this.redoStack.length === 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (isUndo) this.undoLayout();
+        else this.redoLayout();
+    }
+
     private resolveNodeImagePath(node: StoryGraphNode): string {
         const key = this.layoutKey(node);
         const override = this.layoutImages.get(key);
@@ -624,14 +983,14 @@ export class StoryGraph {
         this.zoom = keepZoom;
         this.buildGraph();
 
+        // Always keep filter / undo controls reachable — even when filters hide every node.
+        this.renderFilterBar();
+        activeWindow.addEventListener('keydown', this.boundGraphKeyDown, true);
+
         if (this.nodes.length === 0) {
-            const empty = this.container.createDiv('story-graph-empty');
-            empty.createEl('p', { text: t('No links detected in Library files or scene text. Add an Obsidian wikilink such as [[Character]] to see it here.') });
+            this.renderEmptyGraphState();
             return;
         }
-
-        // Filter toolbar
-        this.renderFilterBar();
 
         // Legend
         this.renderLegend();
@@ -726,6 +1085,9 @@ export class StoryGraph {
         this.clearConnectPick(false);
         // Keep CSS fullscreen across filter re-renders; only tear down listeners here.
         this.unbindFullscreenKeys();
+        activeWindow.removeEventListener('keydown', this.boundGraphKeyDown, true);
+        this.undoBtn = null;
+        this.redoBtn = null;
         if (this.layoutSaveTimer) {
             window.clearTimeout(this.layoutSaveTimer);
             this.layoutSaveTimer = 0;
@@ -950,6 +1312,8 @@ export class StoryGraph {
             this.setNodeConnectHover(this.connectDrag.hoverId, false);
         }
         this.connectDrag?.line.remove();
+        this.connectDrag?.tip.remove();
+        this.connectDrag?.port.remove();
         this.connectDrag = null;
         if (!this.connectPick) {
             this.wrapper?.removeClass('is-connecting');
@@ -1091,24 +1455,42 @@ export class StoryGraph {
         }
         this.clearConnectDrag(false);
         const svgNS = 'http://www.w3.org/2000/svg';
+        const r = this.nodeRadius(node);
+        const port = activeDocument.createElementNS(svgNS, 'circle');
+        port.classList.add('story-graph-edge-port', 'is-connect');
+        port.setAttribute('r', String(STORY_GRAPH_PORT_R));
+        port.setAttribute('cx', String(node.x + r));
+        port.setAttribute('cy', String(node.y));
+        port.style.pointerEvents = 'none';
+
         const line = activeDocument.createElementNS(svgNS, 'line');
-        line.setAttribute('x1', String(node.x));
+        line.setAttribute('x1', String(node.x + r));
         line.setAttribute('y1', String(node.y));
-        line.setAttribute('x2', String(node.x));
+        line.setAttribute('x2', String(node.x + r));
         line.setAttribute('y2', String(node.y));
         line.setAttribute('stroke', 'var(--interactive-accent)');
         line.setAttribute('stroke-width', '2');
         line.setAttribute('stroke-dasharray', '5,4');
         line.setAttribute('stroke-opacity', '0.95');
-        line.setAttribute('marker-end', 'url(#sg-arrow-end)');
+        line.setAttribute('stroke-linecap', 'butt');
         line.classList.add('story-graph-connect-drag-line');
         line.style.pointerEvents = 'none';
+
+        const tip = activeDocument.createElementNS(svgNS, 'polygon');
+        tip.classList.add('story-graph-edge-arrow');
+        tip.style.pointerEvents = 'none';
+        setArrowPolygon(tip, node.x + r, node.y, 1, 0, 'var(--interactive-accent)');
+
         this.layer.appendChild(line);
+        this.layer.appendChild(tip);
+        this.layer.appendChild(port);
 
         this.connectDrag = {
             fromNode: node,
             from,
             line,
+            tip,
+            port,
             startClientX: e.clientX,
             startClientY: e.clientY,
             moved: false,
@@ -1131,8 +1513,26 @@ export class StoryGraph {
             if (dist > 6) drag.moved = true;
             const pt = this.clientToGraph(me.clientX, me.clientY);
             if (pt) {
-                drag.line.setAttribute('x2', String(pt.x));
-                drag.line.setAttribute('y2', String(pt.y));
+                const from = drag.fromNode;
+                const r = this.nodeRadius(from);
+                const dx = pt.x - from.x;
+                const dy = pt.y - from.y;
+                const len = Math.hypot(dx, dy) || 1;
+                const ux = dx / len;
+                const uy = dy / len;
+                const x1 = from.x + ux * r;
+                const y1 = from.y + uy * r;
+                const tipX = pt.x;
+                const tipY = pt.y;
+                const x2 = tipX - ux * STORY_GRAPH_ARROW_SIZE;
+                const y2 = tipY - uy * STORY_GRAPH_ARROW_SIZE;
+                drag.port.setAttribute('cx', String(x1));
+                drag.port.setAttribute('cy', String(y1));
+                drag.line.setAttribute('x1', String(x1 + ux * STORY_GRAPH_END_CLEARANCE));
+                drag.line.setAttribute('y1', String(y1 + uy * STORY_GRAPH_END_CLEARANCE));
+                drag.line.setAttribute('x2', String(x2));
+                drag.line.setAttribute('y2', String(y2));
+                setArrowPolygon(drag.tip, tipX, tipY, ux, uy, 'var(--interactive-accent)');
             }
             const hover = this.hitTestNode(me.clientX, me.clientY, drag.fromNode.id);
             const nextId = hover?.id || null;
@@ -1290,6 +1690,7 @@ export class StoryGraph {
                     item.setTitle(t('Clear node image'));
                     item.setIcon('image-off');
                     item.onClick(() => {
+                        this.pushUndo();
                         this.layoutImages.delete(this.layoutKey(node));
                         this.scheduleLayoutSave(true);
                         this.render();
@@ -1311,6 +1712,7 @@ export class StoryGraph {
         const current = this.resolveNodeImagePath(node);
         const next = await this.onPickNodeImage(connect, current || undefined);
         if (next === undefined) return;
+        this.pushUndo();
         const key = this.layoutKey(node);
         if (!next) {
             this.layoutImages.delete(key);
@@ -1321,38 +1723,78 @@ export class StoryGraph {
         this.render();
     }
 
-    // ── Filter toolbar ─────────────────────────────────
+    private anyEntityFilterOn(): boolean {
+        return this.showScenes
+            || this.showCharacters
+            || this.showLocations
+            || this.showCodex
+            || this.showProps
+            || this.showOther;
+    }
+
+    private allEntityFiltersOn(): boolean {
+        return this.showScenes
+            && this.showCharacters
+            && this.showLocations
+            && this.showCodex
+            && this.showRelationships
+            && this.showProps
+            && this.showOther;
+    }
+
+    /** Empty graph: keep tools + legend visible and offer a way back when filters hid everything. */
+    private renderEmptyGraphState(): void {
+        const empty = this.container.createDiv('story-graph-empty');
+        if (this.legendFocus || !this.anyEntityFilterOn() || !this.allEntityFiltersOn()) {
+            empty.createEl('p', {
+                text: t('Nothing matches the current legend focus. Click the active legend again to show all, or reset filters.'),
+            });
+        } else {
+            empty.createEl('p', {
+                text: t('No links detected in Library files or scene text. Add an Obsidian wikilink such as [[Character]] to see it here.'),
+            });
+            return;
+        }
+        const resetBtn = empty.createEl('button', {
+            cls: 'mod-cta story-graph-reset-filters',
+            text: t('Reset filters'),
+            attr: { type: 'button' },
+        });
+        resetBtn.addEventListener('click', () => this.resetAllFilters());
+    }
+
+    // ── Toolbar (undo / size / export… — entity filters live on the legend) ──
 
     private renderFilterBar(): void {
         const bar = this.container.createDiv('story-graph-filters');
-
-        const makeToggle = (label: string, icon: string, active: boolean, onToggle: (v: boolean) => void) => {
-            const btn = bar.createEl('button', {
-                cls: `story-graph-filter-btn ${active ? 'active' : ''}`,
-                attr: { 'aria-label': label },
-            });
-            const ic = btn.createSpan();
-            obsidian.setIcon(ic, icon);
-            btn.createSpan({ text: ` ${label}` });
-            btn.addEventListener('click', () => {
-                const next = !btn.hasClass('active');
-                btn.toggleClass('active', next);
-                onToggle(next);
-                this.emitFilters();
-                // Full remount with new filters
-                this.render();
-            });
-        };
-
-        makeToggle(t('Scenes'), 'clapperboard', this.showScenes, v => { this.showScenes = v; });
-        makeToggle(t('Characters'), 'user', this.showCharacters, v => { this.showCharacters = v; });
-        makeToggle(t('Locations'), 'map-pin', this.showLocations, v => { this.showLocations = v; });
-        makeToggle(t('Codex'), 'book-open', this.showCodex, v => { this.showCodex = v; });
-        makeToggle(t('Relationships'), 'heart-handshake', this.showRelationships, v => { this.showRelationships = v; });
-        makeToggle(t('Props'), 'tag', this.showProps, v => { this.showProps = v; });
-        makeToggle(t('Other'), 'file-text', this.showOther, v => { this.showOther = v; });
-
         const tools = bar.createDiv('story-graph-filter-tools');
+
+        const undoBtn = tools.createEl('button', {
+            cls: 'story-graph-filter-btn story-graph-undo',
+            attr: {
+                type: 'button',
+                title: t('Undo (Ctrl+Z)'),
+                'aria-label': t('Undo (Ctrl+Z)'),
+            },
+        });
+        obsidian.setIcon(undoBtn.createSpan(), 'undo-2');
+        undoBtn.createSpan({ text: ` ${t('Undo')}` });
+        undoBtn.addEventListener('click', () => this.undoLayout());
+        this.undoBtn = undoBtn;
+
+        const redoBtn = tools.createEl('button', {
+            cls: 'story-graph-filter-btn story-graph-redo',
+            attr: {
+                type: 'button',
+                title: t('Redo (Ctrl+Shift+Z)'),
+                'aria-label': t('Redo (Ctrl+Shift+Z)'),
+            },
+        });
+        obsidian.setIcon(redoBtn.createSpan(), 'redo-2');
+        redoBtn.createSpan({ text: ` ${t('Redo')}` });
+        redoBtn.addEventListener('click', () => this.redoLayout());
+        this.redoBtn = redoBtn;
+        this.syncUndoRedoButtons();
 
         const sizeWrap = tools.createDiv('story-graph-size-control');
         sizeWrap.createSpan({ text: t('Node size') });
@@ -1366,7 +1808,13 @@ export class StoryGraph {
                 'aria-label': t('Node size'),
             },
         }) as HTMLInputElement;
+        let sizeUndoPushed = false;
+        sizeInput.addEventListener('pointerdown', () => { sizeUndoPushed = false; });
         sizeInput.addEventListener('input', () => {
+            if (!sizeUndoPushed) {
+                this.pushUndo();
+                sizeUndoPushed = true;
+            }
             this.nodeScale = Number(sizeInput.value) || 1;
             if (this.svg) {
                 this.buildSVG();
@@ -1392,6 +1840,7 @@ export class StoryGraph {
         obsidian.setIcon(resetIcon, 'refresh-cw');
         resetBtn.createSpan({ text: ` ${t('Reset layout')}` });
         resetBtn.addEventListener('click', () => {
+            this.pushUndo();
             this.layoutPositions.clear();
             for (const node of this.nodes) node.pinned = false;
             this.panX = 0;
@@ -1421,64 +1870,241 @@ export class StoryGraph {
         });
         this.syncFullscreenButton();
         this.fullscreenBtn.addEventListener('click', () => this.toggleFullscreen());
+    }
 
-        if (this.onManageRelationCategories) {
-            const manageBtn = tools.createEl('button', {
-                cls: 'story-graph-filter-btn story-graph-manage-relations',
-                attr: { 'aria-label': t('Relation categories') },
-            });
-            const icon = manageBtn.createSpan();
-            obsidian.setIcon(icon, 'tags');
-            manageBtn.createSpan({ text: ` ${t('Relation categories')}` });
-            manageBtn.addEventListener('click', () => this.onManageRelationCategories?.());
+    private resetAllFilters(): void {
+        this.legendFocus = null;
+        this.showScenes = true;
+        this.showCharacters = true;
+        this.showLocations = true;
+        this.showCodex = true;
+        this.showRelationships = true;
+        this.showProps = true;
+        this.showOther = true;
+        this.emitFilters();
+        this.render();
+    }
+
+    private setEntityLegendFocus(type: EntityType): void {
+        if (this.legendFocus?.kind === 'entity' && this.legendFocus.type === type) {
+            this.resetAllFilters();
+            return;
         }
+        this.legendFocus = { kind: 'entity', type };
+        this.showScenes = type === 'scene';
+        this.showCharacters = type === 'character';
+        this.showLocations = type === 'location';
+        this.showCodex = type === 'codex';
+        this.showProps = type === 'prop';
+        this.showOther = type === 'other';
+        this.showRelationships = type === 'character';
+        this.emitFilters();
+        this.render();
+    }
+
+    private setEdgeLegendFocus(key: string): void {
+        if (this.legendFocus?.kind === 'edge' && this.legendFocus.key === key) {
+            this.resetAllFilters();
+            return;
+        }
+        this.legendFocus = { kind: 'edge', key };
+        // Show every entity type so relation / wikilink endpoints remain available.
+        this.showScenes = true;
+        this.showCharacters = true;
+        this.showLocations = true;
+        this.showCodex = true;
+        this.showProps = true;
+        this.showOther = true;
+        this.showRelationships = true;
+        this.emitFilters();
+        this.render();
     }
 
     // ── Legend ──────────────────────────────────────────
 
+    private applyEntityColorCssVars(): void {
+        const palette = resolveStoryGraphEntityColors(this.entityColorMap);
+        for (const type of STORY_GRAPH_ENTITY_TYPES) {
+            this.container.style.setProperty(`--sl-sg-${type}`, palette[type].fill);
+            this.container.style.setProperty(`--sl-sg-${type}-border`, palette[type].border);
+        }
+    }
+
     private renderLegend(): void {
         const legend = this.container.createDiv('story-graph-legend');
-        const colors = getEntityColors();
+        const palette = resolveStoryGraphEntityColors(this.entityColorMap);
 
-        // Row 1: node / entity types (color swatches)
+        // Row 1: node / entity types — click to solo-focus, right-click to edit colors
         const nodeRow = legend.createDiv('story-graph-legend-row is-nodes');
-        const items: [string, string, EntityType][] = [
-            ['Scene', 'book-open', 'scene'],
-            ['Character', 'user', 'character'],
-            ['Location', 'map-pin', 'location'],
-            ['Codex', 'book-open', 'codex'],
-            ['Prop', 'tag', 'prop'],
-            ['Other', 'file-text', 'other'],
+        const items: [string, EntityType][] = [
+            ['Scenes', 'scene'],
+            ['Characters', 'character'],
+            ['Locations', 'location'],
+            ['Codex', 'codex'],
+            ['Props', 'prop'],
+            ['Other', 'other'],
         ];
-        for (const [label, _icon, type] of items) {
-            const item = nodeRow.createDiv('story-graph-legend-item');
+        for (const [label, type] of items) {
+            const active = this.legendFocus?.kind === 'entity' && this.legendFocus.type === type;
+            const item = nodeRow.createEl('button', {
+                cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
+                attr: {
+                    type: 'button',
+                    title: t('Click to focus · Right-click to edit'),
+                    'aria-pressed': active ? 'true' : 'false',
+                },
+            });
             const swatch = item.createSpan({ cls: 'story-graph-legend-swatch' });
-            swatch.setCssStyles({ backgroundColor: colors[type] });
-            item.createSpan({ text: label });
+            swatch.setCssStyles({
+                backgroundColor: palette[type].fill,
+                boxShadow: `inset 0 0 0 1.5px ${palette[type].border}`,
+            });
+            item.createSpan({ text: t(label) });
+            item.addEventListener('click', () => this.setEntityLegendFocus(type));
+            item.addEventListener('contextmenu', (evt) => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                this.onLegendEditEntity?.(type);
+            });
         }
 
-        // Row 2: relationship / edge types (color lines)
+        // Row 2: relationship / edge types — click focus, right-click edit/delete, trailing +
         const edgeRow = legend.createDiv('story-graph-legend-row is-edges');
         for (const style of this.characterRelationTypes) {
-            const item = edgeRow.createDiv('story-graph-legend-item');
+            const key = `char:${style.id}`;
+            const active = this.legendFocus?.kind === 'edge' && this.legendFocus.key === key;
+            const item = edgeRow.createEl('button', {
+                cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
+                attr: {
+                    type: 'button',
+                    title: t('Click to focus · Right-click to edit'),
+                    'aria-pressed': active ? 'true' : 'false',
+                },
+            });
             const swatch = item.createSpan({ cls: 'story-graph-legend-swatch story-graph-legend-line' });
             swatch.setCssStyles({ borderBottomColor: style.color });
             item.createSpan({ text: displayCharacterRelationLabel(style) });
+            item.addEventListener('click', () => this.setEdgeLegendFocus(key));
+            item.addEventListener('contextmenu', (evt) => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                this.showCharRelationLegendMenu(evt, style);
+            });
         }
-        const defaultLink = edgeRow.createDiv('story-graph-legend-item');
-        const defaultLinkSwatch = defaultLink.createSpan({
-            cls: 'story-graph-legend-swatch story-graph-legend-line',
-        });
-        defaultLinkSwatch.setCssStyles({
-            borderBottomColor: resolveColor('--text-muted', '#6B7280'),
-        });
-        defaultLink.createSpan({ text: t('Default link') });
+
+        {
+            const key = 'link:default';
+            const active = this.legendFocus?.kind === 'edge' && this.legendFocus.key === key;
+            const defaultLink = edgeRow.createEl('button', {
+                cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
+                attr: {
+                    type: 'button',
+                    title: t('Click to focus · Right-click to edit'),
+                    'aria-pressed': active ? 'true' : 'false',
+                },
+            });
+            const defaultLinkSwatch = defaultLink.createSpan({
+                cls: 'story-graph-legend-swatch story-graph-legend-line',
+            });
+            defaultLinkSwatch.setCssStyles({
+                borderBottomColor: resolveColor('--text-muted', '#6B7280'),
+            });
+            defaultLink.createSpan({ text: t('Default link') });
+            defaultLink.addEventListener('click', () => this.setEdgeLegendFocus(key));
+            defaultLink.addEventListener('contextmenu', (evt) => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                this.onLegendEditLinkCategory?.('default');
+            });
+        }
+
         for (const category of this.relationCategories) {
-            const item = edgeRow.createDiv('story-graph-legend-item');
+            const key = `link:${category.id}`;
+            const active = this.legendFocus?.kind === 'edge' && this.legendFocus.key === key;
+            const item = edgeRow.createEl('button', {
+                cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
+                attr: {
+                    type: 'button',
+                    title: t('Click to focus · Right-click to edit'),
+                    'aria-pressed': active ? 'true' : 'false',
+                },
+            });
             const swatch = item.createSpan({ cls: 'story-graph-legend-swatch story-graph-legend-line' });
             swatch.setCssStyles({ borderBottomColor: category.color });
             item.createSpan({ text: category.label });
+            item.addEventListener('click', () => this.setEdgeLegendFocus(key));
+            item.addEventListener('contextmenu', (evt) => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                this.showLinkCategoryLegendMenu(evt, category);
+            });
         }
+
+        const addBtn = edgeRow.createEl('button', {
+            cls: 'story-graph-legend-item is-add',
+            attr: {
+                type: 'button',
+                title: t('Add relation category'),
+                'aria-label': t('Add relation category'),
+            },
+        });
+        const addIcon = addBtn.createSpan({ cls: 'story-graph-legend-add-icon' });
+        obsidian.setIcon(addIcon, 'plus');
+        addBtn.createSpan({ text: t('Add') });
+        addBtn.addEventListener('click', (evt) => {
+            if (this.onLegendAdd) this.onLegendAdd(evt);
+            else this.onManageRelationCategories?.();
+        });
+    }
+
+    private showCharRelationLegendMenu(evt: MouseEvent, style: StoryGraphCharacterRelationType): void {
+        const menu = new Menu();
+        menu.addItem(item => {
+            item.setTitle(t('Edit'));
+            item.setIcon('pencil');
+            item.onClick(() => this.onLegendEditCharRelation?.(style));
+        });
+        const inUse = this.isCharRelationInUse?.(style) ?? true;
+        menu.addItem(item => {
+            item.setTitle(inUse
+                ? t('Cannot delete: used by character relations')
+                : t('Delete'));
+            item.setIcon('trash');
+            item.setDisabled(inUse);
+            item.onClick(() => {
+                if (inUse) {
+                    new Notice(t('Cannot delete: used by character relations'));
+                    return;
+                }
+                void this.onLegendDeleteCharRelation?.(style);
+            });
+        });
+        menu.showAtMouseEvent(evt);
+    }
+
+    private showLinkCategoryLegendMenu(evt: MouseEvent, category: StoryGraphRelationCategory): void {
+        const menu = new Menu();
+        menu.addItem(item => {
+            item.setTitle(t('Edit'));
+            item.setIcon('pencil');
+            item.onClick(() => this.onLegendEditLinkCategory?.(category));
+        });
+        const inUse = this.isLinkCategoryInUse?.(category) ?? true;
+        menu.addItem(item => {
+            item.setTitle(inUse
+                ? t('Cannot delete: category is assigned to links')
+                : t('Delete'));
+            item.setIcon('trash');
+            item.setDisabled(inUse);
+            item.onClick(() => {
+                if (inUse) {
+                    new Notice(t('Cannot delete: category is assigned to links'));
+                    return;
+                }
+                void this.onLegendDeleteLinkCategory?.(category);
+            });
+        });
+        menu.showAtMouseEvent(evt);
     }
 
     // ── Graph building ─────────────────────────────────
@@ -1756,7 +2382,21 @@ export class StoryGraph {
             }
         }
 
-        // ── 4. Clean up orphan scene nodes ─────────────────────
+        // ── 4. Legend edge focus — keep only matching edges + their nodes ──
+        if (this.legendFocus?.kind === 'edge') {
+            const focusKey = this.legendFocus.key;
+            edgeList = edgeList.filter(edge => this.parentIdForEdge(edge) === focusKey);
+            const keepIds = new Set<string>();
+            for (const edge of edgeList) {
+                keepIds.add(edge.source);
+                keepIds.add(edge.target);
+            }
+            for (const id of [...nodeMap.keys()]) {
+                if (!keepIds.has(id)) nodeMap.delete(id);
+            }
+        }
+
+        // ── 5. Clean up orphan scene nodes ─────────────────────
 
         const connectedScenes = new Set(edgeList.map(e => e.source));
         for (const [id, node] of nodeMap) {
@@ -1927,28 +2567,81 @@ export class StoryGraph {
         this.layer.setAttribute('transform', `translate(${this.panX},${this.panY}) scale(${this.zoom})`);
     }
 
-    private ensureArrowMarkers(svgNS: string): void {
+    /** Shared `<defs>` for avatar clips (arrows are drawn as polygons, focus-style). */
+    private ensureSvgDefs(svgNS: string): void {
         if (!this.svg) return;
         const defs = activeDocument.createElementNS(svgNS, 'defs');
-        const makeMarker = (id: string, orient: string) => {
-            const marker = activeDocument.createElementNS(svgNS, 'marker');
-            marker.setAttribute('id', id);
-            marker.setAttribute('viewBox', '0 0 10 10');
-            marker.setAttribute('refX', '9');
-            marker.setAttribute('refY', '5');
-            marker.setAttribute('markerWidth', '6');
-            marker.setAttribute('markerHeight', '6');
-            marker.setAttribute('orient', orient);
-            marker.setAttribute('markerUnits', 'strokeWidth');
-            const path = activeDocument.createElementNS(svgNS, 'path');
-            path.setAttribute('d', 'M 0 1 L 9 5 L 0 9 z');
-            path.setAttribute('fill', 'context-stroke');
-            marker.appendChild(path);
-            defs.appendChild(marker);
-        };
-        makeMarker('sg-arrow-end', 'auto');
-        makeMarker('sg-arrow-start', 'auto-start-reverse');
         this.svg.appendChild(defs);
+    }
+
+    private syncEdgeEndpoints(ed: StoryEdgeDom): { midX: number; midY: number } | null {
+        const a = this.nodeById.get(ed.source);
+        const b = this.nodeById.get(ed.target);
+        if (!a || !b) return null;
+        const arrow = ed.arrow || 'none';
+        const strokeWidth = ed.strokeWidth
+            || Number(ed.line.getAttribute('stroke-width'))
+            || 2;
+        const layout = edgeEndpointLayout(
+            a.x,
+            a.y,
+            b.x,
+            b.y,
+            this.nodeRadius(a),
+            this.nodeRadius(b),
+            arrow,
+            strokeWidth,
+        );
+        const mid = setEdgeGeometry(ed.line, layout.x1, layout.y1, layout.x2, layout.y2);
+        if (ed.hit) {
+            setEdgeGeometry(ed.hit, a.x, a.y, b.x, b.y);
+        }
+        const stroke = ed.line.getAttribute('stroke') || 'var(--text-muted)';
+        if (ed.arrowStart && layout.tipStart) {
+            setArrowPolygon(
+                ed.arrowStart,
+                layout.tipStart.x,
+                layout.tipStart.y,
+                layout.tipStart.dx,
+                layout.tipStart.dy,
+                stroke,
+                layout.arrowSize,
+            );
+            ed.arrowStart.style.display = '';
+        } else if (ed.arrowStart) {
+            ed.arrowStart.style.display = 'none';
+        }
+        if (ed.arrowEnd && layout.tipEnd) {
+            setArrowPolygon(
+                ed.arrowEnd,
+                layout.tipEnd.x,
+                layout.tipEnd.y,
+                layout.tipEnd.dx,
+                layout.tipEnd.dy,
+                stroke,
+                layout.arrowSize,
+            );
+            ed.arrowEnd.style.display = '';
+        } else if (ed.arrowEnd) {
+            ed.arrowEnd.style.display = 'none';
+        }
+        if (ed.portStart && layout.portStart) {
+            ed.portStart.setAttribute('cx', String(layout.portStart.x));
+            ed.portStart.setAttribute('cy', String(layout.portStart.y));
+            ed.portStart.setAttribute('r', String(layout.portR));
+            ed.portStart.style.display = '';
+        } else if (ed.portStart) {
+            ed.portStart.style.display = 'none';
+        }
+        if (ed.portEnd && layout.portEnd) {
+            ed.portEnd.setAttribute('cx', String(layout.portEnd.x));
+            ed.portEnd.setAttribute('cy', String(layout.portEnd.y));
+            ed.portEnd.setAttribute('r', String(layout.portR));
+            ed.portEnd.style.display = '';
+        } else if (ed.portEnd) {
+            ed.portEnd.style.display = 'none';
+        }
+        return mid;
     }
 
     private buildSVG(): void {
@@ -1958,9 +2651,10 @@ export class StoryGraph {
         this.edgeDom = [];
         this.nodeDom.clear();
 
-        this.ensureArrowMarkers(svgNS);
+        this.ensureSvgDefs(svgNS);
+        this.applyEntityColorCssVars();
 
-        const colors = getEntityColors();
+        const palette = resolveStoryGraphEntityColors(this.entityColorMap);
         const g = activeDocument.createElementNS(svgNS, 'g');
         this.layer = g;
         this.svg.appendChild(g);
@@ -2058,36 +2752,29 @@ export class StoryGraph {
                 arrow = 'double';
             }
 
-            const padA = this.nodeRadius(a) + (arrow !== 'none' ? 2 : 0);
-            const padB = this.nodeRadius(b) + (arrow !== 'none' ? 2 : 0);
-            const inset = arrow === 'none'
-                ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y }
-                : insetEdgePoints(a.x, a.y, b.x, b.y, padA, padB);
-
-            const line = activeDocument.createElementNS(svgNS, 'line');
-            const mid = setEdgeGeometry(
-                line,
-                inset.x1,
-                inset.y1,
-                inset.x2,
-                inset.y2,
-            );
-            line.setAttribute('fill', 'none');
             const stroke = edge.edgeColor
                 || getEdgeColor(edge.kind, edge.relationCategoryId, this.relationCategories);
+            const layout = edgeEndpointLayout(
+                a.x,
+                a.y,
+                b.x,
+                b.y,
+                this.nodeRadius(a),
+                this.nodeRadius(b),
+                arrow,
+                strokeWidth,
+            );
+
+            const line = activeDocument.createElementNS(svgNS, 'line');
+            const mid = setEdgeGeometry(line, layout.x1, layout.y1, layout.x2, layout.y2);
+            line.setAttribute('fill', 'none');
             line.setAttribute('stroke', stroke);
             line.setAttribute('stroke-width', String(strokeWidth));
-            line.setAttribute('stroke-opacity', isRelEdge || isWikilinkEdge ? '0.9' : '0.45');
-            line.setAttribute('stroke-linecap', 'round');
+            line.setAttribute('stroke-opacity', isRelEdge || isWikilinkEdge ? '0.92' : '0.45');
+            line.setAttribute('stroke-linecap', arrow === 'none' ? 'round' : 'butt');
             line.style.pointerEvents = hit ? 'none' : '';
             const dash = EDGE_DASH[edge.kind];
             if (dash) line.setAttribute('stroke-dasharray', dash);
-            if (arrow === 'single' || arrow === 'double') {
-                line.setAttribute('marker-end', 'url(#sg-arrow-end)');
-            }
-            if (arrow === 'double') {
-                line.setAttribute('marker-start', 'url(#sg-arrow-start)');
-            }
             const title = activeDocument.createElementNS(svgNS, 'title');
             const arrowGlyph = arrow === 'double' ? '↔' : '→';
             // Main graph shows only the parent label (e.g. 技能), never child strand names.
@@ -2100,6 +2787,58 @@ export class StoryGraph {
                 : `${a.label} ${arrowGlyph} ${b.label}${depthHint}`;
             line.appendChild(title);
             g.appendChild(line);
+
+            let arrowStart: SVGPolygonElement | undefined;
+            let arrowEnd: SVGPolygonElement | undefined;
+            if (layout.tipStart) {
+                arrowStart = activeDocument.createElementNS(svgNS, 'polygon');
+                arrowStart.classList.add('story-graph-edge-arrow');
+                setArrowPolygon(
+                    arrowStart,
+                    layout.tipStart.x,
+                    layout.tipStart.y,
+                    layout.tipStart.dx,
+                    layout.tipStart.dy,
+                    stroke,
+                    layout.arrowSize,
+                );
+                arrowStart.style.pointerEvents = 'none';
+                g.appendChild(arrowStart);
+            }
+            if (layout.tipEnd) {
+                arrowEnd = activeDocument.createElementNS(svgNS, 'polygon');
+                arrowEnd.classList.add('story-graph-edge-arrow');
+                setArrowPolygon(
+                    arrowEnd,
+                    layout.tipEnd.x,
+                    layout.tipEnd.y,
+                    layout.tipEnd.dx,
+                    layout.tipEnd.dy,
+                    stroke,
+                    layout.arrowSize,
+                );
+                arrowEnd.style.pointerEvents = 'none';
+                g.appendChild(arrowEnd);
+            }
+
+            let portStart: SVGCircleElement | undefined;
+            let portEnd: SVGCircleElement | undefined;
+            if (layout.portStart) {
+                portStart = activeDocument.createElementNS(svgNS, 'circle');
+                portStart.classList.add('story-graph-edge-port');
+                portStart.setAttribute('r', String(layout.portR));
+                portStart.setAttribute('cx', String(layout.portStart.x));
+                portStart.setAttribute('cy', String(layout.portStart.y));
+                portStart.style.pointerEvents = 'none';
+            }
+            if (layout.portEnd) {
+                portEnd = activeDocument.createElementNS(svgNS, 'circle');
+                portEnd.classList.add('story-graph-edge-port');
+                portEnd.setAttribute('r', String(layout.portR));
+                portEnd.setAttribute('cx', String(layout.portEnd.x));
+                portEnd.setAttribute('cy', String(layout.portEnd.y));
+                portEnd.style.pointerEvents = 'none';
+            }
 
             let label: SVGTextElement | undefined;
             if (labelText) {
@@ -2123,11 +2862,17 @@ export class StoryGraph {
                 kind: edge.kind,
                 edge,
                 arrow,
+                strokeWidth,
+                arrowStart,
+                arrowEnd,
+                portStart,
+                portEnd,
             });
         }
 
         for (const node of this.nodes) {
-            const color = colors[node.entityType];
+            const color = palette[node.entityType].fill;
+            const border = palette[node.entityType].border;
             const radius = this.nodeRadius(node);
             const imagePath = this.resolveNodeImagePath(node);
             const imageUrl = imagePath && this.resolveImageUrl
@@ -2153,7 +2898,7 @@ export class StoryGraph {
                 avatarClipCircle.setAttribute('cy', String(node.y));
                 avatarClipCircle.setAttribute('r', String(radius));
                 clip.appendChild(avatarClipCircle);
-                // Attach clip to the root defs created by ensureArrowMarkers
+                // Attach clip to the root defs created by ensureSvgDefs
                 const defs = this.svg?.querySelector('defs');
                 defs?.appendChild(clip);
 
@@ -2180,7 +2925,7 @@ export class StoryGraph {
                 avatarRing.setAttribute('cy', String(node.y));
                 avatarRing.setAttribute('r', String(radius));
                 avatarRing.setAttribute('fill', 'none');
-                avatarRing.setAttribute('stroke', color);
+                avatarRing.setAttribute('stroke', border);
                 avatarRing.setAttribute('stroke-width', '2.5');
                 avatarRing.classList.add('story-graph-node-avatar-ring');
                 group.appendChild(avatarRing);
@@ -2197,7 +2942,7 @@ export class StoryGraph {
                 rect.setAttribute('rx', '4');
                 rect.setAttribute('fill', color);
                 rect.setAttribute('fill-opacity', '0.85');
-                rect.setAttribute('stroke', 'var(--background-primary)');
+                rect.setAttribute('stroke', border);
                 rect.setAttribute('stroke-width', '2');
                 rect.classList.add('story-graph-node', 'story-graph-node-scene');
                 shape = rect;
@@ -2212,7 +2957,7 @@ export class StoryGraph {
                 ].join(' '));
                 diamond.setAttribute('fill', color);
                 diamond.setAttribute('fill-opacity', '0.85');
-                diamond.setAttribute('stroke', 'var(--background-primary)');
+                diamond.setAttribute('stroke', border);
                 diamond.setAttribute('stroke-width', '2');
                 diamond.classList.add('story-graph-node', 'story-graph-node-location');
                 shape = diamond;
@@ -2227,7 +2972,7 @@ export class StoryGraph {
                 hex.setAttribute('points', pts.join(' '));
                 hex.setAttribute('fill', color);
                 hex.setAttribute('fill-opacity', '0.85');
-                hex.setAttribute('stroke', 'var(--background-primary)');
+                hex.setAttribute('stroke', border);
                 hex.setAttribute('stroke-width', '2');
                 hex.classList.add('story-graph-node', 'story-graph-node-prop');
                 shape = hex;
@@ -2238,7 +2983,7 @@ export class StoryGraph {
                 circle.setAttribute('r', String(radius));
                 circle.setAttribute('fill', color);
                 circle.setAttribute('fill-opacity', '0.85');
-                circle.setAttribute('stroke', 'var(--background-primary)');
+                circle.setAttribute('stroke', border);
                 circle.setAttribute('stroke-width', '2');
                 circle.classList.add('story-graph-node', `story-graph-node-${node.entityType}`);
                 shape = circle;
@@ -2282,6 +3027,12 @@ export class StoryGraph {
             });
         }
 
+        // Ports above nodes (focus-style rim handles).
+        for (const ed of this.edgeDom) {
+            if (ed.portStart) g.appendChild(ed.portStart);
+            if (ed.portEnd) g.appendChild(ed.portEnd);
+        }
+
         this.svgBuilt = true;
     }
 
@@ -2289,25 +3040,8 @@ export class StoryGraph {
         if (!this.svgBuilt) return;
 
         for (const ed of this.edgeDom) {
-            const a = this.nodeById.get(ed.source);
-            const b = this.nodeById.get(ed.target);
-            if (!a || !b) continue;
-            const arrow = ed.arrow || 'none';
-            const padA = this.nodeRadius(a) + (arrow !== 'none' ? 2 : 0);
-            const padB = this.nodeRadius(b) + (arrow !== 'none' ? 2 : 0);
-            const inset = arrow === 'none'
-                ? { x1: a.x, y1: a.y, x2: b.x, y2: b.y }
-                : insetEdgePoints(a.x, a.y, b.x, b.y, padA, padB);
-            const mid = setEdgeGeometry(
-                ed.line,
-                inset.x1,
-                inset.y1,
-                inset.x2,
-                inset.y2,
-            );
-            if (ed.hit) {
-                setEdgeGeometry(ed.hit, a.x, a.y, b.x, b.y);
-            }
+            const mid = this.syncEdgeEndpoints(ed);
+            if (!mid) continue;
             if (ed.label) {
                 ed.label.setAttribute('x', String(mid.midX));
                 ed.label.setAttribute('y', String(mid.midY - 4));
@@ -2499,8 +3233,13 @@ export class StoryGraph {
 
             this.dragging = node;
             node.pinned = true;
+            let undoPushed = false;
             const onMove = (me: MouseEvent) => {
                 if (!this.svg) return;
+                if (!undoPushed) {
+                    this.pushUndo();
+                    undoPushed = true;
+                }
                 const svgRect = this.svg.getBoundingClientRect();
                 node.x = (me.clientX - svgRect.left - this.panX) / this.zoom;
                 node.y = (me.clientY - svgRect.top - this.panY) / this.zoom;

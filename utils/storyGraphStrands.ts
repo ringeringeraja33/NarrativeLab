@@ -9,6 +9,14 @@ export interface StoryGraphFocusPort {
     id: string;
 }
 
+/** Mid bend of a focus strand in left→right chord-local coordinates (px). */
+export interface StoryGraphStrandMid {
+    /** Offset along the chord from its midpoint. */
+    along: number;
+    /** Offset along the chord normal (perpendicular). */
+    perp: number;
+}
+
 /** One internal strand under a parent edge — edited only in focus view. */
 export interface StoryGraphStrand {
     id: string;
@@ -21,6 +29,11 @@ export interface StoryGraphStrand {
     leftPortId?: string;
     /** Attach to a specific handle on the right endpoint. */
     rightPortId?: string;
+    /**
+     * Manual mid bend (Excalidraw-style). When set, the curve passes through
+     * chordMid + along*ux + perp*nx. When omitted, focus view auto-packs a bow.
+     */
+    mid?: StoryGraphStrandMid;
 }
 
 /** Normalized 0–1 position inside the focus sub-canvas. */
@@ -119,9 +132,21 @@ export function createFocusPort(id?: string): StoryGraphFocusPort {
     };
 }
 
+export function normalizeStrandMid(raw: unknown): StoryGraphStrandMid | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const m = raw as Record<string, unknown>;
+    if (typeof m.along !== 'number' || typeof m.perp !== 'number') return undefined;
+    if (!Number.isFinite(m.along) || !Number.isFinite(m.perp)) return undefined;
+    return {
+        along: Math.max(-800, Math.min(800, m.along)),
+        perp: Math.max(-800, Math.min(800, m.perp)),
+    };
+}
+
 export function createStoryGraphStrand(
     partial?: Partial<StoryGraphStrand>,
 ): StoryGraphStrand {
+    const mid = normalizeStrandMid(partial?.mid);
     return {
         id: partial?.id || `strand-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
         direction: partial?.direction === 'rtl' || partial?.direction === 'both'
@@ -136,6 +161,7 @@ export function createStoryGraphStrand(
             : 'solid',
         leftPortId: typeof partial?.leftPortId === 'string' ? partial.leftPortId : undefined,
         rightPortId: typeof partial?.rightPortId === 'string' ? partial.rightPortId : undefined,
+        mid,
     };
 }
 
@@ -206,6 +232,7 @@ export function normalizeStoryGraphFocusBundle(
                 lineStyle: s.lineStyle as StoryGraphStrandLineStyle,
                 leftPortId: typeof s.leftPortId === 'string' ? s.leftPortId : undefined,
                 rightPortId: typeof s.rightPortId === 'string' ? s.rightPortId : undefined,
+                mid: normalizeStrandMid(s.mid),
             });
         })
         .filter((s): s is StoryGraphStrand => !!s);
@@ -246,13 +273,18 @@ export function strandsForFocusOrientation(
     const left = normalizePath(leftPath);
     const swapped = normalizePath(bundle.leftPath) !== left;
     if (!swapped) {
-        return bundle.strands.map(s => ({ ...s }));
+        return bundle.strands.map(s => ({
+            ...s,
+            mid: s.mid ? { ...s.mid } : undefined,
+        }));
     }
     return bundle.strands.map(s => ({
         ...s,
         direction: flipStrandDirection(s.direction),
         leftPortId: s.rightPortId,
         rightPortId: s.leftPortId,
+        // Chord frame flips with the endpoints — invert mid in both axes.
+        mid: s.mid ? { along: -s.mid.along, perp: -s.mid.perp } : undefined,
     }));
 }
 
