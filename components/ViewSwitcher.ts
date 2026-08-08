@@ -17,7 +17,7 @@ import {
     MANUSCRIPT_VIEW_TYPE,
     NARRATIVE_CANVAS_VIEW_TYPE,
 } from '../constants';
-import { getBuiltinCodexCategory, makeCustomCodexCategory } from '../models/Codex';
+import { getBuiltinCodexCategory, makeCustomCodexCategory, makeProfileCodexCategory } from '../models/Codex';
 import { t } from '../utils/i18n';
 
 export interface ViewSwitcherEntry {
@@ -280,7 +280,10 @@ function showCodexDropdown(
     // Enabled codex categories
     const enabledIds = plugin.settings.codexEnabledCategories || [];
     const customDefs = (plugin.settings.codexCustomCategories || []).map(
-        (c: { id: string; label: string; icon: string }) => makeCustomCodexCategory(c.id, c.label, c.icon),
+        (c: { id: string; label: string; icon: string; hasProfilePage?: boolean }) =>
+            c.hasProfilePage
+                ? makeProfileCodexCategory(c.id, c.label, c.icon)
+                : makeCustomCodexCategory(c.id, c.label, c.icon),
     );
     for (const id of enabledIds) {
         const builtin = getBuiltinCodexCategory(id);

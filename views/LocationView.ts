@@ -82,6 +82,7 @@ export class LocationView extends ItemView {
     /** Snapshot of the item before any edits — used for undo recording */
     private undoSnapshot: WorldOrLocation | null = null;
     private _lastSaveTime = 0;
+    private _libraryCategoriesEpoch = 0;
     private static readonly SAVE_REFRESH_GRACE_MS = 2000;
     /** Original name when the detail view was opened — used for cascade rename detection */
     private originalItemName: string | null = null;
@@ -2350,9 +2351,14 @@ export class LocationView extends ItemView {
         ) {
             return;
         }
+        const categoriesEpoch = this.plugin.libraryCategoriesStructureEpoch;
+        const categoriesChanged = categoriesEpoch !== this._libraryCategoriesEpoch;
+        this._libraryCategoriesEpoch = categoriesEpoch;
         // Keep the native Bases embed mounted — remounting flashes the table.
+        // Still remount when Library folders are newly adopted into tabs.
         if (
-            !this.selectedItem
+            !categoriesChanged
+            && !this.selectedItem
             && this.locationOverviewMode === 'base'
             && this.rootContainer?.querySelector('.library-native-base-embed')
         ) {

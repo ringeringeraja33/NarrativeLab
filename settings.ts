@@ -717,6 +717,11 @@ export interface SceneCardsSettings {
         { fill?: string; border?: string }
     >>;
     /**
+     * Story Graph node fill/border colors per Library category id
+     * (skills, items, creatures, uncategorized, …).
+     */
+    storyGraphLibraryCategoryColors?: Record<string, { fill?: string; border?: string }>;
+    /**
      * Saved Story Graph layouts keyed by project file path (or `__global__`).
      * Positions use node filePath when available, else stable node id.
      */
@@ -832,9 +837,14 @@ export interface SceneCardsSettings {
         label: string;
         icon: string;
         showInSidebar?: boolean;
+        /** Richer profile fields + card browse, similar to Characters / Locations. */
+        hasProfilePage?: boolean;
         preset?: boolean;
     }>;
-    /** Preset category ids explicitly removed from the category manager. */
+    /**
+     * Preset category ids permanently removed from the category manager.
+     * Kept so deleted presets do not reappear; there is no restore UI.
+     */
     codexDeletedPresetCategories?: string[];
     /** Per-category Browse layout: list | cards | table (keys: characters, locations, items, …) */
     libraryBrowseLayout?: Record<string, 'list' | 'cards' | 'table'>;
@@ -1040,6 +1050,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     storyGraphLinkRelationAssignments: {},
     storyGraphCharacterRelationTypes: [],
     storyGraphEntityColors: {},
+    storyGraphLibraryCategoryColors: {},
     storyGraphLayouts: {},
     storyGraphFocusBundles: {},
 

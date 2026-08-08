@@ -4,7 +4,7 @@ import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SceneManager } from '../services/SceneManager';
 import { CodexManager } from '../services/CodexManager';
-import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID, makeCustomCodexCategory, makeUncategorizedCodexCategory, CODEX_ICON_OPTIONS, withLinkingSection } from '../models/Codex';
+import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID, makeCustomCodexCategory, makeProfileCodexCategory, makeUncategorizedCodexCategory, CODEX_ICON_OPTIONS, withLinkingSection } from '../models/Codex';
 import { CHARACTER_CATEGORIES } from '../models/Character';
 import { LOCATION_CATEGORIES, WORLD_CATEGORIES } from '../models/Location';
 import { CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE } from '../constants';
@@ -77,6 +77,7 @@ type ManagedCodexCategory = {
     label: string;
     icon: string;
     showInSidebar?: boolean;
+    hasProfilePage?: boolean;
     preset?: boolean;
 };
 
@@ -163,6 +164,8 @@ export class CodexView extends ItemView {
     private _lastSaveTime = 0;
     private _pendingDraft: CodexEntry | null = null;
     private _undoSnapshot: CodexEntry | null = null;
+    /** Last seen plugin.libraryCategoriesStructureEpoch (forces tab rebuild). */
+    private _libraryCategoriesEpoch = 0;
     private static SAVE_DEBOUNCE_MS = 600;
     private static SAVE_REFRESH_GRACE_MS = 1500;
 
@@ -272,10 +275,15 @@ export class CodexView extends ItemView {
         if (this.selectedEntry && (Date.now() - this._lastSaveTime) < CodexView.SAVE_REFRESH_GRACE_MS) {
             return;
         }
+        const categoriesEpoch = this.plugin.libraryCategoriesStructureEpoch;
+        const categoriesChanged = categoriesEpoch !== this._libraryCategoriesEpoch;
+        this._libraryCategoriesEpoch = categoriesEpoch;
         // Native Bases already live-update rows. Remounting the embed on every
-        // vault event makes the whole Library table flash.
+        // vault event makes the whole Library table flash — but new Library
+        // folders must rebuild the category tab bar.
         if (
-            !this.selectedEntry
+            !categoriesChanged
+            && !this.selectedEntry
             && getLibraryContentMode(this.plugin) === 'browse'
             && this.rootContainer?.querySelector('.library-native-base-embed')
         ) {
@@ -2373,7 +2381,9 @@ export class CodexView extends ItemView {
                     label: category.label || displayLabel(category.id, category.label),
                     icon: category.icon,
                     preset: false,
-                    definition: makeCustomCodexCategory(category.id, category.label, category.icon),
+                    definition: category.hasProfilePage
+                        ? makeProfileCodexCategory(category.id, category.label, category.icon)
+                        : makeCustomCodexCategory(category.id, category.label, category.icon),
                     draft: category,
                 })),
             {
@@ -2466,6 +2476,8 @@ export class CodexView extends ItemView {
                 row.createSpan({ cls: 'codex-category-manager-preset', text: t('Fixed') });
             } else if (category.preset) {
                 row.createSpan({ cls: 'codex-category-manager-preset', text: t('Preset') });
+            } else if (category.draft?.hasProfilePage) {
+                row.createSpan({ cls: 'codex-category-manager-preset is-profile', text: t('Profile') });
             } else {
                 row.createSpan({ cls: 'codex-category-manager-preset is-custom', text: t('Custom') });
             }
@@ -2502,7 +2514,9 @@ export class CodexView extends ItemView {
                         this.codexManager.initCategories(
                             Array.from(state.enabled).filter(id => !fixedIds.has(id)),
                             state.categories.map(item =>
-                                makeCustomCodexCategory(item.id, item.label, item.icon)),
+                                item.hasProfilePage
+                                    ? makeProfileCodexCategory(item.id, item.label, item.icon)
+                                    : makeCustomCodexCategory(item.id, item.label, item.icon)),
                         );
                         if (this.activeCategory === category.id) {
                             this.activeCategory = UNCATEGORIZED_CATEGORY_ID;
@@ -2520,33 +2534,14 @@ export class CodexView extends ItemView {
             }
         }
 
-        const deletedPresets = BUILTIN_CODEX_CATEGORIES.filter(category => deletedPresetIds.has(category.id));
-        if (deletedPresets.length > 0) {
-            el.createEl('h4', { text: t('Deleted preset categories') });
-            const deletedList = el.createDiv('codex-category-manager-deleted');
-            for (const preset of deletedPresets) {
-                const row = deletedList.createDiv('codex-category-manager-row codex-category-manager-deleted-row');
-                row.createSpan({
-                    text: resolveLibraryCategoryLabel(this.plugin, preset.id, preset.label),
-                    cls: 'codex-category-manager-name',
-                });
-                row.createSpan({ cls: 'codex-category-manager-preset', text: t('Preset') });
-                const restoreBtn = row.createEl('button', {
-                    cls: 'codex-category-restore-btn',
-                    text: t('Restore'),
-                });
-                restoreBtn.addEventListener('click', () => {
-                    state.deletedPresets.delete(preset.id);
-                    state.enabled.add(preset.id);
-                    this.renderCategoryManager(el, modal, state);
-                });
-            }
-        }
+        // Deleted presets stay in state.deletedPresets so they do not reappear —
+        // there is no restore zone.
 
         // Add another category in the same list.
         const addSection = el.createDiv('codex-category-manager-add');
         let newLabel = '';
         let newIcon = 'file-text';
+        let newHasProfilePage = false;
         let newLabelInput: HTMLInputElement | null = null;
 
         new Setting(addSection)
@@ -2566,6 +2561,13 @@ export class CodexView extends ItemView {
             () => newIcon,
             (icon) => { newIcon = icon; },
         );
+
+        new Setting(addSection)
+            .setName(t('Include profile page'))
+            .setDesc(t('Like Characters and Locations: richer profile fields, card browse, and links in the scene inspector.'))
+            .addToggle(toggle => toggle
+                .setValue(newHasProfilePage)
+                .onChange(v => { newHasProfilePage = v; }));
 
         new Setting(addSection)
             .addButton(btn => btn
@@ -2592,14 +2594,17 @@ export class CodexView extends ItemView {
                     }
                     // Check duplicates
                     if (BUILTIN_CODEX_CATEGORIES.some(c => c.id === id) ||
-                        state.categories.some(c => c.id === id)) {
+                        state.categories.some(c => c.id === id) ||
+                        state.deletedPresets.has(id)) {
                         new Notice(t('Category already exists'));
                         return;
                     }
                     state.categories.push({
                         id,
                         label: newLabel.trim(),
-                        icon: newIcon,
+                        icon: newHasProfilePage && newIcon === 'file-text' ? 'user' : newIcon,
+                        hasProfilePage: newHasProfilePage || undefined,
+                        showInSidebar: newHasProfilePage || undefined,
                     });
                     state.enabled.add(id);
                     this.renderCategoryManager(el, modal, state);
@@ -2642,6 +2647,25 @@ export class CodexView extends ItemView {
                     this.plugin.settings.libraryHiddenFixedCategories =
                         FIXED_LIBRARY_CATEGORY_IDS.filter(id => !state.enabled.has(id));
                     this.plugin.settings.codexDeletedPresetCategories = Array.from(state.deletedPresets);
+
+                    // Profile-page categories: card browse + scene-inspector links
+                    if (!this.plugin.settings.libraryBrowseLayout) {
+                        this.plugin.settings.libraryBrowseLayout = {};
+                    }
+                    const sidebar = new Set(this.plugin.settings.codexSidebarCategories || []);
+                    for (const category of state.categories) {
+                        if (!category.hasProfilePage) {
+                            sidebar.delete(category.id);
+                            continue;
+                        }
+                        if (!this.plugin.settings.libraryBrowseLayout[category.id]) {
+                            this.plugin.settings.libraryBrowseLayout[category.id] = 'cards';
+                        }
+                        if (state.enabled.has(category.id)) sidebar.add(category.id);
+                        else sidebar.delete(category.id);
+                    }
+                    this.plugin.settings.codexSidebarCategories = Array.from(sidebar);
+
                     await this.plugin.saveSettings();
                     // Reinitialise codex manager with new categories
                     this.codexManager.initCategories(
@@ -2750,7 +2774,9 @@ export class CodexView extends ItemView {
 
     private resolveCustomDefs() {
         return this.plugin.settings.codexCustomCategories.map(cc =>
-            makeCustomCodexCategory(cc.id, cc.label, cc.icon)
+            cc.hasProfilePage
+                ? makeProfileCodexCategory(cc.id, cc.label, cc.icon)
+                : makeCustomCodexCategory(cc.id, cc.label, cc.icon)
         );
     }
 

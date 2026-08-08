@@ -481,6 +481,7 @@ export type LibraryCategorySettingsPayload = {
         label: string;
         icon: string;
         showInSidebar?: boolean;
+        hasProfilePage?: boolean;
         preset?: boolean;
     }>;
     categoryOrder: string[];
@@ -540,6 +541,7 @@ function parseLibraryCategorySettings(raw: Record<string, unknown>): LibraryCate
             label: String(item.label || '').trim(),
             icon: String(item.icon || 'file-text').trim() || 'file-text',
             ...(typeof item.showInSidebar === 'boolean' ? { showInSidebar: item.showInSidebar } : {}),
+            ...(typeof item.hasProfilePage === 'boolean' ? { hasProfilePage: item.hasProfilePage } : {}),
             ...(typeof item.preset === 'boolean' ? { preset: item.preset } : {}),
         }))
         .filter(item => item.id && item.label);
@@ -693,10 +695,9 @@ export async function adoptLibraryCategoriesFromFolders(
             continue;
         }
 
-        // Already-migrated project: keep user hide/delete choices, only adopt
-        // brand-new folders that are not part of this project's category config.
-        if (deleted.has(id) || listed || (builtin && !deleted.has(id) && enabled.has(id))) continue;
-        if (builtin && !listed) continue;
+        // Already-migrated project: respect delete/hide. Adopt any folder that
+        // is not yet in this project's category config (custom or builtin).
+        if (deleted.has(id) || listed) continue;
         ensureRegistered(id, label, icon, builtin, folderName);
     }
 

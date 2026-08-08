@@ -80,6 +80,7 @@ export class CharacterView extends ItemView {
     private undoSnapshot: Character | null = null;
     /** Timestamp of last self-initiated save; used to suppress external refresh that would steal focus */
     private _lastSaveTime = 0;
+    private _libraryCategoriesEpoch = 0;
     private static readonly SAVE_REFRESH_GRACE_MS = 2000;
     /** Active StoryGraph instance (cleaned up on re-render) */
     private storyGraph: StoryGraph | null = null;
@@ -3411,9 +3412,14 @@ export class CharacterView extends ItemView {
         ) {
             return;
         }
+        const categoriesEpoch = this.plugin.libraryCategoriesStructureEpoch;
+        const categoriesChanged = categoriesEpoch !== this._libraryCategoriesEpoch;
+        this._libraryCategoriesEpoch = categoriesEpoch;
         // Keep the native Bases embed mounted — remounting flashes the table.
+        // Still remount when Library folders are newly adopted into tabs.
         if (
-            !this.selectedCharacter
+            !categoriesChanged
+            && !this.selectedCharacter
             && this.characterOverviewMode === 'base'
             && this.containerEl.querySelector('.library-native-base-embed')
         ) {

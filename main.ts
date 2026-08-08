@@ -68,7 +68,7 @@ import { ResearchManager } from './services/ResearchManager';
 import { LocationManager } from './services/LocationManager';
 import { CharacterManager } from './services/CharacterManager';
 import { CodexManager } from './services/CodexManager';
-import { makeCustomCodexCategory, UNCATEGORIZED_CATEGORY_ID } from './models/Codex';
+import { makeCustomCodexCategory, makeProfileCodexCategory, UNCATEGORIZED_CATEGORY_ID } from './models/Codex';
 import {
     collectMarkdownFiles,
     invalidateAllEntityCaches,
@@ -178,7 +178,9 @@ export default class SceneCardsPlugin extends Plugin {
     private _refreshOpenViewsPromise: Promise<void> | null = null;
     private _refreshViewsOnlyPromise: Promise<void> | null = null;
     /** Coalesce concurrent Library/entity reloads (Codex + Characters + Locations). */
-    private _reloadEntitiesPromise: Promise<void> | null = null;
+    private _reloadEntitiesPromise: Promise<boolean> | null = null;
+    /** Bumps when Library category tabs are adopted from vault folders (live sync). */
+    libraryCategoriesStructureEpoch = 0;
     /** Cached plotgrid mention scan — rebuilds are expensive on large grids. */
     private _plotGridScanCache: {
         at: number;
@@ -356,16 +358,10 @@ export default class SceneCardsPlugin extends Plugin {
             new ResearchView(leaf, this, this.researchManager)
         );
 
-        // Narrative Canvas must register its view/extensions during plugin load.
-        // Do not pre-register the same view type (Obsidian forbids duplicates).
-        try {
-            await this.loadEmbeddedCanvas();
-        } catch (canvasErr) {
-            console.error('[NarrativeLab] Narrative Canvas failed to load:', canvasErr);
-            new Notice(t('Failed to open Narrative Canvas: {err}', { err: String(canvasErr) }));
-        }
-
-        // Wait for the workspace layout to be ready, then bootstrap projects
+        // Register layout bootstrap BEFORE awaiting Narrative Canvas.
+        // Awaiting the embedded canvas inside onload delays Obsidian from
+        // mounting saved sidebar leaves (navigator / inspector), which makes
+        // the left & right sidebars visibly jump into place on startup.
         this.app.workspace.onLayoutReady(async () => {
             try {
             // Drop obsolete Help panes left in saved workspace layouts.
@@ -415,20 +411,20 @@ export default class SceneCardsPlugin extends Plugin {
             const stats = this.sceneManager.queryService.getStatistics();
             this.writingTracker.startSession(stats.totalWords);
 
-            // Refresh all open views now that the project is set — this ensures
-            // PlotGrid and other views that opened before bootstrapProjects reload
-            // their data from the correct project folder.
-            this.refreshOpenViews();
-
-            // Auto-open the left Story Navigator when the plugin starts
-            // (same flag used after creating/selecting a project).
+            // If the navigator was already restored with the workspace, leave
+            // the sidebars alone (revealLeaf/expand causes a visible jump).
+            // Only create the leaf when it's missing.
             if (this.settings.autoOpenNavigator !== false) {
                 try {
-                    await this.openNavigator();
+                    await this.openNavigator({ quiet: true });
                 } catch (navErr) {
                     console.warn('[NarrativeLab] Could not open navigator:', navErr);
                 }
             }
+
+            // Refresh open views after sidebars are settled so a full redraw
+            // doesn't fight the initial workspace paint.
+            this.refreshOpenViews();
 
             // Vault-wide migrations are not needed to show Board/corkboard — defer.
             window.setTimeout(() => {
@@ -446,6 +442,13 @@ export default class SceneCardsPlugin extends Plugin {
             } catch (startupErr) {
                 console.error('[NarrativeLab] Startup error:', startupErr);
             }
+        });
+
+        // Narrative Canvas: load in the background so sidebar views can mount
+        // as soon as onload returns. Commands/openers await ensureCanvasModuleReady().
+        void this.loadEmbeddedCanvas().catch((canvasErr: unknown) => {
+            console.error('[NarrativeLab] Narrative Canvas failed to load:', canvasErr);
+            new Notice(t('Failed to open Narrative Canvas: {err}', { err: String(canvasErr) }));
         });
 
         // Ribbon icons — open project chooser (load/create) so users can switch projects
@@ -783,7 +786,10 @@ export default class SceneCardsPlugin extends Plugin {
         // edits only need a background manager refresh; remounting every open
         // NarrativeLab view here makes the entire embedded Base flash.
         const debouncedLibraryEntityReload = this.debounce(() => {
-            void this.reloadEntities();
+            void this.reloadEntities().then((categoriesChanged) => {
+                // New Library/<Category> folders only show as tabs after a view rebuild.
+                if (categoriesChanged) void this.refreshViewsOnly();
+            });
         }, 500);
 
         this.registerEvent(
@@ -827,6 +833,18 @@ export default class SceneCardsPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('create', (file) => {
                 if (this._adoptingLibrary) return;
+                if (file instanceof TFolder) {
+                    // Creating Library/Skills (etc.) must adopt the category without waiting
+                    // for a project reopen — file-only create handlers never see the folder.
+                    const libraryRoot = normalizePath(this.sceneManager.getCodexFolder());
+                    const folderPath = normalizePath(file.path);
+                    if (libraryRoot
+                        && (folderPath === libraryRoot
+                            || parentOfPath(folderPath) === libraryRoot)) {
+                        debouncedLibraryEntityReload();
+                    }
+                    return;
+                }
                 if (file instanceof TFile) {
                     if (file.extension.toLowerCase() === 'base') return;
                     if (file.extension.toLowerCase() === 'md' && this.isActiveManagedPath(file.path)) {
@@ -854,6 +872,13 @@ export default class SceneCardsPlugin extends Plugin {
                     this.sceneManager.handleDraftFolderDelete(file.path).then((changed) => {
                         if (changed) debouncedRefresh();
                     });
+                    const libraryRoot = normalizePath(this.sceneManager.getCodexFolder());
+                    const folderPath = normalizePath(file.path);
+                    if (libraryRoot
+                        && (folderPath === libraryRoot
+                            || parentOfPath(folderPath) === libraryRoot)) {
+                        debouncedLibraryEntityReload();
+                    }
                     return;
                 }
                 if (file instanceof TFile) {
@@ -2466,12 +2491,15 @@ export default class SceneCardsPlugin extends Plugin {
 
     /**
      * Open the Story Navigator in the left sidebar.
-     * If already open, just reveal it.
+     * If already open, just reveal it (unless `quiet` — used on startup so we
+     * don't expand/reveal sidebars that Obsidian already restored).
      */
-    async openNavigator(): Promise<void> {
+    async openNavigator(opts?: { quiet?: boolean }): Promise<void> {
+        const quiet = opts?.quiet === true;
         const { workspace } = this.app;
         const existing = workspace.getLeavesOfType(NAVIGATOR_VIEW_TYPE);
         if (existing.length > 0) {
+            if (quiet) return;
             workspace.revealLeaf(existing[0]);
             // Ensure the left split is expanded if Obsidian collapsed it
             try {
@@ -2486,15 +2514,18 @@ export default class SceneCardsPlugin extends Plugin {
             ensureSideLeaf?: (type: string, side: 'left' | 'right', opts?: { active?: boolean }) => Promise<WorkspaceLeaf>;
         }).ensureSideLeaf;
         if (typeof ensureSideLeaf === 'function') {
-            const leaf = await ensureSideLeaf.call(workspace, NAVIGATOR_VIEW_TYPE, 'left', { active: true });
-            if (leaf) workspace.revealLeaf(leaf);
+            // quiet: create without activating so we don't yank focus / animate splits
+            const leaf = await ensureSideLeaf.call(workspace, NAVIGATOR_VIEW_TYPE, 'left', {
+                active: !quiet,
+            });
+            if (!quiet && leaf) workspace.revealLeaf(leaf);
             return;
         }
 
         const leaf = workspace.getLeftLeaf(false) ?? workspace.getLeftLeaf(true);
         if (leaf) {
-            await leaf.setViewState({ type: NAVIGATOR_VIEW_TYPE, active: true });
-            workspace.revealLeaf(leaf);
+            await leaf.setViewState({ type: NAVIGATOR_VIEW_TYPE, active: !quiet });
+            if (!quiet) workspace.revealLeaf(leaf);
         }
     }
 
@@ -2663,13 +2694,18 @@ export default class SceneCardsPlugin extends Plugin {
         return this._lastEntitiesReloadAt > 0 && (Date.now() - this._lastEntitiesReloadAt) < maxAgeMs;
     }
 
-    async reloadEntities(): Promise<void> {
+    /**
+     * Reload Library/character/location entities.
+     * @returns true when Library category tabs were added/changed from vault folders.
+     */
+    async reloadEntities(): Promise<boolean> {
         // Multiple views (Library / Characters / Locations) used to each call
         // this from refresh(), stacking 2–3 full vault re-reads. Coalesce.
         if (this._reloadEntitiesPromise) return this._reloadEntitiesPromise;
         this._reloadEntitiesPromise = this.reloadEntitiesUncoalesced()
-            .then(() => {
+            .then((categoriesChanged) => {
                 this._lastEntitiesReloadAt = Date.now();
+                return categoriesChanged;
             })
             .finally(() => {
                 this._reloadEntitiesPromise = null;
@@ -2677,12 +2713,34 @@ export default class SceneCardsPlugin extends Plugin {
         return this._reloadEntitiesPromise;
     }
 
-    private async reloadEntitiesUncoalesced(): Promise<void> {
-        // Init Codex category defs first so Library adopt knows folder → type.
+    private async reloadEntitiesUncoalesced(): Promise<boolean> {
+        let categoriesChanged = false;
+        // Discover Library/<Category> folders before initCategories so new tabs
+        // (e.g. Skills) appear without reopening the project.
         const codexFolder = this.sceneManager.getCodexFolder();
         if (codexFolder) {
+            categoriesChanged = await adoptLibraryCategoriesFromFolders(this, {
+                enableExisting: false,
+            });
+            if (categoriesChanged) {
+                const activeProject = this.sceneManager.activeProject;
+                await this.writeSystemJson(
+                    LIBRARY_CATEGORIES_FILENAME,
+                    readLibraryCategorySettings(this.settings) as unknown as Record<string, unknown>,
+                );
+                if (activeProject?.libraryFolders) {
+                    await this.sceneManager.saveProjectFrontmatter(activeProject).catch(() => undefined);
+                }
+                // Force Codex/Character/Location tab bars to rebuild (browse mode
+                // otherwise skips remount to avoid flashing native Bases).
+                this.libraryCategoriesStructureEpoch += 1;
+            }
+
             const customDefs = (this.settings.codexCustomCategories || []).map(
-                (cc: { id: string; label: string; icon: string }) => makeCustomCodexCategory(cc.id, cc.label, cc.icon)
+                (cc: { id: string; label: string; icon: string; hasProfilePage?: boolean }) =>
+                    cc.hasProfilePage
+                        ? makeProfileCodexCategory(cc.id, cc.label, cc.icon)
+                        : makeCustomCodexCategory(cc.id, cc.label, cc.icon)
             );
             this.codexManager.initCategories(this.settings.codexEnabledCategories || [], customDefs);
             await ensureSeededLibraryCategoryLabels(this);
@@ -2702,6 +2760,7 @@ export default class SceneCardsPlugin extends Plugin {
             await this.scanLibraryFolder(codexFolder, { skipLoaded: true });
         }
         await this.scanExtraFolders();
+        return categoriesChanged;
     }
 
     /**

@@ -8799,6 +8799,9 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     padding: 0 0 4px;
     font-size: 0.78em;
     color: var(--text-muted);
+    position: relative;
+    z-index: 5;
+    flex: 0 0 auto;
 }
 
 .story-graph-legend-row {
@@ -8844,6 +8847,10 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     color: var(--text-muted);
     border-style: dashed;
     border-color: var(--background-modifier-border);
+    flex-shrink: 0;
+    pointer-events: auto;
+    position: relative;
+    z-index: 6;
 }
 
 .story-graph-legend-add-icon {
@@ -9086,15 +9093,21 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     stroke: var(--interactive-accent);
     stroke-width: 2;
     cursor: grab;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease;
+}
+
+.story-graph-focus-edge:hover .story-graph-focus-mid-handle,
+.story-graph-focus-mid-handle.is-dragging {
+    opacity: 1;
     pointer-events: all;
-}
-
-.story-graph-focus-mid-handle:active {
-    cursor: grabbing;
-}
-
-.story-graph-focus-edge.is-selected .story-graph-focus-mid-handle {
     filter: drop-shadow(0 1px 3px rgba(20, 30, 50, 0.22));
+}
+
+.story-graph-focus-mid-handle:active,
+.story-graph-focus-mid-handle.is-dragging {
+    cursor: grabbing;
 }
 
 .story-graph-focus-rubber {
@@ -9219,19 +9232,156 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     text-align: center;
 }
 
-/* Floating inspector dock — reference card stack */
-.story-graph-focus-dock {
+/* Excalidraw-style floating canvas toolbar */
+.story-graph-focus-canvas-tools {
     position: absolute;
+    top: 12px;
     left: 50%;
-    bottom: 16px;
     transform: translateX(-50%);
-    z-index: 4;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    pointer-events: none;
+}
+
+.story-graph-focus-tool-bar {
+    pointer-events: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--background-primary) 94%, transparent);
+    border: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+    box-shadow:
+        0 1px 2px rgba(20, 30, 50, 0.06),
+        0 8px 24px rgba(20, 30, 50, 0.1);
+}
+
+.theme-dark .story-graph-focus-tool-bar {
+    background: color-mix(in srgb, var(--background-primary) 92%, transparent);
+}
+
+.story-graph-focus-tool-btn {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    min-width: 36px;
+    height: 36px;
+    padding: 0 8px !important;
+    border: none !important;
+    border-radius: 8px !important;
+    background: transparent !important;
+    color: var(--text-normal) !important;
+    box-shadow: none !important;
+    cursor: pointer;
+}
+
+.story-graph-focus-tool-btn svg {
+    width: 18px;
+    height: 18px;
+}
+
+.story-graph-focus-tool-btn:hover {
+    background: color-mix(in srgb, var(--background-modifier-hover) 85%, transparent) !important;
+}
+
+.story-graph-focus-tool-btn.is-active,
+.story-graph-focus-tool-btn.is-open {
+    background: color-mix(in srgb, var(--interactive-accent) 18%, transparent) !important;
+    color: var(--interactive-accent) !important;
+}
+
+.story-graph-focus-tool-key {
+    position: absolute;
+    right: 3px;
+    bottom: 2px;
+    font-size: 9px;
+    line-height: 1;
+    color: var(--text-faint);
+    pointer-events: none;
+}
+
+.story-graph-focus-tool-btn.is-active .story-graph-focus-tool-key {
+    color: color-mix(in srgb, var(--interactive-accent) 70%, var(--text-faint));
+}
+
+.story-graph-focus-tool-divider {
+    width: 1px;
+    height: 22px;
+    margin: 0 2px;
+    background: var(--background-modifier-border);
+    flex-shrink: 0;
+}
+
+.story-graph-focus-strands-menu {
+    position: relative;
+    display: inline-flex;
+}
+
+.story-graph-focus-strands-trigger {
+    min-width: auto;
+    padding: 0 10px !important;
+}
+
+.story-graph-focus-strands-trigger-label {
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.story-graph-focus-strands-chevron {
+    display: inline-flex;
+    opacity: 0.55;
+}
+
+.story-graph-focus-strands-chevron svg {
+    width: 14px;
+    height: 14px;
+}
+
+.story-graph-focus-strands-panel {
+    pointer-events: auto;
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    width: min(640px, calc(100% - 48px));
-    max-height: min(240px, 42%);
-    pointer-events: none;
+    width: min(640px, calc(100vw - 48px));
+    max-height: min(320px, 46vh);
+    padding: 10px;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--background-primary) 96%, transparent);
+    border: 1px solid color-mix(in srgb, var(--background-modifier-border) 75%, transparent);
+    box-shadow:
+        0 2px 6px rgba(20, 30, 50, 0.08),
+        0 16px 40px rgba(20, 30, 50, 0.14);
+    z-index: 6;
+}
+
+.story-graph-focus-strand-search {
+    width: 100%;
+    height: 34px;
+    margin: 0;
+    padding: 0 12px !important;
+    border: none !important;
+    border-radius: 10px !important;
+    background: color-mix(in srgb, #e8eaef 90%, transparent) !important;
+    box-shadow: none !important;
+    font-size: 13px;
+}
+
+.theme-dark .story-graph-focus-strand-search {
+    background: color-mix(in srgb, var(--background-secondary) 90%, transparent) !important;
+}
+
+.story-graph-focus-strand-search:focus {
+    outline: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 35%, transparent) !important;
 }
 
 .story-graph-focus-strand-list {
@@ -9239,9 +9389,21 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     flex-direction: column;
     gap: 8px;
     overflow: auto;
-    max-height: min(190px, 34vh);
+    max-height: min(220px, 34vh);
     padding: 2px;
     pointer-events: auto;
+}
+
+.story-graph-focus-strand-empty {
+    padding: 14px 10px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.story-graph-focus-stage.is-arrow-tool .story-graph-focus-port {
+    transform: scale(1.15);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 28%, transparent);
 }
 
 .story-graph-focus-strand-card {
@@ -9401,6 +9563,12 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     background: color-mix(in srgb, var(--background-modifier-hover) 80%, transparent) !important;
 }
 
+.story-graph-focus-strand-remove:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    pointer-events: none;
+}
+
 .story-graph-focus-add-strand {
     pointer-events: auto;
     align-self: flex-start;
@@ -9486,7 +9654,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
 
 .story-graph-focus-hint-bar {
     position: absolute;
-    top: 12px;
+    top: 58px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 3;
@@ -9497,6 +9665,9 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     background: color-mix(in srgb, var(--background-primary) 78%, transparent);
     pointer-events: none;
     white-space: nowrap;
+    max-width: calc(100% - 32px);
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .story-graph-focus-arc {
@@ -13021,6 +13192,10 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
 }
 .codex-category-manager-preset.is-custom {
     color: var(--interactive-accent);
+}
+.codex-category-manager-preset.is-profile {
+    color: var(--text-on-accent, #fff);
+    background: var(--interactive-accent);
 }
 .codex-category-manager-fields {
     white-space: nowrap;

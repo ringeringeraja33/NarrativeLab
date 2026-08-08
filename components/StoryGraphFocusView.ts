@@ -71,7 +71,8 @@ export class StoryGraphFocusView {
     private stage: HTMLElement | null = null;
     private svg: SVGSVGElement | null = null;
     private nodesLayer: HTMLElement | null = null;
-    private dock: HTMLElement | null = null;
+    private canvasToolbar: HTMLElement | null = null;
+    private hintBar: HTMLElement | null = null;
     private left: StoryGraphFocusEndpoint;
     private right: StoryGraphFocusEndpoint;
     private parentId: string;
@@ -87,6 +88,10 @@ export class StoryGraphFocusView {
     private labelEditor: HTMLInputElement | null = null;
     /** Detect double-click across redraws that replace the hit path. */
     private lastEdgeClick: { id: string; t: number } | null = null;
+    /** Excalidraw-style canvas tool. */
+    private tool: 'select' | 'arrow' = 'select';
+    private strandsMenuOpen = false;
+    private strandSearchQuery = '';
     private undoStack: FocusUndoSnapshot[] = [];
     private redoStack: FocusUndoSnapshot[] = [];
     private static readonly MAX_UNDO = 40;
@@ -186,7 +191,7 @@ export class StoryGraphFocusView {
         this.selectedId = snap.selectedId;
         this.dirty = true;
         this.syncUndoRedoButtons();
-        this.renderDock();
+        this.renderCanvasToolbar();
         this.redrawCanvas();
     }
 
@@ -223,6 +228,31 @@ export class StoryGraphFocusView {
 
     private onKeyDown(e: KeyboardEvent): void {
         if (!this.root) return;
+        const target = e.target as HTMLElement | null;
+        const inField = !!target?.closest('input, textarea, select, [contenteditable="true"]');
+        if (!inField && (e.key === '1' || e.key === 'v' || e.key === 'V')) {
+            e.preventDefault();
+            this.setTool('select');
+            return;
+        }
+        if (!inField && (e.key === '5' || e.key === 'a' || e.key === 'A')) {
+            e.preventDefault();
+            this.setTool('arrow');
+            return;
+        }
+        if (!inField && e.key === 'Escape') {
+            if (this.strandsMenuOpen) {
+                e.preventDefault();
+                this.strandsMenuOpen = false;
+                this.renderCanvasToolbar();
+                return;
+            }
+            if (this.tool !== 'select') {
+                e.preventDefault();
+                this.setTool('select');
+                return;
+            }
+        }
         const mod = e.ctrlKey || e.metaKey;
         const isUndo = mod && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
         const isRedo = mod && (
@@ -231,8 +261,7 @@ export class StoryGraphFocusView {
             || e.key === 'Y'
         );
         if (!isUndo && !isRedo) return;
-        const target = e.target as HTMLElement | null;
-        if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+        if (inField) return;
         if (!this.root.contains(target) && !this.root.contains(activeDocument.activeElement)) return;
         if (isUndo && this.undoStack.length === 0) return;
         if (isRedo && this.redoStack.length === 0) return;
@@ -240,6 +269,24 @@ export class StoryGraphFocusView {
         e.stopPropagation();
         if (isUndo) this.undo();
         else this.redo();
+    }
+
+    private setTool(tool: 'select' | 'arrow'): void {
+        if (this.tool === tool) return;
+        this.tool = tool;
+        this.stage?.classList.toggle('is-arrow-tool', tool === 'arrow');
+        this.syncHintBar();
+        this.renderCanvasToolbar();
+    }
+
+    private syncHintBar(): void {
+        if (!this.hintBar) return;
+        this.hintBar.style.display = this.strandsMenuOpen ? 'none' : '';
+        this.hintBar.setText(
+            this.tool === 'arrow'
+                ? t('Arrow tool: drag a handle to the other side to add a strand')
+                : t('Drag mid-point to bend · double-click line to edit label · open Strands to manage'),
+        );
     }
 
     private portHasStrands(side: 'left' | 'right', portId: string): boolean {
@@ -358,10 +405,11 @@ export class StoryGraphFocusView {
 
         const stage = root.createDiv({ cls: 'story-graph-focus-stage is-canvas' });
         this.stage = stage;
-        stage.createDiv({
-            cls: 'story-graph-focus-hint-bar',
-            text: t('Drag handles to connect · drag mid-point to bend · double-click line to edit label'),
-        });
+        this.hintBar = stage.createDiv({ cls: 'story-graph-focus-hint-bar' });
+        this.syncHintBar();
+
+        this.canvasToolbar = stage.createDiv({ cls: 'story-graph-focus-canvas-tools' });
+        this.renderCanvasToolbar();
 
         const svg = activeDocument.createElementNS(SVG_NS, 'svg');
         svg.classList.add('story-graph-focus-svg');
@@ -372,8 +420,13 @@ export class StoryGraphFocusView {
         this.mountNode('left');
         this.mountNode('right');
 
-        this.dock = stage.createDiv({ cls: 'story-graph-focus-dock' });
-        this.renderDock();
+        stage.addEventListener('pointerdown', (e) => {
+            if (!this.strandsMenuOpen) return;
+            const target = e.target as HTMLElement;
+            if (target.closest('.story-graph-focus-canvas-tools')) return;
+            this.strandsMenuOpen = false;
+            this.renderCanvasToolbar();
+        });
 
         requestAnimationFrame(() => this.redrawCanvas());
     }
@@ -618,6 +671,10 @@ export class StoryGraphFocusView {
                 el.style.top = `${world.y - center.y + FOCUS_AVATAR_R}px`;
                 el.addEventListener('pointerdown', (e: PointerEvent) => {
                     if (e.button !== 0 || !this.svg || !this.stage) return;
+                    // Connect from handles in arrow tool (Excalidraw-style), or always when menu wants quick add.
+                    if (this.tool !== 'arrow') {
+                        this.setTool('arrow');
+                    }
                     e.preventDefault();
                     e.stopPropagation();
                     const origin = this.portWorldPos(side, port.id);
@@ -668,46 +725,177 @@ export class StoryGraphFocusView {
         }
     }
 
-    private renderDock(): void {
-        if (!this.dock) return;
-        this.dock.empty();
+    private renderCanvasToolbar(): void {
+        if (!this.canvasToolbar) return;
+        const focusSearch = !!this.canvasToolbar.querySelector('.story-graph-focus-strand-search:focus');
+        this.canvasToolbar.empty();
+        this.stage?.classList.toggle('is-arrow-tool', this.tool === 'arrow');
+        this.syncHintBar();
 
-        const list = this.dock.createDiv({ cls: 'story-graph-focus-strand-list' });
-        this.strands.forEach((strand, index) => {
-            list.appendChild(this.makeStrandCard(strand, index));
+        const bar = this.canvasToolbar.createDiv({ cls: 'story-graph-focus-tool-bar' });
+
+        const selectBtn = bar.createEl('button', {
+            cls: `story-graph-focus-tool-btn${this.tool === 'select' ? ' is-active' : ''}`,
+            attr: {
+                type: 'button',
+                title: `${t('Select')} — 1`,
+                'aria-label': t('Select'),
+                'aria-pressed': this.tool === 'select' ? 'true' : 'false',
+            },
+        });
+        setIcon(selectBtn, 'mouse-pointer-2');
+        selectBtn.createSpan({ cls: 'story-graph-focus-tool-key', text: '1' });
+        selectBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.setTool('select');
         });
 
-        const addBtn = this.dock.createEl('button', {
-            cls: 'story-graph-focus-add-strand',
-            attr: { type: 'button' },
+        const arrowBtn = bar.createEl('button', {
+            cls: `story-graph-focus-tool-btn${this.tool === 'arrow' ? ' is-active' : ''}`,
+            attr: {
+                type: 'button',
+                title: `${t('Arrow / connect')} — 5`,
+                'aria-label': t('Arrow / connect'),
+                'aria-pressed': this.tool === 'arrow' ? 'true' : 'false',
+            },
         });
-        setIcon(addBtn.createSpan(), 'plus');
-        addBtn.createSpan({ text: ` ${t('Add strand')}` });
-        addBtn.addEventListener('click', () => {
-            this.pushUndo();
-            const strand = createStoryGraphStrand({
-                direction: 'ltr',
-                label: t('New strand'),
-                leftPortId: this.leftPorts[0]?.id,
-                rightPortId: this.rightPorts[0]?.id,
+        setIcon(arrowBtn, 'move-up-right');
+        arrowBtn.createSpan({ cls: 'story-graph-focus-tool-key', text: '5' });
+        arrowBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.setTool('arrow');
+        });
+
+        bar.createDiv({ cls: 'story-graph-focus-tool-divider' });
+
+        const strandsWrap = bar.createDiv({ cls: 'story-graph-focus-strands-menu' });
+        const strandsBtn = strandsWrap.createEl('button', {
+            cls: `story-graph-focus-tool-btn story-graph-focus-strands-trigger${this.strandsMenuOpen ? ' is-open' : ''}`,
+            attr: {
+                type: 'button',
+                title: t('Strands'),
+                'aria-label': t('Strands'),
+                'aria-expanded': this.strandsMenuOpen ? 'true' : 'false',
+            },
+        });
+        setIcon(strandsBtn, 'list');
+        strandsBtn.createSpan({
+            cls: 'story-graph-focus-strands-trigger-label',
+            text: `${t('Strands')} · ${this.strands.length}`,
+        });
+        setIcon(strandsBtn.createSpan({ cls: 'story-graph-focus-strands-chevron' }), 'chevron-down');
+        strandsBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.strandsMenuOpen = !this.strandsMenuOpen;
+            this.renderCanvasToolbar();
+        });
+
+        if (this.strandsMenuOpen) {
+            // Panel hangs under the whole tool bar (not just the trigger).
+            const panel = this.canvasToolbar.createDiv({ cls: 'story-graph-focus-strands-panel' });
+            panel.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+            const search = panel.createEl('input', {
+                cls: 'story-graph-focus-strand-search',
+                attr: {
+                    type: 'search',
+                    placeholder: t('Search strands'),
+                    value: this.strandSearchQuery,
+                    'aria-label': t('Search strands'),
+                },
+            }) as HTMLInputElement;
+            search.value = this.strandSearchQuery;
+
+            const list = panel.createDiv({ cls: 'story-graph-focus-strand-list' });
+            this.renderStrandList(list);
+
+            search.addEventListener('input', () => {
+                this.strandSearchQuery = search.value;
+                this.renderStrandList(list);
             });
-            this.strands.push(strand);
-            this.selectedId = strand.id;
-            this.dirty = true;
-            this.renderDock();
-            this.redrawCanvas();
+
+            const addBtn = panel.createEl('button', {
+                cls: 'story-graph-focus-add-strand',
+                attr: { type: 'button' },
+            });
+            setIcon(addBtn.createSpan(), 'plus');
+            addBtn.createSpan({ text: ` ${t('Add strand')}` });
+            addBtn.addEventListener('click', () => {
+                this.addStrandQuick();
+            });
+
+            if (focusSearch) {
+                requestAnimationFrame(() => {
+                    search.focus();
+                    const len = search.value.length;
+                    search.setSelectionRange(len, len);
+                });
+            }
+        }
+    }
+
+    private syncStrandCardSelection(): void {
+        if (!this.canvasToolbar || !this.strandsMenuOpen) return;
+        this.canvasToolbar.querySelectorAll('.story-graph-focus-strand-card').forEach((el) => {
+            const id = el.getAttribute('data-strand-id');
+            el.classList.toggle('is-selected', id === this.selectedId);
+            if (id === this.selectedId) {
+                (el as HTMLElement).scrollIntoView({ block: 'nearest' });
+            }
         });
+    }
+
+    private renderStrandList(list: HTMLElement): void {
+        list.empty();
+        const q = this.strandSearchQuery.trim().toLowerCase();
+        const entries = this.strands
+            .map((strand, index) => ({ strand, index }))
+            .filter(({ strand }) => !q || strand.label.toLowerCase().includes(q));
+        if (entries.length === 0) {
+            list.createDiv({
+                cls: 'story-graph-focus-strand-empty',
+                text: this.strands.length === 0
+                    ? t('No strands yet — use the arrow tool or add one below')
+                    : t('No matching strands'),
+            });
+            return;
+        }
+        for (const { strand, index } of entries) {
+            list.appendChild(this.makeStrandCard(strand, index));
+        }
+        requestAnimationFrame(() => {
+            const selected = list.querySelector('.story-graph-focus-strand-card.is-selected') as HTMLElement | null;
+            selected?.scrollIntoView({ block: 'nearest' });
+        });
+    }
+
+    private addStrandQuick(): void {
+        this.pushUndo();
+        const strand = createStoryGraphStrand({
+            direction: 'ltr',
+            label: t('New strand'),
+            leftPortId: this.leftPorts[0]?.id,
+            rightPortId: this.rightPorts[0]?.id,
+        });
+        this.strands.push(strand);
+        this.selectedId = strand.id;
+        this.dirty = true;
+        this.strandsMenuOpen = true;
+        this.tool = 'select';
+        this.stage?.classList.toggle('is-arrow-tool', false);
+        this.syncHintBar();
+        this.renderCanvasToolbar();
+        this.redrawCanvas();
     }
 
     private makeStrandCard(strand: StoryGraphStrand, index: number): HTMLElement {
         const row = activeDocument.createElement('div');
         row.className = `story-graph-focus-strand-card${this.selectedId === strand.id ? ' is-selected' : ''}`;
+        row.setAttribute('data-strand-id', strand.id);
         row.addEventListener('click', (e) => {
             if ((e.target as HTMLElement).closest('button, input, select')) return;
             this.selectedId = strand.id;
-            this.dock?.querySelectorAll('.story-graph-focus-strand-card').forEach(el => {
-                el.classList.toggle('is-selected', el === row);
-            });
+            this.syncStrandCardSelection();
             this.redrawCanvas();
         });
 
@@ -821,15 +1009,26 @@ export class StoryGraphFocusView {
             },
         });
         setIcon(remove, 'trash-2');
+        remove.disabled = this.strands.length <= 1;
+        if (this.strands.length <= 1) {
+            remove.setAttribute(
+                'title',
+                t('Keep at least one strand. To remove the link entirely, delete it on the Story Graph.'),
+            );
+        }
         remove.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (this.strands.length <= 1) {
+                new Notice(t('Keep at least one strand. To remove the link entirely, delete it on the Story Graph.'));
+                return;
+            }
             this.pushUndo();
             this.strands.splice(index, 1);
             if (this.selectedId === strand.id) {
                 this.selectedId = this.strands[0]?.id || null;
             }
             this.dirty = true;
-            this.renderDock();
+            this.renderCanvasToolbar();
             this.redrawCanvas();
         });
 
@@ -1291,6 +1490,7 @@ export class StoryGraphFocusView {
             hit.classList.add('story-graph-focus-edge-hit');
 
             hit.addEventListener('pointerdown', (e) => {
+                if (e.button !== 0) return;
                 e.stopPropagation();
                 const now = Date.now();
                 const isDouble =
@@ -1298,14 +1498,24 @@ export class StoryGraphFocusView {
                     this.lastEdgeClick.id === strand.id &&
                     now - this.lastEdgeClick.t < 400;
                 this.lastEdgeClick = { id: strand.id, t: now };
-                this.selectedId = strand.id;
                 if (isDouble) {
                     e.preventDefault();
+                    this.selectedId = strand.id;
                     this.beginEditStrandLabel(strand, midX, midY);
                     return;
                 }
-                this.renderDock();
-                this.redrawCanvas();
+                const alreadySelected = this.selectedId === strand.id;
+                this.selectedId = strand.id;
+                this.syncStrandCardSelection();
+                // Avoid rebuilding SVG on a re-click so the 2nd half of a
+                // double-click can still land on this hit path / fire dblclick.
+                if (!alreadySelected) this.redrawCanvas();
+            });
+            hit.addEventListener('dblclick', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.selectedId = strand.id;
+                this.beginEditStrandLabel(strand, midX, midY);
             });
 
             const path = activeDocument.createElementNS(SVG_NS, 'path');
@@ -1351,19 +1561,34 @@ export class StoryGraphFocusView {
                 });
             }
 
-            // Mid bend handle (selected strand) — drag like Excalidraw.
+            // Mid bend handle (selected strand) — visible only while the edge is hovered.
             if (selected) {
                 const midHandle = activeDocument.createElementNS(SVG_NS, 'circle');
                 midHandle.setAttribute('cx', String(midX));
                 midHandle.setAttribute('cy', String(midY));
                 midHandle.setAttribute('r', '6');
                 midHandle.classList.add('story-graph-focus-mid-handle');
+                if (this.bendDrag?.strandId === strand.id) {
+                    midHandle.classList.add('is-dragging');
+                }
                 midHandle.setAttribute('aria-label', t('Drag to bend'));
                 midHandle.addEventListener('pointerdown', (e) => {
                     if (e.button !== 0) return;
                     e.preventDefault();
                     e.stopPropagation();
+                    const now = Date.now();
+                    const isDouble =
+                        !!this.lastEdgeClick &&
+                        this.lastEdgeClick.id === strand.id &&
+                        now - this.lastEdgeClick.t < 400;
+                    this.lastEdgeClick = { id: strand.id, t: now };
                     this.selectedId = strand.id;
+                    // Mid sits on the label; treat double-press as label edit.
+                    if (isDouble) {
+                        this.beginEditStrandLabel(strand, midX, midY);
+                        return;
+                    }
+                    midHandle.classList.add('is-dragging');
                     this.bendDrag = {
                         strandId: strand.id,
                         pointerId: e.pointerId,
@@ -1380,12 +1605,8 @@ export class StoryGraphFocusView {
                 midHandle.addEventListener('dblclick', (e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    // Reset to auto-packed bow.
-                    if (!strand.mid) return;
-                    this.pushUndo();
-                    strand.mid = undefined;
-                    this.dirty = true;
-                    this.redrawCanvas();
+                    // Prefer label edit when the mid handle receives the dblclick.
+                    this.beginEditStrandLabel(strand, midX, midY);
                 });
                 g.appendChild(midHandle);
             }
@@ -1445,7 +1666,7 @@ export class StoryGraphFocusView {
     private onPointerUp(e: PointerEvent): void {
         if (this.bendDrag && this.bendDrag.pointerId === e.pointerId) {
             this.bendDrag = null;
-            this.renderDock();
+            this.syncStrandCardSelection();
             this.redrawCanvas();
             return;
         }
@@ -1521,13 +1742,14 @@ export class StoryGraphFocusView {
                 this.dirty = true;
             }
             this.endEditStrandLabel(false);
-            this.renderDock();
+            if (this.strandsMenuOpen) this.renderCanvasToolbar();
+            else this.syncStrandCardSelection();
             this.redrawCanvas();
         };
         const cancel = () => {
             if (this.labelEditor !== input) return;
             this.endEditStrandLabel(false);
-            this.renderDock();
+            this.syncStrandCardSelection();
             this.redrawCanvas();
         };
 
@@ -1549,7 +1771,7 @@ export class StoryGraphFocusView {
             input.focus();
             input.select();
         });
-        this.renderDock();
+        this.syncStrandCardSelection();
     }
 
     private endEditStrandLabel(_commit: boolean): void {
@@ -1577,7 +1799,8 @@ export class StoryGraphFocusView {
         this.strands.push(strand);
         this.selectedId = strand.id;
         this.dirty = true;
-        this.renderDock();
+        this.strandsMenuOpen = true;
+        this.renderCanvasToolbar();
         this.redrawCanvas();
     }
 
@@ -1693,7 +1916,8 @@ export class StoryGraphFocusView {
         this.stage = null;
         this.svg = null;
         this.nodesLayer = null;
-        this.dock = null;
+        this.canvasToolbar = null;
+        this.hintBar = null;
         this.undoBtn = null;
         this.redoBtn = null;
         this.undoStack = [];
