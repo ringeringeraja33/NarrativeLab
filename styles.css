@@ -8917,6 +8917,24 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     gap: 8px;
 }
 
+.story-graph-focus-toolbar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.story-graph-focus-undo {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.story-graph-focus-undo:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
 .story-graph-focus-back {
     display: inline-flex;
     align-items: center;

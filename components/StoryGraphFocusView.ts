@@ -1,8 +1,9 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian DOM + async save handlers */
-import { Notice, TFile, normalizePath, setIcon } from 'obsidian';
+import { Menu, Notice, TFile, normalizePath, setIcon } from 'obsidian';
 import type SceneCardsPlugin from '../main';
-import { resolveImagePath } from './ImagePicker';
+import { pickImage, resolveImagePath } from './ImagePicker';
 import { openConfirmModal } from './ConfirmModal';
+import type { StoryGraphLayoutState } from './StoryGraph';
 import {
     clampFocusNodePos,
     createFocusPort,
@@ -22,6 +23,15 @@ import {
     type StoryGraphStrandLineStyle,
 } from '../utils/storyGraphStrands';
 import { t } from '../utils/i18n';
+
+interface FocusUndoSnapshot {
+    strands: StoryGraphStrand[];
+    leftPorts: StoryGraphFocusPort[];
+    rightPorts: StoryGraphFocusPort[];
+    leftPos: StoryGraphFocusNodePos;
+    rightPos: StoryGraphFocusNodePos;
+    selectedId: string | null;
+}
 
 export interface StoryGraphFocusEndpoint {
     name: string;
@@ -76,11 +86,15 @@ export class StoryGraphFocusView {
     private labelEditor: HTMLInputElement | null = null;
     /** Detect double-click across redraws that replace the hit path. */
     private lastEdgeClick: { id: string; t: number } | null = null;
+    private undoStack: FocusUndoSnapshot[] = [];
+    private static readonly MAX_UNDO = 40;
+    private undoBtn: HTMLButtonElement | null = null;
     private onClose: () => void;
     private onSaved?: () => void;
     private nodeDrag: null | {
         side: 'left' | 'right';
         pointerId: number;
+        pushedUndo: boolean;
     } = null;
     private connectDrag: null | {
         fromSide: 'left' | 'right';
@@ -91,6 +105,7 @@ export class StoryGraphFocusView {
     private boundPointerMove = (e: PointerEvent) => this.onPointerMove(e);
     private boundPointerUp = (e: PointerEvent) => this.onPointerUp(e);
     private boundResize = () => this.redrawCanvas();
+    private boundKeyDown = (e: KeyboardEvent) => this.onKeyDown(e);
 
     constructor(
         host: HTMLElement,
@@ -119,6 +134,82 @@ export class StoryGraphFocusView {
         activeWindow.addEventListener('pointerup', this.boundPointerUp);
         activeWindow.addEventListener('pointercancel', this.boundPointerUp);
         activeWindow.addEventListener('resize', this.boundResize);
+        activeWindow.addEventListener('keydown', this.boundKeyDown, true);
+    }
+
+    private cloneSnapshot(): FocusUndoSnapshot {
+        return {
+            strands: this.strands.map(s => ({ ...s })),
+            leftPorts: this.leftPorts.map(p => ({ ...p })),
+            rightPorts: this.rightPorts.map(p => ({ ...p })),
+            leftPos: { ...this.leftPos },
+            rightPos: { ...this.rightPos },
+            selectedId: this.selectedId,
+        };
+    }
+
+    private pushUndo(): void {
+        this.undoStack.push(this.cloneSnapshot());
+        if (this.undoStack.length > StoryGraphFocusView.MAX_UNDO) {
+            this.undoStack.shift();
+        }
+        this.syncUndoButton();
+    }
+
+    private undo(): void {
+        const snap = this.undoStack.pop();
+        if (!snap) {
+            new Notice(t('Nothing to undo'));
+            return;
+        }
+        this.endEditStrandLabel(false);
+        this.strands = snap.strands.map(s => ({ ...s }));
+        this.leftPorts = snap.leftPorts.map(p => ({ ...p }));
+        this.rightPorts = snap.rightPorts.map(p => ({ ...p }));
+        this.leftPos = { ...snap.leftPos };
+        this.rightPos = { ...snap.rightPos };
+        this.selectedId = snap.selectedId;
+        this.dirty = true;
+        this.syncUndoButton();
+        this.renderDock();
+        this.redrawCanvas();
+    }
+
+    private syncUndoButton(): void {
+        if (!this.undoBtn) return;
+        this.undoBtn.disabled = this.undoStack.length === 0;
+    }
+
+    private onKeyDown(e: KeyboardEvent): void {
+        if (!this.root) return;
+        const isUndo = (e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z');
+        if (!isUndo || this.undoStack.length === 0) return;
+        const target = e.target as HTMLElement | null;
+        if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+        if (!this.root.contains(target) && !this.root.contains(activeDocument.activeElement)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        this.undo();
+    }
+
+    private portHasStrands(side: 'left' | 'right', portId: string): boolean {
+        return this.strands.some(s =>
+            (side === 'left' ? s.leftPortId : s.rightPortId) === portId,
+        );
+    }
+
+    private deletePort(side: 'left' | 'right', portId: string): void {
+        const ports = this.portsFor(side);
+        if (ports.length <= 1) return;
+        if (this.portHasStrands(side, portId)) return;
+        this.pushUndo();
+        if (side === 'left') {
+            this.leftPorts = this.leftPorts.filter(p => p.id !== portId);
+        } else {
+            this.rightPorts = this.rightPorts.filter(p => p.id !== portId);
+        }
+        this.dirty = true;
+        this.redrawCanvas();
     }
 
     private loadStrands(): void {
@@ -180,7 +271,22 @@ export class StoryGraphFocusView {
             text: t('Secondary strands under "{parent}"', { parent: this.parentLabel }),
         });
 
-        const saveBtn = toolbar.createEl('button', {
+        const actions = toolbar.createDiv({ cls: 'story-graph-focus-toolbar-actions' });
+        const undoBtn = actions.createEl('button', {
+            cls: 'story-graph-focus-undo',
+            attr: {
+                type: 'button',
+                title: t('Undo (Ctrl+Z)'),
+                'aria-label': t('Undo (Ctrl+Z)'),
+            },
+        });
+        setIcon(undoBtn.createSpan(), 'undo-2');
+        undoBtn.createSpan({ text: ` ${t('Undo')}` });
+        undoBtn.addEventListener('click', () => this.undo());
+        this.undoBtn = undoBtn;
+        this.syncUndoButton();
+
+        const saveBtn = actions.createEl('button', {
             cls: 'mod-cta',
             text: t('Save strands'),
             attr: { type: 'button' },
@@ -241,6 +347,7 @@ export class StoryGraphFocusView {
         addPort.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            this.pushUndo();
             const port = createFocusPort();
             if (side === 'left') this.leftPorts.push(port);
             else this.rightPorts.push(port);
@@ -253,9 +360,16 @@ export class StoryGraphFocusView {
             if (e.button !== 0) return;
             e.preventDefault();
             e.stopPropagation();
-            this.nodeDrag = { side, pointerId: e.pointerId };
+            this.nodeDrag = { side, pointerId: e.pointerId, pushedUndo: false };
             el.classList.add('is-dragging');
             try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+        });
+
+        el.addEventListener('contextmenu', (e) => {
+            if ((e.target as HTMLElement).closest('.story-graph-focus-port, .story-graph-focus-add-port')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            this.showNodeImageMenu(e, side);
         });
 
         el.addEventListener('dblclick', () => {
@@ -263,6 +377,132 @@ export class StoryGraphFocusView {
                 void this.plugin.app.workspace.openLinkText(endpoint.filePath, '', false);
             }
         });
+    }
+
+    private storyGraphLayoutProjectKey(): string {
+        return this.plugin.sceneManager.activeProject?.filePath || '__global__';
+    }
+
+    private getStoryGraphLayout(): StoryGraphLayoutState {
+        const layouts = this.plugin.settings.storyGraphLayouts || {};
+        const prev = layouts[this.storyGraphLayoutProjectKey()];
+        return {
+            positions: { ...(prev?.positions || {}) },
+            nodeImages: { ...(prev?.nodeImages || {}) },
+            nodeScale: prev?.nodeScale,
+            panX: prev?.panX,
+            panY: prev?.panY,
+            zoom: prev?.zoom,
+        };
+    }
+
+    private layoutImageKey(endpoint: StoryGraphFocusEndpoint): string {
+        return normalizePath(endpoint.filePath || '');
+    }
+
+    /** Vault-relative path: layout override → endpoint → note/character. */
+    private resolveStoredImagePath(endpoint: StoryGraphFocusEndpoint): string {
+        const key = this.layoutImageKey(endpoint);
+        if (key) {
+            const images = this.getStoryGraphLayout().nodeImages || {};
+            const override = images[key] || images[endpoint.filePath];
+            if (typeof override === 'string' && override.trim()) return override.trim();
+        }
+        if (endpoint.image?.trim()) return endpoint.image.trim();
+        const file = this.plugin.app.vault.getAbstractFileByPath(endpoint.filePath);
+        if (file instanceof TFile) {
+            const img = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter?.image;
+            if (typeof img === 'string' && img.trim()) return img.trim();
+        }
+        const character = this.plugin.characterManager.getAllCharacters()
+            .find(c => c.filePath === endpoint.filePath);
+        if (character?.image?.trim()) return character.image.trim();
+        return '';
+    }
+
+    private hasLayoutImageOverride(endpoint: StoryGraphFocusEndpoint): boolean {
+        const key = this.layoutImageKey(endpoint);
+        if (!key) return false;
+        const images = this.getStoryGraphLayout().nodeImages || {};
+        const override = images[key] || images[endpoint.filePath];
+        return typeof override === 'string' && !!override.trim();
+    }
+
+    private showNodeImageMenu(e: MouseEvent, side: 'left' | 'right'): void {
+        const endpoint = side === 'left' ? this.left : this.right;
+        const menu = new Menu();
+        menu.addItem(item => {
+            item.setTitle(endpoint.name || '?');
+            item.setDisabled(true);
+        });
+        menu.addSeparator();
+        const current = this.resolveStoredImagePath(endpoint);
+        menu.addItem(item => {
+            item.setTitle(current ? t('Change node image') : t('Set node image'));
+            item.setIcon('image');
+            item.onClick(() => { void this.pickImageForEndpoint(side); });
+        });
+        if (this.hasLayoutImageOverride(endpoint)) {
+            menu.addItem(item => {
+                item.setTitle(t('Clear node image'));
+                item.setIcon('image-off');
+                item.onClick(() => { void this.setEndpointLayoutImage(side, ''); });
+            });
+        }
+        menu.showAtMouseEvent(e);
+    }
+
+    private async pickImageForEndpoint(side: 'left' | 'right'): Promise<void> {
+        const endpoint = side === 'left' ? this.left : this.right;
+        const attachmentFolder = this.plugin.sceneManager.activeProject?.filePath
+            || this.plugin.sceneManager.getSceneFolder()
+            || '';
+        const current = this.resolveStoredImagePath(endpoint);
+        const next = await pickImage(this.plugin.app, attachmentFolder, current || undefined);
+        if (next === undefined) return;
+        await this.setEndpointLayoutImage(side, next);
+    }
+
+    private async setEndpointLayoutImage(side: 'left' | 'right', image: string): Promise<void> {
+        const endpoint = side === 'left' ? this.left : this.right;
+        const key = this.layoutImageKey(endpoint);
+        if (!key) {
+            new Notice(t('Both endpoints need vault files to open focus view.'));
+            return;
+        }
+        const projectKey = this.storyGraphLayoutProjectKey();
+        const layout = this.getStoryGraphLayout();
+        const nodeImages = { ...(layout.nodeImages || {}) };
+        if (!image.trim()) {
+            delete nodeImages[key];
+            delete nodeImages[endpoint.filePath];
+            endpoint.image = undefined;
+        } else {
+            nodeImages[key] = image.trim();
+            endpoint.image = image.trim();
+        }
+        this.plugin.settings.storyGraphLayouts = {
+            ...(this.plugin.settings.storyGraphLayouts || {}),
+            [projectKey]: { ...layout, nodeImages },
+        };
+        await this.plugin.saveSettings();
+        this.refreshNodeAvatar(side);
+        this.onSaved?.();
+    }
+
+    private refreshNodeAvatar(side: 'left' | 'right'): void {
+        const endpoint = side === 'left' ? this.left : this.right;
+        const node = this.nodesLayer?.querySelector(`[data-side="${side}"]`) as HTMLElement | null;
+        const avatar = node?.querySelector('.story-graph-focus-avatar') as HTMLElement | null;
+        if (!avatar) return;
+        avatar.empty();
+        const src = this.resolveImage(endpoint);
+        if (src) {
+            avatar.createEl('img', { attr: { src, alt: endpoint.name } });
+        } else {
+            const fallback = avatar.createDiv({ cls: 'story-graph-focus-avatar-fallback' });
+            fallback.setText((endpoint.name || '?').slice(0, 1));
+        }
     }
 
     private portsFor(side: 'left' | 'right'): StoryGraphFocusPort[] {
@@ -333,6 +573,20 @@ export class StoryGraphFocusView {
                     };
                     try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
                 });
+                el.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    // Only offer delete when this handle has no strands and isn't the last one.
+                    if (this.portHasStrands(side, port.id)) return;
+                    if (this.portsFor(side).length <= 1) return;
+                    const menu = new Menu();
+                    menu.addItem(item => {
+                        item.setTitle(t('Delete handle'))
+                            .setIcon('trash-2')
+                            .onClick(() => this.deletePort(side, port.id));
+                    });
+                    menu.showAtMouseEvent(e);
+                });
             });
 
             // Place "+" just outside the outermost port fan.
@@ -367,6 +621,7 @@ export class StoryGraphFocusView {
         setIcon(addBtn.createSpan(), 'plus');
         addBtn.createSpan({ text: ` ${t('Add strand')}` });
         addBtn.addEventListener('click', () => {
+            this.pushUndo();
             const strand = createStoryGraphStrand({
                 direction: 'ltr',
                 label: t('New strand'),
@@ -416,6 +671,8 @@ export class StoryGraphFocusView {
             });
             btn.addEventListener('click', (e) => {
                 e.stopPropagation();
+                if (strand.direction === opt.value) return;
+                this.pushUndo();
                 strand.direction = opt.value;
                 this.dirty = true;
                 this.selectedId = strand.id;
@@ -436,7 +693,13 @@ export class StoryGraphFocusView {
                 'aria-label': t('Strand label'),
             },
         }) as HTMLInputElement;
+        let labelUndoPushed = false;
+        labelInput.addEventListener('focus', () => { labelUndoPushed = false; });
         labelInput.addEventListener('input', () => {
+            if (!labelUndoPushed) {
+                this.pushUndo();
+                labelUndoPushed = true;
+            }
             strand.label = labelInput.value;
             this.dirty = true;
             this.paintStrandPreview(preview, strand);
@@ -456,6 +719,7 @@ export class StoryGraphFocusView {
         }
         styleSelect.value = strand.lineStyle;
         styleSelect.addEventListener('change', () => {
+            this.pushUndo();
             strand.lineStyle = styleSelect.value as StoryGraphStrandLineStyle;
             this.dirty = true;
             this.paintStrandPreview(preview, strand);
@@ -472,7 +736,13 @@ export class StoryGraphFocusView {
                 'aria-label': t('Color'),
             },
         }) as HTMLInputElement;
+        let colorUndoPushed = false;
+        color.addEventListener('pointerdown', () => { colorUndoPushed = false; });
         color.addEventListener('input', () => {
+            if (!colorUndoPushed) {
+                this.pushUndo();
+                colorUndoPushed = true;
+            }
             strand.color = color.value;
             colorWrap.style.backgroundColor = color.value;
             this.dirty = true;
@@ -490,6 +760,7 @@ export class StoryGraphFocusView {
         setIcon(remove, 'trash-2');
         remove.addEventListener('click', (e) => {
             e.stopPropagation();
+            this.pushUndo();
             this.strands.splice(index, 1);
             if (this.selectedId === strand.id) {
                 this.selectedId = this.strands[0]?.id || null;
@@ -614,6 +885,60 @@ export class StoryGraphFocusView {
         return lines.slice(0, maxLines);
     }
 
+    /** Wrap metrics for a strand label — drives both drawing and anti-overlap packing. */
+    private strandLabelMetrics(
+        label: string,
+        pathLength: number,
+        fontSize = 12,
+        maxLines = 3,
+    ): { lines: string[]; lineGap: number; height: number; band: number } {
+        const pathLen = Math.max(80, pathLength);
+        // ~0.9em per CJK glyph; leave margins so text doesn't reach arrowheads.
+        const maxChars = Math.max(4, Math.floor((pathLen * 0.5) / (fontSize * 0.92)));
+        const lines = this.wrapPathLabel(label, maxChars, maxLines);
+        const lineGap = fontSize + 2;
+        const height = lines.length === 0 ? 0 : lines.length * lineGap;
+        // Perpendicular band reserved for this strand so tall blocks don't stack.
+        const band = Math.max(22, height + (lines.length > 1 ? 18 : 12));
+        return { lines, lineGap, height, band };
+    }
+
+    /**
+     * Pack strand bows so label blocks (especially multi-line) leave each other room.
+     * Returns bow offset along the left→right normal, centered on 0.
+     */
+    private packStrandBows(
+        strands: StoryGraphStrand[],
+        pathLength: number,
+        fontSize = 12,
+        maxLines = 3,
+    ): Map<string, { bow: number; metrics: ReturnType<StoryGraphFocusView['strandLabelMetrics']> }> {
+        const gap = 10;
+        const items = strands.map((strand) => ({
+            strand,
+            metrics: this.strandLabelMetrics(strand.label, pathLength, fontSize, maxLines),
+        }));
+        const centers: number[] = [];
+        for (let i = 0; i < items.length; i++) {
+            const half = items[i].metrics.band / 2;
+            if (i === 0) {
+                centers.push(0);
+            } else {
+                const prevHalf = items[i - 1].metrics.band / 2;
+                centers.push(centers[i - 1] + prevHalf + gap + half);
+            }
+        }
+        if (centers.length > 0) {
+            const mid = (centers[0] + centers[centers.length - 1]) / 2;
+            for (let i = 0; i < centers.length; i++) centers[i] -= mid;
+        }
+        const out = new Map<string, { bow: number; metrics: ReturnType<StoryGraphFocusView['strandLabelMetrics']> }>();
+        items.forEach((item, i) => {
+            out.set(item.strand.id, { bow: centers[i] || 0, metrics: item.metrics });
+        });
+        return out;
+    }
+
     /**
      * Draw label along a path so text stays parallel to the strand.
      * Long labels wrap onto stacked path-aligned lines.
@@ -633,15 +958,21 @@ export class StoryGraphFocusView {
             /** Approximate path length in px — drives wrap width. */
             pathLength?: number;
             maxLines?: number;
+            /** Precomputed wrap lines (avoids double-wrapping). */
+            lines?: string[];
         },
     ): void {
         const fontSize = opts?.fontSize ?? 12;
         const baseDy = opts?.dy ?? -10;
         const maxLines = opts?.maxLines ?? 3;
         const pathLength = Math.max(80, opts?.pathLength ?? 220);
-        // ~0.9em per CJK glyph; leave margins so text doesn't reach arrowheads.
-        const maxChars = Math.max(4, Math.floor((pathLength * 0.5) / (fontSize * 0.92)));
-        const lines = this.wrapPathLabel(label, maxChars, maxLines);
+        const metrics = opts?.lines
+            ? {
+                lines: opts.lines,
+                lineGap: fontSize + 2,
+            }
+            : this.strandLabelMetrics(label, pathLength, fontSize, maxLines);
+        const lines = metrics.lines;
         if (lines.length === 0) return;
 
         const useReverse = (opts?.tangentX ?? 1) < 0 && !!opts?.reverseD;
@@ -656,7 +987,7 @@ export class StoryGraphFocusView {
         guide.classList.add('story-graph-focus-label-guide');
         parent.appendChild(guide);
 
-        const lineGap = fontSize + 2;
+        const lineGap = metrics.lineGap;
         // Center the wrapped block around the base dy offset.
         const blockStart = baseDy - ((lines.length - 1) * lineGap) / 2;
 
@@ -763,35 +1094,36 @@ export class StoryGraphFocusView {
         }
         this.syncPortsDom();
 
-        // Group strands that share the same port pair so multi-lines on one handle bow apart.
-        const pairGroups = new Map<string, StoryGraphStrand[]>();
-        for (const strand of this.strands) {
-            const key = `${strand.leftPortId || ''}|${strand.rightPortId || ''}`;
-            const list = pairGroups.get(key) || [];
-            list.push(strand);
-            pairGroups.set(key, list);
-        }
+        // Always geometry left→right; arrows convey direction.
+        const dx = right.x - left.x;
+        const dy = right.y - left.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len;
+        const uy = dy / len;
+        const nx = -uy;
+        const ny = ux;
+        const baseSpan = Math.hypot(dx, dy) || 220;
+
+        // Stable order: port fan (top→bottom) then dock order, then pack bows by label height.
+        const packOrder = [...this.strands].sort((a, b) => {
+            const aL = this.portIndex('left', a.leftPortId || this.leftPorts[0]?.id || '');
+            const bL = this.portIndex('left', b.leftPortId || this.leftPorts[0]?.id || '');
+            if (aL !== bL) return aL - bL;
+            const aR = this.portIndex('right', a.rightPortId || this.rightPorts[0]?.id || '');
+            const bR = this.portIndex('right', b.rightPortId || this.rightPorts[0]?.id || '');
+            if (aR !== bR) return aR - bR;
+            return this.strands.indexOf(a) - this.strands.indexOf(b);
+        });
+        const packed = this.packStrandBows(packOrder, baseSpan, 12, 3);
 
         this.strands.forEach((strand, index) => {
             const color = strand.color || '#5B7CFF';
             const selected = strand.id === this.selectedId;
             const leftPortId = strand.leftPortId || this.leftPorts[0]?.id;
             const rightPortId = strand.rightPortId || this.rightPorts[0]?.id;
-            const group = pairGroups.get(`${leftPortId || ''}|${rightPortId || ''}`) || [strand];
-            const groupIndex = group.findIndex(s => s.id === strand.id);
-            const groupCount = group.length;
-            const slot = groupIndex - (groupCount - 1) / 2;
-            const spacing = groupCount <= 1 ? 0 : Math.max(28, Math.min(48, Math.round(160 / groupCount)));
-            const offset = slot * spacing;
-
-            // Always geometry left→right; arrows convey direction.
-            const dx = right.x - left.x;
-            const dy = right.y - left.y;
-            const len = Math.hypot(dx, dy) || 1;
-            const ux = dx / len;
-            const uy = dy / len;
-            const nx = -uy;
-            const ny = ux;
+            const pack = packed.get(strand.id);
+            const bow = pack?.bow || 0;
+            const labelMetrics = pack?.metrics;
 
             const leftAttach = this.portWorldPos('left', leftPortId || this.leftPorts[0].id);
             const rightAttach = this.portWorldPos('right', rightPortId || this.rightPorts[0].id);
@@ -807,8 +1139,7 @@ export class StoryGraphFocusView {
             const x2 = rightAttach.x - sux * clearance;
             const y2 = rightAttach.y - suy * clearance;
 
-            // Extra bow so multi-lines on the same handle stay readable.
-            const bow = offset;
+            // Bow separates strands; taller labels get a wider reserved band.
             const cdx = x2 - x1;
             const cdy = y2 - y1;
             const c1x = x1 + cdx * 0.33 + nx * bow;
@@ -874,10 +1205,11 @@ export class StoryGraphFocusView {
             }
 
             const labelText = strand.label.trim();
-            if (labelText) {
+            if (labelText && labelMetrics && labelMetrics.lines.length > 0) {
                 // Mid-tangent of cubic at t≈0.5 (keep glyphs upright when flipped).
                 const midTx = 0.75 * (c2x - c1x) + 0.375 * ((c1x - x1) + (x2 - c2x));
-                const labelDy = slot >= 0 ? -11 : 13;
+                // Sit slightly above the stroke; packing already reserved band height.
+                const labelDy = -8;
                 const safeId = `sgf-lbl-${strand.id.replace(/[^a-zA-Z0-9_-]/g, '')}-${index}`;
                 const approxLen = Math.hypot(cdx, cdy) + Math.abs(bow) * 0.6;
                 this.appendPathLabel(g, d, safeId, labelText, color, {
@@ -887,6 +1219,7 @@ export class StoryGraphFocusView {
                     reverseD: this.reverseCubicPathD(x1, y1, c1x, c1y, c2x, c2y, x2, y2),
                     pathLength: approxLen,
                     maxLines: 3,
+                    lines: labelMetrics.lines,
                 });
             }
 
@@ -900,6 +1233,10 @@ export class StoryGraphFocusView {
 
     private onPointerMove(e: PointerEvent): void {
         if (this.nodeDrag && this.nodeDrag.pointerId === e.pointerId && this.stage) {
+            if (!this.nodeDrag.pushedUndo) {
+                this.pushUndo();
+                this.nodeDrag.pushedUndo = true;
+            }
             const rect = this.stage.getBoundingClientRect();
             const x = (e.clientX - rect.left) / Math.max(1, rect.width);
             const y = (e.clientY - rect.top) / Math.max(1, rect.height);
@@ -949,10 +1286,11 @@ export class StoryGraphFocusView {
                 confirmClass: 'mod-cta',
                 cancelLabel: t('Use existing handle'),
                 onConfirm: () => {
+                    this.pushUndo();
                     const port = createFocusPort();
                     if (targetSide === 'left') this.leftPorts.push(port);
                     else this.rightPorts.push(port);
-                    this.addStrandBetweenPorts(fromSide, fromPortId, targetSide, port.id);
+                    this.addStrandBetweenPorts(fromSide, fromPortId, targetSide, port.id, false);
                 },
                 onCancel: () => {
                     if (!existingTargetPort) return;
@@ -984,8 +1322,12 @@ export class StoryGraphFocusView {
 
         const commit = () => {
             if (this.labelEditor !== input) return;
-            strand.label = input.value.trim();
-            this.dirty = true;
+            const next = input.value.trim();
+            if (next !== strand.label) {
+                this.pushUndo();
+                strand.label = next;
+                this.dirty = true;
+            }
             this.endEditStrandLabel(false);
             this.renderDock();
             this.redrawCanvas();
@@ -1028,7 +1370,9 @@ export class StoryGraphFocusView {
         fromPortId: string,
         toSide: 'left' | 'right',
         toPortId: string,
+        recordUndo = true,
     ): void {
+        if (recordUndo) this.pushUndo();
         const direction: StoryGraphStrandDirection = fromSide === 'left' ? 'ltr' : 'rtl';
         const leftPortId = fromSide === 'left' ? fromPortId : toPortId;
         const rightPortId = fromSide === 'right' ? fromPortId : toPortId;
@@ -1087,18 +1431,8 @@ export class StoryGraphFocusView {
     }
 
     private resolveImage(endpoint: StoryGraphFocusEndpoint): string {
-        if (endpoint.image) return resolveImagePath(this.plugin.app, endpoint.image);
-        const file = this.plugin.app.vault.getAbstractFileByPath(endpoint.filePath);
-        if (file instanceof TFile) {
-            const img = this.plugin.app.metadataCache.getFileCache(file)?.frontmatter?.image;
-            if (typeof img === 'string' && img.trim()) {
-                return resolveImagePath(this.plugin.app, img);
-            }
-        }
-        const character = this.plugin.characterManager.getAllCharacters()
-            .find(c => c.filePath === endpoint.filePath);
-        if (character?.image) return resolveImagePath(this.plugin.app, character.image);
-        return '';
+        const path = this.resolveStoredImagePath(endpoint);
+        return path ? resolveImagePath(this.plugin.app, path) : '';
     }
 
     private async save(): Promise<void> {
@@ -1160,12 +1494,16 @@ export class StoryGraphFocusView {
         activeWindow.removeEventListener('pointerup', this.boundPointerUp);
         activeWindow.removeEventListener('pointercancel', this.boundPointerUp);
         activeWindow.removeEventListener('resize', this.boundResize);
+        activeWindow.removeEventListener('keydown', this.boundKeyDown, true);
+        this.endEditStrandLabel(false);
         this.root?.remove();
         this.root = null;
         this.stage = null;
         this.svg = null;
         this.nodesLayer = null;
         this.dock = null;
+        this.undoBtn = null;
+        this.undoStack = [];
     }
 }
 
