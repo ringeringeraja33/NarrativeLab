@@ -13,6 +13,7 @@ import { t } from '../utils/i18n';
 import {
     DEFAULT_BASES_FOLDER,
     LEGACY_SYSTEM_BASES_FOLDER,
+    LEGACY_SYSTEM_LIBRARY_BASE,
     LIBRARY_BASE_FILENAME,
     LIBRARY_BASE_FORMAT,
     deriveProjectFoldersFromFilePath,
@@ -98,11 +99,22 @@ function getProjectBaseFolder(plugin: SceneCardsPlugin): string | null {
     return normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
 }
 
-/** Canonical single Library Base: `{project}/System/library.base`. */
+/** Canonical single Library Base: `{Library}/library.base` (project or shared series). */
 function getLibraryBasePath(plugin: SceneCardsPlugin): string | null {
+    const libraryRoot = plugin.sceneManager.getCodexFolder?.()
+        || (() => {
+            const baseFolder = getProjectBaseFolder(plugin);
+            return baseFolder ? `${baseFolder}/Library` : null;
+        })();
+    if (!libraryRoot) return null;
+    return normalizePath(`${libraryRoot}/${LIBRARY_BASE_FILENAME}`);
+}
+
+/** Former System/library.base path for the active project. */
+function getLegacySystemLibraryBasePath(plugin: SceneCardsPlugin): string | null {
     const baseFolder = getProjectBaseFolder(plugin);
     if (!baseFolder) return null;
-    return normalizePath(`${baseFolder}/System/${LIBRARY_BASE_FILENAME}`);
+    return normalizePath(`${baseFolder}/${LEGACY_SYSTEM_LIBRARY_BASE}`);
 }
 
 /** Legacy multi-file Bases roots still scanned for migration. */
@@ -505,6 +517,15 @@ async function readLegacyCategoryConfig(
     plugin: SceneCardsPlugin,
     categoryId: string,
 ): Promise<Record<string, unknown> | null> {
+    // Prefer a matching view from the previous System/library.base when present.
+    const legacySystem = getLegacySystemLibraryBasePath(plugin);
+    if (legacySystem && await pathExists(plugin, legacySystem)) {
+        try {
+            const config = await readBaseConfig(plugin, legacySystem);
+            const view = config ? findViewForCategory(getViews(config), categoryId) : null;
+            if (view) return { views: [view], properties: config?.properties };
+        } catch { /* try per-category files */ }
+    }
     for (const path of getLegacyNativeBasePaths(plugin, categoryId)) {
         if (!(await pathExists(plugin, path))) continue;
         try {
@@ -604,12 +625,23 @@ async function ensureConsolidatedLibraryBase(
     let config = await readBaseConfig(plugin, basePath);
     let dirty = false;
     if (!config) {
-        config = {
-            narrativeLabLibraryBase: LIBRARY_BASE_FORMAT,
-            filters: { and: buildGlobalLibraryFilters(plugin) },
-            views: [],
-        };
-        dirty = true;
+        // Lift the whole previous System/library.base into Library/ when present.
+        const legacySystem = getLegacySystemLibraryBasePath(plugin);
+        if (legacySystem && await pathExists(plugin, legacySystem)) {
+            try {
+                config = await readBaseConfig(plugin, legacySystem);
+            } catch { /* fall through to empty shell */ }
+        }
+        if (config) {
+            dirty = true;
+        } else {
+            config = {
+                narrativeLabLibraryBase: LIBRARY_BASE_FORMAT,
+                filters: { and: buildGlobalLibraryFilters(plugin) },
+                views: [],
+            };
+            dirty = true;
+        }
     }
 
     if (config.narrativeLabLibraryBase !== LIBRARY_BASE_FORMAT) {
@@ -644,6 +676,7 @@ async function ensureConsolidatedLibraryBase(
 async function trashLegacyLibraryBaseFiles(plugin: SceneCardsPlugin): Promise<void> {
     const canonical = getLibraryBasePath(plugin);
     const seen = new Set<string>();
+    await trashBasePath(plugin, getLegacySystemLibraryBasePath(plugin));
     for (const categoryId of getKnownLibraryCategoryIds(plugin)) {
         for (const path of getLegacyNativeBasePaths(plugin, categoryId)) {
             const normalized = normalizePath(path);
@@ -866,7 +899,7 @@ function escapeWikilinkPath(path: string): string {
 
 /**
  * Render an Obsidian Bases embed for one Library category view inside
- * System/library.base.
+ * Library/library.base.
  */
 export async function renderNativeLibraryBase(
     container: HTMLElement,

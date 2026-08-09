@@ -2,7 +2,8 @@
 
 ## 0.1.1
 
-- Library Bases consolidate into a single `System/library.base` with one view per category; switching Library tabs embeds that view. Legacy `Bases/library-*.base` files are migrated and removed. Missing/stale Base trash renames (e.g. OneDrive races) no longer block opening a project.
+- Library Bases consolidate into a single `Library/library.base` with one view per category; switching Library tabs embeds that view. Existing `System/library.base` and legacy `Bases/library-*.base` files are migrated into `Library/` and removed. Missing/stale Base trash renames (e.g. OneDrive races) no longer block opening a project.
+- Tiled corkboard Canvas uses the fixed default name `Canvas/corkboard.canvas` for new and existing projects; project-named `{project}.canvas` files are migrated back.
 - Story Graph: dragging nodes no longer jumps when the SVG viewBox and CSS size differ; pan/zoom use the same coordinate conversion.
 - Story Graph: when a pair already has a character relation or categorized wikilink, the plain default-reference edge is hidden on the main graph.
 - Story Graph: character↔character wikilink edges can add/change/remove character relations from the context menu.

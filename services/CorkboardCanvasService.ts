@@ -56,8 +56,14 @@ export type CorkboardPos = { x: number; y: number; z?: number; w?: number; h?: n
 
 const DEFAULT_W = 280;
 const DEFAULT_H = 200;
-/** Legacy fixed name — migrated to `{project name}.canvas`. */
-const LEGACY_CORKBOARD_CANVAS_NAME = 'corkboard.canvas';
+/** Canonical tiled corkboard canvas filename for every project. */
+export const CORKBOARD_CANVAS_NAME = 'corkboard.canvas';
+
+/** `{project}/Canvas/corkboard.canvas` for a project manifest path. */
+export function corkboardCanvasPathForProject(projectFilePath: string): string {
+    const { canvasFolder } = deriveProjectFoldersFromFilePath(projectFilePath);
+    return normalizePath(`${canvasFolder}/${CORKBOARD_CANVAS_NAME}`);
+}
 
 function sanitizeCanvasFileBase(name: string): string {
     const cleaned = name
@@ -88,40 +94,43 @@ function canonicalizeCanvasPayload(data: CorkboardCanvasData): string {
 
 /**
  * Bidirectional bridge between NarrativeLab board.json positions and a native
- * Obsidian `{project}/Canvas/{project name}.canvas` file (file nodes for NL items).
+ * Obsidian `{project}/Canvas/corkboard.canvas` file (file nodes for NL items).
  */
 export class CorkboardCanvasService {
     constructor(private app: App, private plugin: SceneCardsPlugin) {}
 
-    /** Filename for the tiled corkboard canvas: `{project name}.canvas`. */
-    getCanvasFileName(projectFilePath?: string, title?: string): string | null {
-        const project = this.plugin.sceneManager?.activeProject;
-        const filePath = projectFilePath || project?.filePath;
-        if (!filePath) return null;
-        const fromManifest = filePath.split('/').pop()?.replace(/\.md$/i, '')?.trim() || '';
-        const fromTitle = String(title ?? project?.title ?? '').trim();
-        // Prefer manifest/folder name so renames stay aligned with the project folder.
-        return `${sanitizeCanvasFileBase(fromManifest || fromTitle)}.canvas`;
+    /** Filename for the tiled corkboard canvas: always `corkboard.canvas`. */
+    getCanvasFileName(_projectFilePath?: string, _title?: string): string {
+        return CORKBOARD_CANVAS_NAME;
     }
 
-    /** Canonical corkboard canvas: `{project}/Canvas/{project name}.canvas`. */
+    /** Canonical corkboard canvas: `{project}/Canvas/corkboard.canvas`. */
     getCanvasPath(): string | null {
         const project = this.plugin.sceneManager?.activeProject;
         if (!project?.filePath) return null;
-        const fileName = this.getCanvasFileName();
-        if (!fileName) return null;
-        const { canvasFolder } = deriveProjectFoldersFromFilePath(project.filePath);
-        return normalizePath(`${canvasFolder}/${fileName}`);
+        return corkboardCanvasPathForProject(project.filePath);
     }
 
-    /** Older locations: Canvas/corkboard.canvas and System/corkboard.canvas. */
+    /**
+     * Older locations still migrated into Canvas/corkboard.canvas:
+     * System/corkboard.canvas and the short-lived `{project name}.canvas`.
+     */
     getLegacyCanvasPaths(): string[] {
         const project = this.plugin.sceneManager?.activeProject;
         if (!project?.filePath) return [];
         const { canvasFolder } = deriveProjectFoldersFromFilePath(project.filePath);
-        const paths = [normalizePath(`${canvasFolder}/${LEGACY_CORKBOARD_CANVAS_NAME}`)];
+        const paths: string[] = [];
         const sys = this.plugin.getProjectSystemFolder?.();
-        if (sys) paths.push(normalizePath(`${sys}/${LEGACY_CORKBOARD_CANVAS_NAME}`));
+        if (sys) paths.push(normalizePath(`${sys}/${CORKBOARD_CANVAS_NAME}`));
+
+        const leaf = project.filePath.split('/').pop()?.replace(/\.md$/i, '')?.trim() || '';
+        const title = String(project.title ?? '').trim();
+        for (const base of [leaf, title]) {
+            if (!base) continue;
+            const named = normalizePath(`${canvasFolder}/${sanitizeCanvasFileBase(base)}.canvas`);
+            if (named.endsWith(`/${CORKBOARD_CANVAS_NAME}`)) continue;
+            paths.push(named);
+        }
         return paths;
     }
 
@@ -306,7 +315,7 @@ export class CorkboardCanvasService {
         return await this.writeCanvas(canvasPath, { nodes, edges });
     }
 
-    /** Ensure project-named .canvas exists; migrate legacy corkboard.canvas if needed. */
+    /** Ensure Canvas/corkboard.canvas exists; migrate renamed/legacy copies if needed. */
     async ensureCanvasFile(
         visiblePaths: string[],
         positions: Record<string, CorkboardPos>
@@ -320,9 +329,9 @@ export class CorkboardCanvasService {
     }
 
     /**
-     * Rename/copy explicitly named legacy corkboard canvases onto the
-     * project-named path when missing. Never adopt an arbitrary lone .canvas:
-     * it may be a narrative projection or a user-authored Obsidian Canvas.
+     * Rename/copy known legacy corkboard canvases onto Canvas/corkboard.canvas
+     * when missing. Never adopt an arbitrary lone .canvas: it may be a narrative
+     * projection or a user-authored Obsidian Canvas.
      */
     private async migrateLegacyCanvasIfNeeded(targetPath: string): Promise<void> {
         const existing = this.app.vault.getAbstractFileByPath(targetPath);
@@ -360,7 +369,10 @@ export class CorkboardCanvasService {
         }
     }
 
-    /** After a project rename, move `{oldName}.canvas` / corkboard.canvas → `{newName}.canvas`. */
+    /**
+     * After a project rename, fold any `{old/new name}.canvas` left in Canvas/
+     * back into the fixed `corkboard.canvas` name.
+     */
     async renameCanvasForProject(opts: {
         oldBaseFolder: string;
         newBaseFolder: string;
@@ -370,13 +382,13 @@ export class CorkboardCanvasService {
         const { canvasFolder: newCanvasFolder } = deriveProjectFoldersFromFilePath(
             normalizePath(`${opts.newBaseFolder}/${opts.newLeaf}.md`)
         );
-        const target = normalizePath(`${newCanvasFolder}/${sanitizeCanvasFileBase(opts.newLeaf)}.canvas`);
+        const target = normalizePath(`${newCanvasFolder}/${CORKBOARD_CANVAS_NAME}`);
         if (this.app.vault.getAbstractFileByPath(target) instanceof TFile) return;
 
         const candidates = [
             normalizePath(`${newCanvasFolder}/${sanitizeCanvasFileBase(opts.oldLeaf)}.canvas`),
-            normalizePath(`${newCanvasFolder}/${LEGACY_CORKBOARD_CANVAS_NAME}`),
-            normalizePath(`${opts.newBaseFolder}/System/${LEGACY_CORKBOARD_CANVAS_NAME}`),
+            normalizePath(`${newCanvasFolder}/${sanitizeCanvasFileBase(opts.newLeaf)}.canvas`),
+            normalizePath(`${opts.newBaseFolder}/System/${CORKBOARD_CANVAS_NAME}`),
         ];
         for (const legacy of candidates) {
             if (legacy === target) continue;

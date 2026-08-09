@@ -616,8 +616,20 @@ export class SceneManager implements ISceneStore {
                 }, null, 2),
             );
 
-            // Authored canvas at project root; Library Base lives under System/.
+            // Authored Canvas/ folder + default tiled corkboard file.
             await this.ensureFolder(normalizePath(folders.canvasFolder));
+            try {
+                const { corkboardCanvasPathForProject } = await import('./CorkboardCanvasService');
+                const corkboardPath = corkboardCanvasPathForProject(filePath);
+                if (!this.app.vault.getAbstractFileByPath(corkboardPath)) {
+                    await this.app.vault.create(
+                        corkboardPath,
+                        JSON.stringify({ nodes: [], edges: [] }),
+                    );
+                }
+            } catch (err) {
+                console.warn('[NarrativeLab] default corkboard.canvas create skipped:', err);
+            }
 
             // Create default data files inside System/
             const viewFiles = ['plotgrid.json', 'timeline.json', 'board.json', 'plotlines.json', 'stats.json', 'characters.json'];
@@ -695,7 +707,7 @@ export class SceneManager implements ISceneStore {
         await this.initialize();
         await this.migrateDraftFoldersIfNeeded();
         await this.reconcileDraftFolders();
-        // Ensure System/library.base (migrates legacy Bases/library-*.base)
+        // Ensure Library/library.base (migrates System/library.base + Bases/library-*.base)
         try {
             const { migrateNativeLibraryBasesForActiveProject } = await import('../components/NativeLibraryBase');
             await migrateNativeLibraryBasesForActiveProject(this.plugin);
@@ -766,7 +778,7 @@ export class SceneManager implements ISceneStore {
         // Update frontmatter
         await this.saveProjectFrontmatter(project);
 
-        // Keep tiled corkboard .canvas aligned with the project name.
+        // Keep tiled corkboard at Canvas/corkboard.canvas after the folder move.
         try {
             const { CorkboardCanvasService } = await import('./CorkboardCanvasService');
             const corkboard = new CorkboardCanvasService(this.app, this.plugin);

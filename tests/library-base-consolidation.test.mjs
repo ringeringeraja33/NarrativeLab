@@ -8,9 +8,11 @@ const [nativeLibraryBase, storyLineProject, sceneManager] = await Promise.all([
     readFile(new URL('../services/SceneManager.ts', import.meta.url), 'utf8'),
 ]);
 
-test('canonical Library Base lives under System/library.base', () => {
+test('canonical Library Base lives under Library/library.base', () => {
     assert.match(storyLineProject, /LIBRARY_BASE_FILENAME = 'library\.base'/);
-    assert.match(nativeLibraryBase, /System\/\$\{LIBRARY_BASE_FILENAME\}/);
+    assert.match(storyLineProject, /LEGACY_SYSTEM_LIBRARY_BASE = `System\/library\.base`/);
+    assert.match(nativeLibraryBase, /\$\{libraryRoot\}\/\$\{LIBRARY_BASE_FILENAME\}/);
+    assert.match(nativeLibraryBase, /getCodexFolder/);
     assert.match(nativeLibraryBase, /narrativeLabLibraryBase/);
     assert.match(nativeLibraryBase, /narrativeLabCategoryId/);
 });
@@ -35,4 +37,13 @@ test('legacy Base trash never blocks project open on missing files', () => {
     assert.match(nativeLibraryBase, /Never block project open on Base migration/);
     assert.match(nativeLibraryBase, /ENOENT\|no such file\|does not exist/);
     assert.match(nativeLibraryBase, /if \(!\(await pathExists\(plugin, normalized\)\)\) return;/);
+});
+
+test('System/library.base is migrated into Library/ then trashed', () => {
+    assert.match(nativeLibraryBase, /getLegacySystemLibraryBasePath/);
+    assert.match(nativeLibraryBase, /Lift the whole previous System\/library\.base/);
+    assert.match(
+        nativeLibraryBase,
+        /await trashBasePath\(plugin, getLegacySystemLibraryBasePath\(plugin\)\);/,
+    );
 });

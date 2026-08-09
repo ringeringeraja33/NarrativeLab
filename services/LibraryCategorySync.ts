@@ -9,7 +9,7 @@
  *    category subfolder (Creatures, Skills, …).
  * 3. Deleting a category removes its Library folder(s) and Library Base view,
  *    plus settings; leftover rename aliases (e.g. library-技能.base) are pruned.
- * 4. System/library.base views must match live categories; orphans are removed.
+ * 4. Library/library.base views must match live categories; orphans are removed.
  * 5. Stable category ids (characters, locations, items, …) never change —
  *    only the folder basename / tab label does.
  */
