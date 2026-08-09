@@ -142,10 +142,17 @@ export const LEGACY_SYSTEM_NCANVAS_FOLDER = 'System/NCanvas';
  * `LEGACY_CANVAS_FOLDER = 'Canvas'` when the canonical folder was `NCanvas`.
  */
 export const LEGACY_CANVAS_FOLDER = LEGACY_NCANVAS_FOLDER;
-/** Obsidian Bases view files for Library browse — project root, not System/. */
+/**
+ * Legacy multi-file Library Bases folder (`Bases/library-*.base`).
+ * Live Library Base is now a single file: `System/library.base`.
+ */
 export const DEFAULT_BASES_FOLDER = 'Bases';
-/** Former Bases location under System/ — migrated to project-root Bases/. */
+/** Former nested Bases location — still scanned during migration. */
 export const LEGACY_SYSTEM_BASES_FOLDER = 'System/Bases';
+/** Canonical single Library Base filename under System/. */
+export const LIBRARY_BASE_FILENAME = 'library.base';
+/** Format marker written into System/library.base. */
+export const LIBRARY_BASE_FORMAT = 2;
 /** Default attachment folder name inside each project root */
 export const DEFAULT_ATTACHMENT_FOLDER = 'Attachments';
 

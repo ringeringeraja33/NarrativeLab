@@ -616,8 +616,7 @@ export class SceneManager implements ISceneStore {
                 }, null, 2),
             );
 
-            // Authored content folders at project root (not under System/)
-            await this.ensureFolder(normalizePath(folders.basesFolder));
+            // Authored canvas at project root; Library Base lives under System/.
             await this.ensureFolder(normalizePath(folders.canvasFolder));
 
             // Create default data files inside System/
@@ -696,7 +695,7 @@ export class SceneManager implements ISceneStore {
         await this.initialize();
         await this.migrateDraftFoldersIfNeeded();
         await this.reconcileDraftFolders();
-        // Ensure Bases/ sits at project root (not System/ or Library/)
+        // Ensure System/library.base (migrates legacy Bases/library-*.base)
         try {
             const { migrateNativeLibraryBasesForActiveProject } = await import('../components/NativeLibraryBase');
             await migrateNativeLibraryBasesForActiveProject(this.plugin);
@@ -852,13 +851,13 @@ export class SceneManager implements ISceneStore {
         // trashes all children. It respects the user's "Deleted files" setting
         // (Settings → Files & Links → Deleted files).
         try {
-            const folderEntry = this.app.vault.getAbstractFileByPath(baseFolder);
-            if (folderEntry) {
-                await this.app.fileManager.trashFile(folderEntry);
-            } else {
-                // Folder entry not found — try to trash the .md file directly
-                // so the project stops being discovered by the vault-wide scan.
-                const mdEntry = this.app.vault.getAbstractFileByPath(filePath);
+        const folderEntry = this.app.vault.getAbstractFileByPath(baseFolder);
+        if (folderEntry) {
+            await this.app.fileManager.trashFile(folderEntry);
+        } else {
+            // Folder entry not found — try to trash the .md file directly
+            // so the project stops being discovered by the vault-wide scan.
+            const mdEntry = this.app.vault.getAbstractFileByPath(filePath);
                 if (mdEntry) await this.app.fileManager.trashFile(mdEntry);
             }
         } catch (error) {
@@ -1045,13 +1044,13 @@ export class SceneManager implements ISceneStore {
     async initialize(): Promise<void> {
         if (this.initializePromise) return this.initializePromise;
         this.initializePromise = (async () => {
-            this.scenes.clear();
-            const sceneFolder = this.getSceneFolder();
-            await this.scanFolderAdapter(sceneFolder);
-            const notesFolder = this.getNotesFolder();
-            await this.scanFolderAdapter(notesFolder);
-            this.initialized = true;
-            this.bumpVersion();
+        this.scenes.clear();
+        const sceneFolder = this.getSceneFolder();
+        await this.scanFolderAdapter(sceneFolder);
+        const notesFolder = this.getNotesFolder();
+        await this.scanFolderAdapter(notesFolder);
+        this.initialized = true;
+        this.bumpVersion();
         })().finally(() => {
             this.initializePromise = null;
         });
@@ -1336,46 +1335,46 @@ export class SceneManager implements ISceneStore {
         let currentPath = filePath;
 
         try {
-            // Issue #212 — populate the title→fileStem map so setup/payoff wikilinks
-            // are written as `[[stem|title]]`, letting Obsidian’s graph resolve the
-            // link to the real file while NarrativeLab still matches by title.
-            if (updates.setup_scenes !== undefined || updates.payoff_scenes !== undefined) {
-                const stemMap = new Map<string, string>();
-                for (const [p, s] of this.scenes) {
-                    if (s.title) {
-                        const stem = p.split('/').pop()?.replace(/\.md$/, '') ?? s.title;
-                        stemMap.set(s.title, stem);
-                    }
+        // Issue #212 — populate the title→fileStem map so setup/payoff wikilinks
+        // are written as `[[stem|title]]`, letting Obsidian’s graph resolve the
+        // link to the real file while NarrativeLab still matches by title.
+        if (updates.setup_scenes !== undefined || updates.payoff_scenes !== undefined) {
+            const stemMap = new Map<string, string>();
+            for (const [p, s] of this.scenes) {
+                if (s.title) {
+                    const stem = p.split('/').pop()?.replace(/\.md$/, '') ?? s.title;
+                    stemMap.set(s.title, stem);
                 }
-                setSceneTitleToStemMap(stemMap);
             }
+            setSceneTitleToStemMap(stemMap);
+        }
 
-            await MetadataParser.updateFrontmatter(this.app, file, updates);
+        await MetadataParser.updateFrontmatter(this.app, file, updates);
 
-            // Refresh index
-            const scene = await MetadataParser.parseFile(this.app, file);
-            if (scene) {
-                this.scenes.set(filePath, scene);
-                this.bumpVersion(filePath);
-            }
+        // Refresh index
+        const scene = await MetadataParser.parseFile(this.app, file);
+        if (scene) {
+            this.scenes.set(filePath, scene);
+            this.bumpVersion(filePath);
+        }
 
-            // If the act changed, relocate the file to the correct Act folder and
-            // update the act prefix in the filename.
+        // If the act changed, relocate the file to the correct Act folder and
+        // update the act prefix in the filename.
             const updatesAct = Object.prototype.hasOwnProperty.call(updates, 'act');
             if (updatesAct && oldSnap && updates.act !== oldSnap.act) {
-                currentPath = await this.relocateSceneForAct(filePath, updates.act);
-            }
+            currentPath = await this.relocateSceneForAct(filePath, updates.act);
+        }
 
-            if (
-                updates.title !== undefined ||
-                updates.sequence !== undefined ||
+        if (
+            updates.title !== undefined ||
+            updates.sequence !== undefined ||
                 (updatesAct && oldSnap && updates.act !== oldSnap.act)
-            ) {
-                currentPath = await this.syncSceneFileName(currentPath);
-            }
+        ) {
+            currentPath = await this.syncSceneFileName(currentPath);
+        }
 
             await this.undoManager.commitUpdate(undoToken, currentPath);
-            return currentPath;
+        return currentPath;
         } catch (error) {
             // Preserve a partial change as an undoable action if a later rename or
             // index refresh failed after the file content had already changed.
@@ -1560,7 +1559,7 @@ export class SceneManager implements ISceneStore {
             const actSeg = sanitizeActChapterForPath(String(scene.act));
             if (actSeg) {
                 targetFolder = normalizePath(`${draftRoot}/Act ${actSeg}`);
-                await this.ensureFolder(targetFolder);
+            await this.ensureFolder(targetFolder);
             }
         }
 
@@ -1895,19 +1894,19 @@ export class SceneManager implements ISceneStore {
             if (inNotes) {
                 await this.ensureNotesFileIndexed(file);
             } else {
-                const scene = await MetadataParser.parseFile(this.app, file);
-                if (scene) {
-                    this.scenes.set(file.path, scene);
+            const scene = await MetadataParser.parseFile(this.app, file);
+            if (scene) {
+                this.scenes.set(file.path, scene);
                     if (!scene.corkboardNote) {
-                        const titleFromFile = this.getTitleFromSceneFileName(file);
-                        if (titleFromFile && titleFromFile !== scene.title) {
-                            const oldTitle = scene.title;
+                    const titleFromFile = this.getTitleFromSceneFileName(file);
+                    if (titleFromFile && titleFromFile !== scene.title) {
+                        const oldTitle = scene.title;
                             await this.updateScene(file.path, { title: titleFromFile });
-                            if (oldTitle) await this.updateSceneTitleReferences(oldTitle, titleFromFile);
-                        }
+                        if (oldTitle) await this.updateSceneTitleReferences(oldTitle, titleFromFile);
                     }
                 }
             }
+        }
         }
         await this.syncDraftScenePaths(oldPath, file.path);
         await this.plugin.plotlineManager?.syncScenePath(oldPath, file.path);
@@ -3008,78 +3007,78 @@ export class SceneManager implements ISceneStore {
         }
 
         const buildContent = async (): Promise<string | null> => {
-            const content = await this.app.vault.read(file);
-            const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-            let existingFm: Record<string, unknown> = {};
-            let body = content;
+        const content = await this.app.vault.read(file);
+        const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        let existingFm: Record<string, unknown> = {};
+        let body = content;
 
-            if (fmMatch) {
-                try {
-                    existingFm = parseYaml(fmMatch[1]) || {};
-                } catch {
-                    existingFm = {};
-                }
-                body = content.slice(fmMatch[0].length);
+        if (fmMatch) {
+            try {
+                existingFm = parseYaml(fmMatch[1]) || {};
+            } catch {
+                existingFm = {};
             }
+            body = content.slice(fmMatch[0].length);
+        }
 
-            // Update project-specific fields
-            existingFm.type = 'storyline';
-            existingFm.title = project.title;
-            existingFm.created = project.created;
+        // Update project-specific fields
+        existingFm.type = 'storyline';
+        existingFm.title = project.title;
+        existingFm.created = project.created;
 
-            // Multi-language support — persist BCP-47 locale.
-            if (project.locale) {
-                existingFm.language = normalizeStoryLineLocale(project.locale);
-                // Drop the legacy/community-PR key if both were present.
-                if ('storyline-locale' in existingFm) delete existingFm['storyline-locale'];
-            }
+        // Multi-language support — persist BCP-47 locale.
+        if (project.locale) {
+            existingFm.language = normalizeStoryLineLocale(project.locale);
+            // Drop the legacy/community-PR key if both were present.
+            if ('storyline-locale' in existingFm) delete existingFm['storyline-locale'];
+        }
 
-            // Acts & chapters — only write if non-empty, remove if empty
-            if (project.definedActs.length > 0) {
-                existingFm.acts = project.definedActs;
-            } else {
-                delete existingFm.acts;
-            }
-            if (project.definedChapters.length > 0) {
-                existingFm.chapters = project.definedChapters;
-            } else {
-                delete existingFm.chapters;
-            }
+        // Acts & chapters — only write if non-empty, remove if empty
+        if (project.definedActs.length > 0) {
+            existingFm.acts = project.definedActs;
+        } else {
+            delete existingFm.acts;
+        }
+        if (project.definedChapters.length > 0) {
+            existingFm.chapters = project.definedChapters;
+        } else {
+            delete existingFm.chapters;
+        }
 
-            // Act labels (beat names)
-            if (Object.keys(project.actLabels).length > 0) {
-                existingFm.actLabels = project.actLabels;
-            } else {
-                delete existingFm.actLabels;
-            }
+        // Act labels (beat names)
+        if (Object.keys(project.actLabels).length > 0) {
+            existingFm.actLabels = project.actLabels;
+        } else {
+            delete existingFm.actLabels;
+        }
 
-            // Chapter labels
-            if (Object.keys(project.chapterLabels).length > 0) {
-                existingFm.chapterLabels = project.chapterLabels;
-            } else {
-                delete existingFm.chapterLabels;
-            }
+        // Chapter labels
+        if (Object.keys(project.chapterLabels).length > 0) {
+            existingFm.chapterLabels = project.chapterLabels;
+        } else {
+            delete existingFm.chapterLabels;
+        }
 
-            // Act descriptions
-            if (Object.keys(project.actDescriptions).length > 0) {
-                existingFm.actDescriptions = project.actDescriptions;
-            } else {
-                delete existingFm.actDescriptions;
-            }
+        // Act descriptions
+        if (Object.keys(project.actDescriptions).length > 0) {
+            existingFm.actDescriptions = project.actDescriptions;
+        } else {
+            delete existingFm.actDescriptions;
+        }
 
-            // Chapter descriptions
-            if (Object.keys(project.chapterDescriptions).length > 0) {
-                existingFm.chapterDescriptions = project.chapterDescriptions;
-            } else {
-                delete existingFm.chapterDescriptions;
-            }
+        // Chapter descriptions
+        if (Object.keys(project.chapterDescriptions).length > 0) {
+            existingFm.chapterDescriptions = project.chapterDescriptions;
+        } else {
+            delete existingFm.chapterDescriptions;
+        }
 
-            // Filter presets
-            if (project.filterPresets.length > 0) {
-                existingFm.filterPresets = project.filterPresets;
-            } else {
-                delete existingFm.filterPresets;
-            }
+        // Filter presets
+        if (project.filterPresets.length > 0) {
+            existingFm.filterPresets = project.filterPresets;
+        } else {
+            delete existingFm.filterPresets;
+        }
 
             // Explicit plotlines preserve empty story threads before scenes are assigned.
             if (project.plotlines && project.plotlines.length > 0) {
@@ -3088,29 +3087,29 @@ export class SceneManager implements ISceneStore {
                 delete existingFm.plotlines;
             }
 
-            // corkboardPositions no longer stored in frontmatter — lives in System/board.json
-            delete existingFm.corkboardPositions;
+        // corkboardPositions no longer stored in frontmatter — lives in System/board.json
+        delete existingFm.corkboardPositions;
 
-            // Series ID
-            if (project.seriesId) {
-                existingFm.seriesId = project.seriesId;
-            } else {
-                delete existingFm.seriesId;
-            }
+        // Series ID
+        if (project.seriesId) {
+            existingFm.seriesId = project.seriesId;
+        } else {
+            delete existingFm.seriesId;
+        }
 
-            // Cover image
-            if (project.coverImage) {
-                existingFm.coverImage = project.coverImage;
-            } else {
-                delete existingFm.coverImage;
-            }
+        // Cover image
+        if (project.coverImage) {
+            existingFm.coverImage = project.coverImage;
+        } else {
+            delete existingFm.coverImage;
+        }
 
-            // Active beat sheet template
-            if (project.activeBeatSheet) {
-                existingFm.activeBeatSheet = project.activeBeatSheet;
-            } else {
-                delete existingFm.activeBeatSheet;
-            }
+        // Active beat sheet template
+        if (project.activeBeatSheet) {
+            existingFm.activeBeatSheet = project.activeBeatSheet;
+        } else {
+            delete existingFm.activeBeatSheet;
+        }
 
             // Drafts — folder-isolated under Scenes/<folder>/
             this.ensureProjectDrafts(project);
@@ -3138,7 +3137,7 @@ export class SceneManager implements ISceneStore {
                 delete existingFm.libraryFolders;
             }
 
-            const newContent = `---\n${stringifyYaml(existingFm)}---${body}`;
+        const newContent = `---\n${stringifyYaml(existingFm)}---${body}`;
             // Skip no-op writes — they still contend with the open editor on Windows.
             if (newContent === content) return null;
             return newContent;
@@ -3150,7 +3149,7 @@ export class SceneManager implements ISceneStore {
                 try {
                     const newContent = await buildContent();
                     if (newContent == null) return;
-                    await this.app.vault.modify(file, newContent);
+        await this.app.vault.modify(file, newContent);
                     return;
                 } catch (err) {
                     lastError = err;

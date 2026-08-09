@@ -2,6 +2,9 @@
 
 ## 0.1.1
 
+- Library Bases consolidate into a single `System/library.base` with one view per category; switching Library tabs embeds that view. Legacy `Bases/library-*.base` files are migrated and removed.
+- Story Graph: dragging nodes no longer jumps when the SVG viewBox and CSS size differ; pan/zoom use the same coordinate conversion.
+- Story Graph: when a pair already has a character relation or categorized wikilink, the plain default-reference edge is hidden on the main graph.
 - Story Graph: character↔character wikilink edges can add/change/remove character relations from the context menu.
 - Library entity names fall back to the note file title when frontmatter `name`/`title` is missing or a placeholder (`Untitled` / `未命名`).
 - Story Graph no longer permanently hides non-avatar node labels on large graphs (legend filters can show them again).

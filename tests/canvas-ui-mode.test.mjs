@@ -17,10 +17,17 @@ test("basic canvas mode keeps the four common creation types", () => {
 
 test("advanced canvas surfaces are hidden without removing their controls", () => {
   assert.match(css, /data-ui-mode="basic"\] \.nc-advanced-only/);
-  assert.match(html, /data-file-id="events"[^>]*nc-advanced-only|nc-advanced-only[^>]*data-file-id="events"/);
+  assert.match(html, /data-file-id="document"[^>]*nc-advanced-only|nc-advanced-only[^>]*data-file-id="document"/);
   assert.match(html, /data-file-id="variables"[^>]*nc-advanced-only|nc-advanced-only[^>]*data-file-id="variables"/);
+  assert.doesNotMatch(html, /data-file-id="events"[^>]*nc-advanced-only|nc-advanced-only[^>]*data-file-id="events"/);
   assert.match(html, /id="aiFloatingButton"[^>]*nc-advanced-only|nc-advanced-only[^>]*id="aiFloatingButton"/);
   assert.match(html, /id="uiModeToggle"/);
+});
+
+test("event table stays basic while edit document is advanced-only", () => {
+  assert.match(app, /\["document", "variables"\]\.includes\(fileId\)/);
+  assert.match(app, /\["document", "variables"\]\.includes\(state\.activeFileId\)/);
+  assert.equal((app.match(/\["events", "variables"\]\.includes\(/g) || []).length, 0);
 });
 
 test("inspector uses one current-panel float control", () => {

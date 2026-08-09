@@ -2717,7 +2717,7 @@ async function initNarrativeCanvas() {
     const hostTheme = getHostTheme();
     if (hostTheme) state.theme = hostTheme;
     const restoredView = await loadSavedState(false);
-    if (!isAdvancedUiMode() && ["events", "variables"].includes(state.activeFileId)) {
+    if (!isAdvancedUiMode() && ["document", "variables"].includes(state.activeFileId)) {
       state.activeFileId = "adventure";
     }
     resetHistory();
@@ -4370,7 +4370,7 @@ function isAdvancedUiMode() {
 function toggleUiMode() {
   state.uiMode = isAdvancedUiMode() ? "basic" : "advanced";
   if (!isAdvancedUiMode()) {
-    if (["events", "variables"].includes(state.activeFileId)) state.activeFileId = "adventure";
+    if (["document", "variables"].includes(state.activeFileId)) state.activeFileId = "adventure";
     if (state.aiOpen) toggleAiWindow(false);
   }
   invalidateCanvasSurface();
@@ -14995,7 +14995,7 @@ function reparentChildrenOfDeletedFrames(deletedIds) {
 
 function selectFile(fileId) {
   if (!fileViews[fileId]) return;
-  if (["events", "variables"].includes(fileId)) state.uiMode = "advanced";
+  if (["document", "variables"].includes(fileId)) state.uiMode = "advanced";
   if (state.activeFileId === fileId) {
     if (fileId === "characters" && state.codexSelectedEntryId) closeCodexEntryDetail();
     return;

@@ -13632,11 +13632,11 @@ const CANVAS_INDEX_HTML = [
   "            \u003cspan class=\"file-dot\"\u003e\u003c/span\u003e",
   "            \u003cspan class=\"nc-file-item-label\"\u003eNarrative.canvas\u003c/span\u003e",
   "          \u003c/button\u003e",
-  "          \u003cbutton class=\"nc-file-item\" data-file-id=\"document\"\u003e",
+  "          \u003cbutton class=\"nc-file-item nc-advanced-only\" data-file-id=\"document\"\u003e",
   "            \u003cspan class=\"file-dot muted\"\u003e\u003c/span\u003e",
   "            \u003cspan class=\"nc-file-item-label\"\u003eDocument.md\u003c/span\u003e",
   "          \u003c/button\u003e",
-  "          \u003cbutton class=\"nc-file-item nc-advanced-only\" data-file-id=\"events\"\u003e",
+  "          \u003cbutton class=\"nc-file-item\" data-file-id=\"events\"\u003e",
   "            \u003cspan class=\"file-dot muted\"\u003e\u003c/span\u003e",
   "            \u003cspan class=\"nc-file-item-label\"\u003eEvents Sheet.csv\u003c/span\u003e",
   "          \u003c/button\u003e",
@@ -16919,7 +16919,7 @@ function installNarrativeCanvasApp() {
       const hostTheme = getHostTheme();
       if (hostTheme) state.theme = hostTheme;
       const restoredView = await loadSavedState(false);
-      if (!isAdvancedUiMode() && ["events", "variables"].includes(state.activeFileId)) {
+      if (!isAdvancedUiMode() && ["document", "variables"].includes(state.activeFileId)) {
         state.activeFileId = "adventure";
       }
       resetHistory();
@@ -18572,7 +18572,7 @@ function installNarrativeCanvasApp() {
   function toggleUiMode() {
     state.uiMode = isAdvancedUiMode() ? "basic" : "advanced";
     if (!isAdvancedUiMode()) {
-      if (["events", "variables"].includes(state.activeFileId)) state.activeFileId = "adventure";
+      if (["document", "variables"].includes(state.activeFileId)) state.activeFileId = "adventure";
       if (state.aiOpen) toggleAiWindow(false);
     }
     invalidateCanvasSurface();
@@ -29141,7 +29141,7 @@ function installNarrativeCanvasApp() {
 
   function selectFile(fileId) {
     if (!fileViews[fileId]) return;
-    if (["events", "variables"].includes(fileId)) state.uiMode = "advanced";
+    if (["document", "variables"].includes(fileId)) state.uiMode = "advanced";
     if (state.activeFileId === fileId) {
       if (fileId === "characters" && state.codexSelectedEntryId) closeCodexEntryDetail();
       return;

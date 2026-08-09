@@ -11,18 +11,21 @@ import {
 import { BUILTIN_CODEX_CATEGORIES } from '../models/Codex';
 import { t } from '../utils/i18n';
 import {
+    DEFAULT_BASES_FOLDER,
     LEGACY_SYSTEM_BASES_FOLDER,
+    LIBRARY_BASE_FILENAME,
+    LIBRARY_BASE_FORMAT,
     deriveProjectFoldersFromFilePath,
 } from '../models/StoryLineProject';
 import type SceneCardsPlugin from '../main';
 import {
     buildLibraryPathScopeFilter,
-    areCaseEquivalentVaultPaths,
     collectReferencedLibraryCategoryIds,
     type LibraryBaseFilter,
 } from '../utils/libraryCategoryTransactions';
 
 export const ALL_LIBRARY_CATEGORY_ID = '__all-library__';
+const VIEW_CATEGORY_KEY = 'narrativeLabCategoryId';
 
 interface NativeBaseEmbedState {
     child: MarkdownRenderChild | null;
@@ -32,11 +35,30 @@ interface NativeBaseEmbedState {
 const activeEmbeds = new WeakMap<Component, NativeBaseEmbedState>();
 const ensureLocks = new Map<string, Promise<{ basePath: string; folderPath: string } | null>>();
 const migrationLocks = new Map<string, Promise<void>>();
-/** Projects whose Bases/ migration already completed this session. */
-const migratedBasesFolders = new Set<string>();
-/** Projects whose Base filters were upgraded to path-contains-v3 this session. */
-const FILTER_STYLE_VERSION = 'path-contains-v4-multi-root-boundary';
+/** Projects whose Library Base migration already completed this session. */
+const migratedLibraryBasePaths = new Set<string>();
+/** Projects whose Base filters were synced this session. */
+const FILTER_STYLE_VERSION = 'single-library-base-v2';
 const syncedFilterStyleKeys = new Set<string>();
+
+type BaseViewConfig = Record<string, unknown> & {
+    type?: string;
+    name?: string;
+    filters?: unknown;
+    order?: unknown;
+    narrativeLabCategoryId?: string;
+};
+
+/** Keep the visible category name readable in the Bases view tabs. */
+function sanitizeBaseDisplayKey(label: string): string {
+    return label
+        .trim()
+        .replace(/[\\/:*?"<>|#[\]^]/g, '-')
+        .replace(/\s+/g, ' ')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        || 'category';
+}
 
 function sanitizeBaseStorageKey(categoryId: string): string {
     const raw = categoryId === ALL_LIBRARY_CATEGORY_ID ? 'all' : categoryId;
@@ -49,18 +71,7 @@ function sanitizeBaseStorageKey(categoryId: string): string {
         || 'category';
 }
 
-/** Keep the visible category name readable in the Bases sidebar. */
-function sanitizeBaseDisplayKey(label: string): string {
-    return label
-        .trim()
-        .replace(/[\\/:*?"<>|#[\]^]/g, '-')
-        .replace(/\s+/g, ' ')
-        .replace(/-+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        || 'category';
-}
-
-/** Match the filename suffix to the current Library tab label. */
+/** Match the Base view tab label to the current Library tab label. */
 function getNativeBaseDisplayLabel(plugin: SceneCardsPlugin, categoryId: string): string {
     if (categoryId === ALL_LIBRARY_CATEGORY_ID) return t('All');
     const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
@@ -74,7 +85,6 @@ function getNativeBaseDisplayLabel(plugin: SceneCardsPlugin, categoryId: string)
         ...Object.fromEntries(BUILTIN_CODEX_CATEGORIES.map(category => [category.id, category.folder])),
     };
     const mapped = plugin.sceneManager.activeProject?.libraryFolders?.[categoryId]?.trim();
-    if (mapped && mapped !== defaults[categoryId]) return mapped;
     if (mapped) return mapped;
     if (custom?.label?.trim()) return custom.label.trim();
 
@@ -82,23 +92,31 @@ function getNativeBaseDisplayLabel(plugin: SceneCardsPlugin, categoryId: string)
     return folder || defaults[categoryId] || categoryId;
 }
 
-/** Project-root Bases/ folder (never under System/). */
-function getProjectBasesFolder(plugin: SceneCardsPlugin): string | null {
+function getProjectBaseFolder(plugin: SceneCardsPlugin): string | null {
     const project = plugin.sceneManager.activeProject;
     if (!project) return null;
-    return normalizePath(deriveProjectFoldersFromFilePath(project.filePath).basesFolder);
+    return normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
 }
 
-function getNativeBasePath(plugin: SceneCardsPlugin, categoryId: string): string | null {
-    const basesFolder = getProjectBasesFolder(plugin);
-    if (!basesFolder) return null;
-    const key = sanitizeBaseDisplayKey(getNativeBaseDisplayLabel(plugin, categoryId));
-    return normalizePath(`${basesFolder}/library-${key}.base`);
+/** Canonical single Library Base: `{project}/System/library.base`. */
+function getLibraryBasePath(plugin: SceneCardsPlugin): string | null {
+    const baseFolder = getProjectBaseFolder(plugin);
+    if (!baseFolder) return null;
+    return normalizePath(`${baseFolder}/System/${LIBRARY_BASE_FILENAME}`);
+}
+
+/** Legacy multi-file Bases roots still scanned for migration. */
+function getLegacyBasesScanFolders(plugin: SceneCardsPlugin): string[] {
+    const baseFolder = getProjectBaseFolder(plugin);
+    if (!baseFolder) return [];
+    return [
+        normalizePath(`${baseFolder}/${DEFAULT_BASES_FOLDER}`),
+        normalizePath(`${baseFolder}/${LEGACY_SYSTEM_BASES_FOLDER}`),
+    ];
 }
 
 /**
- * Storage keys that may have been used for a category's Base file:
- * stable id, current folder label, custom/builtin labels, etc.
+ * Storage keys that may have been used for a category's legacy Base file.
  * (Legacy Chinese folder names like 技能 created library-技能.base.)
  */
 function collectAliasBaseKeys(plugin: SceneCardsPlugin, categoryId: string): string[] {
@@ -133,49 +151,23 @@ function collectAliasBaseKeys(plugin: SceneCardsPlugin, categoryId: string): str
     return [...keys];
 }
 
-/** Move id/legacy-labelled Base files onto the current visible category name. */
-async function migrateAliasBaseToCurrentName(
-    plugin: SceneCardsPlugin,
-    categoryId: string,
-): Promise<void> {
-    const basesFolder = getProjectBasesFolder(plugin);
-    const destination = getNativeBasePath(plugin, categoryId);
-    if (!basesFolder || !destination) return;
-    for (const key of collectAliasBaseKeys(plugin, categoryId)) {
-        const source = normalizePath(`${basesFolder}/library-${key}.base`);
-        if (source === destination || !(await pathExists(plugin, source))) continue;
-        await moveOrReplaceBaseFile(plugin, source, destination);
-    }
-}
-
-/** Preserve a category Base when its Library tab/folder is renamed. */
-export async function renameNativeLibraryBase(
-    plugin: SceneCardsPlugin,
-    categoryId: string,
-    oldLabel: string,
-): Promise<void> {
-    const basesFolder = getProjectBasesFolder(plugin);
-    const destination = getNativeBasePath(plugin, categoryId);
-    if (!basesFolder || !destination) return;
-    const oldKeys = new Set([
-        sanitizeBaseDisplayKey(oldLabel),
-        sanitizeBaseStorageKey(oldLabel),
-        sanitizeBaseStorageKey(categoryId),
-    ]);
-    for (const key of oldKeys) {
-        const source = normalizePath(`${basesFolder}/library-${key}.base`);
-        if (source === destination || !(await pathExists(plugin, source))) continue;
-        await moveOrReplaceBaseFile(plugin, source, destination);
-    }
-}
-
 function getLegacyNativeBasePaths(plugin: SceneCardsPlugin, categoryId: string): string[] {
+    const paths: string[] = [];
+    for (const folder of getLegacyBasesScanFolders(plugin)) {
+        for (const key of collectAliasBaseKeys(plugin, categoryId)) {
+            paths.push(normalizePath(`${folder}/library-${key}.base`));
+        }
+    }
     const folderPath = getCategoryFolder(plugin, categoryId);
-    if (!folderPath) return [];
-    const fileNames = categoryId === ALL_LIBRARY_CATEGORY_ID
-        ? ['_NarrativeLab-All.base']
-        : ['_NarrativeLab.base', '.narrative-lab.base'];
-    return fileNames.map(fileName => normalizePath(`${folderPath}/${fileName}`));
+    if (folderPath) {
+        const fileNames = categoryId === ALL_LIBRARY_CATEGORY_ID
+            ? ['_NarrativeLab-All.base']
+            : ['_NarrativeLab.base', '.narrative-lab.base'];
+        for (const fileName of fileNames) {
+            paths.push(normalizePath(`${folderPath}/${fileName}`));
+        }
+    }
+    return paths;
 }
 
 async function trashBasePath(plugin: SceneCardsPlugin, path: string | null): Promise<void> {
@@ -187,9 +179,7 @@ async function trashBasePath(plugin: SceneCardsPlugin, path: string | null): Pro
         return;
     }
     if (await pathExists(plugin, normalized)) {
-        throw new Error(t('The Base file exists but is not indexed by Obsidian. Reopen the vault and try again: {path}', {
-            path: normalized,
-        }));
+        await plugin.app.vault.adapter.remove(normalized).catch(() => undefined);
     }
 }
 
@@ -224,55 +214,6 @@ async function pathExists(plugin: SceneCardsPlugin, path: string): Promise<boole
     }
 }
 
-async function moveOrReplaceBaseFile(
-    plugin: SceneCardsPlugin,
-    sourcePath: string,
-    destPath: string,
-): Promise<void> {
-    const src = normalizePath(sourcePath);
-    const dest = normalizePath(destPath);
-    if (src === dest) return;
-    // On the default macOS/Windows filesystems, library-characters.base and
-    // library-Characters.base resolve to the same file. Treating the first as
-    // a disposable alias trashes the canonical Base itself.
-    if (areCaseEquivalentVaultPaths(src, dest) && await pathExists(plugin, dest)) return;
-    if (!(await pathExists(plugin, src))) return;
-
-    await ensureVaultFolder(plugin, dest.split('/').slice(0, -1).join('/'));
-
-    const srcFile = plugin.app.vault.getAbstractFileByPath(src);
-    const destFile = plugin.app.vault.getAbstractFileByPath(dest);
-
-    if (srcFile instanceof TFile && destFile instanceof TFile
-        && areCaseEquivalentVaultPaths(srcFile.path, destFile.path)) return;
-
-    if (destFile instanceof TFile || await pathExists(plugin, dest)) {
-        // Destination already has the migrated file — drop the legacy copy
-        if (srcFile instanceof TFile) {
-            await plugin.app.fileManager.trashFile(srcFile);
-        } else {
-            await plugin.app.vault.adapter.remove(src).catch(() => undefined);
-        }
-        return;
-    }
-
-    if (srcFile instanceof TFile) {
-        await plugin.app.fileManager.renameFile(srcFile, dest);
-        return;
-    }
-
-    // Dotfiles / adapter-only paths may not appear in the vault index
-    await plugin.app.vault.adapter.rename(src, dest).catch(async () => {
-        try {
-            const data = await plugin.app.vault.adapter.read(src);
-            await plugin.app.vault.adapter.write(dest, data);
-            await plugin.app.vault.adapter.remove(src);
-        } catch {
-            /* non-fatal */
-        }
-    });
-}
-
 async function listBaseFilesRecursive(
     plugin: SceneCardsPlugin,
     folderPath: string,
@@ -301,7 +242,6 @@ async function removeFolderIfEmpty(plugin: SceneCardsPlugin, folderPath: string)
     const path = normalizePath(folderPath);
     const af = plugin.app.vault.getAbstractFileByPath(path);
     if (af instanceof TFolder) {
-        // Prefer adapter listing so dotfiles count
         try {
             const listing = await plugin.app.vault.adapter.list(path);
             if (listing.files.length === 0 && listing.folders.length === 0) {
@@ -326,165 +266,40 @@ async function removeFolderIfEmpty(plugin: SceneCardsPlugin, folderPath: string)
     }
 }
 
-async function migrateSystemBasesFolder(plugin: SceneCardsPlugin): Promise<void> {
+function getCategoryFolder(plugin: SceneCardsPlugin, categoryId: string): string | null {
+    if (!plugin.sceneManager.activeProject) return null;
+    if (categoryId === ALL_LIBRARY_CATEGORY_ID) {
+        return normalizePath(plugin.sceneManager.getCodexFolder());
+    }
+    if (categoryId === 'uncategorized') {
+        return normalizePath(plugin.sceneManager.getCodexFolder());
+    }
+    if (categoryId === 'characters') {
+        return normalizePath(plugin.sceneManager.getCharacterFolder());
+    }
+    if (categoryId === 'locations') {
+        return normalizePath(plugin.sceneManager.getLocationFolder());
+    }
+    const folderName = plugin.sceneManager.getLibraryFolderName(categoryId);
+    return normalizePath(`${plugin.sceneManager.getCodexFolder()}/${folderName}`);
+}
+
+/** Shared-series and project-local folders represented by one Library view. */
+function getCategoryFolders(plugin: SceneCardsPlugin, categoryId: string): string[] {
+    const primary = getCategoryFolder(plugin, categoryId);
+    if (!primary) return [];
+    const paths = new Set<string>([normalizePath(primary)]);
     const project = plugin.sceneManager.activeProject;
-    if (!project) return;
-    const folders = deriveProjectFoldersFromFilePath(project.filePath);
-    const destFolder = normalizePath(folders.basesFolder);
-    const legacyFolder = normalizePath(`${folders.baseFolder}/${LEGACY_SYSTEM_BASES_FOLDER}`);
-    if (legacyFolder === destFolder) return;
-    if (!(await pathExists(plugin, legacyFolder))) return;
+    const localRoot = project?.codexFolder ? normalizePath(project.codexFolder) : '';
+    if (!localRoot) return [...paths];
 
-    await ensureVaultFolder(plugin, destFolder);
-
-    const legacyBases = await listBaseFilesRecursive(plugin, legacyFolder);
-    for (const srcPath of legacyBases) {
-        const name = srcPath.split('/').pop() || 'library.base';
-        await moveOrReplaceBaseFile(plugin, srcPath, `${destFolder}/${name}`);
+    if (categoryId === ALL_LIBRARY_CATEGORY_ID || categoryId === 'uncategorized') {
+        paths.add(localRoot);
+    } else {
+        const folderName = plugin.sceneManager.getLibraryFolderName(categoryId);
+        paths.add(normalizePath(`${localRoot}/${folderName}`));
     }
-
-    // Remove empty nested folders then System/Bases itself
-    await removeFolderIfEmpty(plugin, legacyFolder);
-}
-
-/**
- * Move any stray `.base` files still living under Library/ (or elsewhere in the
- * project) into project-root Bases/, using library-{category}.base names when known.
- */
-async function migrateStrayProjectBaseFiles(plugin: SceneCardsPlugin): Promise<void> {
-    const project = plugin.sceneManager.activeProject;
-    if (!project) return;
-    const folders = deriveProjectFoldersFromFilePath(project.filePath);
-    const baseFolder = normalizePath(folders.baseFolder);
-    const destFolder = normalizePath(folders.basesFolder);
-    await ensureVaultFolder(plugin, destFolder);
-
-    // Map known category folders → destination library-*.base paths
-    const folderToDest = new Map<string, string>();
-    for (const categoryId of getKnownLibraryCategoryIds(plugin)) {
-        const categoryFolder = getCategoryFolder(plugin, categoryId);
-        const dest = getNativeBasePath(plugin, categoryId);
-        if (categoryFolder && dest) folderToDest.set(normalizePath(categoryFolder), dest);
-    }
-
-    const candidates = await listBaseFilesRecursive(plugin, baseFolder);
-    for (const srcPath of candidates) {
-        // Already in the canonical Bases/ folder
-        if (srcPath === destFolder || srcPath.startsWith(`${destFolder}/`)) continue;
-        // Never touch trash / archive copies
-        if (srcPath.includes('/.trash/') || srcPath.includes('/Archived/')) continue;
-
-        const parent = normalizePath(srcPath.split('/').slice(0, -1).join('/'));
-        const name = (srcPath.split('/').pop() || '').toLowerCase();
-        let destPath: string | null = folderToDest.get(parent) ?? null;
-
-        if (!destPath) {
-            if (name === '_narrativelab-all.base' || name === 'library-all.base') {
-                destPath = getNativeBasePath(plugin, ALL_LIBRARY_CATEGORY_ID);
-            } else if (name.startsWith('library-') && name.endsWith('.base')) {
-                destPath = normalizePath(`${destFolder}/${srcPath.split('/').pop()}`);
-            } else if (name === '.narrative-lab.base' || name === '_narrativelab.base') {
-                // Prefer a known category id so we don't create library-技能.base orphans
-                const folderName = parent.split('/').pop() || 'category';
-                const folderKey = sanitizeBaseStorageKey(folderName);
-                let matchedId: string | null = null;
-                for (const id of getKnownLibraryCategoryIds(plugin)) {
-                    if (collectAliasBaseKeys(plugin, id).includes(folderKey)) {
-                        matchedId = id;
-                        break;
-                    }
-                }
-                destPath = matchedId
-                    ? getNativeBasePath(plugin, matchedId)
-                    : normalizePath(`${destFolder}/library-${folderKey}.base`);
-            } else {
-                destPath = normalizePath(`${destFolder}/${srcPath.split('/').pop()}`);
-            }
-        }
-        if (!destPath) continue;
-        await moveOrReplaceBaseFile(plugin, srcPath, destPath);
-    }
-}
-
-async function migrateLegacyNativeBasesUnlocked(plugin: SceneCardsPlugin): Promise<void> {
-    const basesFolder = getProjectBasesFolder(plugin);
-    if (!basesFolder) return;
-    await ensureVaultFolder(plugin, basesFolder);
-    await migrateSystemBasesFolder(plugin);
-
-    for (const categoryId of getKnownLibraryCategoryIds(plugin)) {
-        const legacyPaths = getLegacyNativeBasePaths(plugin, categoryId);
-        const destinationPath = getNativeBasePath(plugin, categoryId);
-        if (!destinationPath) continue;
-
-        for (const legacyPath of legacyPaths) {
-            if (legacyPath === destinationPath) continue;
-            if (!(await pathExists(plugin, legacyPath))) continue;
-            await moveOrReplaceBaseFile(plugin, legacyPath, destinationPath);
-            // Prefer the first legacy file that existed; continue to delete the rest
-        }
-    }
-
-    // Final sweep: any remaining .base under the project (incl. dotfiles)
-    await migrateStrayProjectBaseFiles(plugin);
-    // Drop Bases that no longer match a live Library category (e.g. library-技能.base)
-    await pruneOrphanNativeLibraryBases(plugin);
-    // System/Bases may now be empty after the sweep
-    const project = plugin.sceneManager.activeProject;
-    if (project) {
-        const legacyFolder = normalizePath(
-            `${deriveProjectFoldersFromFilePath(project.filePath).baseFolder}/${LEGACY_SYSTEM_BASES_FOLDER}`,
-        );
-        await removeFolderIfEmpty(plugin, legacyFolder);
-    }
-}
-
-async function migrateLegacyNativeBases(plugin: SceneCardsPlugin): Promise<void> {
-    if (!plugin.sceneManager.activeProject) return;
-    const basesFolder = getProjectBasesFolder(plugin);
-    if (!basesFolder) return;
-    // Once per project per session — re-running on every Base mount caused
-    // vault churn and made the Library table flash continuously.
-    if (migratedBasesFolders.has(basesFolder)) return;
-    const lockKey = basesFolder;
-    const existing = migrationLocks.get(lockKey);
-    if (existing) return existing;
-    const pending = migrateLegacyNativeBasesUnlocked(plugin)
-        .then(() => {
-            migratedBasesFolders.add(basesFolder);
-        })
-        .catch(error => {
-            console.error('[NarrativeLab] Failed to migrate Library Base files:', error);
-        })
-        .finally(() => migrationLocks.delete(lockKey));
-    migrationLocks.set(lockKey, pending);
-    return pending;
-}
-
-function getFilterAndList(config: Record<string, unknown>): unknown[] | null {
-    const filters = config.filters;
-    if (!filters || typeof filters !== 'object') return null;
-    const and = (filters as { and?: unknown }).and;
-    return Array.isArray(and) ? and : null;
-}
-
-function filtersMatchRequired(
-    config: Record<string, unknown>,
-    requiredFilters: LibraryBaseFilter[],
-): boolean {
-    const and = getFilterAndList(config);
-    if (!and || and.length !== requiredFilters.length) return false;
-    return requiredFilters.every((filter, index) =>
-        JSON.stringify(and[index]) === JSON.stringify(filter));
-}
-
-/** True when Base filters drift from the Library-folder-derived required set. */
-function shouldRewriteFilters(
-    config: Record<string, unknown>,
-    requiredFilters: LibraryBaseFilter[],
-    _categoryId: string,
-): boolean {
-    return !filtersMatchRequired(config, requiredFilters);
+    return [...paths];
 }
 
 function listLibrarySubfolderPaths(
@@ -503,13 +318,12 @@ function buildRequiredFilters(
     categoryId: string,
     folderPaths: string[],
 ): LibraryBaseFilter[] {
+    if (categoryId === ALL_LIBRARY_CATEGORY_ID) {
+        // All view uses global Library-root filters only.
+        return [];
+    }
     if (categoryId === 'uncategorized') {
-        // Library-root notes only — include both shared and project-local roots,
-        // then exclude every real category subfolder on disk.
-        const filters: LibraryBaseFilter[] = [
-            buildLibraryPathScopeFilter(folderPaths),
-            'file.ext == "md"',
-        ];
+        const filters: LibraryBaseFilter[] = [];
         const excluded = new Set<string>();
         for (const folderPath of folderPaths) {
             for (const sub of listLibrarySubfolderPaths(plugin, folderPath)) {
@@ -529,139 +343,43 @@ function buildRequiredFilters(
     }
     return [
         buildLibraryPathScopeFilter(folderPaths),
+    ];
+}
+
+function buildGlobalLibraryFilters(plugin: SceneCardsPlugin): LibraryBaseFilter[] {
+    const roots = getCategoryFolders(plugin, ALL_LIBRARY_CATEGORY_ID);
+    return [
+        buildLibraryPathScopeFilter(roots),
         'file.ext == "md"',
     ];
 }
 
-function libraryFilterSyncKey(plugin: SceneCardsPlugin, basesFolder: string): string {
-    const roots = getCategoryFolders(plugin, ALL_LIBRARY_CATEGORY_ID);
-    const subs = roots.flatMap(root => listLibrarySubfolderPaths(plugin, root))
-        .sort()
-        .join('|');
-    const cats = getKnownLibraryCategoryIds(plugin).slice().sort();
-    const baseNames = cats.map(id => getNativeBasePath(plugin, id) || id).join('|');
-    return `${basesFolder}::${FILTER_STYLE_VERSION}::${cats.join(',')}::${baseNames}::${roots.join('|')}::${subs}`;
+function filtersEqual(a: unknown, b: unknown): boolean {
+    return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Ensure every known Library category Base uses path-contains filters (once/session). */
-export async function syncAllNativeLibraryBases(
-    plugin: SceneCardsPlugin,
-): Promise<void> {
-    if (!plugin.sceneManager.activeProject) return;
-    const basesFolder = getProjectBasesFolder(plugin);
-    if (!basesFolder) return;
-    const styleKey = libraryFilterSyncKey(plugin, basesFolder);
-    if (syncedFilterStyleKeys.has(styleKey)) return;
-    for (const categoryId of getKnownLibraryCategoryIds(plugin)) {
-        try {
-            await ensureNativeBase(plugin, categoryId);
-        } catch (error) {
-            console.error('[NarrativeLab] Failed to sync Library Base:', categoryId, error);
-        }
-    }
-    syncedFilterStyleKeys.add(styleKey);
+function getViews(config: Record<string, unknown>): BaseViewConfig[] {
+    if (!Array.isArray(config.views)) return [];
+    return config.views.filter((view): view is BaseViewConfig => !!view && typeof view === 'object');
 }
 
-export async function migrateNativeLibraryBasesForActiveProject(
-    plugin: SceneCardsPlugin,
-): Promise<void> {
-    await migrateLegacyNativeBases(plugin);
-    // Always prune — migrate itself is once-per-session, but categories can change.
-    await pruneOrphanNativeLibraryBases(plugin);
-    await syncAllNativeLibraryBases(plugin);
+function findViewForCategory(views: BaseViewConfig[], categoryId: string): BaseViewConfig | undefined {
+    return views.find(view => String(view[VIEW_CATEGORY_KEY] || '') === categoryId);
 }
 
-/** Migrate Bases/ out of System/ (and Library/) for every known project. */
-export async function migrateNativeLibraryBasesForAllProjects(
-    plugin: SceneCardsPlugin,
-): Promise<void> {
-    const projects = plugin.sceneManager.getProjects();
-    for (const project of projects) {
-        await plugin.sceneManager.withActiveProject(project, async () => {
-            await migrateLegacyNativeBases(plugin);
-            await pruneOrphanNativeLibraryBases(plugin);
-            await syncAllNativeLibraryBases(plugin);
-        });
+function viewFiltersMatch(view: BaseViewConfig, required: LibraryBaseFilter[]): boolean {
+    if (required.length === 0) {
+        return view.filters == null
+            || (typeof view.filters === 'object'
+                && view.filters !== null
+                && Array.isArray((view.filters as { and?: unknown }).and)
+                && (view.filters as { and: unknown[] }).and.length === 0);
     }
-}
-
-/**
- * Keep Bases/library-*.base aligned with current Library categories:
- * merge id/alias-named files into library-{current label}.base, trash orphans.
- */
-export async function pruneOrphanNativeLibraryBases(
-    plugin: SceneCardsPlugin,
-): Promise<void> {
-    const basesFolder = getProjectBasesFolder(plugin);
-    if (!basesFolder || !(await pathExists(plugin, basesFolder))) return;
-
-    const aliasToCanonicalId = new Map<string, string>();
-    for (const id of getKnownLibraryCategoryIds(plugin)) {
-        const canonicalKey = sanitizeBaseDisplayKey(getNativeBaseDisplayLabel(plugin, id));
-        for (const alias of collectAliasBaseKeys(plugin, id)) {
-            const existing = aliasToCanonicalId.get(alias);
-            if (!existing || sanitizeBaseStorageKey(existing) !== alias) {
-                // Prefer the category whose id key equals this alias
-                if (!existing || alias === canonicalKey) {
-                    aliasToCanonicalId.set(alias, id);
-                }
-            }
-        }
-    }
-
-    const files = await listBaseFilesRecursive(plugin, basesFolder);
-    for (const path of files) {
-        const name = path.split('/').pop() || '';
-        const match = /^library-(.+)\.base$/i.exec(name);
-        if (!match) continue;
-        const key = match[1];
-        const canonicalId = aliasToCanonicalId.get(key)
-            ?? aliasToCanonicalId.get(sanitizeBaseStorageKey(key));
-        if (!canonicalId) {
-            await trashBasePath(plugin, path);
-            continue;
-        }
-        const canonicalPath = getNativeBasePath(plugin, canonicalId);
-        if (canonicalPath && normalizePath(path) !== normalizePath(canonicalPath)) {
-            await moveOrReplaceBaseFile(plugin, path, canonicalPath);
-        }
-    }
-}
-
-function getCategoryFolder(plugin: SceneCardsPlugin, categoryId: string): string | null {
-    if (!plugin.sceneManager.activeProject) return null;
-    if (categoryId === ALL_LIBRARY_CATEGORY_ID) {
-        return normalizePath(plugin.sceneManager.getCodexFolder());
-    }
-    if (categoryId === 'uncategorized') {
-        return normalizePath(plugin.sceneManager.getCodexFolder());
-    }
-    if (categoryId === 'characters') {
-        return normalizePath(plugin.sceneManager.getCharacterFolder());
-    }
-    if (categoryId === 'locations') {
-        return normalizePath(plugin.sceneManager.getLocationFolder());
-    }
-    const folderName = plugin.sceneManager.getLibraryFolderName(categoryId);
-    return normalizePath(`${plugin.sceneManager.getCodexFolder()}/${folderName}`);
-}
-
-/** Shared-series and project-local folders represented by one project Base. */
-function getCategoryFolders(plugin: SceneCardsPlugin, categoryId: string): string[] {
-    const primary = getCategoryFolder(plugin, categoryId);
-    if (!primary) return [];
-    const paths = new Set<string>([normalizePath(primary)]);
-    const project = plugin.sceneManager.activeProject;
-    const localRoot = project?.codexFolder ? normalizePath(project.codexFolder) : '';
-    if (!localRoot) return [...paths];
-
-    if (categoryId === ALL_LIBRARY_CATEGORY_ID || categoryId === 'uncategorized') {
-        paths.add(localRoot);
-    } else {
-        const folderName = plugin.sceneManager.getLibraryFolderName(categoryId);
-        paths.add(normalizePath(`${localRoot}/${folderName}`));
-    }
-    return [...paths];
+    const filters = view.filters;
+    if (!filters || typeof filters !== 'object') return false;
+    const and = (filters as { and?: unknown }).and;
+    if (!Array.isArray(and) || and.length !== required.length) return false;
+    return required.every((filter, index) => filtersEqual(and[index], filter));
 }
 
 function collectNoteProperties(plugin: SceneCardsPlugin, folderPaths: string[], recursive: boolean): string[] {
@@ -693,20 +411,12 @@ function collectConfiguredNoteProperties(config: Record<string, unknown>): strin
     if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
         for (const propertyId of Object.keys(properties)) addPropertyId(propertyId);
     }
-    if (Array.isArray(config.views)) {
-        for (const view of config.views) {
-            if (!view || typeof view !== 'object') continue;
-            const order = (view as Record<string, unknown>).order;
-            if (Array.isArray(order)) order.forEach(addPropertyId);
-        }
+    for (const view of getViews(config)) {
+        if (Array.isArray(view.order)) view.order.forEach(addPropertyId);
     }
     return [...keys];
 }
 
-/**
- * Base field names are editable data identifiers, so keep them verbatim in
- * every interface language. Only surrounding Base controls are localized.
- */
 function ensureRawNotePropertyDisplayNames(
     config: Record<string, unknown>,
     notePropertyKeys: Iterable<string>,
@@ -741,6 +451,253 @@ function ensureRawNotePropertyDisplayNames(
     return dirty;
 }
 
+async function readBaseConfig(
+    plugin: SceneCardsPlugin,
+    basePath: string,
+): Promise<Record<string, unknown> | null> {
+    const existing = plugin.app.vault.getAbstractFileByPath(basePath);
+    if (!(existing instanceof TFile)) {
+        if (!(await pathExists(plugin, basePath))) return null;
+        try {
+            const source = await plugin.app.vault.adapter.read(basePath);
+            const parsed: unknown = parseYaml(source) as unknown;
+            return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+        } catch {
+            return null;
+        }
+    }
+    const source = await plugin.app.vault.read(existing);
+    try {
+        const parsed: unknown = parseYaml(source) as unknown;
+        return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+    } catch (error) {
+        console.error('[NarrativeLab] Invalid Base YAML:', error);
+        throw new Error(t('Cannot parse {path}; the file was left unchanged.', { path: basePath }));
+    }
+}
+
+async function writeBaseConfig(
+    plugin: SceneCardsPlugin,
+    basePath: string,
+    config: Record<string, unknown>,
+): Promise<void> {
+    await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
+    const yaml = stringifyYaml(config);
+    const existing = plugin.app.vault.getAbstractFileByPath(basePath);
+    if (existing instanceof TFile) {
+        await plugin.app.vault.modify(existing, yaml);
+        return;
+    }
+    if (await pathExists(plugin, basePath)) {
+        await plugin.app.vault.adapter.write(basePath, yaml);
+        return;
+    }
+    await plugin.app.vault.create(basePath, yaml);
+}
+
+async function readLegacyCategoryConfig(
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+): Promise<Record<string, unknown> | null> {
+    for (const path of getLegacyNativeBasePaths(plugin, categoryId)) {
+        if (!(await pathExists(plugin, path))) continue;
+        try {
+            return await readBaseConfig(plugin, path);
+        } catch {
+            /* try next alias */
+        }
+    }
+    return null;
+}
+
+function extractTableOrder(config: Record<string, unknown> | null, discovered: string[]): string[] {
+    if (config && Array.isArray(config.views)) {
+        for (const view of config.views) {
+            if (!view || typeof view !== 'object') continue;
+            const viewConfig = view as BaseViewConfig;
+            if (Array.isArray(viewConfig.order) && viewConfig.order.length > 0) {
+                return viewConfig.order.filter((item): item is string => typeof item === 'string');
+            }
+        }
+    }
+    return [
+        'file.name',
+        ...discovered.map(key => `note.${key}`),
+    ];
+}
+
+function upsertCategoryView(
+    plugin: SceneCardsPlugin,
+    config: Record<string, unknown>,
+    categoryId: string,
+    options?: { seedFromLegacy?: Record<string, unknown> | null },
+): boolean {
+    const folderPaths = getCategoryFolders(plugin, categoryId);
+    if (folderPaths.length === 0) return false;
+    const recursive = categoryId !== 'uncategorized';
+    const requiredFilters = buildRequiredFilters(plugin, categoryId, folderPaths);
+    const discovered = collectNoteProperties(plugin, folderPaths, recursive);
+    const label = getNativeBaseDisplayLabel(plugin, categoryId);
+    const views = getViews(config);
+    let view = findViewForCategory(views, categoryId);
+    let dirty = false;
+
+    if (!view) {
+        view = {
+            type: 'table',
+            name: label,
+            [VIEW_CATEGORY_KEY]: categoryId,
+            order: extractTableOrder(options?.seedFromLegacy ?? null, discovered),
+        };
+        if (requiredFilters.length > 0) {
+            view.filters = { and: requiredFilters };
+        }
+        views.push(view);
+        dirty = true;
+    } else {
+        if (view.type === 'narrative-lab-cards') {
+            view.type = 'table';
+            dirty = true;
+        }
+        if (view.name !== label) {
+            view.name = label;
+            dirty = true;
+        }
+        if (String(view[VIEW_CATEGORY_KEY] || '') !== categoryId) {
+            view[VIEW_CATEGORY_KEY] = categoryId;
+            dirty = true;
+        }
+        if (!viewFiltersMatch(view, requiredFilters)) {
+            if (requiredFilters.length === 0) {
+                delete view.filters;
+            } else {
+                view.filters = { and: requiredFilters };
+            }
+            dirty = true;
+        }
+        if (!Array.isArray(view.order) || view.order.length === 0) {
+            view.order = extractTableOrder(null, discovered);
+            dirty = true;
+        }
+    }
+
+    config.views = views;
+    dirty = ensureRawNotePropertyDisplayNames(config, [
+        ...discovered,
+        ...collectConfiguredNoteProperties(config),
+    ]) || dirty;
+    return dirty;
+}
+
+async function ensureConsolidatedLibraryBase(
+    plugin: SceneCardsPlugin,
+): Promise<{ basePath: string; config: Record<string, unknown>; dirty: boolean } | null> {
+    const basePath = getLibraryBasePath(plugin);
+    if (!basePath) return null;
+
+    let config = await readBaseConfig(plugin, basePath);
+    let dirty = false;
+    if (!config) {
+        config = {
+            narrativeLabLibraryBase: LIBRARY_BASE_FORMAT,
+            filters: { and: buildGlobalLibraryFilters(plugin) },
+            views: [],
+        };
+        dirty = true;
+    }
+
+    if (config.narrativeLabLibraryBase !== LIBRARY_BASE_FORMAT) {
+        config.narrativeLabLibraryBase = LIBRARY_BASE_FORMAT;
+        dirty = true;
+    }
+
+    const globalFilters = { and: buildGlobalLibraryFilters(plugin) };
+    if (!filtersEqual(config.filters, globalFilters)) {
+        config.filters = globalFilters;
+        dirty = true;
+    }
+
+    for (const categoryId of getKnownLibraryCategoryIds(plugin)) {
+        const folderPaths = getCategoryFolders(plugin, categoryId);
+        for (const path of folderPaths) {
+            if (!plugin.app.vault.getAbstractFileByPath(path)) {
+                await ensureVaultFolder(plugin, path);
+            }
+        }
+        const seed = findViewForCategory(getViews(config), categoryId)
+            ? null
+            : await readLegacyCategoryConfig(plugin, categoryId);
+        if (upsertCategoryView(plugin, config, categoryId, { seedFromLegacy: seed })) {
+            dirty = true;
+        }
+    }
+
+    return { basePath, config, dirty };
+}
+
+async function trashLegacyLibraryBaseFiles(plugin: SceneCardsPlugin): Promise<void> {
+    const canonical = getLibraryBasePath(plugin);
+    const seen = new Set<string>();
+    for (const categoryId of getKnownLibraryCategoryIds(plugin)) {
+        for (const path of getLegacyNativeBasePaths(plugin, categoryId)) {
+            const normalized = normalizePath(path);
+            if (canonical && normalized === canonical) continue;
+            if (seen.has(normalized)) continue;
+            seen.add(normalized);
+            await trashBasePath(plugin, normalized);
+        }
+    }
+    for (const folder of getLegacyBasesScanFolders(plugin)) {
+        const files = await listBaseFilesRecursive(plugin, folder);
+        for (const path of files) {
+            if (canonical && normalizePath(path) === canonical) continue;
+            const name = (path.split('/').pop() || '').toLowerCase();
+            if (name.startsWith('library-') && name.endsWith('.base')) {
+                await trashBasePath(plugin, path);
+            }
+        }
+        await removeFolderIfEmpty(plugin, folder);
+    }
+}
+
+async function migrateLegacyNativeBasesUnlocked(plugin: SceneCardsPlugin): Promise<void> {
+    const ensured = await ensureConsolidatedLibraryBase(plugin);
+    if (!ensured) return;
+    if (ensured.dirty) {
+        await writeBaseConfig(plugin, ensured.basePath, ensured.config);
+    }
+    await trashLegacyLibraryBaseFiles(plugin);
+}
+
+async function migrateLegacyNativeBases(plugin: SceneCardsPlugin): Promise<void> {
+    if (!plugin.sceneManager.activeProject) return;
+    const basePath = getLibraryBasePath(plugin);
+    if (!basePath) return;
+    if (migratedLibraryBasePaths.has(basePath)) return;
+    const existing = migrationLocks.get(basePath);
+    if (existing) return existing;
+    const pending = migrateLegacyNativeBasesUnlocked(plugin)
+        .then(() => {
+            migratedLibraryBasePaths.add(basePath);
+        })
+        .catch(error => {
+            console.error('[NarrativeLab] Failed to migrate Library Base files:', error);
+        })
+        .finally(() => migrationLocks.delete(basePath));
+    migrationLocks.set(basePath, pending);
+    return pending;
+}
+
+function libraryFilterSyncKey(plugin: SceneCardsPlugin, basePath: string): string {
+    const roots = getCategoryFolders(plugin, ALL_LIBRARY_CATEGORY_ID);
+    const subs = roots.flatMap(root => listLibrarySubfolderPaths(plugin, root))
+        .sort()
+        .join('|');
+    const cats = getKnownLibraryCategoryIds(plugin).slice().sort();
+    const labels = cats.map(id => getNativeBaseDisplayLabel(plugin, id)).join('|');
+    return `${basePath}::${FILTER_STYLE_VERSION}::${cats.join(',')}::${labels}::${roots.join('|')}::${subs}`;
+}
+
 async function ensureNativeBaseUnlocked(
     plugin: SceneCardsPlugin,
     categoryId: string,
@@ -748,89 +705,12 @@ async function ensureNativeBaseUnlocked(
     const folderPaths = getCategoryFolders(plugin, categoryId);
     const folderPath = folderPaths[0];
     if (!folderPath) return null;
-    for (const path of folderPaths) {
-        if (!plugin.app.vault.getAbstractFileByPath(path)) {
-            await ensureVaultFolder(plugin, path);
-        }
+    const ensured = await ensureConsolidatedLibraryBase(plugin);
+    if (!ensured) return null;
+    if (ensured.dirty) {
+        await writeBaseConfig(plugin, ensured.basePath, ensured.config);
     }
-
-    // Keep the filename aligned even when a category was renamed after the
-    // one-time project migration already ran.
-    await migrateAliasBaseToCurrentName(plugin, categoryId);
-    const basePath = getNativeBasePath(plugin, categoryId);
-    if (!basePath) return null;
-    const recursive = categoryId !== 'uncategorized';
-    const requiredFilters = buildRequiredFilters(plugin, categoryId, folderPaths);
-    const discoveredProperties = collectNoteProperties(plugin, folderPaths, recursive);
-    const existing = plugin.app.vault.getAbstractFileByPath(basePath);
-
-    if (existing instanceof TFile) {
-        const source = await plugin.app.vault.read(existing);
-        let config: Record<string, unknown>;
-        try {
-            const parsed: unknown = parseYaml(source) as unknown;
-            config = parsed && typeof parsed === 'object'
-                ? parsed as Record<string, unknown>
-                : {};
-        } catch (error) {
-            console.error('[NarrativeLab] Invalid Base YAML:', error);
-            throw new Error(t('Cannot parse {path}; the file was left unchanged.', { path: basePath }));
-        }
-
-        // Only rewrite when filters are missing/legacy. Never clobber user edits
-        // that already use path.contains (avoids Bases flash loops).
-        let dirty = false;
-        if (shouldRewriteFilters(config, requiredFilters, categoryId)) {
-            config.filters = { and: requiredFilters };
-            dirty = true;
-        }
-        dirty = ensureRawNotePropertyDisplayNames(config, [
-            ...discoveredProperties,
-            ...collectConfiguredNoteProperties(config),
-        ]) || dirty;
-        if (Array.isArray(config.views)) {
-            for (const view of config.views) {
-                if (!view || typeof view !== 'object') continue;
-                const viewConfig = view as Record<string, unknown>;
-                if (viewConfig.type === 'narrative-lab-cards') {
-                    viewConfig.type = 'table';
-                    if (viewConfig.name === 'NarrativeLab Cards') viewConfig.name = 'Table';
-                    dirty = true;
-                }
-            }
-        }
-        if (!Array.isArray(config.views) || config.views.length === 0) {
-            config.views = [{
-                type: 'table',
-                name: 'Table',
-                order: [
-                    'file.name',
-                    ...discoveredProperties.map(key => `note.${key}`),
-                ],
-            }];
-            dirty = true;
-        }
-        if (dirty) {
-            await plugin.app.vault.modify(existing, stringifyYaml(config));
-        }
-        return { basePath, folderPath };
-    }
-
-    await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
-    const config: Record<string, unknown> = {
-        filters: { and: requiredFilters },
-        views: [{
-            type: 'table',
-            name: 'Table',
-            order: [
-                'file.name',
-                ...discoveredProperties.map(key => `note.${key}`),
-            ],
-        }],
-    };
-    ensureRawNotePropertyDisplayNames(config, discoveredProperties);
-    await plugin.app.vault.create(basePath, stringifyYaml(config));
-    return { basePath, folderPath };
+    return { basePath: ensured.basePath, folderPath };
 }
 
 async function ensureNativeBase(
@@ -839,14 +719,93 @@ async function ensureNativeBase(
 ): Promise<{ basePath: string; folderPath: string } | null> {
     const folderPath = getCategoryFolder(plugin, categoryId);
     if (!folderPath) return null;
-    const basePath = getNativeBasePath(plugin, categoryId);
+    const basePath = getLibraryBasePath(plugin);
     if (!basePath) return null;
-    const existing = ensureLocks.get(basePath);
-    if (existing) return existing;
+    while (ensureLocks.has(basePath)) {
+        await ensureLocks.get(basePath);
+    }
     const pending = ensureNativeBaseUnlocked(plugin, categoryId)
         .finally(() => ensureLocks.delete(basePath));
     ensureLocks.set(basePath, pending);
     return pending;
+}
+
+/** Rename a category view when its Library tab/folder label changes. */
+export async function renameNativeLibraryBase(
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+    _oldLabel: string,
+): Promise<void> {
+    await ensureNativeBase(plugin, categoryId);
+}
+
+/** Ensure every known Library category has a view with correct filters (once/session). */
+export async function syncAllNativeLibraryBases(
+    plugin: SceneCardsPlugin,
+): Promise<void> {
+    if (!plugin.sceneManager.activeProject) return;
+    const basePath = getLibraryBasePath(plugin);
+    if (!basePath) return;
+    const styleKey = libraryFilterSyncKey(plugin, basePath);
+    if (syncedFilterStyleKeys.has(styleKey)) return;
+    try {
+        const ensured = await ensureConsolidatedLibraryBase(plugin);
+        if (ensured?.dirty) {
+            await writeBaseConfig(plugin, ensured.basePath, ensured.config);
+        }
+    } catch (error) {
+        console.error('[NarrativeLab] Failed to sync Library Base:', error);
+    }
+    syncedFilterStyleKeys.add(styleKey);
+}
+
+export async function migrateNativeLibraryBasesForActiveProject(
+    plugin: SceneCardsPlugin,
+): Promise<void> {
+    await migrateLegacyNativeBases(plugin);
+    await pruneOrphanNativeLibraryBases(plugin);
+    await syncAllNativeLibraryBases(plugin);
+}
+
+export async function migrateNativeLibraryBasesForAllProjects(
+    plugin: SceneCardsPlugin,
+): Promise<void> {
+    const projects = plugin.sceneManager.getProjects();
+    for (const project of projects) {
+        await plugin.sceneManager.withActiveProject(project, async () => {
+            await migrateLegacyNativeBases(plugin);
+            await pruneOrphanNativeLibraryBases(plugin);
+            await syncAllNativeLibraryBases(plugin);
+        });
+    }
+}
+
+/**
+ * Drop views for deleted categories and trash leftover multi-file Bases.
+ */
+export async function pruneOrphanNativeLibraryBases(
+    plugin: SceneCardsPlugin,
+): Promise<void> {
+    const basePath = getLibraryBasePath(plugin);
+    if (!basePath) return;
+
+    if (await pathExists(plugin, basePath)) {
+        const config = await readBaseConfig(plugin, basePath);
+        if (config) {
+            const known = new Set(getKnownLibraryCategoryIds(plugin));
+            const views = getViews(config);
+            const next = views.filter(view => {
+                const id = String(view[VIEW_CATEGORY_KEY] || '');
+                return !id || known.has(id);
+            });
+            if (next.length !== views.length) {
+                config.views = next;
+                await writeBaseConfig(plugin, basePath, config);
+            }
+        }
+    }
+
+    await trashLegacyLibraryBaseFiles(plugin);
 }
 
 export async function syncNativeLibraryBase(
@@ -860,10 +819,16 @@ export async function removeNativeLibraryBase(
     plugin: SceneCardsPlugin,
     categoryId: string,
 ): Promise<void> {
-    const basesFolder = getProjectBasesFolder(plugin);
-    for (const key of collectAliasBaseKeys(plugin, categoryId)) {
-        if (basesFolder) {
-            await trashBasePath(plugin, normalizePath(`${basesFolder}/library-${key}.base`));
+    const basePath = getLibraryBasePath(plugin);
+    if (basePath && await pathExists(plugin, basePath)) {
+        const config = await readBaseConfig(plugin, basePath);
+        if (config) {
+            const views = getViews(config);
+            const next = views.filter(view => String(view[VIEW_CATEGORY_KEY] || '') !== categoryId);
+            if (next.length !== views.length) {
+                config.views = next;
+                await writeBaseConfig(plugin, basePath, config);
+            }
         }
     }
     for (const path of getLegacyNativeBasePaths(plugin, categoryId)) {
@@ -884,9 +849,13 @@ export function disposeNativeLibraryBase(owner: Component): void {
     }
 }
 
+function escapeWikilinkPath(path: string): string {
+    return path.replace(/\]/g, '\\]');
+}
+
 /**
- * Render an actual Obsidian Bases embed. Column drag/drop, property controls,
- * formulas, filters, grouping, summaries, and editing are provided by core.
+ * Render an Obsidian Bases embed for one Library category view inside
+ * System/library.base.
  */
 export async function renderNativeLibraryBase(
     container: HTMLElement,
@@ -903,6 +872,7 @@ export async function renderNativeLibraryBase(
     const loading = host.createDiv({ cls: 'library-native-base-loading', text: t('Loading Base…') });
     let resolved: { basePath: string; folderPath: string } | null;
     try {
+        await migrateLegacyNativeBases(plugin);
         resolved = await ensureNativeBase(plugin, categoryId);
     } catch (error) {
         console.error('[NarrativeLab] Failed to prepare native Library Base:', error);
@@ -917,13 +887,15 @@ export async function renderNativeLibraryBase(
         return;
     }
 
+    const viewName = getNativeBaseDisplayLabel(plugin, categoryId);
     loading.remove();
     const child = owner.addChild(new MarkdownRenderChild(host));
     state.child = child;
-    const linkPath = resolved.basePath.replace(/\]/g, '\\]');
+    const linkPath = escapeWikilinkPath(resolved.basePath);
+    const linkView = escapeWikilinkPath(viewName);
     await MarkdownRenderer.render(
         plugin.app,
-        `![[${linkPath}]]`,
+        `![[${linkPath}#${linkView}]]`,
         host,
         resolved.basePath,
         child,

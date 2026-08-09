@@ -34,6 +34,7 @@ import {
     resolveCharacterRelationStyle,
     type StoryGraphCharacterRelationType,
 } from '../utils/storyGraphCharacterRelations';
+import { suppressDefaultReferenceEdges } from '../utils/storyGraphEdges';
 import { UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
 import { t } from '../utils/i18n';
 
@@ -1095,17 +1096,21 @@ export class StoryGraph {
         });
         this.resizeObserver.observe(wrapper);
 
-        // Pan support — transform only
+        // Pan support — transform only (panX/panY are viewBox units).
         this.svg.addEventListener('mousedown', (e) => {
             if (e.target === this.svg || e.target === this.layer) {
+                const vb = this.clientToViewBox(e.clientX, e.clientY);
+                if (!vb) return;
                 this.isPanning = true;
-                this.panStart = { x: e.clientX - this.panX, y: e.clientY - this.panY };
+                this.panStart = { x: vb.x - this.panX, y: vb.y - this.panY };
             }
         });
         this.onPanMove = (e: MouseEvent) => {
             if (!this.isPanning) return;
-            this.panX = e.clientX - this.panStart.x;
-            this.panY = e.clientY - this.panStart.y;
+            const vb = this.clientToViewBox(e.clientX, e.clientY);
+            if (!vb) return;
+            this.panX = vb.x - this.panStart.x;
+            this.panY = vb.y - this.panStart.y;
             this.updateTransform();
         };
         this.onPanUp = () => {
@@ -1120,11 +1125,10 @@ export class StoryGraph {
             e.preventDefault();
             const factor = e.deltaY < 0 ? 1.1 : 0.9;
             const newZoom = Math.min(5, Math.max(0.2, this.zoom * factor));
-            const svgRect = this.svg!.getBoundingClientRect();
-            const mx = e.clientX - svgRect.left;
-            const my = e.clientY - svgRect.top;
-            this.panX = mx - (mx - this.panX) * (newZoom / this.zoom);
-            this.panY = my - (my - this.panY) * (newZoom / this.zoom);
+            const vb = this.clientToViewBox(e.clientX, e.clientY);
+            if (!vb) return;
+            this.panX = vb.x - (vb.x - this.panX) * (newZoom / this.zoom);
+            this.panY = vb.y - (vb.y - this.panY) * (newZoom / this.zoom);
             this.zoom = newZoom;
             this.updateTransform();
             this.scheduleLayoutSave();
@@ -1481,12 +1485,25 @@ export class StoryGraph {
         this.showConnectDropMenuAt(clientX, clientY, from, to);
     }
 
-    private clientToGraph(clientX: number, clientY: number): { x: number; y: number } | null {
+    /** Map client (CSS) pixels into SVG viewBox user units. */
+    private clientToViewBox(clientX: number, clientY: number): { x: number; y: number } | null {
         if (!this.svg) return null;
         const svgRect = this.svg.getBoundingClientRect();
+        if (svgRect.width <= 0 || svgRect.height <= 0) return null;
         return {
-            x: (clientX - svgRect.left - this.panX) / this.zoom,
-            y: (clientY - svgRect.top - this.panY) / this.zoom,
+            x: (clientX - svgRect.left) * (this.width / svgRect.width),
+            y: (clientY - svgRect.top) * (this.height / svgRect.height),
+        };
+    }
+
+    /** Map client pixels into graph coordinates (viewBox, then undo pan/zoom). */
+    private clientToGraph(clientX: number, clientY: number): { x: number; y: number } | null {
+        const vb = this.clientToViewBox(clientX, clientY);
+        if (!vb) return null;
+        const zoom = this.zoom || 1;
+        return {
+            x: (vb.x - this.panX) / zoom,
+            y: (vb.y - this.panY) / zoom,
         };
     }
 
@@ -2444,21 +2461,21 @@ export class StoryGraph {
         // ── 2. Scene → entity edges (plain mentions from LinkScanner) ──
 
         if (this.showScenes) {
-            for (const scene of this.scenes) {
-                const result = this.scanResults.get(scene.filePath);
-                if (!result || result.links.length === 0) continue;
+        for (const scene of this.scenes) {
+            const result = this.scanResults.get(scene.filePath);
+            if (!result || result.links.length === 0) continue;
 
-                const sceneId = `scene::${scene.filePath}`;
+            const sceneId = `scene::${scene.filePath}`;
                 ensureNode(sceneId, scene.title || 'Untitled', 'scene', scene.filePath);
 
-                for (const link of result.links) {
+            for (const link of result.links) {
                     const configuredType = this.tagTypeOverrides[link.name.toLowerCase()] || link.type;
                     const resolvedType = (configuredType === 'codex' ? 'codex' : configuredType) as EntityType;
-                    if (resolvedType === 'character' && !this.showCharacters) continue;
-                    if (resolvedType === 'location' && !this.showLocations) continue;
+                if (resolvedType === 'character' && !this.showCharacters) continue;
+                if (resolvedType === 'location' && !this.showLocations) continue;
                     if (resolvedType === 'codex' && !this.showCodex) continue;
-                    if (resolvedType === 'other' && !this.showOther) continue;
-                    if (resolvedType === 'prop' && !this.showProps) continue;
+                if (resolvedType === 'other' && !this.showOther) continue;
+                if (resolvedType === 'prop' && !this.showProps) continue;
 
                     const knownDocument = documentByName.get(link.name.toLowerCase());
                     const entityId = knownDocument
@@ -2471,10 +2488,10 @@ export class StoryGraph {
                         knownDocument?.entityType || resolvedType,
                         knownDocument?.filePath,
                     );
-                    nodeMap.get(sceneId)!.weight++;
-                    node.weight++;
+                nodeMap.get(sceneId)!.weight++;
+                node.weight++;
 
-                    edgeList.push({ source: sceneId, target: entityId, kind: resolvedType });
+                edgeList.push({ source: sceneId, target: entityId, kind: resolvedType });
                 }
             }
         }
@@ -2635,6 +2652,10 @@ export class StoryGraph {
 
         // Legend filtering is applied to the existing SVG after it is built.
         // Keeping the full data set here avoids remounting the canvas on every click.
+
+        // If a pair already has a specific relation (character relation or
+        // categorized wikilink), hide the plain「默认引用」wikilink on the main graph.
+        edgeList = suppressDefaultReferenceEdges(edgeList);
 
         // Cap node count for SVG + JS physics (keep highest-weight nodes).
         let nodes = Array.from(nodeMap.values());
@@ -3456,15 +3477,19 @@ export class StoryGraph {
             this.dragging = node;
             node.pinned = true;
             let undoPushed = false;
+            const grab = this.clientToGraph(e.clientX, e.clientY);
+            const grabOffsetX = grab ? node.x - grab.x : 0;
+            const grabOffsetY = grab ? node.y - grab.y : 0;
             const onMove = (me: MouseEvent) => {
                 if (!this.svg) return;
                 if (!undoPushed) {
                     this.pushUndo();
                     undoPushed = true;
                 }
-                const svgRect = this.svg.getBoundingClientRect();
-                node.x = (me.clientX - svgRect.left - this.panX) / this.zoom;
-                node.y = (me.clientY - svgRect.top - this.panY) / this.zoom;
+                const pt = this.clientToGraph(me.clientX, me.clientY);
+                if (!pt) return;
+                node.x = pt.x + grabOffsetX;
+                node.y = pt.y + grabOffsetY;
                 this.updatePositions();
             };
             const onUp = () => {
