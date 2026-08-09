@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 /**
  * SnapshotManager — save, list, compare and restore named snapshots
  * of individual scene files.
@@ -14,6 +14,7 @@
 
 import { App, TFile, TFolder, normalizePath, Notice, type DataAdapter } from 'obsidian';
 import { tokenizeWords, DEFAULT_STORYLINE_LOCALE, type StoryLineLocale } from '../utils/locale';
+import { t } from '../utils/i18n';
 
 export interface SceneSnapshot {
     /** Vault-relative path of the snapshot file */
@@ -72,7 +73,7 @@ export class SnapshotManager {
         const wordcount = this.countWords(content);
         await this.app.vault.create(snapshotPath, content);
 
-        new Notice(`Snapshot "${safeLabel}" saved`);
+        new Notice(t('Snapshot "{name}" saved', { name: safeLabel }));
 
         return {
             filePath: snapshotPath,
@@ -152,7 +153,7 @@ export class SnapshotManager {
 
         const snapshotContent = await this.readSnapshotContent(snapshotPath);
         await this.app.vault.modify(sceneFile, snapshotContent);
-        new Notice('Snapshot restored');
+        new Notice(t('Snapshot restored'));
     }
 
     /**
@@ -281,4 +282,3 @@ export class SnapshotManager {
         };
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

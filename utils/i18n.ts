@@ -4,7 +4,8 @@ import { VIEWS_ZH } from './i18n-views.zh';
 import { ENTITIES_ZH } from './i18n-entities.zh';
 import { BEATS_ZH } from './i18n-beats.zh';
 import { EXTRA_ZH } from './i18n-extra.zh';
-import type { BeatSheetTemplate } from '../models/Scene';
+import type { BeatSheetTemplate, SceneTemplate } from '../models/Scene';
+import { coerceString } from './narrow';
 
 export type UiLanguageSetting = 'auto' | 'en' | 'zh';
 export type UiLanguage = 'en' | 'zh';
@@ -22,6 +23,7 @@ const ZH_CORE: Record<string, string> = {
     'Untitled': '未命名',
     'Save failed': '保存失败',
     'Timeline': '时间线',
+    'Order': '次序',
     'Plotlines': '情节线',
     'Manuscript': '文稿',
     'Canvas': '画布',
@@ -36,7 +38,8 @@ const ZH_CORE: Record<string, string> = {
     'Notes': '笔记',
     'NarrativeLab projects': 'NarrativeLab 项目',
     'Open board view': '打开白板视图',
-    'Open timeline view': '打开时间线视图',
+    'Open timeline view': '打开次序视图',
+    'Open Order view': '打开次序视图',
     'Open plotgrid view': '打开表格',
     'Open concept grid view': '打开表格',
     'Open plotlines view': '打开情节线视图',
@@ -76,7 +79,7 @@ const ZH_CORE: Record<string, string> = {
     'Project bundle written: {path} ({n} files)': '已写入项目包：{path}（{n} 个文件）',
     'Imported {n} files into the current project.': '已向当前项目导入 {n} 个文件。',
     'Created project and imported {n} files: {path}': '已创建项目并导入 {n} 个文件：{path}',
-    'Each selected plotline becomes a Location Frame; each scene becomes a fillable Story Sequence with a link to its note.': '每条勾选的情节线会成为 Location Frame；每个场景会成为可填写的 Story Sequence，并链接到对应笔记。',
+    'Each selected plotline becomes a Location Frame; each scene becomes a fillable Story Sequence with a link to its note.': '每条勾选的情节线会生成一个地点框架；每个场景会生成一个可填写的故事序列，并链接到对应笔记。',
     'No plotlines in this project yet.': '当前项目还没有情节线。',
     'Select all': '全选',
     'Select none': '全不选',
@@ -94,7 +97,7 @@ const ZH_CORE: Record<string, string> = {
     '“{name}” will be replaced entirely with plotline frames.': '「{name}」将被情节线画框完整替换。',
     'Wrote plotline canvas: {name}': '已写入情节线画布：{name}',
     'From plotlines': '从情节线',
-    'Turn selected NarrativeLab plotlines into Location Frames and fillable Story Sequences.': '将选定的 NarrativeLab 情节线转为 Location Frame 与可填写的 Story Sequence。',
+    'Turn selected NarrativeLab plotlines into Location Frames and fillable Story Sequences.': '将选定的 NarrativeLab 情节线转为地点框架和可填写的故事序列。',
     'Generate from plotlines…': '从情节线生成…',
     'To fill — scene beats / dialog / outcomes.': '待填 — 节拍 / 对白 / 结果。',
     'To fill — add a scene to this plotline in NarrativeLab.': '待填 — 请先在 NarrativeLab 为该情节线添加场景。',
@@ -113,7 +116,7 @@ const ZH_CORE: Record<string, string> = {
     'JSON (.json)': 'JSON (.json)',
     'Confirm': '确认',
     'Library wikilinks appear automatically. Connect via node menu (Connect to…) or mouse right-drag; double-click a relationship to focus; right-click an edge for type/category.': '资料库双链会自动显示；节点菜单选「连到…」或鼠标右键拖线可建关联；双击关系进入聚焦；右键连线可设类型/类别。',
-    'Body wikilinks are default references. Right-click an edge to set a category (written to frontmatter), focus strands, or delete the link entirely (clears body + frontmatter on both notes).': '正文双链即默认引用。右键连线可设类别（写入 frontmatter）、进入聚焦，或彻底删除（清除双方正文双链与标注引用）。',
+    'Body wikilinks are default references. Right-click an edge to set a category (written to frontmatter), focus strands, or delete the link entirely (clears body + frontmatter on both notes).': '正文双链是默认引用。右键连线可设置类别（写入 YAML 属性）、聚焦关系线，或彻底删除这条关系（同时清除两篇笔记正文中的双链和 YAML 属性引用）。',
     'Focus relationship': '聚焦关系',
     'Connect with wikilink': '用双链连线',
     'Connect character relation': '连人物关系',
@@ -184,10 +187,10 @@ const ZH_CORE: Record<string, string> = {
     'Keep at least one strand': '至少保留一股指向',
     'Keep at least one strand. To remove the link entirely, delete it on the Story Graph.': '至少保留一股指向。要彻底删除关系，请回到故事图谱右键删除连线。',
     'Remove link': '删除连线',
-    'Remove all body wikilinks and annotated references between "{from}" and "{to}"?': '将删除「{from}」与「{to}」之间的全部正文双链与 frontmatter 标注引用，是否继续？',
+    'Remove all body wikilinks and annotated references between "{from}" and "{to}"?': '确定删除“{from}”与“{to}”之间的全部正文双链和 YAML 属性引用吗？',
     'Link removed': '已删除连线',
     'Failed to remove link': '删除连线失败',
-    'Each strand becomes one line on the Story Graph. Set a short label, style, and direction.': '每一股指向退出后都会变成图谱上的一条线。可自设短标签、样式与方向。',
+    'Each strand becomes one line on the Story Graph. Set a short label, style, and direction.': '每种关系会在故事图谱中显示为一条连线。可设置短标签、样式和方向。',
     'Internal strands only — each becomes an extra line beside the main relation. Set short label, style, and direction here.': '此处只设关系内部的小连线；每一股会叠在主关系线旁。可设短标签、样式与方向。',
     'Drag to connect': '拖拽连线',
     'Drag nodes to rearrange · drag the blue port to add a strand': '拖动节点调整位置 · 从蓝色圆点拖向另一端可添加指向',
@@ -210,13 +213,43 @@ const ZH_CORE: Record<string, string> = {
     'Undo': '撤销',
     'Redo': '重做',
     'Nothing to undo': '没有可撤销的操作',
+    'Could not record this change for undo.': '无法记录这次修改，之后不能撤销。',
+    'The file changed outside NarrativeLab. Undo was cancelled to protect the newer content.': '文件已在 NarrativeLab 外部被修改。为保护较新的内容，已取消撤销。',
+    'The file changed outside NarrativeLab. Redo was cancelled to protect the newer content.': '文件已在 NarrativeLab 外部被修改。为保护较新的内容，已取消重做。',
+    'The file changed outside NarrativeLab. {action} was cancelled to protect the newer content.': '文件已在 NarrativeLab 外部被修改。为保护较新的内容，已取消{action}。',
+    'A file already exists at the restore location.': '恢复位置已经存在文件。',
+    'Expected a JSON object.': '这里应当是一个 JSON 对象。',
+    'Project data file "{name}" is invalid. It will be preserved before the next save.': '项目数据文件“{name}”无效。下次保存前会先保留原文件。',
+    'Could not save project data "{name}": {message}': '无法保存项目数据“{name}”：{message}',
+    'Safe write failed for {name}: {message}': '{name} 的安全写入失败：{message}',
+    'The Base file exists but is not indexed by Obsidian. Reopen the vault and try again: {path}': 'Base 文件存在，但 Obsidian 尚未建立索引。请重新打开仓库后再试：{path}',
+    'Library folder not found: {path}': '未找到资料库文件夹：{path}',
+    'Failed to rename Library category: {message}': '资料库分类重命名失败：{message}',
+    'Staged Library assets could not be found.': '找不到暂存的资料库资产。',
+    'Failed to delete Library category: {message}': '删除资料库分类失败：{message}',
+    'Unsupported project bundle version: {version}': '不支持此项目包版本：{version}',
+    'unknown': '未知',
+    'Bundle is missing project metadata.': '项目包缺少项目元数据。',
+    'Bundle file entry {index} is invalid.': '项目包中的第 {index} 个文件条目无效。',
+    'Bundle contains the same path more than once: {path}': '项目包包含重复路径：{path}',
+    'Bundle contains an unsafe path: {path}': '项目包包含不安全的路径：{path}',
+    'A folder blocks the import path: {path}': '文件夹占用了导入路径：{path}',
+    'The import target is not indexed by Obsidian. Reopen the vault and try again: {path}': '导入目标尚未被 Obsidian 索引。请重新打开仓库后再试：{path}',
+    'Skipped rollback because the file changed: {path}': '文件已经变化，已跳过回滚：{path}',
+    'Import failed. Some files could not be rolled back: {details}': '导入失败，部分文件无法回滚：{details}',
+    'Imported project could not be registered.': '导入的项目无法注册。',
+    'Invalid snapshot state.': '快照状态无效。',
+    'Invalid view snapshot.': '视图快照无效。',
+    'Unsupported view snapshot version: {version}': '不支持此视图快照版本：{version}',
+    'Could not load view snapshot {id}: {message}': '无法加载视图快照 {id}：{message}',
+    'The snapshot file is not indexed by Obsidian. Reopen the vault and try again.': '快照文件尚未被 Obsidian 索引。请重新打开仓库后再试。',
     'Nothing to redo': '没有可重做的操作',
     'Secondary strands under "{parent}"': '「{parent}」下的次级指向',
     'internal strands': '条内部指向',
     'Edit character relation styles (synced with character notes) and wikilink categories. Internal multi-strands are set in focus view.': '编辑人物关系样式（与角色笔记双向同步）以及双链类别。关系内部的多重小连线请在聚焦视图中设置。',
     'Character relations': '人物关系',
     'These appear as labeled lines between characters. Types found on character notes are imported automatically.': '会显示为角色之间的带字连线；角色笔记里已有的关系类型会自动导入。',
-    'Legend matches library relation categories. Custom types sync with character profile relation entries.': '图鉴与资料库关系分类一致；自定义类型会同步到角色资料的关系条目。',
+    'Legend matches library relation categories. Custom types sync with character profile relation entries.': '图例与资料库关系类别一致。自定义类型会同步到角色资料中的关系条目。',
     'Relation category': '关系分类',
     'Add character relation': '添加人物关系',
     'Cannot delete: used by character relations': '无法删除：已有角色关系在使用',
@@ -256,7 +289,7 @@ const ZH_CORE: Record<string, string> = {
     'Open Board': '打开白板',
     'Open Project': '打开项目',
     'Open Canvas': '打开画布试玩',
-    'Playmode in Canvas': '画布试玩',
+    'Play in Canvas': '在叙事画布中试玩',
     'Choose, create, or open an ncanvas for this project': '为此项目选择、新建或打开 ncanvas',
     'New Project': '新建项目',
     'Manage Series…': '管理系列…',
@@ -293,7 +326,7 @@ const ZH_CORE: Record<string, string> = {
     'Create New Project': '新建项目',
     'Project title': '项目标题',
     'The title of this project. Each project gets its own workspace folder.': '项目名称。每个项目都有独立的工作区文件夹。',
-    'Location': '位置',
+    'Location': '地点',
     'Create': '创建',
     'Series name': '系列名称',
     'Create as series': '创建为系列',
@@ -334,7 +367,7 @@ const ZH_CORE: Record<string, string> = {
     'Browse': '浏览',
     'Character Profiles': '角色档案',
     'Location Profiles': '地点档案',
-    'Move up': '上移',
+    '{name} Profiles': '{name} 档案',
     'Move down': '下移',
 
     // Main views
@@ -368,7 +401,7 @@ const ZH_CORE: Record<string, string> = {
     'Templates': '模板',
     'Writing': '写作',
     'Export & Advanced': '导出与高级',
-    'Hide frontmatter': '隐藏属性区',
+    'Hide frontmatter': '隐藏 YAML 属性',
     'Properties on NarrativeLab notes': 'NarrativeLab 笔记中的属性',
     'Controls the Obsidian Properties block on notes inside NarrativeLab projects only. Your global Obsidian "Properties in document" setting is left untouched.': '仅控制 NarrativeLab 项目内笔记的 Obsidian 属性区块。Obsidian 全局的「文档中的属性」设置不会改变。',
     'Folded (show header)': '折叠（保留标题）',
@@ -388,7 +421,7 @@ const ZH_CORE: Record<string, string> = {
     'Spell check': '拼写检查',
 
     // Settings: general and scene defaults
-    'Hide the properties/frontmatter block on NarrativeLab notes only (live preview and reading mode). Since all fields are editable from the Inspector, frontmatter can safely be hidden. Your global Obsidian "Properties in document" setting is left untouched.': '仅隐藏 NarrativeLab 笔记中的属性/前置元数据区块（实时预览和阅读模式）。所有字段都可在检查器中编辑，因此可以放心隐藏前置元数据。Obsidian 全局的“文档中的属性”设置不会改变。',
+    'Hide the properties/frontmatter block on NarrativeLab notes only (live preview and reading mode). Since all fields are editable from the Inspector, frontmatter can safely be hidden. Your global Obsidian "Properties in document" setting is left untouched.': '仅在 NarrativeLab 笔记中隐藏 YAML 属性区（实时预览和阅读模式）。所有字段仍可在检查器中编辑，且不会更改 Obsidian 全局的“文档中的属性”设置。',
     'Collapse view-tab labels when toolbar is narrow': '工具栏较窄时折叠视图标签文字',
     'When the NarrativeLab toolbar is too narrow to fit every view-tab label, show only the icon (Corkboard, Timeline, etc.). Disable to always show both icon and text — the labels will wrap or be clipped if the toolbar is small.': '当 NarrativeLab 工具栏过窄，无法容纳所有视图标签文字时，仅显示图标（平铺画布、时间线等）。关闭后将始终同时显示图标和文字；工具栏较小时，标签可能换行或被截断。',
     'Scene Defaults': '场景默认设置',
@@ -477,20 +510,20 @@ const ZH_CORE: Record<string, string> = {
     'Sprint end sound': '冲刺结束提示音',
     'Play a chime when the writing sprint timer reaches zero': '写作冲刺计时器归零时播放提示音',
     'Write scene references as wikilinks': '将场景引用写为 Wiki 链接',
-    'Issue #73 — when on, scene fields like POV, location, characters, setup_scenes and payoff_scenes are stored as Obsidian [[wikilinks]] so they auto-update on rename. Existing plain-text values keep working.': '问题 #73 — 启用后，POV、location、characters、setup_scenes 和 payoff_scenes 等场景字段会存储为 Obsidian [[Wiki 链接]]，以便重命名时自动更新。现有纯文本值仍然有效。',
+    'Store scene references such as POV, location, characters, setup_scenes, and payoff_scenes as Obsidian [[wikilinks]] so they update automatically when files are renamed. Existing plain-text values continue to work.': '将 POV、location、characters、setup_scenes 和 payoff_scenes 等场景引用存为 Obsidian [[Wiki 链接]]，文件重命名时可自动更新。现有纯文本值仍可继续使用。',
     'Mirror custom fields to top-level YAML': '将自定义字段镜像到顶层 YAML',
-    'Issue #71 — when on, Universal Field values are also written as top-level YAML keys (using each template\'s "Top-level key") so they show up in Obsidian Properties, Bases, and Dataview. Reserved NarrativeLab keys are skipped automatically.': '问题 #71 — 启用后，通用字段值还会写入顶层 YAML 键（使用各模板的“顶层键”），以便显示在 Obsidian 属性、Bases 和 Dataview 中。NarrativeLab 保留键会自动跳过。',
+    'Also write Universal Field values as top-level YAML keys, using each template\'s “Top-level key”, so they appear in Obsidian Properties, Bases, and Dataview. Reserved NarrativeLab keys are skipped.': '同时按各模板的“顶层键”将通用字段值写入顶层 YAML，以便显示在 Obsidian 属性、Bases 和 Dataview 中。NarrativeLab 保留键会自动跳过。',
     'Count unit for scene lengths': '场景长度计数单位',
     'Choose whether scene cards, the Timeline, and the Inspector display scene length in words or characters. Useful for prose writers who track length in characters (e.g. Russian, Chinese, Japanese).': '选择场景卡片、时间线和检查器以字数还是字符数显示场景长度。适合以字符数追踪篇幅的散文作者（例如俄语、中文、日语作者）。',
     'Words': '字数',
     'Exclude `%%comments%%` from wordcount': '字数统计中排除 `%%注释%%`',
-    'Issue #78 — strip Obsidian comment blocks (anything between `%%` markers) before counting words. Keeps `wordcount` aligned with what readers will actually see.': '问题 #78 — 统计字数前移除 Obsidian 注释区块（`%%` 标记之间的所有内容），使 `wordcount` 与读者实际看到的内容一致。',
+    'Exclude Obsidian comment blocks (text between `%%` markers) so the word count matches what readers see.': '统计时排除 Obsidian 注释区块（`%%` 标记之间的文本），使字数与读者看到的内容一致。',
     'Also ignore checkbox lines (`- [ ]`, `- [x]`)': '同时忽略复选框行（`- [ ]`、`- [x]`）',
-    'Issue #78 — also drop markdown task lines from the wordcount. Off by default because some authors keep checklists in the manuscript body.': '问题 #78 — 同时从字数统计中排除 Markdown 任务行。默认关闭，因为有些作者会在文稿正文中保留核对清单。',
-    'BCP-47 tag used for word counting, reading time, dialogue %, stop-word filtering and PDF line wrapping. Choose Auto-detect to infer the script from manuscript text. Existing projects that still use the old default are updated too; otherwise set per-project by editing `language:` in the project frontmatter.': '用于字数统计、阅读时间、对话占比、停用词过滤和 PDF 换行的 BCP-47 标签。选择“从文本自动检测”可根据文稿文本推断文字系统。仍使用旧默认值的现有项目也会更新；否则可编辑项目前置元数据中的 `language:`，为每个项目单独设置。',
+    'Also exclude Markdown task lines from the word count. Off by default because some authors keep checklists in the manuscript body.': '同时从字数统计中排除 Markdown 任务行。默认关闭，因为有些作者会在文稿正文中保留核对清单。',
+    'BCP-47 tag used for word counting, reading time, dialogue %, stop-word filtering and PDF line wrapping. Choose Auto-detect to infer the script from manuscript text. Existing projects that still use the old default are updated too; otherwise set per-project by editing `language:` in the project frontmatter.': '用于字数统计、阅读时间、对话占比、停用词过滤和 PDF 换行的 BCP-47 标签。选择“从文本自动检测”可根据文稿推断文字系统。仍使用旧默认值的现有项目也会更新；也可在项目的 YAML 属性中编辑 `language:`，单独设置语言。',
     'Auto-detect from text': '从文本自动检测',
-    'Default scene frontmatter': '默认场景前置元数据',
-    'Issue #77 — raw YAML merged into the frontmatter of every newly-created scene. Useful for companion plugins (e.g. `cssclasses: [fountain]`). NarrativeLab\'s own keys (type, title, act, chapter, sequence, status…) always win on conflict.': '问题 #77 — 将原始 YAML 合并到每个新建场景的前置元数据中。适用于配套插件（例如 `cssclasses: [fountain]`）。发生冲突时，NarrativeLab 自有键（type、title、act、chapter、sequence、status…）始终优先。',
+    'Default scene frontmatter': '默认场景 YAML 属性',
+    'Raw YAML merged into every newly created scene. Useful for companion plugins (e.g. `cssclasses: [fountain]`). NarrativeLab\'s own keys (type, title, act, chapter, sequence, status…) take priority on conflict.': '将原始 YAML 合并到每个新建场景中，可用于配套插件（如 `cssclasses: [fountain]`）。如有冲突，以 NarrativeLab 自有键（type、title、act、chapter、sequence、status…）为准。',
     'Focus Mode Settings': '专注模式设置',
     'Control how the UI changes when Focus mode is enabled in Manuscript view.': '控制在文稿视图中启用专注模式时界面的变化。',
     'Darken': '变暗',
@@ -574,14 +607,84 @@ const ZH_CORE: Record<string, string> = {
     'No active project': '无当前项目',
     'Rename…': '重命名…',
     'Rename Library tab': '重命名资料库页签',
-    'Tab name matches the Library folder name.': '页签名称与 Library 子文件夹名称一致。',
+    'Tab name matches the Library folder name.': '页签名称与资料库子文件夹名称一致。',
     'Invalid folder name': '无效的文件夹名称',
     'A folder with this name already exists': '已存在同名文件夹',
-    'Toggle categories to show in the Library. Tab names match Library folder names — right-click a tab to rename.': '切换要在资料库中显示的类别。页签名与 Library 子文件夹名一致 — 右键页签可改名。',
+    'Toggle categories to show in the Library. Tab names match Library folder names — right-click a tab to rename.': '选择要在资料库中显示的类别。页签名与资料库子文件夹名一致；右键页签可重命名。',
     'This project already belongs to a series.': '此项目已属于一个系列。',
     'Wrap the current project in a new series.': '将当前项目纳入一个新系列。',
     'Create Series…': '创建系列…',
     'Scene Templates': '场景模板',
+    'Template Center': '模板中心',
+    'Manage scene templates, narrative structures and project presets in one place. Project templates are stored under System/Templates/. Continue using System, not Library, so Library folder scanning cannot treat templates as categories.': '统一管理场景模板、叙事结构和项目预设。项目模板保存在 System/Templates/，不要放入 Library，以免被资料库文件夹扫描识别为分类。',
+    'Export all templates': '导出全部模板',
+    'Template bundle written: {path}': '模板包已写入：{path}',
+    'Could not export templates: {message}': '无法导出模板：{message}',
+    'Import templates…': '导入模板…',
+    'Imported {scenes} scene template(s), {structures} structure(s), and {presets} preset(s).': '已导入 {scenes} 个场景模板、{structures} 个结构模板和 {presets} 个项目预设。',
+    'Could not import templates: {message}': '无法导入模板：{message}',
+    'Pre-fill scene fields and Markdown body. Built-in templates are bilingual.': '预填场景字段和 Markdown 正文；内置模板提供中英文正文。',
+    'Narrative Structures': '叙事结构',
+    'Define acts, chapters and beats. Applying a structure always shows a change preview.': '定义幕、章节和节拍；应用结构前始终显示变更预览。',
+    'Create a structure template': '创建结构模板',
+    'Add Structure': '添加结构',
+    'Project Presets': '项目预设',
+    'A preset can combine a narrative structure, Library categories and project field templates.': '项目预设可组合叙事结构、资料库分类和项目字段模板。',
+    'Capture current project as preset': '将当前项目保存为预设',
+    'Copies current Library category and field-template definitions. Scene content is not included.': '复制当前资料库分类和字段模板定义，不包含场景正文。',
+    'Add Preset': '添加预设',
+    'Global': '全局',
+    'Duplicate template': '复制模板',
+    'Copy': '副本',
+    'No custom structures yet. Built-in structures remain available.': '尚无自定义结构；内置结构仍可使用。',
+    'No project presets yet.': '尚无项目预设。',
+    'Project preset applied.': '项目预设已应用。',
+    'Scope': '作用域',
+    'Project templates are saved under System/Templates/ and sync with the project.': '项目模板保存在 System/Templates/，并随项目同步。',
+    'Comma-separated numbers or ranges.': '使用逗号分隔数字或范围。',
+    'One per line: number|label': '每行一项：编号|名称',
+    'Beats': '节拍',
+    'beats': '节拍',
+    'Act labels': '幕名称',
+    'Chapter labels': '章节名称',
+    'One per line: act|chapter|label|description. Chapter may be blank.': '每行一项：幕|章节|名称|说明；章节可留空。',
+    'Enter a template name.': '请输入模板名称。',
+    'Preset name': '预设名称',
+    'Narrative structure': '叙事结构',
+    'Create beat scenes': '创建节拍场景',
+    'Placeholder scene template': '占位场景模板',
+    'This preset contains {categories} Library category definition(s) and {fields} field template(s).': '此预设包含 {categories} 个资料库分类定义和 {fields} 个字段模板。',
+    'Enter a preset name.': '请输入预设名称。',
+    'Choose a NarrativeLab template bundle…': '选择 NarrativeLab 模板包…',
+    'Import template scope': '导入模板的作用域',
+    'Choose where imported templates will be stored.': '选择导入模板的保存位置。',
+    'Edit Structure Template': '编辑结构模板',
+    'New Structure Template': '新建结构模板',
+    'Edit Project Preset': '编辑项目预设',
+    'New Project Preset': '新建项目预设',
+    'Apply structure: {name}': '应用结构：{name}',
+    'Acts: {before} → {after}; chapters: {chaptersBefore} → {chaptersAfter}.': '幕：{before} → {after}；章节：{chaptersBefore} → {chaptersAfter}。',
+    '{n} existing scene(s) will be remapped.': '将重新映射 {n} 个现有场景。',
+    '{n} existing scene(s) will become uncategorized.': '将有 {n} 个现有场景移到未分类。',
+    '{n} missing beat scene(s) will be created.': '将创建 {n} 个缺失的节拍场景。',
+    'Existing scene files are never deleted when applying a structure.': '应用结构不会删除现有场景文件。',
+    'Apply mode': '应用方式',
+    'Merge keeps the current structure. Replace uses the selected scene-handling rule.': '合并会保留当前结构；替换会按所选规则处理现有场景。',
+    'Merge with current structure': '合并到当前结构',
+    'Replace current structure': '替换当前结构',
+    'Existing scenes': '现有场景',
+    'Choose how current act and chapter assignments are handled.': '选择如何处理现有场景的幕和章节归属。',
+    'Keep existing numbering': '保留现有编号',
+    'Remap to the new structure': '重新映射到新结构',
+    'Move to uncategorized': '移到未分类',
+    'Create one placeholder scene for every missing beat.': '为每个缺失节拍创建一个占位场景。',
+    'Optional fields and Markdown body for generated beat scenes.': '为生成的节拍场景选择可选字段和 Markdown 正文。',
+    'Applied "{name}": {changed} scene(s) updated, {created} created.': '已应用“{name}”：更新 {changed} 个场景，新建 {created} 个场景。',
+    'Could not apply structure: {message}': '无法应用结构：{message}',
+    'Quick Structure Generator': '快速结构生成器',
+    'Generate a regular act/chapter structure. Use Template Center when you want named beats or a reusable custom structure.': '生成规则的幕章结构；如需命名节拍或可复用的自定义结构，请使用模板中心。',
+    'Generate Structure': '生成结构',
+    'Generated {acts} act(s), {chapters} chapter(s), and {scenes} scene(s).': '已生成 {acts} 幕、{chapters} 章和 {scenes} 个场景。',
     'Custom templates pre-fill fields and body text when creating new scenes. Built-in templates are always available.': '创建新场景时，自定义模板会预先填充字段和正文文本。内置模板始终可用。',
     'Create and manage multiple scene templates. Each template can pre-fill scene fields and insert reusable Markdown into the new scene.': '创建并管理多个场景模板。每个模板都可以预填场景字段，并在新场景中插入可复用的 Markdown 正文。',
     'Create a template': '创建模板',
@@ -602,6 +705,90 @@ const ZH_CORE: Record<string, string> = {
     'Character conversation with emotional stakes': '带情感张力的角色对话',
     'Past event revealed to the reader': '向读者揭示的过去事件',
     'Hook, world, and character introduction': '钩子、世界观与角色引入',
+    [`## Goal
+What does the POV character want in this scene?
+
+## Conflict
+What stands in their way? Who opposes them?
+
+## Action
+Describe the key beats of the scene.
+
+## Outcome
+How does the scene end? What changes for the character?`]: `## 目标
+视角角色在这个场景中想要什么？
+
+## 冲突
+什么阻碍了角色？谁在反对角色？
+
+## 行动
+写下这个场景的关键节拍。
+
+## 结果
+场景如何结束？角色发生了什么变化？`,
+    [`## Setup
+Where are the characters, and what brought them here?
+
+## Dialogue Focus
+What is the conversation about? What subtext is at play?
+
+## Emotional Stakes
+What does each speaker want from this exchange?
+
+## Takeaway
+How has the relationship shifted by the end?`]: `## 情境
+角色身在何处？什么让他们来到这里？
+
+## 对话焦点
+这场谈话围绕什么？潜台词是什么？
+
+## 情感利害
+每位说话者想从交流中得到什么？
+
+## 余波
+谈话结束时，人物关系发生了什么变化？`,
+    [`## Trigger
+What in the present triggers this memory?
+
+## The Memory
+Describe the past event in vivid detail.
+
+## Emotional Weight
+Why does this memory matter now?
+
+## Return to Present
+How does the character feel after reliving this?`]: `## 触发点
+当下的什么事触发了这段回忆？
+
+## 回忆
+具体描写过去发生的事。
+
+## 情感分量
+为什么这段回忆此刻如此重要？
+
+## 回到当下
+重历往事后，角色有什么感受？`,
+    [`## Hook
+What grabs the reader's attention on page one?
+
+## World & Setting
+Establish time, place, and atmosphere.
+
+## Character Introduction
+Who is the POV character? What do they want?
+
+## Inciting Moment
+What disrupts the status quo?`]: `## 钩子
+第一页用什么抓住读者？
+
+## 世界与环境
+交代时间、地点和氛围。
+
+## 角色登场
+视角角色是谁？角色想要什么？
+
+## 诱发事件
+什么打破了原有状态？`,
     '(unnamed)': '（未命名）',
     'Edit template': '编辑模板',
     'Delete template': '删除模板',
@@ -633,7 +820,7 @@ const ZH_CORE: Record<string, string> = {
     'Default font size': '默认字号',
     'Base font size in half-points (e.g. 24 = 12pt, 28 = 14pt).': '基本字号，以半磅为单位（例如 24 = 12 磅，28 = 14 磅）。',
     'Include metadata': '包含元数据',
-    'When enabled, YAML frontmatter is included in the exported document. Disabled by default.': '启用后，导出文档中会包含 YAML 前置元数据。默认关闭。',
+    'When enabled, YAML frontmatter is included in the exported document. Disabled by default.': '启用后，导出文档中会包含 YAML 属性。默认关闭。',
     'Preserve formatting': '保留格式',
     'Maintain original Markdown formatting in the output (bold, italic, code, etc.).': '在输出中保留原始 Markdown 格式（粗体、斜体、代码等）。',
     'Enable preprocessing': '启用预处理',
@@ -663,7 +850,7 @@ const ZH_CORE: Record<string, string> = {
     'Line height multiplier (1.0 = single, 1.5, 2.0 = double).': '行高倍数（1.0 = 单倍，1.5，2.0 = 双倍）。',
     'Margins (pt)': '页边距（磅）',
     'Top / Bottom / Left / Right margins in points. 72pt = 1 inch.': '上/下/左/右页边距，以磅为单位。72 磅 = 1 英寸。',
-    'When enabled, YAML frontmatter is included in the exported PDF. Disabled by default.': '启用后，导出的 PDF 中会包含 YAML 前置元数据。默认关闭。',
+    'When enabled, YAML frontmatter is included in the exported PDF. Disabled by default.': '启用后，导出的 PDF 中会包含 YAML 属性。默认关闭。',
     'Include page numbers': '包含页码',
     'Show centered page numbers at the bottom of each page.': '在每页底部居中显示页码。',
     'Import a Scrivener project (.scriv folder) as a new NarrativeLab project. Converts scenes, characters, locations, and research notes. Desktop only.': '将 Scrivener 项目（.scriv 文件夹）导入为新的 NarrativeLab 项目。会转换场景、角色、地点和研究笔记。仅限桌面端。',
@@ -680,7 +867,7 @@ const ZH_CORE: Record<string, string> = {
     'Display warning notifications': '显示警告通知',
     'Additional Source Folders (Experimental)': '其他源文件夹（实验性）',
     '⚠ Experimental — back up your files before linking external folders. Files in linked folders may be modified when you edit entities in NarrativeLab.': '⚠ 实验性功能 — 链接外部文件夹前请备份文件。在 NarrativeLab 中编辑实体时，链接文件夹中的文件可能会被修改。',
-    'Point NarrativeLab to any folder in your vault. All .md files inside will be scanned and automatically sorted by their frontmatter type: field.': '将 NarrativeLab 指向仓库中的任意文件夹。系统会扫描其中所有 .md 文件，并根据前置元数据的 type: 字段自动分类。',
+    'Point NarrativeLab to any folder in your vault. All .md files inside will be scanned and automatically sorted by their frontmatter type: field.': '选择仓库中的任意文件夹。NarrativeLab 会扫描其中所有 .md 文件，并按 YAML 属性中的 `type` 字段自动分类。',
     'Type or browse for a folder...': '输入或浏览文件夹…',
 
     // Template editor opened from Settings
@@ -697,6 +884,95 @@ const ZH_CORE: Record<string, string> = {
     'e.g. 1200': '例如：1200',
     'Body Template': '正文模板',
     'This text is inserted into the scene file body when using this template.': '使用此模板时，这段文本会插入场景文件的正文中。',
+
+    // Interface completeness and operation feedback
+    'Color': '颜色',
+    'Please enter a name': '请输入名称',
+    'Double-click to open': '双击打开',
+    'Click to hide entries not in “{book}”': '点击后仅显示“{book}”中的条目',
+    'Loading Base…': '正在加载 Base…',
+    'Move up': '上移',
+    'e.g. "Our heroes arrive in the capital…"': '例如：“主角一行抵达王都……”',
+    'Moved "{name}" to the shared series Library': '已将“{name}”移至系列共享资料库',
+    'Moved "{name}" to the current project Library': '已将“{name}”移至当前项目资料库',
+    '{words} words · {scenes} scenes': '{words} 字 · {scenes} 个场景',
+    'POV: {name}': '视角：{name}',
+    'No scenes to export': '没有可导出的场景',
+    'Exported to {filename}': '已导出到 {filename}',
+    'Saved as {filename}. Open it in a browser to print as PDF.': '已保存为 {filename}。请在浏览器中打开并打印为 PDF。',
+    'CSV exported: {path}': 'CSV 已导出：{path}',
+    'Exporting to Word…': '正在导出 Word…',
+    'Exporting to PDF…': '正在导出 PDF…',
+    'PDF export requires the Obsidian desktop app.': '只能在 Obsidian 桌面端导出 PDF。',
+    'Project "{title}" created': '已创建项目“{title}”',
+    'Failed to create project files or folders: {error}': '创建项目文件或文件夹失败：{error}',
+    'Project "{title}" was not found. It may have already been deleted.': '找不到项目“{title}”，它可能已被删除。',
+    'Project "{title}" deleted.': '已删除项目“{title}”。',
+    'Copied "{source}" to "{target}" ({count} scenes)': '已将“{source}”复制为“{target}”（{count} 个场景）',
+    'scene': '场景',
+    'Create "{name}"': '创建“{name}”',
+    'Update "{name}"': '更新“{name}”',
+    'Delete "{name}"': '删除“{name}”',
+    'Delete scene': '删除场景',
+    'Scene file not found': '找不到场景文件',
+    'Note file not found': '找不到笔记文件',
+    'No active NarrativeLab project. Open one first.': '当前没有 NarrativeLab 项目。请先打开一个项目。',
+    'Selected file is not a Markdown note.': '所选文件不是 Markdown 笔记。',
+    'This file is already a scene.': '该文件已是场景。',
+    'Converted "{name}" to a scene.': '已将“{name}”转为场景。',
+    'Archived "{name}"': '已归档“{name}”',
+    'Archived file not found': '找不到已归档文件',
+    'Restored "{name}" from the archive and assigned a new sequence number': '已从归档恢复“{name}”，并分配新序号',
+    'Update tags for "{name}"': '更新“{name}”的标签',
+    'Drafts moved into Scenes subfolders': '已将草稿迁移到 Scenes 子文件夹',
+    'Draft folder created: {path}': '已创建草稿文件夹：{path}',
+    'Draft folder removed: {name}': '已移除草稿文件夹：{name}',
+    'Removed {count} missing draft folders': '已移除 {count} 个不存在的草稿文件夹',
+    'Split "{name}" into two scenes': '已将“{name}”拆分为两个场景',
+    'Merged {count} scenes into "{name}"': '已将 {count} 个场景合并为“{name}”',
+    'Series "{name}" created': '已创建系列“{name}”',
+    'Project added to series "{name}"': '已将项目加入系列“{name}”',
+    'Project removed from series "{name}"': '已将项目移出系列“{name}”',
+    'Before moving a project into a series, set "New link format" to "Shortest path when possible".': '将项目移入系列前，建议把“新链接格式”设为“尽可能使用最短路径”。',
+    'Snapshot "{name}" saved': '已保存快照“{name}”',
+    'Snapshot restored': '已恢复快照',
+    'Undo: {action}': '撤销：{action}',
+    'Undo failed: {message}': '撤销失败：{message}',
+    'Redo: {action}': '重做：{action}',
+    'Redo failed: {message}': '重做失败：{message}',
+    'Classify Scrivener folders': '分类 Scrivener 文件夹',
+    'These Scrivener folders do not match a standard category. Choose how to import each one.': '以下 Scrivener 文件夹无法匹配标准类别。请分别选择导入方式。',
+    'Library category': '资料库类别',
+    'Scenes (manuscript)': '场景（文稿）',
+    'Skip': '跳过',
+    '{count} items': '{count} 项',
+    'Continue import': '继续导入',
+    'Creating series "{name}" with {count} projects…': '正在创建系列“{name}”（{count} 个项目）…',
+    'Importing… {processed}/{total}': '正在导入… {processed}/{total}',
+    'e.g. 5': '例如：5',
+    'e.g. 1943': '例如：1943',
+    'Could not find an available attachment path.': '找不到可用的附件路径。',
+    'Cannot parse {path}; the file was left unchanged.': '无法解析 {path}；文件未作修改。',
+    'Narrative Canvas did not finish loading.': 'Narrative Canvas 未能完成加载。',
+    'Scene not found': '未找到场景',
+    'Select at least two scenes to merge.': '请至少选择两个要合并的场景。',
+    'Some selected scenes could not be found.': '部分所选场景无法找到。',
+    'Primary scene file not found.': '未找到主场景文件。',
+    'This Scrivener 1.x project uses an unsupported format. Open it in Scrivener 3 to convert it, then import it again.': '此 Scrivener 1.x 项目使用了不支持的格式。请先用 Scrivener 3 打开并转换，然后重新导入。',
+    'No .scrivx file was found in the selected folder.': '所选文件夹中没有 .scrivx 文件。',
+    'This appears to be a Scrivener iOS stub without binder data. Open it in Scrivener desktop to sync the full project, then try again.': '这似乎是缺少活页夹数据的 Scrivener iOS 占位项目。请先用桌面版 Scrivener 打开并同步完整项目，然后重试。',
+    'Import cancelled.': '已取消导入。',
+    'Series name "{name}" matches the current project folder. Choose a different name, such as "{name} Series".': '系列名称“{name}”与当前项目文件夹同名。请换一个名称，例如“{name} 系列”。',
+    'Invalid series folder: series.json was not found.': '系列文件夹无效：未找到 series.json。',
+    'Series folder "{name}" has the same name as the project folder. Rename the project or series before adding it.': '系列文件夹“{name}”与项目文件夹同名。请先重命名项目或系列。',
+    'Project is not in a series.': '项目不属于任何系列。',
+    'Cannot determine the series folder.': '无法确定系列文件夹。',
+    'Invalid series metadata.': '系列元数据无效。',
+    'Series migration requires “Automatically update internal links”. Enable it under Settings → Files & Links, then try again.': '迁移到系列前，需在“设置 → 文件与链接”中启用“自动更新内部链接”，然后重试。',
+    'Cannot move "{source}" into its own subfolder "{destination}". Choose a different destination name.': '不能将“{source}”移入其自身的子文件夹“{destination}”。请选择其他目标名称。',
+    'File not found': '未找到文件',
+    'No saved content is available to restore this file.': '没有可用于恢复此文件的已保存内容。',
+    'No saved content is available to recreate this file.': '没有可用于重新创建此文件的已保存内容。',
 };
 
 // Fragments first, then ZH_CORE overrides conflicts with curated translations.
@@ -712,27 +988,31 @@ const ZH: Record<string, string> = {
 let activeLanguage: UiLanguage = 'en';
 
 export function normalizeUiLanguageSetting(value: unknown): UiLanguageSetting {
-    const normalized = String(value ?? '').trim().toLowerCase();
+    const normalized = coerceString(value).trim().toLowerCase();
     return normalized === 'en' || normalized === 'zh' ? normalized : 'auto';
 }
 
 function isChineseLocale(value: unknown): boolean {
-    const normalized = String(value ?? '').trim().toLowerCase();
+    const normalized = coerceString(value).trim().toLowerCase();
     return normalized === 'zh' || normalized.startsWith('zh-') || normalized.includes('中文');
 }
 
 export function getObsidianInterfaceLanguage(app: App): UiLanguage {
     const vault = app.vault as unknown as { getConfig?: (key: string) => unknown };
+    const rawNavigatorLanguages: unknown = window.navigator?.languages;
+    const navigatorLanguages: unknown[] = Array.isArray(rawNavigatorLanguages)
+        ? rawNavigatorLanguages as unknown[]
+        : [];
     const values: unknown[] = [
         vault.getConfig?.('interfaceLanguage'),
         vault.getConfig?.('language'),
         vault.getConfig?.('locale'),
-        (globalThis as unknown as { moment?: { locale?: () => string } }).moment?.locale?.(),
+        (window as unknown as { moment?: { locale?: () => string } }).moment?.locale?.(),
         activeDocument?.documentElement?.lang,
-        globalThis.navigator?.language,
-        ...(Array.isArray(globalThis.navigator?.languages) ? globalThis.navigator.languages : []),
+        window.navigator?.language,
+        ...navigatorLanguages,
     ];
-    const detected = values.find(value => String(value ?? '').trim().length > 0);
+    const detected = values.find(value => coerceString(value).trim().length > 0);
     return isChineseLocale(detected) ? 'zh' : 'en';
 }
 
@@ -799,6 +1079,17 @@ export function localizeBeatSheet(template: BeatSheetTemplate): BeatSheetTemplat
     };
 }
 
+/** Localize built-in scene template labels and Markdown body. Custom copy passes through unchanged. */
+export function localizeSceneTemplate(template: SceneTemplate): SceneTemplate {
+    return {
+        ...template,
+        name: t(template.name),
+        description: template.description ? t(template.description) : undefined,
+        bodyTemplate: template.bodyTemplate ? t(template.bodyTemplate) : '',
+        defaultFields: { ...template.defaultFields },
+    };
+}
+
 function translateLiteral(value: string): string {
     return activeLanguage === 'zh' ? (ZH[value] ?? value) : value;
 }
@@ -856,9 +1147,9 @@ function isLocalEntityElement(element: Element | null): boolean {
 export function localizeElement(root: ParentNode): void {
     // English UI uses source strings — skip expensive TreeWalker / querySelectorAll.
     if (activeLanguage === 'en') return;
-    if (root instanceof Element && (isDocumentShell(root) || isLocalEntityElement(root))) return;
+    if (root.instanceOf(Element) && (isDocumentShell(root) || isLocalEntityElement(root))) return;
 
-    const doc = root instanceof Document ? root : root.ownerDocument ?? activeDocument;
+    const doc = root.instanceOf(Document) ? root : root.ownerDocument ?? activeDocument;
     if (!doc) return;
     const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     let node = walker.nextNode();
@@ -877,7 +1168,7 @@ export function localizeElement(root: ParentNode): void {
         node = walker.nextNode();
     }
 
-    const elements: Element[] = root instanceof Element
+    const elements: Element[] = root.instanceOf(Element)
         ? [root, ...Array.from(root.querySelectorAll('*'))]
         : Array.from(root.querySelectorAll('*'));
     for (const element of elements) {
@@ -919,7 +1210,7 @@ function isPluginUiRoot(element: Element): boolean {
 
 export function localizePluginSubtree(node: Node): void {
     if (activeLanguage === 'en') return;
-    const element = node instanceof Element ? node : node.parentElement;
+    const element = node.instanceOf(Element) ? node : node.parentElement;
     if (!element || isDocumentShell(element)) {
         const scope = isDocumentShell(element) ? element : activeDocument?.body;
         if (!scope) return;
@@ -938,9 +1229,10 @@ export function localizePluginSubtree(node: Node): void {
 
     const containingRoot = element.closest(PLUGIN_UI_SELECTOR);
     if (containingRoot && isPluginUiRoot(containingRoot)) {
-        const modal = containingRoot.closest('.modal-container');
-        const target = modal && !isDocumentShell(modal) ? modal : containingRoot;
-        localizeElement(target);
+        // This path is called by the global MutationObserver. Localize only the
+        // inserted branch; walking the entire view once for every new card made
+        // large Chinese Library views progressively slower.
+        localizeElement(element);
         return;
     }
 

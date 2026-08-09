@@ -1,5 +1,5 @@
-/* eslint-disable @typescript-eslint/no-explicit-any -- Obsidian Canvas JSON is loosely typed */
-import { App, TFile, TFolder, normalizePath } from 'obsidian';
+
+import { App, TFile, normalizePath } from 'obsidian';
 import {
     deriveProjectFoldersFromFilePath,
 } from '../models/StoryLineProject';
@@ -31,6 +31,25 @@ export interface CorkboardCanvasEdge {
 export interface CorkboardCanvasData {
     nodes: CorkboardCanvasNode[];
     edges: CorkboardCanvasEdge[];
+}
+
+function isCanvasNode(value: unknown): value is CorkboardCanvasNode {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const node = value as Partial<CorkboardCanvasNode>;
+    return typeof node.id === 'string'
+        && typeof node.type === 'string'
+        && typeof node.x === 'number'
+        && typeof node.y === 'number'
+        && typeof node.width === 'number'
+        && typeof node.height === 'number';
+}
+
+function isCanvasEdge(value: unknown): value is CorkboardCanvasEdge {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const edge = value as Partial<CorkboardCanvasEdge>;
+    return typeof edge.id === 'string'
+        && typeof edge.fromNode === 'string'
+        && typeof edge.toNode === 'string';
 }
 
 export type CorkboardPos = { x: number; y: number; z?: number; w?: number; h?: number };
@@ -137,12 +156,24 @@ export class CorkboardCanvasService {
             return { nodes: [], edges: [] };
         }
         try {
-            const raw = JSON.parse(await this.app.vault.read(file));
-            const nodes = Array.isArray(raw?.nodes) ? raw.nodes : [];
-            const edges = Array.isArray(raw?.edges) ? raw.edges : [];
+            const raw: unknown = JSON.parse(await this.app.vault.read(file));
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                throw new Error('Canvas root must be a JSON object.');
+            }
+            const record = raw as Record<string, unknown>;
+            if (!Array.isArray(record.nodes) || !Array.isArray(record.edges)) {
+                throw new Error('Canvas must contain nodes and edges arrays.');
+            }
+            if (!record.nodes.every(isCanvasNode) || !record.edges.every(isCanvasEdge)) {
+                throw new Error('Canvas contains malformed nodes or edges.');
+            }
+            const nodes = record.nodes;
+            const edges = record.edges;
             return { nodes, edges };
-        } catch {
-            return { nodes: [], edges: [] };
+        } catch (error) {
+            const wrapped = new Error(`Could not read corkboard Canvas "${path}". The original file was not changed.`);
+            (wrapped as Error & { cause?: unknown }).cause = error;
+            throw wrapped;
         }
     }
 
@@ -161,8 +192,10 @@ export class CorkboardCanvasService {
                 }) === payload) {
                     return existing;
                 }
-            } catch {
-                // Fall through and rewrite if current content is unreadable.
+            } catch (error) {
+                const wrapped = new Error(`Could not verify corkboard Canvas "${path}". The original file was not changed.`);
+                (wrapped as Error & { cause?: unknown }).cause = error;
+                throw wrapped;
             }
             const suppress = this.plugin.beginSuppressVaultRefresh?.(path);
             try {
@@ -242,16 +275,16 @@ export class CorkboardCanvasService {
             const row = Math.floor(index / 4);
             const x = Number.isFinite(Number(prev?.x))
                 ? Number(prev!.x)
-                : (Number.isFinite(pos?.x) ? Number(pos!.x) : col * 320);
+                : (Number.isFinite(pos?.x) ? Number(pos.x) : col * 320);
             const y = Number.isFinite(Number(prev?.y))
                 ? Number(prev!.y)
-                : (Number.isFinite(pos?.y) ? Number(pos!.y) : row * 230);
+                : (Number.isFinite(pos?.y) ? Number(pos.y) : row * 230);
             const w = Number.isFinite(Number(prev?.width)) && Number(prev!.width) > 0
                 ? Number(prev!.width)
-                : (Number.isFinite(pos?.w) && (pos!.w as number) > 0 ? Number(pos!.w) : DEFAULT_W);
+                : (Number.isFinite(pos?.w) && (pos.w as number) > 0 ? Number(pos.w) : DEFAULT_W);
             const h = Number.isFinite(Number(prev?.height)) && Number(prev!.height) > 0
                 ? Number(prev!.height)
-                : (Number.isFinite(pos?.h) && (pos!.h as number) > 0 ? Number(pos!.h) : DEFAULT_H);
+                : (Number.isFinite(pos?.h) && (pos.h as number) > 0 ? Number(pos.h) : DEFAULT_H);
             fileNodes.push({
                 id: prev?.id?.startsWith?.('nl-') ? prev.id : corkboardNodeIdForPath(path),
                 type: 'file',
@@ -287,28 +320,15 @@ export class CorkboardCanvasService {
     }
 
     /**
-     * Rename/copy legacy corkboard canvases onto the project-named path when missing:
-     * corkboard.canvas, System/corkboard.canvas, or a single leftover .canvas in Canvas/.
+     * Rename/copy explicitly named legacy corkboard canvases onto the
+     * project-named path when missing. Never adopt an arbitrary lone .canvas:
+     * it may be a narrative projection or a user-authored Obsidian Canvas.
      */
     private async migrateLegacyCanvasIfNeeded(targetPath: string): Promise<void> {
         const existing = this.app.vault.getAbstractFileByPath(targetPath);
         if (existing instanceof TFile) return;
 
         const candidates: string[] = [...this.getLegacyCanvasPaths()];
-        const project = this.plugin.sceneManager?.activeProject;
-        if (project?.filePath) {
-            const { canvasFolder } = deriveProjectFoldersFromFilePath(project.filePath);
-            const folder = this.app.vault.getAbstractFileByPath(canvasFolder);
-            if (folder instanceof TFolder) {
-                const canvases = folder.children
-                    .filter((c): c is TFile => c instanceof TFile && c.extension.toLowerCase() === 'canvas')
-                    .map(c => c.path);
-                // If exactly one .canvas remains under Canvas/, treat it as the corkboard.
-                if (canvases.length === 1 && canvases[0] !== targetPath) {
-                    candidates.push(canvases[0]);
-                }
-            }
-        }
 
         for (const legacy of candidates) {
             if (!legacy || legacy === targetPath) continue;

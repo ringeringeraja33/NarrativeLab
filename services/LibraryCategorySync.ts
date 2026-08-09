@@ -1,15 +1,38 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
- * Keep Library tab labels parallel with Library/<folder> names.
- * Stable category ids (characters, locations, items, …) never change —
- * only the folder basename / tab label does.
+ * Library categories ↔ vault folders.
+ *
+ * Strict rules (every project):
+ * 1. Source of truth for tabs = direct subfolders of Library/ (plus fixed
+ *    Characters / Locations / Uncategorized).
+ * 2. Uncategorized = notes at Library root only — never notes inside a
+ *    category subfolder (Creatures, Skills, …).
+ * 3. Deleting a category removes its Library folder(s), alias Bases, and
+ *    settings; leftover rename aliases (e.g. library-技能.base) are pruned.
+ * 4. Bases/library-*.base must match live categories; orphans are removed.
+ * 5. Stable category ids (characters, locations, items, …) never change —
+ *    only the folder basename / tab label does.
  */
 import { App, Notice, TFile, TFolder, normalizePath } from 'obsidian';
 import { BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
-import type { StoryLineProject } from '../models/StoryLineProject';
+import { DEFAULT_PROJECT_LIBRARY_FOLDERS, type StoryLineProject } from '../models/StoryLineProject';
 import type SceneCardsPlugin from '../main';
-import { localizeForLanguage, seedUiLanguage, t } from '../utils/i18n';
-import { removeNativeLibraryBase, syncNativeLibraryBase } from '../components/NativeLibraryBase';
+import { localizeForLanguage, t } from '../utils/i18n';
+import {
+    allocateLibraryCategoryId,
+    findLibraryCategoriesMissingFolders,
+    libraryFolderNamesMatch,
+    planLibraryFolderRename,
+    type VaultPathKind,
+} from '../utils/libraryCategoryTransactions';
+import { coerceString } from '../utils/narrow';
+import {
+    migrateNativeLibraryBasesForActiveProject,
+    pruneOrphanNativeLibraryBases,
+    renameNativeLibraryBase,
+    removeNativeLibraryBase,
+    syncNativeLibraryBase,
+} from '../components/NativeLibraryBase';
 
 /** Default English folder basenames for built-in / special Library tabs. */
 export const DEFAULT_LIBRARY_FOLDER_NAMES: Record<string, string> = {
@@ -75,10 +98,7 @@ export function resolveLibraryFolderName(
     return categoryId;
 }
 
-/**
- * Player-visible Library tab / manager label.
- * Prefers saved custom label; otherwise seeds from Obsidian interface language.
- */
+/** Player-visible Library tab / manager label. Editable names stay verbatim. */
 export function resolveLibraryCategoryLabel(
     plugin: SceneCardsPlugin,
     categoryId: string,
@@ -88,30 +108,59 @@ export function resolveLibraryCategoryLabel(
         const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
         return custom?.label?.trim() || t('Uncategorized entries');
     }
+    const projectFolder = plugin.sceneManager.activeProject?.libraryFolders?.[categoryId]?.trim();
+    const defaultFolder = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId];
+    // A non-default project mapping is an explicit folder rename and should be
+    // visible immediately, including for fixed Characters / Locations tabs.
+    if (projectFolder && projectFolder !== defaultFolder) return projectFolder;
     const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
-    if (custom?.label?.trim()) return custom.label.trim();
+    const customLabel = custom?.label?.trim();
+    if (customLabel && (!defaultFolder || !isSeedLibraryCategoryLabel(categoryId, customLabel))) {
+        return customLabel;
+    }
     const english = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId] || fallback;
     if (!english) return fallback || categoryId;
-    return localizeForLanguage(seedUiLanguage(plugin.app), english);
+    return english;
 }
 
-/**
- * One-shot: persist display labels for built-in Library categories from Obsidian language.
- * Pins English folder mappings on the active project so labels can differ from paths.
- */
+function setLibraryCategoryDisplayMetadata(
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+    label: string,
+): void {
+    if (!plugin.settings.codexCustomCategories) plugin.settings.codexCustomCategories = [];
+    const existing = plugin.settings.codexCustomCategories.find(category => category.id === categoryId);
+    if (existing) {
+        existing.label = label;
+        if (!existing.icon) existing.icon = BUILTIN_LIBRARY_ICONS[categoryId] || 'file-text';
+        return;
+    }
+    plugin.settings.codexCustomCategories.push({
+        id: categoryId,
+        label,
+        icon: BUILTIN_LIBRARY_ICONS[categoryId] || 'file-text',
+        preset: BUILTIN_CODEX_CATEGORIES.some(category => category.id === categoryId) || undefined,
+    });
+}
+
+/** Persist raw English defaults while preserving explicit folder/category renames. */
 export async function ensureSeededLibraryCategoryLabels(plugin: SceneCardsPlugin): Promise<void> {
-    const seedLang = seedUiLanguage(plugin.app);
     const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
     if (!plugin.settings.codexCustomCategories) plugin.settings.codexCustomCategories = [];
+
+    const project = plugin.sceneManager.activeProject;
+    const enabled = new Set(plugin.settings.codexEnabledCategories || []);
+    const registered = new Set(plugin.settings.codexCustomCategories.map(category => category.id));
 
     const ids = [
         'characters',
         'locations',
-        ...BUILTIN_CODEX_CATEGORIES.map(c => c.id).filter(id => !deleted.has(id)),
+        ...BUILTIN_CODEX_CATEGORIES.map(c => c.id).filter(id =>
+            !deleted.has(id)
+            && (enabled.has(id) || registered.has(id) || !!project?.libraryFolders?.[id])),
     ];
 
     let settingsChanged = false;
-    const project = plugin.sceneManager.activeProject;
     let projectChanged = false;
     if (project && !project.libraryFolders) {
         project.libraryFolders = {};
@@ -121,7 +170,8 @@ export async function ensureSeededLibraryCategoryLabels(plugin: SceneCardsPlugin
     for (const id of ids) {
         const english = DEFAULT_LIBRARY_FOLDER_NAMES[id];
         if (!english) continue;
-        const seedLabel = localizeForLanguage(seedLang, english);
+        const projectFolder = project?.libraryFolders?.[id]?.trim();
+        const seedLabel = projectFolder && projectFolder !== english ? projectFolder : english;
 
         if (project?.libraryFolders && !project.libraryFolders[id]?.trim()) {
             project.libraryFolders[id] = english;
@@ -139,8 +189,8 @@ export async function ensureSeededLibraryCategoryLabels(plugin: SceneCardsPlugin
                     : undefined,
             });
             settingsChanged = true;
-        } else if (!entry.label?.trim() || entry.label.trim() === english) {
-            // Still at English factory default → first-generation seed.
+        } else if (!entry.label?.trim() || isSeedLibraryCategoryLabel(id, entry.label)) {
+            // Migrate old UI-language seeds; explicit folder renames remain intact.
             if (entry.label?.trim() !== seedLabel) {
                 entry.label = seedLabel;
                 settingsChanged = true;
@@ -177,14 +227,195 @@ export function applyCategoryFolderLabels(plugin: SceneCardsPlugin): void {
     }
 }
 
+/**
+ * Category ids that still own a Library folder: fixed hubs plus categories
+ * already registered by this project. Merely existing as a built-in template
+ * does not create a folder.
+ */
+export function getManagedLibraryCategoryIds(plugin: SceneCardsPlugin): string[] {
+    const ids = new Set<string>(['characters', 'locations']);
+    for (const custom of plugin.settings.codexCustomCategories || []) {
+        if (!custom.id || custom.id === UNCATEGORIZED_CATEGORY_ID) continue;
+        ids.add(custom.id);
+    }
+    for (const id of plugin.settings.codexEnabledCategories || []) {
+        if (!id || id === UNCATEGORIZED_CATEGORY_ID) continue;
+        ids.add(id);
+    }
+    return [...ids];
+}
+
+function removeLibraryCategoryState(
+    plugin: SceneCardsPlugin,
+    project: StoryLineProject,
+    categoryId: string,
+): void {
+    plugin.settings.codexEnabledCategories =
+        (plugin.settings.codexEnabledCategories || []).filter(id => id !== categoryId);
+    plugin.settings.codexSidebarCategories =
+        (plugin.settings.codexSidebarCategories || []).filter(id => id !== categoryId);
+    plugin.settings.libraryCategoryOrder =
+        (plugin.settings.libraryCategoryOrder || []).filter(id => id !== categoryId);
+    if (plugin.settings.storyGraphLibraryCategoryColors?.[categoryId]) {
+        delete plugin.settings.storyGraphLibraryCategoryColors[categoryId];
+    }
+    plugin.settings.codexCustomCategories =
+        (plugin.settings.codexCustomCategories || []).filter(category => category.id !== categoryId);
+    if (BUILTIN_CODEX_CATEGORIES.some(category => category.id === categoryId)) {
+        const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
+        deleted.add(categoryId);
+        plugin.settings.codexDeletedPresetCategories = Array.from(deleted);
+    }
+    delete plugin.settings.codexCategoryFieldTemplates?.[categoryId];
+    delete plugin.settings.codexCategoryCustomSections?.[categoryId];
+    delete plugin.settings.libraryBrowseLayout?.[categoryId];
+    delete plugin.settings.libraryTableColumns?.[categoryId];
+    delete plugin.settings.libraryTableSort?.[categoryId];
+    delete plugin.settings.libraryTableFormulas?.[categoryId];
+    delete plugin.settings.hiddenFields?.[categoryId];
+    if (project.libraryFolders) delete project.libraryFolders[categoryId];
+}
+
+/** Read direct Library children from disk so Finder/Explorer changes do not wait for Obsidian's index. */
+async function readLibraryFolderNames(
+    plugin: SceneCardsPlugin,
+    project: StoryLineProject,
+): Promise<{ names: Set<string>; scannedRoots: number }> {
+    const names = new Set<string>();
+    let scannedRoots = 0;
+    for (const root of libraryRootsForProject(plugin, project)) {
+        try {
+            if (!await plugin.app.vault.adapter.exists(root)) continue;
+            const listing = await plugin.app.vault.adapter.list(root);
+            scannedRoots += 1;
+            for (const folderPath of listing.folders) {
+                const name = basenameOfPath(folderPath);
+                if (name) names.add(name);
+            }
+        } catch (error) {
+            console.warn('[NarrativeLab] Failed to scan Library folders:', root, error);
+        }
+    }
+    return { names, scannedRoots };
+}
+
+/** Remove category settings and Base assets when its local folder was removed. */
+async function pruneLibraryCategoriesMissingFolders(plugin: SceneCardsPlugin): Promise<boolean> {
+    const pluginAny = plugin as SceneCardsPlugin & { _syncingLibraryFolders?: boolean };
+    // Never prune mid-rename/create — vault events can fire before mapping updates.
+    if (pluginAny._syncingLibraryFolders) return false;
+
+    const project = plugin.sceneManager.activeProject;
+    if (!project) return false;
+    const snapshot = await readLibraryFolderNames(plugin, project);
+    if (snapshot.scannedRoots === 0) return false;
+
+    const candidateIds = new Set<string>([
+        ...(plugin.settings.codexEnabledCategories || []),
+        ...(plugin.settings.codexCustomCategories || []).map(category => category.id),
+        ...Object.keys(project.libraryFolders || {}),
+    ]);
+    candidateIds.delete('characters');
+    candidateIds.delete('locations');
+    candidateIds.delete(UNCATEGORIZED_CATEGORY_ID);
+
+    const aliasesByCategory: Record<string, string[]> = {};
+    for (const categoryId of candidateIds) {
+        const aliases = new Set<string>();
+        aliases.add(resolveLibraryFolderName(plugin, categoryId, project));
+        const mapped = project.libraryFolders?.[categoryId]?.trim();
+        if (mapped) aliases.add(mapped);
+        const custom = plugin.settings.codexCustomCategories?.find(category => category.id === categoryId);
+        const customLabel = sanitizeLibraryFolderName(custom?.label || '');
+        if (customLabel) aliases.add(customLabel);
+        const english = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId];
+        if (english) aliases.add(english);
+        aliasesByCategory[categoryId] = [...aliases];
+    }
+
+    const missing = findLibraryCategoriesMissingFolders(aliasesByCategory, snapshot.names);
+    if (missing.length === 0) return false;
+    for (const categoryId of missing) {
+        // Resolve aliases before removing their metadata.
+        await removeNativeLibraryBase(plugin, categoryId);
+        removeLibraryCategoryState(plugin, project, categoryId);
+    }
+    return true;
+}
+
+function expectedLibraryFolderNames(
+    plugin: SceneCardsPlugin,
+    project: StoryLineProject,
+): Set<string> {
+    const names = new Set<string>();
+    for (const id of getManagedLibraryCategoryIds(plugin)) {
+        const resolved = resolveLibraryFolderName(plugin, id, project);
+        if (resolved) names.add(resolved);
+        const mapped = project.libraryFolders?.[id]?.trim();
+        if (mapped) names.add(mapped);
+        const english = DEFAULT_LIBRARY_FOLDER_NAMES[id];
+        if (english) names.add(english);
+        const custom = plugin.settings.codexCustomCategories?.find(c => c.id === id);
+        const label = sanitizeLibraryFolderName(custom?.label || '');
+        if (label) names.add(label);
+    }
+    return names;
+}
+
+/** Move notes out of a category folder into Library root, then trash the folder. */
+async function disposeLibrarySubfolder(
+    plugin: SceneCardsPlugin,
+    libraryRoot: string,
+    folderName: string,
+    mode: 'trash' | 'move-to-root',
+): Promise<void> {
+    const folderPath = normalizePath(`${libraryRoot}/${folderName}`);
+    const folder = plugin.app.vault.getAbstractFileByPath(folderPath);
+    if (!(folder instanceof TFolder)) return;
+
+    if (mode === 'move-to-root') {
+        const files: TFile[] = [];
+        const collectFiles = (current: TFolder) => {
+            for (const child of current.children) {
+                if (child instanceof TFile) files.push(child);
+                else if (child instanceof TFolder) collectFiles(child);
+            }
+        };
+        collectFiles(folder);
+        for (const file of files) {
+            if (file.name === '_NarrativeLab.base' || file.name === '.narrative-lab.base') continue;
+            if (file.name.toLowerCase().endsWith('.base')) continue;
+            const dot = file.name.lastIndexOf('.');
+            const stem = dot > 0 ? file.name.slice(0, dot) : file.name;
+            const extension = dot > 0 ? file.name.slice(dot) : '';
+            let targetPath = normalizePath(`${libraryRoot}/${file.name}`);
+            let suffix = 2;
+            while (plugin.app.vault.getAbstractFileByPath(targetPath)) {
+                targetPath = normalizePath(`${libraryRoot}/${stem} ${suffix}${extension}`);
+                suffix += 1;
+            }
+            await plugin.app.fileManager.renameFile(file, targetPath);
+        }
+        const remaining = plugin.app.vault.getAbstractFileByPath(folderPath);
+        if (remaining instanceof TFolder) {
+            await plugin.app.fileManager.trashFile(remaining);
+        }
+        return;
+    }
+
+    await plugin.app.fileManager.trashFile(folder);
+}
+
 /** Ensure Library + known category folders exist for the active project. */
 export async function ensureLibraryCategoryFolders(plugin: SceneCardsPlugin): Promise<void> {
     const project = plugin.sceneManager.activeProject;
     if (!project) return;
     const adapter = plugin.app.vault.adapter;
-    const lib = normalizePath(project.codexFolder);
-    if (!await adapter.exists(lib)) {
-        await plugin.app.vault.createFolder(lib).catch(() => undefined);
+    const roots = libraryRootsForProject(plugin, project);
+    for (const lib of roots) {
+        if (!await adapter.exists(lib)) {
+            await plugin.app.vault.createFolder(lib).catch(() => undefined);
+        }
     }
 
     const ids = new Set<string>([
@@ -192,17 +423,102 @@ export async function ensureLibraryCategoryFolders(plugin: SceneCardsPlugin): Pr
         'locations',
         ...(plugin.settings.codexEnabledCategories || []),
     ]);
+    // Prefer the series Library when present — that's where shared categories live.
+    const primaryLib = normalizePath(plugin.sceneManager.getCodexFolder() || project.codexFolder);
     for (const id of ids) {
         const name = resolveLibraryFolderName(plugin, id, project);
-        const path = normalizePath(`${lib}/${name}`);
+        const path = normalizePath(`${primaryLib}/${name}`);
         if (!await adapter.exists(path)) {
             await plugin.app.vault.createFolder(path).catch(() => undefined);
         }
-        const attachments = normalizePath(`${path}/Attachments`);
-        if (!await adapter.exists(attachments)) {
-            await plugin.app.vault.createFolder(attachments).catch(() => undefined);
-        }
     }
+}
+
+/**
+ * After folders→categories adopt: ensure enabled folders exist, drop stale
+ * libraryFolders keys, prune unmanaged orphan folders, prune orphan Bases.
+ */
+export async function syncLibraryFoldersWithCategories(
+    plugin: SceneCardsPlugin,
+): Promise<boolean> {
+    const project = plugin.sceneManager.activeProject;
+    if (!project) return false;
+
+    const pluginAny = plugin as SceneCardsPlugin & { _syncingLibraryFolders?: boolean };
+    const wasSyncing = !!pluginAny._syncingLibraryFolders;
+    pluginAny._syncingLibraryFolders = true;
+    let changed = false;
+    try {
+        await ensureLibraryCategoryFolders(plugin);
+
+        const managed = new Set(getManagedLibraryCategoryIds(plugin));
+        if (project.libraryFolders) {
+            for (const id of Object.keys(project.libraryFolders)) {
+                if (managed.has(id)) continue;
+                delete project.libraryFolders[id];
+                changed = true;
+            }
+        }
+
+        const expected = expectedLibraryFolderNames(plugin, project);
+        const expectedList = [...expected];
+        for (const libraryRoot of libraryRootsForProject(plugin, project)) {
+            const rootAf = plugin.app.vault.getAbstractFileByPath(libraryRoot);
+            if (!(rootAf instanceof TFolder)) continue;
+            for (const child of [...rootAf.children]) {
+                if (!(child instanceof TFolder)) continue;
+                if (expected.has(child.name)) continue;
+                // Case-only mismatch (Skills vs skills) — keep folder, align mapping.
+                const caseMatch = expectedList.find(name => libraryFolderNamesMatch(name, child.name));
+                if (caseMatch) {
+                    for (const id of getManagedLibraryCategoryIds(plugin)) {
+                        const mapped = project.libraryFolders?.[id]?.trim();
+                        const resolved = resolveLibraryFolderName(plugin, id, project);
+                        if (
+                            (mapped && libraryFolderNamesMatch(mapped, child.name))
+                            || libraryFolderNamesMatch(resolved, child.name)
+                        ) {
+                            if (!project.libraryFolders) project.libraryFolders = {};
+                            if (project.libraryFolders[id] !== child.name) {
+                                project.libraryFolders[id] = child.name;
+                                changed = true;
+                            }
+                        }
+                    }
+                    continue;
+                }
+                // Orphan folder — keep notes as Uncategorized, drop the shell.
+                await disposeLibrarySubfolder(plugin, libraryRoot, child.name, 'move-to-root');
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            await plugin.sceneManager.saveProjectFrontmatter(project).catch(() => undefined);
+        }
+        await pruneOrphanNativeLibraryBases(plugin);
+        return changed;
+    } finally {
+        if (!wasSyncing) pluginAny._syncingLibraryFolders = false;
+    }
+}
+
+/**
+ * Full reconcile for the active project: folders → categories → folders/Bases.
+ * Call on project open, after category manager save, and from the all-projects pass.
+ */
+export async function reconcileLibraryCategoriesForActiveProject(
+    plugin: SceneCardsPlugin,
+    options: { createMissingRegistered?: boolean } = {},
+): Promise<boolean> {
+    if (!plugin.sceneManager.activeProject) return false;
+    const adopted = await adoptLibraryCategoriesFromFolders(plugin);
+    const removed = options.createMissingRegistered
+        ? false
+        : await pruneLibraryCategoriesMissingFolders(plugin);
+    const foldersChanged = await syncLibraryFoldersWithCategories(plugin);
+    await migrateNativeLibraryBasesForActiveProject(plugin);
+    return adopted || removed || foldersChanged;
 }
 
 /**
@@ -230,24 +546,46 @@ export async function renameLibraryCategory(
     if (oldName === newName) return false;
 
     const pluginAny = plugin as SceneCardsPlugin & { _syncingLibraryFolders?: boolean };
+    const settingsSnapshot = JSON.stringify(plugin.settings);
+    const projectFoldersSnapshot = project.libraryFolders ? { ...project.libraryFolders } : undefined;
+    const renamedFolders: Array<{ from: string; to: string }> = [];
+    const createdFolders: string[] = [];
     pluginAny._syncingLibraryFolders = true;
     try {
         const libraryRoots = libraryRootsForProject(plugin, project);
-        for (const lib of libraryRoots) {
+        const states = libraryRoots.map(lib => {
             const oldPath = normalizePath(`${lib}/${oldName}`);
             const newPath = normalizePath(`${lib}/${newName}`);
-            const existing = plugin.app.vault.getAbstractFileByPath(newPath);
-            if (existing) {
-                new Notice(t('A folder with this name already exists'));
-                return false;
+            const kindOf = (path: string): VaultPathKind => {
+                const value = plugin.app.vault.getAbstractFileByPath(path);
+                if (!value) return 'missing';
+                return value instanceof TFolder ? 'folder' : 'other';
+            };
+            return {
+                root: lib,
+                oldPath,
+                newPath,
+                rootKind: kindOf(lib),
+                oldKind: kindOf(oldPath),
+                newKind: kindOf(newPath),
+            };
+        });
+        const plan = planLibraryFolderRename(states);
+        if (!plan.ok) {
+            if (plan.reason === 'missing-root') throw new Error(t('Library folder not found: {path}', { path: plan.path }));
+            if (plan.reason === 'source-not-folder') throw new Error(t('Library folder not found: {path}', { path: plan.path }));
+            throw new Error(t('A folder with this name already exists'));
+        }
+        for (const operation of plan.operations) {
+            if (operation.action === 'create') {
+                await plugin.app.vault.createFolder(operation.newPath);
+                createdFolders.push(operation.newPath);
+                continue;
             }
-            const folder = plugin.app.vault.getAbstractFileByPath(oldPath);
-            if (folder instanceof TFolder) {
-                await plugin.app.fileManager.renameFile(folder, newPath);
-            } else {
-                // Folder missing — still update mapping; create empty target.
-                await plugin.app.vault.createFolder(newPath).catch(() => undefined);
-            }
+            const folder = plugin.app.vault.getAbstractFileByPath(operation.oldPath);
+            if (!(folder instanceof TFolder)) throw new Error(t('Library folder not found: {path}', { path: operation.oldPath }));
+            await plugin.app.fileManager.renameFile(folder, operation.newPath);
+            renamedFolders.push({ from: operation.oldPath, to: operation.newPath });
         }
 
         if (!project.libraryFolders) project.libraryFolders = {};
@@ -255,16 +593,42 @@ export async function renameLibraryCategory(
         applyLibraryFolderPaths(project, plugin);
 
         // Keep the active project's custom label in sync with the folder name.
-        const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
-        if (custom) {
-            custom.label = newName;
-            await plugin.saveSettings();
-        }
+        setLibraryCategoryDisplayMetadata(plugin, categoryId, newName);
+        await plugin.saveSettings();
 
         await plugin.sceneManager.saveProjectFrontmatter(project);
         applyCategoryFolderLabels(plugin);
+        await renameNativeLibraryBase(plugin, categoryId, oldName);
         await syncNativeLibraryBase(plugin, categoryId);
+        // Drop alias Bases named after the old folder label (e.g. library-技能.base)
+        await pruneOrphanNativeLibraryBases(plugin);
         return true;
+    } catch (error) {
+        for (const move of [...renamedFolders].reverse()) {
+            const folder = plugin.app.vault.getAbstractFileByPath(move.to);
+            if (folder instanceof TFolder && !plugin.app.vault.getAbstractFileByPath(move.from)) {
+                await plugin.app.fileManager.renameFile(folder, move.from).catch(rollbackError => {
+                    console.error('[NarrativeLab] Failed to roll back Library folder rename:', rollbackError);
+                });
+            }
+        }
+        for (const path of [...createdFolders].reverse()) {
+            const folder = plugin.app.vault.getAbstractFileByPath(path);
+            if (folder instanceof TFolder && folder.children.length === 0) {
+                await plugin.app.fileManager.trashFile(folder).catch(() => undefined);
+            }
+        }
+        plugin.settings = JSON.parse(settingsSnapshot);
+        project.libraryFolders = projectFoldersSnapshot ? { ...projectFoldersSnapshot } : undefined;
+        applyLibraryFolderPaths(project, plugin);
+        await plugin.saveSettings().catch(() => undefined);
+        await plugin.sceneManager.saveProjectFrontmatter(project).catch(() => undefined);
+        await syncNativeLibraryBase(plugin, categoryId).catch(() => undefined);
+        console.error('[NarrativeLab] Failed to rename Library category:', error);
+        new Notice(t('Failed to rename Library category: {message}', {
+            message: error instanceof Error ? error.message : String(error),
+        }));
+        return false;
     } finally {
         pluginAny._syncingLibraryFolders = false;
     }
@@ -288,84 +652,123 @@ export async function deleteLibraryCategory(
         return false;
     }
 
-    const folderName = resolveLibraryFolderName(plugin, categoryId, project);
+    const folderNames = new Set<string>();
+    const primaryName = resolveLibraryFolderName(plugin, categoryId, project);
+    if (primaryName) folderNames.add(primaryName);
+    const mapped = project.libraryFolders?.[categoryId]?.trim();
+    if (mapped) folderNames.add(mapped);
+    const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
+    const customLabel = sanitizeLibraryFolderName(custom?.label || '');
+    if (customLabel) folderNames.add(customLabel);
+    const english = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId];
+    if (english) folderNames.add(english);
+
     const libraryRoots = libraryRootsForProject(plugin, project);
     const pluginAny = plugin as SceneCardsPlugin & { _syncingLibraryFolders?: boolean };
+    const settingsSnapshot = JSON.stringify(plugin.settings);
+    const projectFoldersSnapshot = project.libraryFolders ? { ...project.libraryFolders } : undefined;
+    const stagedFolders: Array<{ originalPath: string; stagedPath: string }> = [];
+    let stagingRoot: string | null = null;
+    let stagingFolder: TFolder | null = null;
     pluginAny._syncingLibraryFolders = true;
 
     try {
+        // Also catch leftover rename aliases (e.g. 技能 after label became Skills).
         for (const libraryRoot of libraryRoots) {
-            const folderPath = normalizePath(`${libraryRoot}/${folderName}`);
-            const folder = plugin.app.vault.getAbstractFileByPath(folderPath);
-            if (!(folder instanceof TFolder)) continue;
-            if (mode === 'move-to-root') {
-                const files: TFile[] = [];
-                const collectFiles = (current: TFolder) => {
-                    for (const child of current.children) {
-                        if (child instanceof TFile) files.push(child);
-                        else if (child instanceof TFolder) collectFiles(child);
-                    }
-                };
-                collectFiles(folder);
-                for (const file of files) {
-                    if (file.name === '_NarrativeLab.base' || file.name === '.narrative-lab.base') continue;
-                    const dot = file.name.lastIndexOf('.');
-                    const stem = dot > 0 ? file.name.slice(0, dot) : file.name;
-                    const extension = dot > 0 ? file.name.slice(dot) : '';
-                    let targetPath = normalizePath(`${libraryRoot}/${file.name}`);
-                    let suffix = 2;
-                    while (plugin.app.vault.getAbstractFileByPath(targetPath)) {
-                        targetPath = normalizePath(`${libraryRoot}/${stem} ${suffix}${extension}`);
-                        suffix += 1;
-                    }
-                    await plugin.app.fileManager.renameFile(file, targetPath);
+            const rootAf = plugin.app.vault.getAbstractFileByPath(libraryRoot);
+            if (!(rootAf instanceof TFolder)) continue;
+            for (const child of rootAf.children) {
+                if (!(child instanceof TFolder)) continue;
+                if (slugLibraryCategoryId(child.name) === categoryId) {
+                    folderNames.add(child.name);
                 }
-                const remainingFolder = plugin.app.vault.getAbstractFileByPath(folderPath);
-                if (remainingFolder instanceof TFolder) {
-                    await plugin.app.fileManager.trashFile(remainingFolder);
-                }
-            } else {
-                await plugin.app.fileManager.trashFile(folder);
             }
         }
+
+        if (mode === 'trash') {
+            const targets = new Map<string, TFolder>();
+            for (const libraryRoot of libraryRoots) {
+                for (const folderName of folderNames) {
+                    const path = normalizePath(`${libraryRoot}/${folderName}`);
+                    const folder = plugin.app.vault.getAbstractFileByPath(path);
+                    if (folder instanceof TFolder) targets.set(path, folder);
+                }
+            }
+            if (targets.size > 0) {
+                const systemFolder = normalizePath(plugin.getProjectSystemFolder());
+                if (!plugin.app.vault.getAbstractFileByPath(systemFolder)) {
+                    await plugin.app.vault.createFolder(systemFolder);
+                }
+                const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                // Dot-prefixed folders are deliberately omitted from Obsidian's
+                // Vault index. Keep this temporary folder indexed so trash and
+                // rollback can use FileManager instead of unsafe adapter removal.
+                stagingRoot = normalizePath(`${systemFolder}/_NarrativeLab-delete-${stamp}`);
+                stagingFolder = await plugin.app.vault.createFolder(stagingRoot);
+                let index = 0;
+                for (const [originalPath, folder] of targets) {
+                    const stagedPath = normalizePath(`${stagingRoot}/${index}-${folder.name}`);
+                    await plugin.app.fileManager.renameFile(folder, stagedPath);
+                    stagedFolders.push({ originalPath, stagedPath });
+                    index += 1;
+                }
+            }
+        }
+
+        // Remove the generated/linked Base first. If that fails, leave the
+        // category folder and its entries untouched; the Base is recoverable
+        // from trash and can also be regenerated from the category mapping.
         await removeNativeLibraryBase(plugin, categoryId);
 
-        plugin.settings.codexEnabledCategories =
-            (plugin.settings.codexEnabledCategories || []).filter(id => id !== categoryId);
-        plugin.settings.codexSidebarCategories =
-            (plugin.settings.codexSidebarCategories || []).filter(id => id !== categoryId);
-        plugin.settings.libraryCategoryOrder =
-            (plugin.settings.libraryCategoryOrder || []).filter(id => id !== categoryId);
-        const customIndex = (plugin.settings.codexCustomCategories || [])
-            .findIndex(category => category.id === categoryId);
-        if (customIndex >= 0) {
-            plugin.settings.codexCustomCategories.splice(customIndex, 1);
+        if (mode === 'move-to-root') {
+            for (const libraryRoot of libraryRoots) {
+                for (const folderName of folderNames) {
+                    await disposeLibrarySubfolder(plugin, libraryRoot, folderName, mode);
+                }
+            }
         }
-        if (BUILTIN_CODEX_CATEGORIES.some(category => category.id === categoryId)) {
-            const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
-            deleted.add(categoryId);
-            plugin.settings.codexDeletedPresetCategories = Array.from(deleted);
-        }
-        delete plugin.settings.codexCategoryFieldTemplates?.[categoryId];
-        delete plugin.settings.codexCategoryCustomSections?.[categoryId];
-        delete plugin.settings.libraryBrowseLayout?.[categoryId];
-        delete plugin.settings.libraryTableColumns?.[categoryId];
-        delete plugin.settings.libraryTableSort?.[categoryId];
-        delete plugin.settings.libraryTableFormulas?.[categoryId];
-        delete plugin.settings.hiddenFields?.[categoryId];
 
-        if (project.libraryFolders) {
-            delete project.libraryFolders[categoryId];
-        }
+        removeLibraryCategoryState(plugin, project, categoryId);
 
         await plugin.saveSettings();
         await plugin.sceneManager.saveProjectFrontmatter(project);
+        await syncLibraryFoldersWithCategories(plugin);
         await plugin.reloadEntities();
+        if (stagingRoot) {
+            const staged = plugin.app.vault.getAbstractFileByPath(stagingRoot) ?? stagingFolder;
+            if (!(staged instanceof TFolder)) throw new Error(t('Staged Library assets could not be found.'));
+            await plugin.app.fileManager.trashFile(staged);
+            stagingRoot = null;
+            stagingFolder = null;
+            stagedFolders.length = 0;
+        }
         new Notice(t('Library category deleted'));
         return true;
     } catch (error) {
+        for (const move of [...stagedFolders].reverse()) {
+            const folder = plugin.app.vault.getAbstractFileByPath(move.stagedPath);
+            if (folder instanceof TFolder && !plugin.app.vault.getAbstractFileByPath(move.originalPath)) {
+                await plugin.app.fileManager.renameFile(folder, move.originalPath).catch(rollbackError => {
+                    console.error('[NarrativeLab] Failed to restore staged Library assets:', rollbackError);
+                });
+            }
+        }
+        if (stagingRoot) {
+            const folder = plugin.app.vault.getAbstractFileByPath(stagingRoot) ?? stagingFolder;
+            if (folder instanceof TFolder && folder.children.length === 0) {
+                await plugin.app.fileManager.trashFile(folder).catch(() => undefined);
+            }
+        }
+        plugin.settings = JSON.parse(settingsSnapshot);
+        project.libraryFolders = projectFoldersSnapshot ? { ...projectFoldersSnapshot } : undefined;
+        applyLibraryFolderPaths(project, plugin);
+        await plugin.saveSettings().catch(() => undefined);
+        await plugin.sceneManager.saveProjectFrontmatter(project).catch(() => undefined);
+        await syncNativeLibraryBase(plugin, categoryId).catch(() => undefined);
         console.error('[NarrativeLab] Failed to delete Library category:', error);
-        new Notice(t('Failed to delete Library category'));
+        new Notice(t('Failed to delete Library category: {message}', {
+            message: error instanceof Error ? error.message : String(error),
+        }));
         return false;
     } finally {
         pluginAny._syncingLibraryFolders = false;
@@ -412,11 +815,8 @@ export async function handleLibraryFolderVaultRename(
     project.libraryFolders[categoryId] = newName;
     applyLibraryFolderPaths(project, plugin);
 
-    const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
-    if (custom) {
-        custom.label = newName;
-        await plugin.saveSettings();
-    }
+    setLibraryCategoryDisplayMetadata(plugin, categoryId, newName);
+    await plugin.saveSettings();
 
     await plugin.sceneManager.saveProjectFrontmatter(project);
     applyCategoryFolderLabels(plugin);
@@ -448,18 +848,9 @@ function findCategoryIdForFolderName(
     return null;
 }
 
-/** Seed libraryFolders for a new project from defaults + enabled categories. */
-export function defaultLibraryFoldersForNewProject(
-    plugin: SceneCardsPlugin,
-): Record<string, string> {
-    const map: Record<string, string> = {
-        characters: DEFAULT_LIBRARY_FOLDER_NAMES.characters,
-        locations: DEFAULT_LIBRARY_FOLDER_NAMES.locations,
-    };
-    for (const id of plugin.settings.codexEnabledCategories || []) {
-        map[id] = resolveLibraryFolderName(plugin, id, null);
-    }
-    return map;
+/** Seed a new project with its two fixed Library folders only. */
+export function defaultLibraryFoldersForNewProject(): Record<string, string> {
+    return { ...DEFAULT_PROJECT_LIBRARY_FOLDERS };
 }
 
 export async function ensureFoldersExist(app: App, paths: string[]): Promise<void> {
@@ -537,9 +928,9 @@ function parseLibraryCategorySettings(raw: Record<string, unknown>): LibraryCate
     const customCategories = customRaw
         .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object')
         .map(item => ({
-            id: String(item.id || '').trim(),
-            label: String(item.label || '').trim(),
-            icon: String(item.icon || 'file-text').trim() || 'file-text',
+            id: coerceString(item.id).trim(),
+            label: coerceString(item.label).trim(),
+            icon: coerceString(item.icon, 'file-text').trim() || 'file-text',
             ...(typeof item.showInSidebar === 'boolean' ? { showInSidebar: item.showInSidebar } : {}),
             ...(typeof item.hasProfilePage === 'boolean' ? { hasProfilePage: item.hasProfilePage } : {}),
             ...(typeof item.preset === 'boolean' ? { preset: item.preset } : {}),
@@ -601,7 +992,27 @@ function resolveCategoryIdForLibraryFolder(
     }
 
     for (const builtin of BUILTIN_CODEX_CATEGORIES) {
-        if (builtin.folder === normalized || builtin.id === normalized.toLowerCase()) {
+        if (
+            builtin.folder === normalized
+            || builtin.id === normalized.toLowerCase()
+            || builtin.label === normalized
+        ) {
+            return {
+                id: builtin.id,
+                label: builtin.label,
+                icon: builtin.icon,
+                builtin: true,
+            };
+        }
+    }
+
+    // Localized seed labels (e.g. 生物 → creatures) still map to builtins.
+    for (const builtin of BUILTIN_CODEX_CATEGORIES) {
+        if (
+            isSeedLibraryCategoryLabel(builtin.id, normalized)
+            || localizeForLanguage('zh', builtin.folder) === normalized
+            || localizeForLanguage('en', builtin.folder) === normalized
+        ) {
             return {
                 id: builtin.id,
                 label: builtin.label,
@@ -633,21 +1044,16 @@ function resolveCategoryIdForLibraryFolder(
 }
 
 /**
- * Discover Library subfolders and register missing categories for the active project.
- * When `enableExisting` is true (first migration), restore/enable categories that
- * already have folders — e.g. revive Creatures after a shared global delete.
+ * Library subfolders are the source of truth for which categories exist.
+ * Any direct child of Library/ becomes an enabled category tab (Creatures,
+ * custom folders like 技能, …). Fixed Characters/Locations are skipped here.
  */
 export async function adoptLibraryCategoriesFromFolders(
     plugin: SceneCardsPlugin,
-    options: { enableExisting?: boolean } = {},
+    _options: { enableExisting?: boolean } = {},
 ): Promise<boolean> {
     const project = plugin.sceneManager.activeProject;
     if (!project) return false;
-
-    const enableExisting = options.enableExisting === true;
-    const libraryRoot = normalizePath(project.codexFolder);
-    const rootAf = plugin.app.vault.getAbstractFileByPath(libraryRoot);
-    if (!(rootAf instanceof TFolder)) return false;
 
     let changed = false;
     const enabled = new Set(plugin.settings.codexEnabledCategories || []);
@@ -655,6 +1061,28 @@ export async function adoptLibraryCategoriesFromFolders(
     const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
     if (!plugin.settings.codexCustomCategories) plugin.settings.codexCustomCategories = [];
     if (!project.libraryFolders) project.libraryFolders = {};
+
+    // Recover fixed-folder renames that happened while Obsidian was closed.
+    // Localized seed names are unambiguous; arbitrary unknown folders remain
+    // custom categories because their intended fixed-category target is unknowable.
+    const diskSnapshot = await readLibraryFolderNames(plugin, project);
+    if (diskSnapshot.scannedRoots > 0) {
+        for (const id of FIXED_LIBRARY_FOLDER_IDS) {
+            const current = resolveLibraryFolderName(plugin, id, project);
+            if (diskSnapshot.names.has(current)) continue;
+            const defaultName = DEFAULT_LIBRARY_FOLDER_NAMES[id];
+            const localizedCandidates = new Set([
+                localizeForLanguage('zh', defaultName),
+                localizeForLanguage('en', defaultName),
+            ]);
+            const replacement = [...localizedCandidates].find(name =>
+                name !== current && diskSnapshot.names.has(name));
+            if (!replacement) continue;
+            project.libraryFolders[id] = replacement;
+            setLibraryCategoryDisplayMetadata(plugin, id, replacement);
+            changed = true;
+        }
+    }
 
     const ensureRegistered = (id: string, label: string, icon: string, builtin: boolean, folderName: string) => {
         if (deleted.has(id)) {
@@ -669,6 +1097,16 @@ export async function adoptLibraryCategoriesFromFolders(
             plugin.settings.codexCustomCategories.push({ id, label, icon });
             changed = true;
         }
+        // Keep builtin display metadata in customCategories for renames/icons.
+        if (builtin && !plugin.settings.codexCustomCategories.some(category => category.id === id)) {
+            plugin.settings.codexCustomCategories.push({
+                id,
+                label,
+                icon,
+                preset: true,
+            });
+            changed = true;
+        }
         if (!order.includes(id)) {
             order.push(id);
             changed = true;
@@ -679,26 +1117,44 @@ export async function adoptLibraryCategoriesFromFolders(
         }
     };
 
-    for (const child of rootAf.children) {
-        if (!(child instanceof TFolder)) continue;
-        const folderName = child.name;
-        const resolved = resolveCategoryIdForLibraryFolder(plugin, project, folderName);
-        if (!resolved) continue;
-
-        const { id, label, icon, builtin } = resolved;
-        const listed = enabled.has(id)
-            || !!plugin.settings.codexCustomCategories.find(category => category.id === id)
-            || !!project.libraryFolders[id];
-
-        if (enableExisting) {
-            ensureRegistered(id, label, icon, builtin, folderName);
+    // A series project reads from the shared series Library while retaining a
+    // project-local Library for book-only assets. Scan both so a folder created
+    // in Finder/Explorer is adopted regardless of which Library owns it.
+    for (const libraryRoot of libraryRootsForProject(plugin, project)) {
+        let folderPaths: string[] = [];
+        try {
+            if (!await plugin.app.vault.adapter.exists(libraryRoot)) continue;
+            folderPaths = (await plugin.app.vault.adapter.list(libraryRoot)).folders;
+        } catch (error) {
+            console.warn('[NarrativeLab] Failed to scan Library categories:', libraryRoot, error);
             continue;
         }
-
-        // Already-migrated project: respect delete/hide. Adopt any folder that
-        // is not yet in this project's category config (custom or builtin).
-        if (deleted.has(id) || listed) continue;
-        ensureRegistered(id, label, icon, builtin, folderName);
+        for (const folderPath of folderPaths) {
+            const folderName = basenameOfPath(folderPath);
+            let resolved = resolveCategoryIdForLibraryFolder(plugin, project, folderName);
+            if (!resolved) continue;
+            const mappedFolder = project.libraryFolders?.[resolved.id]?.trim();
+            if (mappedFolder && mappedFolder !== folderName) {
+                const usedIds = new Set<string>([
+                    ...Object.keys(project.libraryFolders || {}),
+                    ...(plugin.settings.codexEnabledCategories || []),
+                    ...(plugin.settings.codexCustomCategories || []).map(category => category.id),
+                ]);
+                resolved = {
+                    id: allocateLibraryCategoryId(resolved.id, usedIds),
+                    label: folderName,
+                    icon: 'file-text',
+                    builtin: false,
+                };
+            }
+            ensureRegistered(
+                resolved.id,
+                resolved.label,
+                resolved.icon,
+                resolved.builtin,
+                folderName,
+            );
+        }
     }
 
     if (changed) {
@@ -708,4 +1164,4 @@ export async function adoptLibraryCategoriesFromFolders(
     }
     return changed;
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-assignment -- end of file-wide suppression block opened at line 1 */

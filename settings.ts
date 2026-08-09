@@ -1,15 +1,18 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import type SceneCardsPlugin from './main';
 import { SLDocxSettings, SL_DEFAULT_DOCX_SETTINGS } from './services/DocxConverter';
 import { SLPdfSettings, SL_DEFAULT_PDF_SETTINGS } from './services/PdfConverter';
 import { AddFieldModal } from './components/AddFieldModal';
 import type { UniversalFieldTemplate } from './services/FieldTemplateService';
-import { ColorCodingMode, CustomStatusDef, SceneStatus, SceneTemplate, ViewType, getStatusConfig, getStatusOrder, registerCustomStatuses } from './models/Scene';
-import { App, Modal, Notice, PluginSettingTab, Setting, TFolder, TextAreaComponent, AbstractInputSuggest } from 'obsidian';
+import { BeatSheetTemplate, BUILTIN_BEAT_SHEETS, BUILTIN_SCENE_TEMPLATES, ColorCodingMode, CustomStatusDef, ProjectPresetTemplate, SceneStatus, SceneTemplate, TemplateScope, ViewType, getStatusConfig, getStatusOrder, registerCustomStatuses } from './models/Scene';
+import { App, FuzzySuggestModal, Modal, Notice, PluginSettingTab, Setting, TFile, TFolder, TextAreaComponent, AbstractInputSuggest } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { SUPPORTED_STORYLINE_LOCALES, normalizeStoryLineLocale } from './utils/locale';
-import { localizeElement, t, type UiLanguageSetting } from './utils/i18n';
+import { localizeBeatSheet, localizeElement, localizeSceneTemplate, t, type UiLanguageSetting } from './utils/i18n';
 import type { CustomSection } from './components/CustomSectionsRenderer';
+import { BeatSheetApplyModal } from './components/BeatSheetApplyModal';
+import { applyLibraryCategorySettings, readLibraryCategorySettings, reconcileLibraryCategoriesForActiveProject } from './services/LibraryCategorySync';
+import { syncAllNativeLibraryBases } from './components/NativeLibraryBase';
 
 // ═══════════════════════════════════════════════════════
 //  COLOR PALETTES — Catppuccin + Mood-based
@@ -670,6 +673,8 @@ export interface SceneCardsSettings {
 
     // Scene templates
     sceneTemplates: SceneTemplate[];
+    structureTemplates: BeatSheetTemplate[];
+    projectPresets: ProjectPresetTemplate[];
 
     // Tag / plotline color scheme
     colorScheme: ColorScheme;
@@ -881,7 +886,7 @@ export interface SceneCardsSettings {
     codexSidebarCategories: string[];
     /** Series name — groups projects that share a common universe / codex */
     series: string;
-    /** Optional vault-relative path to a shared codex folder for series */
+    /** Optional vault-relative path to a shared Library folder for series */
     sharedCodex: string;
     /** Extra vault-relative folder paths to scan for NarrativeLab entities */
     extraFolders: string[];
@@ -919,21 +924,6 @@ export interface SceneCardsSettings {
      * Bases, and Dataview. Each template controls its own `topLevelKey`.
      */
     universalFieldsMirrorTopLevel?: boolean;
-
-    /**
-     * Issue #66 — when true (and the active project belongs to a series),
-     * cross-book "Series Arc View" scope is enabled in supported views.
-     * Phase 1 is read-only and currently scaffolded only — see
-     * `services/SceneProvider.ts` for the in-progress implementation.
-     */
-    seriesArcView?: boolean;
-
-    /**
-     * Issue #66 — when true, warn the user if a scene move would cross a
-     * book boundary in Series Arc View. Defaults to true. Used by the
-     * Phase 1 follow-up that wires writes through SceneProvider.
-     */
-    warnOnCrossBookMove?: boolean;
 
     /**
      * Issue #78 — when true, Obsidian `%%comment%%` blocks are stripped
@@ -1036,6 +1026,8 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     showWarnings: true,
 
     sceneTemplates: [],
+    structureTemplates: [],
+    projectPresets: [],
 
     colorScheme: 'mocha' as ColorScheme,
 
@@ -1111,8 +1103,6 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     sprintEndSound: true,
     writeFieldsAsWikilinks: true,
     universalFieldsMirrorTopLevel: true,
-    seriesArcView: false,
-    warnOnCrossBookMove: true,
     excludeCommentsFromWordcount: true,
     excludeChecklistFromWordcount: false,
     defaultProjectLanguage: 'en',
@@ -1152,7 +1142,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         const tabs: Array<{ id: NarrativeLabSettingsTabId; label: string }> = [
             { id: 'general', label: 'General' },
             { id: 'scenes', label: 'Scenes' },
-            { id: 'templates', label: 'Templates' },
+            { id: 'templates', label: 'Template Center' },
             { id: 'display', label: 'Display' },
             { id: 'colors', label: 'Colors' },
             { id: 'writing', label: 'Writing' },
@@ -1478,16 +1468,16 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             panel.querySelectorAll('.sl-custom-loc-type-row').forEach(el => el.remove());
 
             const types = this.plugin.settings.customLocationTypes ?? [];
-            for (const t of types) {
+            for (const locationType of types) {
                 new Setting(panel)
                     .setClass('sl-custom-loc-type-row')
-                    .setName(t)
+                    .setName(locationType)
                     .addButton(btn => btn
                         .setIcon('trash')
-                        .setTooltip('Remove')
+                        .setTooltip(t('Remove'))
                         .onClick(async () => {
                             const list = (this.plugin.settings.customLocationTypes ?? [])
-                                .filter(x => x !== t);
+                                .filter(x => x !== locationType);
                             this.plugin.settings.customLocationTypes = list;
                             await this.plugin.saveSettings();
                             renderCustomTypes();
@@ -1556,29 +1546,38 @@ export class SceneCardsSettingTab extends PluginSettingTab {
     }
 
     private renderTemplatesSettingsTab(panel: HTMLElement): void {
-        new Setting(panel).setName(t('Scene Templates')).setHeading();
+        new Setting(panel).setName(t('Template Center')).setHeading();
         panel.createEl('p', {
-            text: t('Create and manage multiple scene templates. Each template can pre-fill scene fields and insert reusable Markdown into the new scene.'),
+            text: t('Manage scene templates, narrative structures and project presets in one place. Project templates are stored under System/Templates/. Continue using System, not Library, so Library folder scanning cannot treat templates as categories.'),
             cls: 'setting-item-description',
         });
-
-        const addTemplate = (templateListEl: HTMLElement): void => {
-            const blank: SceneTemplate = {
-                name: '',
-                description: '',
-                defaultFields: {},
-                bodyTemplate: '',
-            };
-            new TemplateEditorModal(this.app, blank, async (tpl) => {
-                this.plugin.settings.sceneTemplates.push(tpl);
-                await this.plugin.saveSettings();
-                this.renderTemplateList(templateListEl);
+        const tools = panel.createDiv('story-line-button-row');
+        tools.createEl('button', { text: t('Export all templates') }).addEventListener('click', async () => {
+            try {
+                const path = await this.plugin.templateCenter.exportBundle();
+                new Notice(t('Template bundle written: {path}', { path }));
+            } catch (error) {
+                new Notice(t('Could not export templates: {message}', { message: error instanceof Error ? error.message : String(error) }));
+            }
+        });
+        tools.createEl('button', { text: t('Import templates…') }).addEventListener('click', () => {
+            new TemplateBundleSuggestModal(this.app, async path => {
+                new TemplateImportScopeModal(this.app, async scope => {
+                    try {
+                        const result = await this.plugin.templateCenter.importBundle(path, scope);
+                        new Notice(t('Imported {scenes} scene template(s), {structures} structure(s), and {presets} preset(s).', result));
+                        this.display();
+                    } catch (error) {
+                        new Notice(t('Could not import templates: {message}', { message: error instanceof Error ? error.message : String(error) }));
+                    }
+                }).open();
             }).open();
-        };
+        });
 
+        new Setting(panel).setName(t('Scene Templates')).setHeading();
+        panel.createEl('p', { text: t('Pre-fill scene fields and Markdown body. Built-in templates are bilingual.'), cls: 'setting-item-description' });
         const templateListEl = panel.createDiv('story-line-template-list');
         this.renderTemplateList(templateListEl);
-
         new Setting(panel)
             .setName(t('Create a template'))
             .setDesc(t('Custom templates appear immediately in the Template dropdown when creating a scene.'))
@@ -1586,7 +1585,60 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                 .setButtonText(t('Add Template'))
                 .setIcon('plus')
                 .setCta()
-                .onClick(() => addTemplate(templateListEl)));
+                .onClick(() => {
+                    new TemplateEditorModal(this.app, {
+                        id: '', scope: 'global', name: '', description: '', defaultFields: {}, bodyTemplate: '',
+                    }, async template => {
+                        await this.plugin.templateCenter.saveSceneTemplate(template);
+                        this.renderTemplateList(templateListEl);
+                    }).open();
+                }));
+
+        new Setting(panel).setName(t('Narrative Structures')).setHeading();
+        panel.createEl('p', { text: t('Define acts, chapters and beats. Applying a structure always shows a change preview.'), cls: 'setting-item-description' });
+        const structureList = panel.createDiv('story-line-template-list');
+        this.renderStructureTemplateList(structureList);
+        new Setting(panel)
+            .setName(t('Create a structure template'))
+            .addButton(button => button.setButtonText(t('Add Structure')).setIcon('plus').setCta().onClick(() => {
+                new StructureTemplateEditorModal(this.app, {
+                    id: '', scope: 'global', name: '', summary: '', acts: [1, 2, 3], chapters: [], actLabels: {}, chapterLabels: {}, beats: [],
+                }, async template => {
+                    await this.plugin.templateCenter.saveStructureTemplate(template);
+                    this.renderStructureTemplateList(structureList);
+                }).open();
+            }));
+
+        new Setting(panel).setName(t('Project Presets')).setHeading();
+        panel.createEl('p', { text: t('A preset can combine a narrative structure, Library categories and project field templates.'), cls: 'setting-item-description' });
+        const presetList = panel.createDiv('story-line-template-list');
+        this.renderProjectPresetList(presetList);
+        new Setting(panel)
+            .setName(t('Capture current project as preset'))
+            .setDesc(t('Copies current Library category and field-template definitions. Scene content is not included.'))
+            .addButton(button => button.setButtonText(t('Add Preset')).setIcon('plus').setCta().onClick(() => {
+                const preset: ProjectPresetTemplate = {
+                    id: '',
+                    scope: 'project',
+                    name: '',
+                    libraryCategories: readLibraryCategorySettings(this.plugin.settings),
+                    fieldTemplates: this.plugin.fieldTemplates.getAll().map(field => ({ ...field })),
+                    libraryFieldTemplates: Object.fromEntries(
+                        Object.entries(this.plugin.settings.codexCategoryFieldTemplates || {})
+                            .map(([category, fields]) => [category, [...fields]]),
+                    ),
+                };
+                new ProjectPresetEditorModal(
+                    this.app,
+                    preset,
+                    [...BUILTIN_BEAT_SHEETS.map(localizeBeatSheet), ...this.plugin.templateCenter.getStructureTemplates()],
+                    [...BUILTIN_SCENE_TEMPLATES.map(localizeSceneTemplate), ...this.plugin.templateCenter.getSceneTemplates()],
+                    async updated => {
+                        await this.plugin.templateCenter.saveProjectPreset(updated);
+                        this.renderProjectPresetList(presetList);
+                    },
+                ).open();
+            }));
     }
 
     private renderDisplaySettingsTab(panel: HTMLElement): void {
@@ -2402,7 +2454,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         new Setting(panel)
             .setName(t('Write scene references as wikilinks'))
-            .setDesc(t('Issue #73 — when on, scene fields like POV, location, characters, setup_scenes and payoff_scenes are stored as Obsidian [[wikilinks]] so they auto-update on rename. Existing plain-text values keep working.'))
+            .setDesc(t('Store scene references such as POV, location, characters, setup_scenes, and payoff_scenes as Obsidian [[wikilinks]] so they update automatically when files are renamed. Existing plain-text values continue to work.'))
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.writeFieldsAsWikilinks !== false)
                 .onChange(async (value) => {
@@ -2412,7 +2464,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         new Setting(panel)
             .setName(t('Mirror custom fields to top-level YAML'))
-            .setDesc(t('Issue #71 — when on, Universal Field values are also written as top-level YAML keys (using each template\'s "Top-level key") so they show up in Obsidian Properties, Bases, and Dataview. Reserved NarrativeLab keys are skipped automatically.'))
+            .setDesc(t('Also write Universal Field values as top-level YAML keys, using each template\'s “Top-level key”, so they appear in Obsidian Properties, Bases, and Dataview. Reserved NarrativeLab keys are skipped.'))
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.universalFieldsMirrorTopLevel !== false)
                 .onChange(async (value) => {
@@ -2447,7 +2499,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         // ── Issue #78 — Wordcount exclusions ──
         new Setting(panel)
             .setName(t('Exclude `%%comments%%` from wordcount'))
-            .setDesc(t('Issue #78 — strip Obsidian comment blocks (anything between `%%` markers) before counting words. Keeps `wordcount` aligned with what readers will actually see.'))
+            .setDesc(t('Exclude Obsidian comment blocks (text between `%%` markers) so the word count matches what readers see.'))
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.excludeCommentsFromWordcount !== false)
                 .onChange(async (value) => {
@@ -2457,7 +2509,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         new Setting(panel)
             .setName(t('Also ignore checkbox lines (`- [ ]`, `- [x]`)'))
-            .setDesc(t('Issue #78 — also drop markdown task lines from the wordcount. Off by default because some authors keep checklists in the manuscript body.'))
+            .setDesc(t('Also exclude Markdown task lines from the word count. Off by default because some authors keep checklists in the manuscript body.'))
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.excludeChecklistFromWordcount === true)
                 .onChange(async (value) => {
@@ -2507,8 +2559,9 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         // ── Issue #77 — Default scene frontmatter ──
         new Setting(panel)
             .setName(t('Default scene frontmatter'))
-            .setDesc(t('Issue #77 — raw YAML merged into the frontmatter of every newly-created scene. Useful for companion plugins (e.g. `cssclasses: [fountain]`). NarrativeLab\'s own keys (type, title, act, chapter, sequence, status…) always win on conflict.'))
+            .setDesc(t('Raw YAML merged into every newly created scene. Useful for companion plugins (e.g. `cssclasses: [fountain]`). NarrativeLab\'s own keys (type, title, act, chapter, sequence, status…) take priority on conflict.'))
             .addTextArea(ta => {
+                // eslint-disable-next-line obsidianmd/ui/sentence-case -- YAML keys are case-sensitive.
                 ta.setPlaceholder('cssclasses:\n  - fountain\n')
                     .setValue(this.plugin.settings.defaultSceneFrontmatter || '')
                     .onChange(async (value) => {
@@ -2736,7 +2789,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             const isOverridden = !!customColor;
 
             const s = new Setting(container);
-            
+
             // Color swatch before the name
             const nameEl = s.nameEl;
             const swatch = nameEl.createSpan();
@@ -2775,7 +2828,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             // Reset button
             s.addExtraButton(btn => btn
                 .setIcon('x')
-                .setTooltip('Remove custom override')
+                .setTooltip(t('Remove custom override'))
                 .onClick(async () => {
                     delete this.plugin.settings.tagColors[tag];
                     await this.plugin.saveSettings();
@@ -3149,7 +3202,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
     /** Render the list of user-defined scene templates */
     private renderTemplateList(container: HTMLElement): void {
         container.empty();
-        const templates = this.plugin.settings.sceneTemplates;
+        const templates = this.plugin.templateCenter.getSceneTemplates();
         if (templates.length === 0) {
             container.createEl('p', { text: t('No custom templates yet. Built-in templates (Blank, Action Scene, Dialogue Scene, Flashback, Opening Chapter) are always available.'), cls: 'setting-item-description' });
             return;
@@ -3158,25 +3211,159 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             const tpl = templates[i];
             new Setting(container)
                 .setName(tpl.name || '(unnamed)')
-                .setDesc(tpl.description || '')
+                .setDesc(`${tpl.description || ''}${tpl.scope === 'project' ? ` · ${t('Project')}` : ` · ${t('Global')}`}`)
+                .addExtraButton(btn => btn
+                    .setIcon('arrow-up')
+                    .setTooltip(t('Move up'))
+                    .onClick(async () => {
+                        if (tpl.id) await this.plugin.templateCenter.moveSceneTemplate(tpl.id, -1);
+                        this.renderTemplateList(container);
+                    }))
+                .addExtraButton(btn => btn
+                    .setIcon('arrow-down')
+                    .setTooltip(t('Move down'))
+                    .onClick(async () => {
+                        if (tpl.id) await this.plugin.templateCenter.moveSceneTemplate(tpl.id, 1);
+                        this.renderTemplateList(container);
+                    }))
+                .addExtraButton(btn => btn
+                    .setIcon('copy')
+                    .setTooltip(t('Duplicate template'))
+                    .onClick(async () => {
+                        await this.plugin.templateCenter.saveSceneTemplate({ ...tpl, id: '', name: `${tpl.name} ${t('Copy')}` });
+                        this.renderTemplateList(container);
+                    }))
                 .addExtraButton(btn => btn
                     .setIcon('pencil')
-                    .setTooltip('Edit template')
+                    .setTooltip(t('Edit template'))
                     .onClick(() => {
                         new TemplateEditorModal(this.app, { ...tpl }, async (updated) => {
-                            this.plugin.settings.sceneTemplates[i] = updated;
-                            await this.plugin.saveSettings();
+                            await this.plugin.templateCenter.saveSceneTemplate(updated);
                             this.renderTemplateList(container);
                         }).open();
                     }))
                 .addExtraButton(btn => btn
                     .setIcon('trash')
-                    .setTooltip('Delete template')
+                    .setTooltip(t('Delete template'))
                     .onClick(async () => {
-                        this.plugin.settings.sceneTemplates.splice(i, 1);
-                        await this.plugin.saveSettings();
+                        if (tpl.id) await this.plugin.templateCenter.deleteTemplate('scene', tpl.id);
                         this.renderTemplateList(container);
                     }));
+        }
+    }
+
+    private renderStructureTemplateList(container: HTMLElement): void {
+        container.empty();
+        const templates = this.plugin.templateCenter.getStructureTemplates();
+        if (templates.length === 0) {
+            container.createEl('p', { text: t('No custom structures yet. Built-in structures remain available.'), cls: 'setting-item-description' });
+            return;
+        }
+        for (const template of templates) {
+            new Setting(container)
+                .setName(template.name)
+                .setDesc(`${template.beats.length} ${t('beats')} · ${template.scope === 'project' ? t('Project') : t('Global')}`)
+                .addButton(button => button.setButtonText(t('Apply')).onClick(() => {
+                    new BeatSheetApplyModal(
+                        this.app,
+                        this.plugin.sceneManager,
+                        template,
+                        [...BUILTIN_SCENE_TEMPLATES.map(localizeSceneTemplate), ...this.plugin.templateCenter.getSceneTemplates()],
+                        async () => this.plugin.refreshOpenViews(),
+                    ).open();
+                }))
+                .addExtraButton(button => button.setIcon('copy').setTooltip(t('Duplicate template')).onClick(async () => {
+                    await this.plugin.templateCenter.saveStructureTemplate({ ...template, id: '', name: `${template.name} ${t('Copy')}` });
+                    this.renderStructureTemplateList(container);
+                }))
+                .addExtraButton(button => button.setIcon('pencil').setTooltip(t('Edit template')).onClick(() => {
+                    new StructureTemplateEditorModal(this.app, { ...template }, async updated => {
+                        await this.plugin.templateCenter.saveStructureTemplate(updated);
+                        this.renderStructureTemplateList(container);
+                    }).open();
+                }))
+                .addExtraButton(button => button.setIcon('trash').setTooltip(t('Delete template')).onClick(async () => {
+                    if (template.id) await this.plugin.templateCenter.deleteTemplate('structure', template.id);
+                    this.renderStructureTemplateList(container);
+                }));
+        }
+    }
+
+    private renderProjectPresetList(container: HTMLElement): void {
+        container.empty();
+        const presets = this.plugin.templateCenter.getProjectPresets();
+        if (presets.length === 0) {
+            container.createEl('p', { text: t('No project presets yet.'), cls: 'setting-item-description' });
+            return;
+        }
+        const structures = [...BUILTIN_BEAT_SHEETS.map(localizeBeatSheet), ...this.plugin.templateCenter.getStructureTemplates()];
+        const sceneTemplates = [...BUILTIN_SCENE_TEMPLATES.map(localizeSceneTemplate), ...this.plugin.templateCenter.getSceneTemplates()];
+        for (const preset of presets) {
+            new Setting(container)
+                .setName(preset.name)
+                .setDesc(`${preset.description || ''}${preset.scope === 'project' ? ` · ${t('Project')}` : ` · ${t('Global')}`}`)
+                .addButton(button => button.setButtonText(t('Apply')).onClick(async () => {
+                    await this.applyProjectPreset(preset, structures, sceneTemplates);
+                }))
+                .addExtraButton(button => button.setIcon('pencil').setTooltip(t('Edit template')).onClick(() => {
+                    new ProjectPresetEditorModal(this.app, { ...preset }, structures, sceneTemplates, async updated => {
+                        await this.plugin.templateCenter.saveProjectPreset(updated);
+                        this.renderProjectPresetList(container);
+                    }).open();
+                }))
+                .addExtraButton(button => button.setIcon('trash').setTooltip(t('Delete template')).onClick(async () => {
+                    await this.plugin.templateCenter.deleteTemplate('preset', preset.id);
+                    this.renderProjectPresetList(container);
+                }));
+        }
+    }
+
+    private async applyProjectPreset(
+        preset: ProjectPresetTemplate,
+        structures: BeatSheetTemplate[],
+        sceneTemplates: SceneTemplate[],
+    ): Promise<void> {
+        const applyAssets = async () => {
+            if (preset.libraryCategories) {
+                applyLibraryCategorySettings(this.plugin, preset.libraryCategories);
+                await reconcileLibraryCategoriesForActiveProject(this.plugin);
+                await this.plugin.saveProjectSystemData();
+                await syncAllNativeLibraryBases(this.plugin);
+                this.plugin.libraryCategoriesStructureEpoch += 1;
+            }
+            for (const rawField of preset.fieldTemplates || []) {
+                const field = rawField as unknown as UniversalFieldTemplate;
+                if (!field.id || !field.label) continue;
+                const existing = this.plugin.fieldTemplates.getById(field.id);
+                if (existing) await this.plugin.fieldTemplates.update(field.id, field);
+                else await this.plugin.fieldTemplates.add({ ...field });
+            }
+            if (preset.libraryFieldTemplates) {
+                this.plugin.settings.codexCategoryFieldTemplates = {
+                    ...(this.plugin.settings.codexCategoryFieldTemplates || {}),
+                    ...Object.fromEntries(Object.entries(preset.libraryFieldTemplates).map(([category, fields]) => [category, [...fields]])),
+                };
+                await this.plugin.saveSettings();
+            }
+        };
+        const structure = structures.find(template => template.id === preset.structureTemplateId || template.name === preset.structureTemplateId);
+        if (structure) {
+            const sceneTemplate = sceneTemplates.find(template => template.id === preset.placeholderSceneTemplateId || template.name === preset.placeholderSceneTemplateId);
+            new BeatSheetApplyModal(
+                this.app,
+                this.plugin.sceneManager,
+                structure,
+                sceneTemplates,
+                async () => {
+                    await applyAssets();
+                    await this.plugin.refreshOpenViews();
+                },
+                { createPlaceholderScenes: preset.createPlaceholderScenes, sceneTemplate },
+            ).open();
+        } else {
+            await applyAssets();
+            await this.plugin.refreshOpenViews();
+            new Notice(t('Project preset applied.'));
         }
     }
 
@@ -3214,7 +3401,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                 .setDesc(`${typeLabel}${optionsHint}`)
                 .addExtraButton(btn => btn
                     .setIcon('pencil')
-                    .setTooltip('Edit field')
+                    .setTooltip(t('Edit field'))
                     .onClick(() => {
                         const modal = new AddFieldModal(
                             this.app,
@@ -3234,7 +3421,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     }))
                 .addExtraButton(btn => btn
                     .setIcon('trash')
-                    .setTooltip('Delete field')
+                    .setTooltip(t('Delete field'))
                     .onClick(async () => {
                         await this.plugin.fieldTemplates.remove(tpl.id);
                         this.renderSceneCustomFieldList(container);
@@ -3441,7 +3628,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             .setName(t('Line spacing'))
             .setDesc(t('Line height multiplier (1.0 = single, 1.5, 2.0 = double).'))
             .addText(text => text
-                .setPlaceholder(t('1.4'))
+                .setPlaceholder('1.4')
                 .setValue(String(ps.lineSpacing))
                 .onChange(async (value) => {
                     const num = parseFloat(value);
@@ -3616,7 +3803,7 @@ class TemplateEditorModal extends Modal {
 
     onOpen(): void {
         const { contentEl } = this;
-        new Setting(contentEl).setName(this.template.name ? 'Edit Template' : 'New Template').setHeading();
+        new Setting(contentEl).setName(t(this.template.name ? 'Edit Template' : 'New Template')).setHeading();
 
         new Setting(contentEl)
             .setName(t('Template name'))
@@ -3624,6 +3811,15 @@ class TemplateEditorModal extends Modal {
                 .setPlaceholder(t('e.g. Climax Scene'))
                 .setValue(this.template.name)
                 .onChange(v => this.template.name = v));
+
+        new Setting(contentEl)
+            .setName(t('Scope'))
+            .setDesc(t('Project templates are saved under System/Templates/ and sync with the project.'))
+            .addDropdown(dropdown => dropdown
+                .addOption('global', t('Global'))
+                .addOption('project', t('Project'))
+                .setValue(this.template.scope || 'global')
+                .onChange(value => this.template.scope = value as TemplateScope));
 
         new Setting(contentEl)
             .setName(t('Description'))
@@ -3723,6 +3919,187 @@ class TemplateEditorModal extends Modal {
     }
 }
 
+function parseNumberList(value: string): number[] {
+    const result = new Set<number>();
+    for (const part of value.split(',')) {
+        const range = part.trim().match(/^(\d+)\s*-\s*(\d+)$/);
+        if (range) {
+            const start = Number(range[1]);
+            const end = Number(range[2]);
+            for (let value = Math.min(start, end); value <= Math.max(start, end); value++) result.add(value);
+        } else {
+            const number = Number(part.trim());
+            if (Number.isInteger(number) && number >= 0) result.add(number);
+        }
+    }
+    return [...result].sort((a, b) => a - b);
+}
+
+function labelsToText(labels: Record<number, string>): string {
+    return Object.entries(labels).map(([number, label]) => `${number}|${label}`).join('\n');
+}
+
+function parseLabels(value: string): Record<number, string> {
+    const result: Record<number, string> = {};
+    for (const line of value.split('\n')) {
+        const [number, ...labelParts] = line.split('|');
+        const key = Number(number?.trim());
+        const label = labelParts.join('|').trim();
+        if (Number.isInteger(key) && label) result[key] = label;
+    }
+    return result;
+}
+
+class StructureTemplateEditorModal extends Modal {
+    private template: BeatSheetTemplate;
+
+    constructor(app: App, template: BeatSheetTemplate, private onSave: (template: BeatSheetTemplate) => void | Promise<void>) {
+        super(app);
+        this.template = {
+            ...template,
+            acts: [...template.acts],
+            chapters: [...template.chapters],
+            actLabels: { ...template.actLabels },
+            chapterLabels: { ...template.chapterLabels },
+            beats: template.beats.map(beat => ({ ...beat })),
+        };
+    }
+
+    onOpen(): void {
+        this.titleEl.setText(t(this.template.name ? 'Edit Structure Template' : 'New Structure Template'));
+        new Setting(this.contentEl).setName(t('Template name')).addText(input => input.setValue(this.template.name).onChange(value => this.template.name = value));
+        new Setting(this.contentEl).setName(t('Summary')).addText(input => input.setValue(this.template.summary).onChange(value => this.template.summary = value));
+        new Setting(this.contentEl).setName(t('Scope')).addDropdown(dropdown => dropdown
+            .addOption('global', t('Global')).addOption('project', t('Project'))
+            .setValue(this.template.scope || 'global').onChange(value => this.template.scope = value as TemplateScope));
+        new Setting(this.contentEl).setName(t('Acts')).setDesc(t('Comma-separated numbers or ranges.')).addText(input => input
+            .setPlaceholder('1,2,3').setValue(this.template.acts.join(','))
+            .onChange(value => this.template.acts = parseNumberList(value)));
+        new Setting(this.contentEl).setName(t('Chapters')).setDesc(t('Comma-separated numbers or ranges.')).addText(input => input
+            .setPlaceholder('1-15').setValue(this.template.chapters.join(','))
+            .onChange(value => this.template.chapters = parseNumberList(value)));
+        this.addTextArea(t('Act labels'), t('One per line: number|label'), labelsToText(this.template.actLabels), value => this.template.actLabels = parseLabels(value));
+        this.addTextArea(t('Chapter labels'), t('One per line: number|label'), labelsToText(this.template.chapterLabels), value => this.template.chapterLabels = parseLabels(value));
+        this.addTextArea(
+            t('Beats'),
+            t('One per line: act|chapter|label|description. Chapter may be blank.'),
+            this.template.beats.map(beat => `${beat.act}|${beat.chapter ?? ''}|${beat.label}|${beat.description}`).join('\n'),
+            value => {
+                this.template.beats = value.split('\n').map(line => {
+                    const [actRaw, chapterRaw, labelRaw, ...description] = line.split('|');
+                    return {
+                        act: Number(actRaw) || 1,
+                        ...(chapterRaw?.trim() ? { chapter: Number(chapterRaw) || 1 } : {}),
+                        label: labelRaw?.trim() || '',
+                        description: description.join('|').trim(),
+                    };
+                }).filter(beat => beat.label);
+            },
+            10,
+        );
+        const buttons = this.contentEl.createDiv('story-line-button-row');
+        buttons.createEl('button', { text: t('Cancel') }).addEventListener('click', () => this.close());
+        buttons.createEl('button', { text: t('Save'), cls: 'mod-cta' }).addEventListener('click', async () => {
+            if (!this.template.name.trim()) {
+                new Notice(t('Enter a template name.'));
+                return;
+            }
+            await this.onSave(this.template);
+            this.close();
+        });
+    }
+
+    private addTextArea(name: string, description: string, value: string, onChange: (value: string) => void, rows = 5): void {
+        const setting = new Setting(this.contentEl).setName(name).setDesc(description);
+        const area = new TextAreaComponent(setting.controlEl);
+        area.setValue(value).onChange(onChange);
+        area.inputEl.rows = rows;
+        area.inputEl.addClass('story-line-wide-input');
+    }
+
+    onClose(): void { this.contentEl.empty(); }
+}
+
+class ProjectPresetEditorModal extends Modal {
+    private preset: ProjectPresetTemplate;
+
+    constructor(
+        app: App,
+        preset: ProjectPresetTemplate,
+        private structures: BeatSheetTemplate[],
+        private sceneTemplates: SceneTemplate[],
+        private onSave: (preset: ProjectPresetTemplate) => void | Promise<void>,
+    ) {
+        super(app);
+        this.preset = { ...preset };
+    }
+
+    onOpen(): void {
+        this.titleEl.setText(t(this.preset.name ? 'Edit Project Preset' : 'New Project Preset'));
+        new Setting(this.contentEl).setName(t('Preset name')).addText(input => input.setValue(this.preset.name).onChange(value => this.preset.name = value));
+        new Setting(this.contentEl).setName(t('Description')).addText(input => input.setValue(this.preset.description || '').onChange(value => this.preset.description = value || undefined));
+        new Setting(this.contentEl).setName(t('Scope')).addDropdown(dropdown => dropdown
+            .addOption('global', t('Global')).addOption('project', t('Project'))
+            .setValue(this.preset.scope || 'project').onChange(value => this.preset.scope = value as TemplateScope));
+        new Setting(this.contentEl).setName(t('Narrative structure')).addDropdown(dropdown => {
+            dropdown.addOption('', t('(none)'));
+            for (const structure of this.structures) dropdown.addOption(structure.id || structure.name, structure.name);
+            dropdown.setValue(this.preset.structureTemplateId || '');
+            dropdown.onChange(value => this.preset.structureTemplateId = value || undefined);
+        });
+        new Setting(this.contentEl).setName(t('Create beat scenes')).addToggle(toggle => toggle
+            .setValue(this.preset.createPlaceholderScenes === true)
+            .onChange(value => this.preset.createPlaceholderScenes = value));
+        new Setting(this.contentEl).setName(t('Placeholder scene template')).addDropdown(dropdown => {
+            dropdown.addOption('', t('Blank'));
+            for (const template of this.sceneTemplates) dropdown.addOption(template.id || template.name, template.name);
+            dropdown.setValue(this.preset.placeholderSceneTemplateId || '');
+            dropdown.onChange(value => this.preset.placeholderSceneTemplateId = value || undefined);
+        });
+        this.contentEl.createEl('p', {
+            cls: 'setting-item-description',
+            text: t('This preset contains {categories} Library category definition(s) and {fields} field template(s).', {
+                categories: this.preset.libraryCategories?.customCategories.length || 0,
+                fields: (this.preset.fieldTemplates?.length || 0)
+                    + Object.values(this.preset.libraryFieldTemplates || {}).reduce((sum, fields) => sum + fields.length, 0),
+            }),
+        });
+        const buttons = this.contentEl.createDiv('story-line-button-row');
+        buttons.createEl('button', { text: t('Cancel') }).addEventListener('click', () => this.close());
+        buttons.createEl('button', { text: t('Save'), cls: 'mod-cta' }).addEventListener('click', async () => {
+            if (!this.preset.name.trim()) {
+                new Notice(t('Enter a preset name.'));
+                return;
+            }
+            await this.onSave(this.preset);
+            this.close();
+        });
+    }
+
+    onClose(): void { this.contentEl.empty(); }
+}
+
+class TemplateBundleSuggestModal extends FuzzySuggestModal<TFile> {
+    constructor(app: App, private onChoose: (path: string) => void) { super(app); }
+    getItems(): TFile[] {
+        return this.app.vault.getFiles().filter(file => file.extension === 'json' && /(^|\/)System\/Templates\//.test(file.path));
+    }
+    getItemText(file: TFile): string { return file.path; }
+    onChooseItem(file: TFile): void { this.onChoose(file.path); }
+    onOpen(): void { super.onOpen(); this.setPlaceholder(t('Choose a NarrativeLab template bundle…')); }
+}
+
+class TemplateImportScopeModal extends Modal {
+    constructor(app: App, private onChoose: (scope: TemplateScope) => void) { super(app); }
+    onOpen(): void {
+        this.titleEl.setText(t('Import template scope'));
+        this.contentEl.createEl('p', { text: t('Choose where imported templates will be stored.') });
+        const buttons = this.contentEl.createDiv('story-line-button-row');
+        buttons.createEl('button', { text: t('Global') }).addEventListener('click', () => { this.onChoose('global'); this.close(); });
+        buttons.createEl('button', { text: t('Project'), cls: 'mod-cta' }).addEventListener('click', () => { this.onChoose('project'); this.close(); });
+    }
+}
+
 /**
  * Folder-path autocomplete for text inputs.
  * Lists all vault folders and filters as you type.
@@ -3755,4 +4132,4 @@ class FolderSuggest extends AbstractInputSuggest<TFolder> {
         this.close();
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

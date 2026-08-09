@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-unnecessary-type-assertion, no-useless-escape -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
  * ScrivenerImporter — import a .scriv project into NarrativeLab.
  *
@@ -19,6 +19,7 @@ import type { SceneStatus } from '../models/Scene';
 import { makeCustomCodexCategory } from '../models/Codex';
 import type { SeriesMetadata } from '../models/StoryLineProject';
 import { App, Modal, Notice, Setting, normalizePath, stringifyYaml } from 'obsidian';
+import { t } from '../utils/i18n';
 
 // Node modules — only available on desktop
 const fs = ((window as unknown as { require?: (m: string) => unknown }).require)?.('fs') as typeof import('fs') | undefined;
@@ -134,25 +135,25 @@ class FolderClassificationModal extends Modal {
         contentEl.empty();
         contentEl.addClass('storyline-folder-classification-modal');
 
-        contentEl.createEl('h3', { text: 'Classify Scrivener folders' });
+        contentEl.createEl('h3', { text: t('Classify Scrivener folders') });
         contentEl.createEl('p', {
-            text: 'These folders were found in the Scrivener project but don\u2019t match a standard category. Choose how each should be imported:',
+            text: t('These Scrivener folders do not match a standard category. Choose how to import each one.'),
             cls: 'setting-item-description',
         });
 
         const options: Record<string, string> = {
-            codex: 'Codex category',
-            notes: 'Notes',
-            research: 'Research',
-            manuscript: 'Scenes (manuscript)',
-            skip: 'Skip (don\u2019t import)',
+            codex: t('Library category'),
+            notes: t('Notes'),
+            research: t('Research'),
+            manuscript: t('Scenes (manuscript)'),
+            skip: t('Skip'),
         };
 
         for (const folder of this.folders) {
             const childCount = this.countLeafItems(folder);
             new Setting(contentEl)
                 .setName(folder.title)
-                .setDesc(`${childCount} item${childCount !== 1 ? 's' : ''}`)
+                .setDesc(t('{count} items', { count: childCount }))
                 .addDropdown(dd => {
                     for (const [value, label] of Object.entries(options)) {
                         dd.addOption(value, label);
@@ -166,14 +167,14 @@ class FolderClassificationModal extends Modal {
 
         const btnRow = contentEl.createDiv({ cls: 'story-line-button-row' });
 
-        const cancelBtn = btnRow.createEl('button', { text: 'Cancel' });
+        const cancelBtn = btnRow.createEl('button', { text: t('Cancel') });
         cancelBtn.addEventListener('click', () => {
             this.resolved = true;
             this.onResult(null);
             this.close();
         });
 
-        const importBtn = btnRow.createEl('button', { text: 'Continue Import', cls: 'mod-cta' });
+        const importBtn = btnRow.createEl('button', { text: t('Continue import'), cls: 'mod-cta' });
         importBtn.addEventListener('click', () => {
             this.resolved = true;
             this.onResult(this.choices);
@@ -792,7 +793,7 @@ export class ScrivenerImporter {
      */
     async import(scrivPath: string): Promise<ImportResult> {
         if (!fs || !nodePath) {
-            throw new Error('Scrivener import is only available on desktop.');
+            throw new Error(t('Scrivener import is only available on desktop.'));
         }
 
         const warnings: string[] = [];
@@ -801,15 +802,14 @@ export class ScrivenerImporter {
         const entries = fs.readdirSync(scrivPath);
         if (entries.some((f: string) => f === 'binder.scrivproj')) {
             throw new Error(
-                'This is a Scrivener 1.x (Mac) project which uses an unsupported format. '
-                + 'Please open it in Scrivener 3 and let it convert, then try importing again.',
+                t('This Scrivener 1.x project uses an unsupported format. Open it in Scrivener 3 to convert it, then import it again.'),
             );
         }
 
         // ── 1. Locate and read project.scrivx ──
         const scrivxFile = entries.find((f: string) => f.endsWith('.scrivx'));
         if (!scrivxFile) {
-            throw new Error('No .scrivx file found in the selected folder.');
+            throw new Error(t('No .scrivx file was found in the selected folder.'));
         }
         const scrivxPath = nodePath.join(scrivPath, scrivxFile);
         let scrivxContent = fs.readFileSync(scrivxPath, 'utf-8');
@@ -821,8 +821,7 @@ export class ScrivenerImporter {
                 scrivxContent = fs.readFileSync(mobPath, 'utf-8');
             } else {
                 throw new Error(
-                    'This appears to be a Scrivener iOS mobile stub with no binder data. '
-                    + 'Open it in Scrivener desktop first to sync the full project, then try again.',
+                    t('This appears to be a Scrivener iOS stub without binder data. Open it in Scrivener desktop to sync the full project, then try again.'),
                 );
             }
         }
@@ -840,7 +839,7 @@ export class ScrivenerImporter {
             const choices = await openFolderClassificationModal(this.app, unknownFolders);
             if (!choices) {
                 // User cancelled
-                throw new Error('Import cancelled.');
+                throw new Error(t('Import cancelled.'));
             }
             this.applyFolderClassifications(binder, choices);
         }
@@ -983,7 +982,10 @@ export class ScrivenerImporter {
                 notesFolder: firstProject!.notesFolder,
             };
 
-            new Notice(`Creating series "${projectTitle}" with ${bookFolders.length} projects…`, 3000);
+            new Notice(t('Creating series "{name}" with {count} projects…', {
+                name: projectTitle,
+                count: bookFolders.length,
+            }), 3000);
         } else {
             // ── 3b. Single-book project ──
             const project = await this.plugin.sceneManager.createProject(safeName);
@@ -1019,7 +1021,7 @@ export class ScrivenerImporter {
 
             processed++;
             if (processed % 10 === 0) {
-                new Notice(`Importing… ${processed}/${total}`, 2000);
+                new Notice(t('Importing… {processed}/{total}', { processed, total }), 2000);
             }
             // Allow UI to breathe
             if (processed % 5 === 0) {
@@ -1299,7 +1301,7 @@ export class ScrivenerImporter {
 
     /**
      * Register a custom Codex category in plugin settings (if not already there)
-     * and create its folder under the Codex directory.
+     * and create its folder under the Library directory.
      */
     private async registerCodexCategory(id: string, label: string, codexFolder: string): Promise<void> {
         const settings = this.plugin.settings;
@@ -1675,4 +1677,4 @@ export class ScrivenerImporter {
         await this.app.vault.create(filePath, content);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-unnecessary-type-assertion, no-useless-escape -- end of file-wide suppression block opened at line 1 */

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian event handlers intentionally launch async work and use compatibility assertions; matching enable at end of file */
 import { ButtonComponent, ItemView, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { LOCATION_VIEW_TYPE } from '../constants';
@@ -44,21 +44,7 @@ import {
 } from '../components/LibraryModeBar';
 import type { StoryGraph } from '../components/StoryGraph';
 import {
-    getLibraryFilePropertyOptions,
-    getLibraryFilePropertyValue,
-    getLibraryNotePropertyOptions,
-    getLibraryNotePropertyValue,
-    getLibraryTableSort,
-    getLibraryTableColumns,
-    getLibraryTableFormulas,
-    evaluateLibraryTableFormula,
-    compareLibraryTableValues,
-    pageSlice,
     renderLibraryBrowseToolbar,
-    renderLibraryTableHeader,
-    setLibraryTableColumns,
-    setLibraryTableSort,
-    LIBRARY_BROWSE_PAGE_SIZE,
 } from '../components/LibraryBrowseLayout';
 
 /**
@@ -75,7 +61,6 @@ export class LocationView extends ItemView {
     private rootContainer: HTMLElement | null = null;
     private storyGraph: StoryGraph | null = null;
     private collapsedSections: Set<string> = new Set();
-    private collapsedTreeNodes: Set<string> = new Set();
     private autoSaveTimer: number | null = null;
     /** The draft waiting to be saved (if any) */
     private pendingSaveDraft: WorldOrLocation | null = null;
@@ -94,7 +79,6 @@ export class LocationView extends ItemView {
     private locationOverviewMode: 'editor' | 'base' | 'story-graph';
     private browseSearchOpen = true;
     private browseFilterOpen = true;
-    private _searchTimer: number | null = null;
     /** Precomputed location-name → scene count for the current overview render */
     private _locationSceneCounts: Map<string, number> | null = null;
     /** Current sort mode for the overview tree */
@@ -257,136 +241,6 @@ export class LocationView extends ItemView {
             }
         }
         return false;
-    }
-
-    /** Flat cards / table for Locations browse (list keeps the world tree). */
-    private renderLocationBrowseAlt(
-        container: HTMLElement,
-        layout: 'cards' | 'table',
-        items: WorldOrLocation[],
-    ): void {
-        let shown = LIBRARY_BROWSE_PAGE_SIZE;
-        const host = container.createDiv('location-browse-alt');
-        const paint = () => {
-            host.empty();
-            const { visible, hasMore } = pageSlice(items, shown);
-            if (layout === 'cards') {
-                const grid = host.createDiv('codex-entry-cards');
-                for (const item of visible) {
-                    const card = grid.createDiv('codex-entry-card');
-                    const cover = card.createDiv('codex-entry-card-cover');
-                    if (item.image) {
-                        const src = resolveImagePath(this.app, item.image);
-                        if (src) cover.createEl('img', { attr: { src, alt: '', loading: 'lazy' } });
-                        else obsidian.setIcon(cover, item.type === 'world' ? 'globe' : 'map-pin');
-                    } else {
-                        obsidian.setIcon(cover, item.type === 'world' ? 'globe' : 'map-pin');
-                    }
-                    card.createEl('h4', { text: item.name });
-                    if (item.type === 'location' && item.locationType) {
-                        card.createSpan({ cls: 'codex-entry-type-badge', text: item.locationType });
-                    } else if (item.type === 'world') {
-                        card.createSpan({ cls: 'codex-entry-type-badge', text: t('World') });
-                    }
-                    if (item.type === 'location' && item.world) {
-                        card.createSpan({ cls: 'codex-entry-card-meta', text: item.world });
-                    }
-                    card.addEventListener('click', () => {
-                        this.selectedItem = item.filePath;
-                        if (this.rootContainer) this.renderView(this.rootContainer);
-                    });
-                }
-            } else {
-                const cols = getLibraryTableColumns(this.plugin, 'locations') ?? ['type', 'world'];
-                const propertyLabels = new Map<string, string>([
-                    ['type', 'type'] as [string, string],
-                    ['world', 'world'] as [string, string],
-                    ...getLibraryFilePropertyOptions().map(property => [property.key, property.label] as [string, string]),
-                ]);
-                const formulas = getLibraryTableFormulas(this.plugin, 'locations');
-                for (const formula of formulas) propertyLabels.set(`formula:${formula.id}`, formula.name);
-                const resolveValue = (item: WorldOrLocation, key: string): unknown => {
-                    if (key.startsWith('file.')) {
-                        return getLibraryFilePropertyValue(this.plugin, item.filePath, key);
-                    }
-                    if (key === 'name') return item.name;
-                    if (key === 'type') {
-                        return item.type === 'world'
-                            ? t('World')
-                            : (item.locationType || t('Location'));
-                    }
-                    if (key === 'world') {
-                        return item.type === 'location' ? (item.world || item.parent || '') : '';
-                    }
-                    const direct = (item as unknown as Record<string, unknown>)[key];
-                    return direct !== undefined
-                        ? direct
-                        : getLibraryNotePropertyValue(this.plugin, item.filePath, key);
-                };
-                const valueForColumn = (item: WorldOrLocation, key: string): unknown => {
-                    const formula = key.startsWith('formula:')
-                        ? formulas.find(value => value.id === key.slice('formula:'.length))
-                        : undefined;
-                    return formula
-                        ? evaluateLibraryTableFormula(formula.expression, property => resolveValue(item, property))
-                        : resolveValue(item, key);
-                };
-                const tableSort = getLibraryTableSort(this.plugin, 'locations');
-                const tableItems = [...items];
-                if (tableSort) {
-                    tableItems.sort((left, right) => {
-                        const result = compareLibraryTableValues(
-                            valueForColumn(left, tableSort.key),
-                            valueForColumn(right, tableSort.key),
-                        );
-                        return tableSort.direction === 'asc' ? result : -result;
-                    });
-                }
-                const tableVisible = pageSlice(tableItems, shown).visible;
-                const wrap = host.createDiv('library-base-table-wrap');
-                const table = wrap.createEl('table', { cls: 'library-base-table' });
-                const hr = table.createEl('thead').createEl('tr');
-                renderLibraryTableHeader(hr, 'name', 'name', tableSort, sort => {
-                    void setLibraryTableSort(this.plugin, 'locations', sort).then(paint);
-                });
-                for (const key of cols) {
-                    renderLibraryTableHeader(hr, propertyLabels.get(key) || key, key, tableSort, sort => {
-                        void setLibraryTableSort(this.plugin, 'locations', sort).then(paint);
-                    });
-                }
-                const tbody = table.createEl('tbody');
-                for (const item of tableVisible) {
-                    const tr = tbody.createEl('tr');
-                    const nameTd = tr.createEl('td');
-                    const btn = nameTd.createEl('button', {
-                        cls: 'library-base-table-name-btn',
-                        text: item.name,
-                    });
-                    btn.addEventListener('click', () => {
-                        this.selectedItem = item.filePath;
-                        if (this.rootContainer) this.renderView(this.rootContainer);
-                    });
-                    for (const key of cols) {
-                        const value = valueForColumn(item, key);
-                        const text = Array.isArray(value)
-                            ? value.map(item => coerceString(item).trim()).filter(Boolean).join(', ')
-                            : coerceString(value);
-                        tr.createEl('td', { text });
-                    }
-                }
-            }
-            if (hasMore) {
-                const more = host.createEl('button', {
-                    cls: 'mod-cta library-browse-load-more',
-                    text: t('Load more'),
-                });
-                more.addEventListener('click', () => {
-                    shown += LIBRARY_BROWSE_PAGE_SIZE;
-                    paint();
-                });
-            }
-        };
-        paint();
     }
 
     // ── Overview: tree hierarchy ───────────────────────
@@ -722,178 +576,6 @@ export class LocationView extends ItemView {
         });
     }
 
-    private renderWorldNode(parent: HTMLElement, world: StoryWorld, scenes: Scene[]): void {
-        const node = parent.createDiv('location-tree-node location-world-node');
-        const isCollapsed = this.collapsedTreeNodes.has(world.filePath);
-
-        const header = node.createDiv('location-tree-header');
-        const chevron = header.createSpan('location-tree-chevron');
-
-        const worldLocations = this.locationManager.getLocationsForWorld(world.name);
-        if (worldLocations.length > 0) {
-            obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
-            chevron.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (this.collapsedTreeNodes.has(world.filePath)) {
-                    this.collapsedTreeNodes.delete(world.filePath);
-                } else {
-                    this.collapsedTreeNodes.add(world.filePath);
-                }
-                this.renderView(this.rootContainer!);
-            });
-        } else {
-            chevron.setCssStyles({ width: '14px' }); // spacer
-        }
-
-        const icon = header.createSpan('location-tree-icon');
-        if (world.image) {
-            try {
-                // Use the helper function to resolve the image path
-                const imgSrc = resolveImagePath(this.app, world.image);
-                
-                const img = icon.createEl('img', { attr: { src: imgSrc, alt: world.name }, cls: 'location-tree-thumb' });
-                
-                // Add error handler to show placeholder if image fails to load
-                img.onerror = () => {
-                    img.remove();
-                    obsidian.setIcon(icon, 'globe');
-                };
-            } catch {
-                obsidian.setIcon(icon, 'globe');
-            }
-        } else {
-            obsidian.setIcon(icon, 'globe');
-        }
-
-        header.createSpan({ cls: 'location-tree-name', text: world.name });
-
-
-        header.addEventListener('click', () => {
-            this.selectedItem = world.filePath;
-            this.renderView(this.rootContainer!);
-        });
-
-        header.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            this.showItemContextMenu(world, e);
-        });
-
-        // Children
-        if (!isCollapsed && worldLocations.length > 0) {
-            const children = node.createDiv('location-tree-children');
-            let topLevel = this.locationManager.getTopLevelLocations(world.name);
-            if (this.activeTagFilters.size > 0) {
-                // Keep locations that match, or whose descendants match
-                topLevel = topLevel.filter(loc =>
-                    this.itemMatchesTagFilters(loc)
-                    || this.locationManager.getChildLocations(loc.name).some(c => this.itemMatchesTagFilters(c)));
-            }
-            for (const loc of topLevel) {
-                this.renderLocationNode(children, loc, scenes, 1);
-            }
-        }
-    }
-
-    private renderLocationNode(parent: HTMLElement, loc: StoryLocation, scenes: Scene[], depth: number): void {
-        const node = parent.createDiv('location-tree-node');
-        const childLocations = this.locationManager.getChildLocations(loc.name);
-        const isCollapsed = this.collapsedTreeNodes.has(loc.filePath);
-
-        const header = node.createDiv('location-tree-header');
-        header.setCssStyles({ paddingLeft: `${depth * 20}px` });
-
-        const chevron = header.createSpan('location-tree-chevron');
-        if (childLocations.length > 0) {
-            obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
-            chevron.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (this.collapsedTreeNodes.has(loc.filePath)) {
-                    this.collapsedTreeNodes.delete(loc.filePath);
-                } else {
-                    this.collapsedTreeNodes.add(loc.filePath);
-                }
-                this.renderView(this.rootContainer!);
-            });
-        } else {
-            chevron.setCssStyles({ width: '14px' });
-        }
-
-        const icon = header.createSpan('location-tree-icon');
-        if (loc.image) {
-            try {
-                // Use the helper function to resolve the image path
-                const imgSrc = resolveImagePath(this.app, loc.image);
-                
-                const img = icon.createEl('img', { attr: { src: imgSrc, alt: loc.name }, cls: 'location-tree-thumb' });
-                
-                // Add error handler to show placeholder if image fails to load
-                img.onerror = () => {
-                    img.remove();
-                    obsidian.setIcon(icon, 'map-pin');
-                };
-            } catch {
-                obsidian.setIcon(icon, 'map-pin');
-            }
-        } else {
-            obsidian.setIcon(icon, 'map-pin');
-        }
-
-        header.createSpan({ cls: 'location-tree-name', text: loc.name });
-
-        // Scene count for this location (precomputed map when available)
-        const locLower = loc.name.toLowerCase();
-        const sceneCount = (this._locationSceneCounts?.get(locLower)
-            ?? scenes.filter(s => s.location?.toLowerCase() === locLower).length);
-        if (sceneCount > 0) {
-            header.createSpan({ cls: 'location-tree-count', text: `${sceneCount} sc` });
-        }
-
-        if (loc.locationType) {
-            header.createSpan({ cls: 'location-type-badge', text: loc.locationType });
-        }
-
-        header.addEventListener('click', () => {
-            this.selectedItem = loc.filePath;
-            this.renderView(this.rootContainer!);
-        });
-
-        header.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            this.showItemContextMenu(loc, e);
-        });
-
-        // Child locations
-        if (!isCollapsed && childLocations.length > 0) {
-            const children = node.createDiv('location-tree-children');
-            for (const child of childLocations) {
-                this.renderLocationNode(children, child, scenes, depth + 1);
-            }
-        }
-    }
-
-    private renderUnlinkedLocation(parent: HTMLElement, name: string, scenes: Scene[]): void {
-        const node = parent.createDiv('location-tree-node location-unlinked-node');
-        const header = node.createDiv('location-tree-header');
-
-        header.createSpan({ cls: 'location-tree-chevron' }).setCssStyles({ width: '14px' });
-        const icon = header.createSpan('location-tree-icon');
-        obsidian.setIcon(icon, 'map-pin');
-        header.createSpan({ cls: 'location-tree-name', text: name });
-
-        const locLower = name.toLowerCase();
-        const sceneCount = this._locationSceneCounts?.get(locLower)
-            ?? scenes.filter(s => s.location?.toLowerCase() === locLower).length;
-        if (sceneCount > 0) {
-            header.createSpan({ cls: 'location-tree-count', text: `${sceneCount} sc` });
-        }
-
-        const createBtn = header.createEl('button', { cls: 'location-create-profile-btn', text: t('Create') });
-        createBtn.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            await this.createLocationFromName(name);
-        });
-    }
-
     // ── Tree node context menu (promote/demote, book membership) ───────
 
     private showItemContextMenu(item: WorldOrLocation, e: MouseEvent): void {
@@ -962,7 +644,9 @@ export class LocationView extends ItemView {
     private async moveItemTo(item: WorldOrLocation, target: string, verb: 'promoted' | 'demoted'): Promise<void> {
         try {
             await this.locationManager.moveItem(item, target);
-            new Notice(`"${item.name}" ${verb}`);
+            new Notice(verb === 'promoted'
+                ? t('Moved "{name}" to the shared series Library', { name: item.name })
+                : t('Moved "{name}" to the current project Library', { name: item.name }));
             await this.plugin.refreshOpenViews();
         } catch (err) {
             new Notice(t('Could not move: {err}', { err: (err as Error).message }));
@@ -1038,7 +722,7 @@ export class LocationView extends ItemView {
         // Type label
         const typeLabel = container.createDiv('location-detail-type');
         obsidian.setIcon(typeLabel, isWorld ? 'globe' : 'map-pin');
-        typeLabel.createSpan({ text: ` ${isWorld ? 'World' : 'Location'}` });
+        typeLabel.createSpan({ text: ` ${t(isWorld ? 'World' : 'Location')}` });
 
         // Portrait area (clickable to change)
         const portraitArea = container.createDiv('location-detail-portrait');
@@ -1048,10 +732,10 @@ export class LocationView extends ItemView {
                 try {
                     // Use the helper function to resolve the image path
                     const imgSrc = resolveImagePath(this.app, draft.image);
-                    
+
                     const img = portraitArea.createEl('img', { attr: { src: imgSrc, alt: draft.name } });
                     img.classList.add('location-detail-portrait-img');
-                    
+
                     // Add error handler to show placeholder if image fails to load
                     img.onerror = () => {
                         img.remove();
@@ -1068,7 +752,7 @@ export class LocationView extends ItemView {
                 ph.createEl('span', { text: t('Click to add image') });
             }
             const changeLabel = portraitArea.createDiv('location-portrait-change-label');
-            changeLabel.textContent = draft.image ? 'Change image' : '';
+            changeLabel.textContent = draft.image ? t('Change image') : '';
         };
         renderPortrait();
         portraitArea.addEventListener('click', () => {
@@ -1498,7 +1182,7 @@ export class LocationView extends ItemView {
             const msInput = inputRow.createEl('input', {
                 cls: 'universal-multi-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder || 'Type to add\u2026' },
+                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : t('Type to add\u2026') },
             });
             // Issue #102 — portal dropdown to <body> so position:fixed coords are
             // viewport-relative even when an ancestor uses transform/contain.
@@ -1562,7 +1246,7 @@ export class LocationView extends ItemView {
             });
         } else if (tpl.type === 'dropdown') {
             const select = row.createEl('select', { cls: 'location-field-input dropdown' });
-            select.createEl('option', { text: tpl.placeholder || 'Select…', value: '' });
+            select.createEl('option', { text: tpl.placeholder || t('Select…'), value: '' });
 
             const dropdownOptions = [...tpl.options];
             if (tpl.folderSource) {
@@ -1786,11 +1470,15 @@ export class LocationView extends ItemView {
 
     private renderNotesSection(container: HTMLElement, draft: WorldOrLocation): void {
         const section = container.createDiv('codex-side-section entity-notes-section');
-        section.createEl('h4', { text: t('Notes') });
+        const header = section.createDiv('entity-notes-header');
+        const icon = header.createSpan('entity-notes-icon');
+        obsidian.setIcon(icon, 'notebook-pen');
+        header.createEl('h4', { cls: 'entity-notes-title', text: t('Notes') });
+        header.createSpan({ cls: 'entity-notes-format', text: t('Markdown') });
 
         const textarea = section.createEl('textarea', {
             cls: 'codex-notes-textarea',
-            attr: { placeholder: t('Free-form notes (markdown)…'), rows: '12' },
+            attr: { placeholder: t('Write additional notes…'), rows: '12', 'aria-label': t('Notes') },
         });
         textarea.value = draft.notes || '';
         textarea.addEventListener('input', () => {
@@ -2047,24 +1735,23 @@ export class LocationView extends ItemView {
         this.pendingSaveDraft = draft;
         this.autoSaveTimer = window.setTimeout(async () => {
             try {
-                // Record undo snapshot
                 const undoMgr = this.plugin.sceneManager?.undoManager;
-                if (undoMgr && this.undoSnapshot) {
-                    undoMgr.recordUpdate(
-                        draft.filePath,
-                        this.undoSnapshot as unknown as unknown as Record<string, unknown>,
-                        draft as unknown as unknown as Record<string, unknown>,
-                        `Update ${draft.type} "${draft.name}"`,
-                        'location'
-                    );
-                    this.undoSnapshot = { ...draft, custom: { ...(draft.custom || {}) } };
-                }
+                const undoToken = undoMgr && this.undoSnapshot
+                    ? await undoMgr.beginUpdate(draft.filePath, t('Update "{name}"', { name: draft.name }), 'location')
+                    : null;
                 this._lastSaveTime = Date.now();
-                if (draft.type === 'world') {
-                    await this.locationManager.saveWorld(draft as StoryWorld);
-                } else {
-                    await this.locationManager.saveLocation(draft as StoryLocation);
+                try {
+                    if (draft.type === 'world') {
+                        await this.locationManager.saveWorld(draft as StoryWorld);
+                    } else {
+                        await this.locationManager.saveLocation(draft as StoryLocation);
+                    }
+                    await undoMgr?.commitUpdate(undoToken);
+                } catch (error) {
+                    await undoMgr?.commitUpdate(undoToken);
+                    throw error;
                 }
+                this.undoSnapshot = { ...draft, custom: { ...(draft.custom || {}) } };
                 this.pendingSaveDraft = null;
             } catch (e) {
                 console.error('NarrativeLab: failed to save location/world', e);
@@ -2084,22 +1771,22 @@ export class LocationView extends ItemView {
             this.pendingSaveDraft = null;
             try {
                 const undoMgr = this.plugin.sceneManager?.undoManager;
-                if (undoMgr && this.undoSnapshot) {
-                    undoMgr.recordUpdate(
-                        draft.filePath,
-                        this.undoSnapshot as unknown as unknown as Record<string, unknown>,
-                        draft as unknown as unknown as Record<string, unknown>,
-                        `Update ${draft.type} "${draft.name}"`,
-                        'location'
-                    );
-                    this.undoSnapshot = { ...draft, custom: { ...(draft.custom || {}) } };
-                }
+                const undoToken = undoMgr && this.undoSnapshot
+                    ? await undoMgr.beginUpdate(draft.filePath, t('Update "{name}"', { name: draft.name }), 'location')
+                    : null;
                 this._lastSaveTime = Date.now();
-                if (draft.type === 'world') {
-                    await this.locationManager.saveWorld(draft as StoryWorld);
-                } else {
-                    await this.locationManager.saveLocation(draft as StoryLocation);
+                try {
+                    if (draft.type === 'world') {
+                        await this.locationManager.saveWorld(draft as StoryWorld);
+                    } else {
+                        await this.locationManager.saveLocation(draft as StoryLocation);
+                    }
+                    await undoMgr?.commitUpdate(undoToken);
+                } catch (error) {
+                    await undoMgr?.commitUpdate(undoToken);
+                    throw error;
                 }
+                this.undoSnapshot = { ...draft, custom: { ...(draft.custom || {}) } };
             } catch (e) {
                 console.error('NarrativeLab: failed to flush-save location/world', e);
             }
@@ -2452,7 +2139,7 @@ export class LocationView extends ItemView {
                 if (src) {
                     const img = viewer.createEl('img', {
                         cls: 'character-gallery-img',
-                        attr: { src, alt: entry.caption || 'Gallery image' }
+                        attr: { src, alt: entry.caption || t('Gallery image') }
                     });
                     img.setCssStyles({ cursor: 'pointer' });
                     img.addEventListener('click', () => {
@@ -2619,7 +2306,7 @@ export class LocationView extends ItemView {
             titleText.textContent = entry.caption || `Image ${currentIndex + 1} of ${gallery.length}`;
             imgContainer.empty();
             if (src) {
-                const img = imgContainer.createEl('img', { attr: { src, alt: entry.caption || 'Gallery image' } });
+                const img = imgContainer.createEl('img', { attr: { src, alt: entry.caption || t('Gallery image') } });
                 img.setCssStyles({ transformOrigin: 'center center' });
                 const z = getZoom();
                 if (z !== 1) img.setCssStyles({ transform: `scale(${z})` });
@@ -2748,4 +2435,4 @@ export class LocationView extends ItemView {
         return pickImageModal(this.app, attachmentSourcePath, currentImage);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

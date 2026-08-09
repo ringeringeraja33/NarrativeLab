@@ -104,6 +104,23 @@
   box-sizing: border-box;
 }
 
+.app-shell[data-ui-mode="basic"] .nc-advanced-only {
+  display: none !important;
+}
+
+.app-shell[data-ui-mode="basic"] .project-file-section > h2,
+.app-shell[data-ui-mode="basic"] .project-file-card {
+  display: none;
+}
+
+.app-shell[data-ui-mode="basic"] .project-file-section {
+  padding-top: 8px;
+}
+
+.app-shell[data-ui-mode="basic"] .project-file-actions .save-project-button {
+  width: 100%;
+}
+
 *::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -985,6 +1002,20 @@ button {
   gap: 8px;
 }
 
+.custom-node-form > summary,
+.nc-disclosure > summary {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.custom-node-form[open] > summary,
+.nc-disclosure[open] > summary {
+  margin-bottom: 8px;
+  color: var(--text-normal);
+}
+
 .custom-node-form input,
 .custom-node-form select {
   min-width: 0;
@@ -1077,6 +1108,18 @@ button {
   align-items: center;
   gap: 4px;
   flex: 0 0 auto;
+}
+
+.ui-mode-toggle {
+  min-width: 64px;
+  height: 30px;
+  border-color: var(--background-modifier-border);
+  background: var(--background-secondary-alt);
+}
+
+.ui-mode-toggle[aria-pressed="true"] {
+  border-color: var(--interactive-accent);
+  color: var(--text-accent);
 }
 
 .canvas-workspace-tabs {
@@ -2352,6 +2395,10 @@ button {
 .project-export-controls {
   display: grid;
   gap: 8px;
+}
+
+.project-export-controls > summary {
+  padding: 7px 0 2px;
 }
 
 .project-control-group {
@@ -4218,10 +4265,20 @@ select:focus {
 
 .inspector-tab-group {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 26px;
+  grid-template-columns: minmax(0, 1fr);
   min-width: 0;
   border: 1px solid transparent;
   border-radius: var(--radius-s);
+}
+
+.inspector-current-float-button svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
 }
 
 .inspector-tab {
@@ -4432,9 +4489,17 @@ select:focus {
   min-width: 0;
 }
 
+.node-secondary-actions {
+  padding-top: 2px;
+}
+
+.node-secondary-actions .button-row {
+  margin-top: 8px;
+}
+
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));
   gap: 8px;
 }
 

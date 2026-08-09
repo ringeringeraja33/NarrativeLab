@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian event handlers intentionally launch async work and use compatibility assertions; matching enable at end of file */
 import { ItemView, WorkspaceLeaf, WorkspaceSplit, MarkdownRenderer, TFile, setIcon, Notice } from 'obsidian';
 import { EditorView, Decoration } from '@codemirror/view';
 import { RangeSetBuilder, StateEffect, Compartment, EditorSelection } from '@codemirror/state';
@@ -132,7 +132,7 @@ export class ManuscriptView extends ItemView {
 
     getDisplayText(): string {
         const title = this.plugin?.sceneManager?.activeProject?.title;
-        return title ? `Manuscript - ${title}` : 'Manuscript';
+        return title ? `${t('Manuscript')} - ${title}` : t('Manuscript');
     }
 
     getIcon(): string {
@@ -464,7 +464,9 @@ export class ManuscriptView extends ItemView {
                 const chapLabel = this.sceneManager.getChapterLabel(Number(scene.chapter));
                 chapDiv.createEl('span', {
                     cls: 'sl-manuscript-chapter-label',
-                    text: chapLabel ? `Chapter ${scene.chapter}: ${chapLabel}` : `Chapter ${scene.chapter}`,
+                    text: chapLabel
+                        ? t('Chapter {n}: {label}', { n: scene.chapter, label: chapLabel })
+                        : t('Chapter {n}', { n: scene.chapter }),
                 });
             }
 
@@ -844,7 +846,7 @@ export class ManuscriptView extends ItemView {
         });
         this.searchInput = input;
 
-        const count = row.createSpan({ cls: 'sl-manuscript-search-count', text: '' });
+        row.createSpan({ cls: 'sl-manuscript-search-count', text: '' });
 
         const prevBtn = row.createEl('button', { cls: 'sl-manuscript-search-btn', attr: { 'aria-label': t('Previous match'), title: t('Previous (Shift+Enter)') } });
         setIcon(prevBtn, 'chevron-up');
@@ -1055,9 +1057,12 @@ export class ManuscriptView extends ItemView {
         const el = this.searchPanel?.querySelector('.sl-manuscript-search-count') as HTMLElement | null;
         if (!el) return;
         if (this.searchMatchTotal === 0) {
-            el.setText(this.searchInput?.value ? 'No results' : '');
+            el.setText(this.searchInput?.value ? t('No results') : '');
         } else {
-            el.setText(`${this.searchMatchIndex + 1} of ${this.searchMatchTotal}`);
+            el.setText(t('{current} of {total}', {
+                current: this.searchMatchIndex + 1,
+                total: this.searchMatchTotal,
+            }));
         }
     }
 
@@ -1540,4 +1545,4 @@ export class ManuscriptView extends ItemView {
         void mountAndFocus();
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

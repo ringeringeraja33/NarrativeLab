@@ -50,6 +50,14 @@ const PLOTLINE_GAP_Y = 100;
 const START_X = 80;
 const START_Y = 80;
 
+function localizedFrameTypes() {
+    return [LOCATION_FRAME_TYPE, STORY_SEQUENCE_TYPE].map(type => ({
+        ...type,
+        label: t(type.label),
+        fields: type.fields.map(field => ({ ...field, label: t(field.label) })),
+    }));
+}
+
 function uid(prefix: string, index: number): string {
     return `${prefix}${index.toString(36)}`;
 }
@@ -205,7 +213,7 @@ export class PlotlineNcanvasService {
                 notes: t('Generated from NarrativeLab plotlines. Frames are ready to fill.'),
                 variables: {},
                 characters: [],
-                nodeTypes: [LOCATION_FRAME_TYPE, STORY_SEQUENCE_TYPE],
+                nodeTypes: localizedFrameTypes(),
                 nodes,
                 links,
             },

@@ -1,7 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 import { App, TFile, Notice } from 'obsidian';
-import { Scene } from '../models/Scene';
-import { MetadataParser } from './MetadataParser';
+import { t } from '../utils/i18n';
 
 /**
  * Types of undoable actions
@@ -23,10 +22,12 @@ interface UndoAction {
     /** Human-readable description (e.g. "Update status of 'The Red Door'") */
     label: string;
     filePath: string;
-    /** For 'update': the field values *before* the change */
-    oldValues?: Record<string, unknown>;
-    /** For 'update': the field values *after* the change */
-    newValues?: Record<string, unknown>;
+    /** For 'update': exact file state and path before the change. */
+    beforeContent?: string;
+    beforePath?: string;
+    /** For 'update': exact file state and path after the change. */
+    afterContent?: string;
+    afterPath?: string;
     /** For 'delete': full file content so we can re-create the file */
     fileContent?: string;
     /** For 'create': we store the content so undo can delete, redo can re-create */
@@ -39,7 +40,8 @@ const MAX_STACK = 50;
  * Manages an undo/redo stack for scene operations.
  *
  * Usage:
- *  - Before an update:  `undoManager.recordUpdate(filePath, oldSnap, newUpdates, label)`
+ *  - Around an update:   `const token = await undoManager.beginUpdate(filePath, label)`
+ *                       `await undoManager.commitUpdate(token, finalPath)`
  *  - Before a delete:   `undoManager.recordDelete(filePath, fileContent, label)`
  *  - After a create:    `undoManager.recordCreate(filePath, fileContent, label)`
  *  - Undo:              `await undoManager.undo()`
@@ -49,6 +51,8 @@ export class UndoManager {
     private app: App;
     private undoStack: UndoAction[] = [];
     private redoStack: UndoAction[] = [];
+    private pendingUpdates = new Map<number, UndoAction>();
+    private nextUpdateToken = 1;
     /** Callback fired after undo/redo so views can refresh */
     onAfterUndoRedo: (() => void) | null = null;
 
@@ -58,35 +62,53 @@ export class UndoManager {
 
     // ─── Recording ──────────────────────────────────────────────
 
-    /**
-     * Record a scene update (field changes).
-     * @param filePath  Scene file path
-     * @param oldSnap   Snapshot of the scene **before** the update
-     * @param newUpdates The partial updates being applied
-     * @param label     Human-readable description
-     * @param domain    Which domain ('scene' | 'character' | 'location')
-     */
-    recordUpdate(
-        filePath: string,
-        oldSnap: Record<string, unknown>,
-        newUpdates: Record<string, unknown>,
-        label?: string,
-        domain: UndoDomain = 'scene'
-    ): void {
-        // Only store the fields that are actually changing
-        const oldValues: Record<string, unknown> = {};
-        for (const key of Object.keys(newUpdates)) {
-            oldValues[key] = oldSnap[key];
-        }
+    async beginUpdate(filePath: string, label?: string, domain: UndoDomain = 'scene'): Promise<number | null> {
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (!(file instanceof TFile)) return null;
 
-        this.push({
-            type: 'update',
-            domain,
-            label: label || `Update ${domain}`,
-            filePath,
-            oldValues,
-            newValues: { ...newUpdates },
-        });
+        try {
+            const beforeContent = await this.app.vault.read(file);
+            const token = this.nextUpdateToken++;
+            this.pendingUpdates.set(token, {
+                type: 'update',
+                domain,
+                label: label || `Update ${domain}`,
+                filePath,
+                beforePath: filePath,
+                beforeContent,
+            });
+            return token;
+        } catch (error) {
+            console.error('NarrativeLab: could not capture file before update', error);
+            new Notice(t('Could not record this change for undo.'));
+            return null;
+        }
+    }
+
+    async commitUpdate(token: number | null, afterPath?: string): Promise<void> {
+        if (token === null) return;
+        const action = this.pendingUpdates.get(token);
+        if (!action) return;
+
+        try {
+            const resolvedPath = afterPath || action.beforePath || action.filePath;
+            const file = this.app.vault.getAbstractFileByPath(resolvedPath);
+            if (!(file instanceof TFile)) throw new Error(t('File not found'));
+            action.afterPath = resolvedPath;
+            action.afterContent = await this.app.vault.read(file);
+            if (action.beforePath !== action.afterPath || action.beforeContent !== action.afterContent) {
+                this.push(action);
+            }
+        } catch (error) {
+            console.error('NarrativeLab: could not capture file after update', error);
+            new Notice(t('Could not record this change for undo.'));
+        } finally {
+            this.pendingUpdates.delete(token);
+        }
+    }
+
+    cancelUpdate(token: number | null): void {
+        if (token !== null) this.pendingUpdates.delete(token);
     }
 
     /**
@@ -136,7 +158,7 @@ export class UndoManager {
     async undo(): Promise<boolean> {
         const action = this.undoStack.pop();
         if (!action) {
-            new Notice('Nothing to undo');
+            new Notice(t('Nothing to undo'));
             return false;
         }
 
@@ -144,12 +166,13 @@ export class UndoManager {
             await this.applyReverse(action);
             this.redoStack.push(action);
             if (this.redoStack.length > MAX_STACK) this.redoStack.shift();
-            new Notice(`Undo: ${action.label}`);
+            new Notice(t('Undo: {action}', { action: action.label }));
             this.onAfterUndoRedo?.();
             return true;
         } catch (e) {
+            this.undoStack.push(action);
             console.error('NarrativeLab: undo failed', e);
-            new Notice(`Undo failed: ${(e as Error).message}`);
+            new Notice(t('Undo failed: {message}', { message: (e as Error).message }));
             return false;
         }
     }
@@ -157,7 +180,7 @@ export class UndoManager {
     async redo(): Promise<boolean> {
         const action = this.redoStack.pop();
         if (!action) {
-            new Notice('Nothing to redo');
+            new Notice(t('Nothing to redo'));
             return false;
         }
 
@@ -165,12 +188,13 @@ export class UndoManager {
             await this.applyForward(action);
             this.undoStack.push(action);
             if (this.undoStack.length > MAX_STACK) this.undoStack.shift();
-            new Notice(`Redo: ${action.label}`);
+            new Notice(t('Redo: {action}', { action: action.label }));
             this.onAfterUndoRedo?.();
             return true;
         } catch (e) {
+            this.redoStack.push(action);
             console.error('NarrativeLab: redo failed', e);
-            new Notice(`Redo failed: ${(e as Error).message}`);
+            new Notice(t('Redo failed: {message}', { message: (e as Error).message }));
             return false;
         }
     }
@@ -181,6 +205,7 @@ export class UndoManager {
     clear(): void {
         this.undoStack = [];
         this.redoStack = [];
+        this.pendingUpdates.clear();
     }
 
     // ─── Internal ───────────────────────────────────────────────
@@ -198,14 +223,12 @@ export class UndoManager {
     private async applyReverse(action: UndoAction): Promise<void> {
         switch (action.type) {
             case 'update': {
-                const file = this.app.vault.getAbstractFileByPath(action.filePath);
-                if (!file || !(file instanceof TFile)) throw new Error('File not found');
-                await MetadataParser.updateFrontmatter(this.app, file, action.oldValues! as Partial<Scene>);
+                await this.restoreUpdate(action, 'undo');
                 break;
             }
             case 'delete': {
                 // Re-create the deleted file
-                if (!action.fileContent) throw new Error('No saved content for undo-delete');
+                if (action.fileContent === undefined) throw new Error(t('No saved content is available to restore this file.'));
                 await this.ensureParentFolder(action.filePath);
                 await this.app.vault.create(action.filePath, action.fileContent);
                 break;
@@ -214,6 +237,10 @@ export class UndoManager {
                 // Delete the created file
                 const file = this.app.vault.getAbstractFileByPath(action.filePath);
                 if (file && file instanceof TFile) {
+                    const currentContent = await this.app.vault.read(file);
+                    if (currentContent !== action.createdContent) {
+                        throw new Error(t('The file changed outside NarrativeLab. Undo was cancelled to protect the newer content.'));
+                    }
                     await this.app.fileManager.trashFile(file);
                 }
                 break;
@@ -227,27 +254,68 @@ export class UndoManager {
     private async applyForward(action: UndoAction): Promise<void> {
         switch (action.type) {
             case 'update': {
-                const file = this.app.vault.getAbstractFileByPath(action.filePath);
-                if (!file || !(file instanceof TFile)) throw new Error('File not found');
-                await MetadataParser.updateFrontmatter(this.app, file, action.newValues! as Partial<Scene>);
+                await this.restoreUpdate(action, 'redo');
                 break;
             }
             case 'delete': {
                 // Delete the file again
                 const file = this.app.vault.getAbstractFileByPath(action.filePath);
                 if (file && file instanceof TFile) {
+                    const currentContent = await this.app.vault.read(file);
+                    if (currentContent !== action.fileContent) {
+                        throw new Error(t('The file changed outside NarrativeLab. Redo was cancelled to protect the newer content.'));
+                    }
                     await this.app.fileManager.trashFile(file);
                 }
                 break;
             }
             case 'create': {
                 // Re-create the file
-                if (!action.createdContent) throw new Error('No saved content for redo-create');
+                if (action.createdContent === undefined) throw new Error(t('No saved content is available to recreate this file.'));
                 await this.ensureParentFolder(action.filePath);
                 await this.app.vault.create(action.filePath, action.createdContent);
                 break;
             }
         }
+    }
+
+    private async restoreUpdate(action: UndoAction, direction: 'undo' | 'redo'): Promise<void> {
+        const sourcePath = direction === 'undo' ? action.afterPath : action.beforePath;
+        const targetPath = direction === 'undo' ? action.beforePath : action.afterPath;
+        const expectedContent = direction === 'undo' ? action.afterContent : action.beforeContent;
+        const targetContent = direction === 'undo' ? action.beforeContent : action.afterContent;
+        if (!sourcePath || !targetPath || expectedContent === undefined || targetContent === undefined) {
+            throw new Error(t('No saved content is available to restore this file.'));
+        }
+
+        const source = this.app.vault.getAbstractFileByPath(sourcePath);
+        const target = this.app.vault.getAbstractFileByPath(targetPath);
+        let file: TFile;
+        if (!(source instanceof TFile)) {
+            // A previous attempt may have completed the rename but failed before modifying content.
+            if (target instanceof TFile) file = target;
+            else throw new Error(t('File not found'));
+        } else if (sourcePath !== targetPath && target) {
+            throw new Error(t('A file already exists at the restore location.'));
+        } else {
+            file = source;
+        }
+
+        const currentContent = await this.app.vault.read(file);
+        if (currentContent !== expectedContent) {
+            throw new Error(t('The file changed outside NarrativeLab. {action} was cancelled to protect the newer content.', {
+                action: direction === 'undo' ? t('Undo') : t('Redo'),
+            }));
+        }
+
+        if (file.path !== targetPath) {
+            await this.ensureParentFolder(targetPath);
+            await this.app.fileManager.renameFile(file, targetPath);
+            const renamed = this.app.vault.getAbstractFileByPath(targetPath);
+            if (!(renamed instanceof TFile)) throw new Error(t('File not found'));
+            file = renamed;
+        }
+        await this.app.vault.modify(file, targetContent);
     }
 
     private async ensureParentFolder(filePath: string): Promise<void> {
@@ -261,4 +329,3 @@ export class UndoManager {
         }
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

@@ -1,6 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceString } from '../utils/narrow';
+import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 import {
     StoryWorld, StoryLocation, WorldOrLocation,
     WORLD_FIELD_KEYS, LOCATION_FIELD_KEYS,
@@ -87,7 +88,7 @@ export class LocationManager {
         const safeFm = (fm ?? {}) as Partial<StoryWorld> & Partial<StoryLocation> & Record<string, unknown>;
 
         // Resolve effective type — explicit `type:` wins; otherwise fall back
-        // to 'location' for Codex/Locations residents (issue #74).
+        // to 'location' for Library/Locations residents (issue #74).
         let effectiveType: 'world' | 'location' = 'location';
         if (safeFm.type === 'world' || safeFm.type === 'location') {
             effectiveType = safeFm.type as 'world' | 'location';
@@ -97,13 +98,13 @@ export class LocationManager {
         const fmEff = safeFm;
 
         const body = this.extractBody(content);
-        const basename = filePath.split('/').pop()?.replace(/\.md$/i, '') ?? filePath;
+        const displayName = resolveLibraryEntityName(fmEff.name, filePath, fmEff.title);
 
         if (effectiveType === 'world') {
             const world: StoryWorld = {
                 filePath,
                 type: 'world',
-                name: fmEff.name || basename,
+                name: displayName,
                 image: fmEff.image,
                 gallery: this.parseGallery(fmEff.gallery),
                 nickname: fmEff.nickname,
@@ -135,7 +136,7 @@ export class LocationManager {
         const loc: StoryLocation = {
             filePath,
             type: 'location',
-            name: fmEff.name || basename,
+            name: displayName,
             image: fmEff.image,
             gallery: this.parseGallery(fmEff.gallery),
             nickname: fmEff.nickname,
@@ -381,7 +382,7 @@ export class LocationManager {
     /**
      * Move a world or location file to a different folder. Used by the
      * Promote / Demote actions to shuttle entries between the per-project
-     * Codex/Locations folder and the series-level shared folder.
+     * Library/Locations folder and the series-level shared folder.
      *
      * Wikilinks in scenes / characters reference locations by NAME (not
      * file path), so no link cascade is needed — only the file location
@@ -460,4 +461,4 @@ export class LocationManager {
         await this.app.vault.createFolder(folderPath);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

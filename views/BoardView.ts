@@ -1,7 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { ItemView, WorkspaceLeaf, WorkspaceSplit, Menu, Notice, TFile, TFolder, Modal, Setting, MarkdownRenderer, normalizePath } from 'obsidian';
 import * as obsidian from 'obsidian';
-import { Scene, SceneFilter, SortConfig, BoardGroupBy, SceneStatus, SceneTemplate, BUILTIN_BEAT_SHEETS, getStatusOrder, getStatusConfig, resolveStatusCfg } from '../models/Scene';
+import { Scene, SceneFilter, SortConfig, BoardGroupBy, SceneStatus, SceneTemplate, getStatusOrder, getStatusConfig, resolveStatusCfg } from '../models/Scene';
 import { openConfirmModal } from '../components/ConfirmModal';
 import { SceneManager } from '../services/SceneManager';
 import { SceneCardComponent } from '../components/SceneCard';
@@ -21,7 +21,7 @@ import { resolveImagePath } from '../components/ImagePicker';
 import { CorkboardCanvasService, type CorkboardPos } from '../services/CorkboardCanvasService';
 import type SceneCardsPlugin from '../main';
 import { compareActChapter, parseActChapterInput, getActDisplayLabel } from '../utils/actChapter';
-import { t, localizeBeatSheet } from '../utils/i18n';
+import { t } from '../utils/i18n';
 
 type BoardMode = 'kanban' | 'corkboard';
 
@@ -32,7 +32,6 @@ export class BoardView extends ItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private cardComponent: SceneCardComponent;
-    private _lastCacheVersion = -1;
     private filtersComponent: FiltersComponent | null = null;
     private inspectorComponent: InspectorComponent | null = null;
     private currentFilter: SceneFilter = { activeState: 'active' };
@@ -80,13 +79,14 @@ export class BoardView extends ItemView {
     /** Native Obsidian Canvas leaf hosted inside corkboard mode (ephemeral). */
     private corkboardCanvasLeaf: WorkspaceLeaf | null = null;
     /** Detached WorkspaceSplit that owns the embedded Canvas leaf. */
-    private corkboardCanvasSplit: WorkspaceSplit | null = null;
     private corkboardCanvasHostEl: HTMLElement | null = null;
     private corkboardCanvasFilePath: string | null = null;
     private corkboardCanvasService: CorkboardCanvasService;
     private corkboardCanvasResizeObserver: ResizeObserver | null = null;
     /** Unwrap native Canvas delete hooks installed for park-instead-of-delete. */
     private corkboardCanvasDeleteCleanup: (() => void) | null = null;
+    /** Snapshot selection before Canvas toolbars clear it during a remove click. */
+    private corkboardLastManagedSelectionPaths: string[] = [];
     /** When native Canvas host fails, fall back to the legacy DOM corkboard. */
     private corkboardNativeFailed = false;
     private corkboardCanvasSyncTimer: number | null = null;
@@ -187,7 +187,6 @@ export class BoardView extends ItemView {
                 this.refreshBoard();
             },
             this.plugin,
-            undefined,
             {
                 initialFilter: this.currentFilter,
                 initialSort: this.currentSort,
@@ -389,19 +388,7 @@ export class BoardView extends ItemView {
         // Icon button group
         const iconGroup = controls.createDiv('story-line-icon-group');
 
-        // Add acts/chapters button (available in both kanban and corkboard)
-        {
-            const structBtn = iconGroup.createEl('button', {
-                cls: 'clickable-icon',
-            });
-            if (typeof obsidian.setIcon === 'function') {
-                obsidian.setIcon(structBtn, 'columns-3');
-            } else {
-                console.error('obsidian.setIcon is not defined when setting structBtn');
-            }
-            attachTooltip(structBtn, t('Beat Sheet Templates / Add acts or chapters'));
-            structBtn.addEventListener('click', () => this.openStructureModal());
-        }
+        // Act/chapter structure lives on the Order (次序) view, next to swimlanes.
 
         // Resequence button (kanban only)
         if (this.boardMode !== 'corkboard') {
@@ -625,7 +612,6 @@ export class BoardView extends ItemView {
             try { this.corkboardCanvasLeaf.detach(); } catch { /* ignore */ }
             this.corkboardCanvasLeaf = null;
         }
-        this.corkboardCanvasSplit = null;
         // Keep hostEl when still connected so callers can remount into it.
         if (!this.corkboardCanvasHostEl?.isConnected) {
             this.corkboardCanvasHostEl = null;
@@ -733,18 +719,22 @@ export class BoardView extends ItemView {
             await this.mountNativeCorkboardCanvas(this.corkboardCanvasHostEl!, file);
         } catch (err) {
             console.error('[NarrativeLab] Native corkboard Canvas failed:', err);
-            // Last resort: ephemeral WorkspaceLeaf constructor (unofficial).
-            try {
-                const file = await this.syncNativeCorkboardFile();
-                if (!file || !this.boardEl) throw err;
-                this.boardEl.empty();
-                this.boardEl.addClass('story-line-corkboard');
-                this.boardEl.addClass('is-native-canvas-host');
-                this.corkboardCanvasHostEl = this.boardEl.createDiv('story-line-corkboard-native-host');
-                await this.mountNativeCorkboardCanvasViaLeafCtor(this.corkboardCanvasHostEl, file);
-                return;
-            } catch (err2) {
-                console.error('[NarrativeLab] Corkboard Canvas leaf-ctor fallback failed:', err2);
+            const originalPreserved = err instanceof Error
+                && err.message.includes('original file was not changed');
+            if (!originalPreserved) {
+                // Last resort: ephemeral WorkspaceLeaf constructor (unofficial).
+                try {
+                    const file = await this.syncNativeCorkboardFile();
+                    if (!file || !this.boardEl) throw err;
+                    this.boardEl.empty();
+                    this.boardEl.addClass('story-line-corkboard');
+                    this.boardEl.addClass('is-native-canvas-host');
+                    this.corkboardCanvasHostEl = this.boardEl.createDiv('story-line-corkboard-native-host');
+                    await this.mountNativeCorkboardCanvasViaLeafCtor(this.corkboardCanvasHostEl, file);
+                    return;
+                } catch (err2) {
+                    console.error('[NarrativeLab] Corkboard Canvas leaf-ctor fallback failed:', err2);
+                }
             }
             this.corkboardNativeFailed = true;
             this.teardownNativeCorkboardCanvas();
@@ -753,7 +743,9 @@ export class BoardView extends ItemView {
             this.boardEl.removeClass('is-native-canvas-host');
             const banner = this.boardEl.createDiv('story-line-corkboard-native-fallback');
             banner.createEl('p', {
-                text: t('Could not embed Obsidian Canvas. Using legacy corkboard. Open the .canvas file in a tab for full Canvas features.'),
+                text: originalPreserved
+                    ? t('The corkboard Canvas is unreadable. NarrativeLab did not change it. Repair or restore the .canvas file, then reload the view.')
+                    : t('Could not embed Obsidian Canvas. Using legacy corkboard. Open the .canvas file in a tab for full Canvas features.'),
             });
             const openBtn = banner.createEl('button', {
                 cls: 'mod-cta',
@@ -858,7 +850,6 @@ export class BoardView extends ItemView {
                 throw new Error(`Expected canvas view, got ${viewType ?? 'none'}`);
             }
 
-            this.corkboardCanvasSplit = split;
             this.corkboardCanvasLeaf = leaf;
             this.corkboardCanvasHostEl = host;
             this.corkboardCanvasFilePath = file.path;
@@ -888,7 +879,6 @@ export class BoardView extends ItemView {
             }
             try { splitEl.remove(); } catch { /* ignore */ }
             this.corkboardCanvasLeaf = null;
-            this.corkboardCanvasSplit = null;
             this.corkboardCanvasFilePath = null;
             throw err instanceof Error ? err : new Error(String(err));
         }
@@ -920,6 +910,7 @@ export class BoardView extends ItemView {
         const view = leaf?.view as {
             canvas?: {
                 selection?: Set<unknown> | unknown[];
+                nodes?: Map<string, unknown> | Record<string, unknown>;
                 deleteSelection?: (...args: unknown[]) => unknown;
                 [key: string]: unknown;
             };
@@ -930,6 +921,7 @@ export class BoardView extends ItemView {
 
         const origDelete = canvas.deleteSelection.bind(canvas);
         let parking = false;
+        let removeSelectionCaptured = false;
 
         const parkThenSync = async (paths: string[]): Promise<void> => {
             if (parking || paths.length === 0) return;
@@ -938,6 +930,7 @@ export class BoardView extends ItemView {
                 for (const path of paths) {
                     await this.parkCorkboardPath(path);
                 }
+                this.corkboardLastManagedSelectionPaths = [];
                 new Notice(
                     paths.length === 1
                         ? t('Parked as inactive. File kept in the vault.')
@@ -961,47 +954,115 @@ export class BoardView extends ItemView {
 
         // Capture menu trash ("移除") in case it bypasses deleteSelection.
         const root = this.corkboardCanvasHostEl ?? view?.containerEl ?? null;
-        const onClickCapture = (event: Event) => {
-            const target = event.target as HTMLElement | null;
-            const btn = target?.closest?.(
-                '.canvas-menu button, .canvas-node-menu button, .menu-item',
-            ) as HTMLElement | null;
-            if (!btn) return;
+        const selectedPaths = (allowCapturedSnapshot = false): string[] => {
+            const current = this.getSelectedCorkboardManagedPaths(canvas);
+            if (current.length > 0) return current;
+            if (allowCapturedSnapshot && removeSelectionCaptured) {
+                return this.corkboardLastManagedSelectionPaths;
+            }
+            return [];
+        };
+        const isRemoveControl = (element: HTMLElement | null): boolean => {
+            const btn = element?.closest?.('button, .clickable-icon, .menu-item') as HTMLElement | null;
+            if (!btn) return false;
             const label = [
                 btn.getAttribute('aria-label'),
                 btn.getAttribute('title'),
                 btn.textContent,
             ].filter(Boolean).join(' ').toLowerCase();
-            const isRemove = /remove|delete|trash|移除|删除/.test(label)
+            return /remove|delete|trash|移除|删除/.test(label)
                 || !!btn.querySelector?.('.lucide-trash, .lucide-trash-2, svg.lucide-trash, svg.lucide-trash-2');
-            if (!isRemove) return;
-            const paths = this.getSelectedCorkboardManagedPaths(canvas);
+        };
+        const onPointerDownCapture = (event: PointerEvent) => {
+            // Capture the current selection synchronously only for the remove
+            // control that is about to consume it. Other pointer actions must
+            // clear stale snapshots when Canvas ends with no selection.
+            const before = this.getSelectedCorkboardManagedPaths(canvas);
+            const removeControl = isRemoveControl(event.target as HTMLElement | null);
+            if (removeControl) {
+                this.corkboardLastManagedSelectionPaths = before;
+                removeSelectionCaptured = before.length > 0;
+                return;
+            }
+            window.setTimeout(() => {
+                const current = this.getSelectedCorkboardManagedPaths(canvas);
+                if (current.length > 0) {
+                    this.corkboardLastManagedSelectionPaths = current;
+                } else {
+                    this.corkboardLastManagedSelectionPaths = [];
+                }
+                removeSelectionCaptured = false;
+            }, 0);
+        };
+        const onClickCapture = (event: Event) => {
+            const target = event.target as HTMLElement | null;
+            if (!isRemoveControl(target)) return;
+            const paths = selectedPaths(true);
+            removeSelectionCaptured = false;
             if (paths.length === 0) return;
             event.preventDefault();
             event.stopPropagation();
             void parkThenSync(paths);
         };
+        const onKeyDownCapture = (event: KeyboardEvent) => {
+            if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+            const target = event.target as HTMLElement | null;
+            if (target?.closest('input, textarea, [contenteditable="true"]')) return;
+            const paths = selectedPaths(false);
+            if (paths.length === 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void parkThenSync(paths);
+        };
+        root?.addEventListener('pointerdown', onPointerDownCapture, true);
         root?.addEventListener('click', onClickCapture, true);
+        root?.addEventListener('keydown', onKeyDownCapture, true);
 
         this.corkboardCanvasDeleteCleanup = () => {
             if (canvas.deleteSelection !== origDelete) {
                 canvas.deleteSelection = origDelete;
             }
+            root?.removeEventListener('pointerdown', onPointerDownCapture, true);
             root?.removeEventListener('click', onClickCapture, true);
+            root?.removeEventListener('keydown', onKeyDownCapture, true);
         };
     }
 
     private getSelectedCorkboardManagedPaths(canvas: {
         selection?: Set<unknown> | unknown[];
+        nodes?: Map<string, unknown> | Record<string, unknown>;
     }): string[] {
         const selected = canvas.selection instanceof Set
             ? [...canvas.selection]
             : Array.isArray(canvas.selection) ? canvas.selection : [];
         const paths: string[] = [];
-        for (const node of selected) {
+        const resolveNode = (value: unknown): unknown => {
+            if (typeof value !== 'string') return value;
+            if (canvas.nodes instanceof Map) return canvas.nodes.get(value) ?? value;
+            if (canvas.nodes && typeof canvas.nodes === 'object') return canvas.nodes[value] ?? value;
+            return value;
+        };
+        for (const selectedValue of selected) {
+            const node = resolveNode(selectedValue);
             const path = this.getCanvasNodeFilePath(node);
             if (path && this.corkboardCanvasService.isNlManagedPath(path)) {
                 paths.push(path);
+            }
+        }
+
+        // Some Canvas builds expose selected node ids separately while keeping
+        // the visual state on nodeEl. Use that state as a compatibility fallback.
+        if (paths.length === 0 && canvas.nodes) {
+            const nodes = canvas.nodes instanceof Map
+                ? [...canvas.nodes.values()]
+                : Object.values(canvas.nodes);
+            for (const node of nodes) {
+                if (!node || typeof node !== 'object') continue;
+                const nodeEl = (node as { nodeEl?: HTMLElement; containerEl?: HTMLElement }).nodeEl
+                    ?? (node as { containerEl?: HTMLElement }).containerEl;
+                if (!nodeEl?.matches?.('.is-selected, .is-focused, .mod-active')) continue;
+                const path = this.getCanvasNodeFilePath(node);
+                if (path && this.corkboardCanvasService.isNlManagedPath(path)) paths.push(path);
             }
         }
         return [...new Set(paths)];
@@ -2292,7 +2353,7 @@ export class BoardView extends ItemView {
             .onClick(() => { this.moveCorkboardLayer(scenePath, 'top'); }));
 
         menu.addItem(item => item
-            .setTitle('Up')
+            .setTitle(t('Move up'))
             .setIcon('arrow-up')
             .onClick(() => { this.moveCorkboardLayer(scenePath, 'up'); }));
 
@@ -2325,6 +2386,16 @@ export class BoardView extends ItemView {
             .setTitle(t('Color: None'))
             .setIcon('rotate-ccw')
             .onClick(() => { void this.setCorkboardNoteColor(scene, undefined); }));
+
+        menu.addItem(item => item
+            .setTitle(t('Sticky note font color (light notes)'))
+            .setIcon('sun')
+            .onClick(() => { this.openStickyNoteFontColorModal('light'); }));
+
+        menu.addItem(item => item
+            .setTitle(t('Sticky note font color (dark notes)'))
+            .setIcon('moon')
+            .onClick(() => { this.openStickyNoteFontColorModal('dark'); }));
 
         menu.addSeparator();
         menu.addItem(item => item
@@ -2516,9 +2587,11 @@ export class BoardView extends ItemView {
      * context menu so users discover it next to the background color
      * controls.
      */
-    private openStickyNoteFontColorModal(scene: Scene, bucket: 'light' | 'dark'): void {
+    private openStickyNoteFontColorModal(bucket: 'light' | 'dark'): void {
         const modal = new Modal(this.app);
-        modal.titleEl.setText(bucket === 'light' ? 'Sticky note font color (light notes)' : 'Sticky note font color (dark notes)');
+        modal.titleEl.setText(t(bucket === 'light'
+            ? 'Sticky note font color (light notes)'
+            : 'Sticky note font color (dark notes)'));
 
         const currentValue = bucket === 'light'
             ? this.plugin.settings.stickyNoteFontColorLight
@@ -2534,9 +2607,9 @@ export class BoardView extends ItemView {
         });
 
         const desc = modal.contentEl.createEl('p', { cls: 'setting-item-description' });
-        desc.textContent = bucket === 'light'
+        desc.textContent = t(bucket === 'light'
             ? 'Used on bright note backgrounds. Applies to all sticky notes. Use "Auto" to derive the text color from each note\'s background.'
-            : 'Used on dark note backgrounds. Applies to all sticky notes. Use "Auto" to derive the text color from each note\'s background.';
+            : 'Used on dark note backgrounds. Applies to all sticky notes. Use "Auto" to derive the text color from each note\'s background.');
 
         new Setting(modal.contentEl)
             .addButton(btn => {
@@ -3197,7 +3270,7 @@ export class BoardView extends ItemView {
                 .onClick(() => { this.moveCorkboardLayer(scene.filePath, 'top'); }));
 
             menu.addItem(item => item
-                .setTitle('Up')
+                .setTitle(t('Move up'))
                 .setIcon('arrow-up')
                 .onClick(() => { this.moveCorkboardLayer(scene.filePath, 'up'); }));
 
@@ -3239,7 +3312,7 @@ export class BoardView extends ItemView {
 
         // Scene color picker
         menu.addItem(item => {
-            item.setTitle(scene.color ? 'Change Color' : 'Set Color')
+            item.setTitle(t(scene.color ? 'Change Color' : 'Set Color'))
                 .setIcon('palette')
                 .onClick(() => {
                     SceneCardComponent.openColorPicker(this.app, scene, this.sceneManager, () => this.refreshBoard());
@@ -3311,7 +3384,7 @@ export class BoardView extends ItemView {
         menu.addItem(item => {
             item.setTitle(t('Save as Template'))
                 .setIcon('file-plus')
-                .onClick(() => {
+                .onClick(async () => {
                     const tpl: SceneTemplate = {
                         name: `Template from "${scene.title || 'Untitled'}"`,
                         description: `Saved from scene "${scene.title || 'Untitled'}"`,
@@ -3323,9 +3396,9 @@ export class BoardView extends ItemView {
                             target_wordcount: scene.target_wordcount,
                         },
                         bodyTemplate: scene.body || '',
+                        scope: 'global',
                     };
-                    this.plugin.settings.sceneTemplates.push(tpl);
-                    this.plugin.saveSettings();
+                    await this.plugin.templateCenter.saveSceneTemplate(tpl);
                     new Notice(t('Scene template "{name}" saved', { name: tpl.name }));
                 });
         });
@@ -3333,7 +3406,7 @@ export class BoardView extends ItemView {
         menu.addSeparator();
 
         menu.addItem(item => {
-            item.setTitle(scene.inactive ? 'Mark Active' : 'Mark Inactive')
+            item.setTitle(t(scene.inactive ? 'Mark Active' : 'Mark Inactive'))
                 .setIcon(scene.inactive ? 'eye' : 'eye-off')
                 .onClick(async () => {
                     await this.sceneManager.updateScene(scene.filePath, { inactive: !scene.inactive });
@@ -3642,7 +3715,7 @@ export class BoardView extends ItemView {
             cls: 'storyline-description-textarea',
         });
         textArea.value = current;
-        textArea.placeholder = 'e.g. "Our heroes arrive in the capital…"';
+        textArea.placeholder = t('e.g. "Our heroes arrive in the capital…"');
         textArea.rows = 4;
         textArea.setCssStyles({
             width: '100%',
@@ -3817,388 +3890,6 @@ export class BoardView extends ItemView {
     }
 
     /**
-     * Open the structure modal to add/remove empty acts and chapters
-     */
-    private openStructureModal(): void {
-        const modal = new Modal(this.app);
-        modal.titleEl.setText(t('Manage Story Structure'));
-        modal.containerEl.addClass('sl-structure-modal');
-
-        const { contentEl } = modal;
-
-        // ── Beat Sheet Templates section ──
-        contentEl.createEl('h3', { text: t('Beat Sheet Templates') });
-        contentEl.createEl('p', {
-            cls: 'setting-item-description',
-            text: t('Apply a template to pre-populate your act/chapter structure with named beats.')
-        });
-
-        // Global toggle: create placeholder scenes from beats
-        let createPlaceholderScenes = false;
-        new Setting(contentEl)
-            .setName(t('Create placeholder scenes from beats'))
-            .setDesc(t('When enabled, applying a beat sheet also creates one "idea" scene per beat with the beat\'s title, act, chapter, and synopsis.'))
-            .addToggle(toggle => {
-                toggle.setValue(false);
-                toggle.onChange(v => { createPlaceholderScenes = v; });
-            });
-
-        // Render each template as a standard Setting item — avoids the custom
-        // flex container that collapsed to zero height on mobile (issue #214).
-        for (const rawTemplate of BUILTIN_BEAT_SHEETS) {
-            const template = localizeBeatSheet(rawTemplate);
-            const parts = [
-                t('{n} beats', { n: template.beats.length }),
-                t('{n} acts', { n: template.acts.length }),
-            ];
-            if (template.chapters.length > 0) {
-                parts.push(t('{n} chapters', { n: template.chapters.length }));
-            }
-
-            const s = new Setting(contentEl)
-                .setName(template.name)
-                .addButton(btn => {
-                    btn.setButtonText(t('Apply')).setCta().onClick(async () => {
-                        const doApply = async () => {
-                            await this.sceneManager.applyBeatSheet(template);
-                            if (createPlaceholderScenes) {
-                                const count = await this.sceneManager.createScenesFromBeats(template);
-                                new Notice(count > 0
-                                    ? t('Applied "{name}" — created {count} placeholder scene(s)', { name: template.name, count })
-                                    : t('Applied "{name}" template', { name: template.name }));
-                            } else {
-                                new Notice(t('Applied "{name}" template', { name: template.name }));
-                            }
-                            renderActsList();
-                            renderChaptersList();
-                        };
-                        const existingActs = this.sceneManager.getDefinedActs();
-                        const existingChapters = this.sceneManager.getDefinedChapters();
-                        if (existingActs.length > 0 || existingChapters.length > 0) {
-                            openConfirmModal(this.app, {
-                                title: t('Apply Beat Sheet'),
-                                message: t('Applying "{name}" will merge its acts, chapters, and labels into your existing structure. Existing scenes are not modified. Continue?', { name: template.name }),
-                                confirmLabel: t('Apply'),
-                                confirmClass: 'mod-cta',
-                                onConfirm: doApply,
-                            });
-                        } else {
-                            await doApply();
-                        }
-                    });
-                });
-
-            // Summary line + expandable beat list under the Setting description
-            const descFrag = activeDocument.createDocumentFragment();
-            const summaryLine = descFrag.createEl('div', { cls: 'beat-sheet-row-summary', text: `${template.summary} · ${parts.join(' · ')}` });
-            const details = descFrag.createEl('details', { cls: 'beat-sheet-details' });
-            details.createEl('summary', { cls: 'beat-sheet-details-summary', text: t('Show beats') });
-            for (const beat of template.beats) {
-                const item = details.createDiv({ cls: 'beat-sheet-beat-item' });
-                item.createSpan({ cls: 'beat-sheet-beat-act', text: `A${beat.act}` });
-                item.createSpan({ cls: 'beat-sheet-beat-label', text: beat.label });
-                item.createSpan({ cls: 'beat-sheet-beat-desc', text: beat.description });
-            }
-            s.descEl.appendChild(summaryLine);
-            s.descEl.appendChild(details);
-        }
-
-        // ── Acts section ──
-        contentEl.createEl('h3', { text: t('Acts') });
-        contentEl.createEl('p', {
-            cls: 'setting-item-description',
-            text: t('Define acts for your story. Empty acts will appear as columns even without scenes.')
-        });
-
-        const actsList = contentEl.createDiv('structure-list');
-        const scenesPerAct = new Map<number, number>();
-        for (const scene of this.sceneManager.getAllScenes()) {
-            if (scene.act !== undefined) {
-                const n = Number(scene.act);
-                scenesPerAct.set(n, (scenesPerAct.get(n) || 0) + 1);
-            }
-        }
-
-        const renderActsList = () => {
-            actsList.empty();
-            const acts = this.sceneManager.getDefinedActs();
-            const actLabels = this.sceneManager.getActLabels();
-            if (acts.length === 0) {
-                actsList.createEl('p', { cls: 'structure-empty', text: t('No acts defined yet.') });
-            }
-            for (const act of acts) {
-                const count = scenesPerAct.get(act) || 0;
-                const label = actLabels[act];
-                const row = actsList.createDiv('structure-row');
-                const cleanLabel = label?.replace(/^(Act|Prologue|Epilogue)\s*\d*\s*[—:]\s*/i, '');
-                const actDisplay = getActDisplayLabel(act);
-                const labelText = cleanLabel ? `${actDisplay} — ${cleanLabel}` : actDisplay;
-                row.createSpan({ cls: 'structure-label', text: labelText });
-                row.createSpan({
-                    cls: 'structure-count',
-                    text: count === 1 ? t('{count} scene', { count }) : t('{count} scenes', { count }),
-                });
-                const removeBtn = row.createEl('button', {
-                    cls: 'clickable-icon structure-remove',
-                    attr: { 'aria-label': t('Remove {label}', { label: actDisplay }) }
-                });
-                removeBtn.textContent = '×';
-                removeBtn.addEventListener('click', async () => {
-                    await this.sceneManager.removeAct(act);
-                    renderActsList();
-                });
-            }
-        };
-        renderActsList();
-
-        // Add acts controls
-        const addActRow = contentEl.createDiv('structure-add-row');
-        new Setting(addActRow)
-            .setName(t('Add acts'))
-            .setDesc(t('Enter act numbers (e.g. "1,2,3,4,5" or "6" to add one)'))
-            .addText(text => {
-                text.setPlaceholder('1,2,3,4,5');
-                text.inputEl.addClass('structure-input');
-                (text.inputEl as unknown as Record<string, unknown>)._ref = text;
-            })
-            .addButton(btn => {
-                btn.setButtonText(t('Add')).setCta().onClick(async () => {
-                    const input = addActRow.querySelector('.structure-input') as HTMLInputElement;
-                    if (!input?.value) return;
-                    const nums = input.value.split(',')
-                        .map(s => parseInt(s.trim()))
-                        .filter(n => !isNaN(n) && n > 0);
-                    if (nums.length === 0) {
-                        new Notice(t('Enter valid act numbers (e.g. 1,2,3)'));
-                        return;
-                    }
-                    await this.sceneManager.addActs(nums);
-                    input.value = '';
-                    renderActsList();
-                    new Notice(t('Added {n} act(s)', { n: nums.length }));
-                });
-            });
-
-        // ── Chapters section ──
-        contentEl.createEl('h3', { text: t('Chapters') });
-        contentEl.createEl('p', {
-            cls: 'setting-item-description',
-            text: t('Define chapters. Empty chapters appear as columns when grouping by chapter.')
-        });
-
-        const chaptersList = contentEl.createDiv('structure-list');
-        const scenesPerChapter = new Map<number, number>();
-        for (const scene of this.sceneManager.getAllScenes()) {
-            if (scene.chapter !== undefined) {
-                const n = Number(scene.chapter);
-                scenesPerChapter.set(n, (scenesPerChapter.get(n) || 0) + 1);
-            }
-        }
-
-        const renderChaptersList = () => {
-            chaptersList.empty();
-            const chapters = this.sceneManager.getDefinedChapters();
-            const chLabels = this.sceneManager.getChapterLabels();
-            if (chapters.length === 0) {
-                chaptersList.createEl('p', { cls: 'structure-empty', text: t('No chapters defined yet.') });
-            }
-            for (const ch of chapters) {
-                const count = scenesPerChapter.get(ch) || 0;
-                const chLabel = chLabels[ch];
-                const row = chaptersList.createDiv('structure-row');
-                const cleanChLabel = chLabel?.replace(/^Ch(?:apter)?\s*\d+\s*[—:]\s*/i, '');
-                const chDisplay = `${t('Chapter')} ${ch}`;
-                const labelText = cleanChLabel ? `${chDisplay} — ${cleanChLabel}` : chDisplay;
-                row.createSpan({ cls: 'structure-label', text: labelText });
-                row.createSpan({
-                    cls: 'structure-count',
-                    text: count === 1 ? t('{count} scene', { count }) : t('{count} scenes', { count }),
-                });
-                const removeBtn = row.createEl('button', {
-                    cls: 'clickable-icon structure-remove',
-                    attr: { 'aria-label': t('Remove {label}', { label: chDisplay }) }
-                });
-                removeBtn.textContent = '×';
-                removeBtn.addEventListener('click', async () => {
-                    await this.sceneManager.removeChapter(ch);
-                    renderChaptersList();
-                });
-            }
-        };
-        renderChaptersList();
-
-        const addChapterRow = contentEl.createDiv('structure-add-row');
-        let createScenesForChapters = false;
-        new Setting(addChapterRow)
-            .setName(t('Add chapters'))
-            .setDesc(t('Enter chapter numbers (e.g. "1-10" or "1,2,3")'))
-            .addText(text => {
-                text.setPlaceholder('1-10');
-                text.inputEl.addClass('structure-input');
-            })
-            .addButton(btn => {
-                btn.setButtonText(t('Add')).setCta().onClick(async () => {
-                    const input = addChapterRow.querySelector('.structure-input') as HTMLInputElement;
-                    if (!input?.value) return;
-                    let nums: number[] = [];
-                    const val = input.value.trim();
-                    // Support range syntax: "1-10"
-                    const rangeMatch = val.match(/^(\d+)\s*-\s*(\d+)$/);
-                    if (rangeMatch) {
-                        const start = parseInt(rangeMatch[1]);
-                        const end = parseInt(rangeMatch[2]);
-                        for (let i = start; i <= end; i++) nums.push(i);
-                    } else {
-                        nums = val.split(',')
-                            .map(s => parseInt(s.trim()))
-                            .filter(n => !isNaN(n) && n > 0);
-                    }
-                    if (nums.length === 0) {
-                        new Notice(t('Enter valid chapter numbers (e.g. 1-10 or 1,2,3)'));
-                        return;
-                    }
-                    await this.sceneManager.addChapters(nums);
-
-                    // Optionally create one empty scene per chapter
-                    if (createScenesForChapters) {
-                        const chLabels = this.sceneManager.getChapterLabels();
-                        for (const ch of nums) {
-                            const label = chLabels[ch];
-                            const title = label ? `${t('Chapter')} ${ch} — ${label}` : `${t('Chapter')} ${ch}`;
-                            await this.sceneManager.createScene({
-                                title,
-                                chapter: ch,
-                                sequence: ch,
-                                status: 'idea' as SceneStatus,
-                            });
-                        }
-                    }
-
-                    input.value = '';
-                    renderChaptersList();
-                    const msg = createScenesForChapters
-                        ? t('Added {n} chapter(s) with empty scenes — visible in all views.', { n: nums.length })
-                        : t('Added {n} chapter(s). Group by Chapter in Kanban to see them.', { n: nums.length });
-                    new Notice(msg);
-                });
-            });
-
-        new Setting(addChapterRow)
-            .setName(t('Create an empty scene per chapter'))
-            .setDesc(t('Makes new chapters immediately visible in all views.'))
-            .addToggle(toggle => {
-                toggle.setValue(false);
-                toggle.onChange(v => { createScenesForChapters = v; });
-            });
-
-        // ── Custom Structure Builder ──
-        contentEl.createEl('h3', { text: t('Custom Structure Builder') });
-        contentEl.createEl('p', {
-            cls: 'setting-item-description',
-            text: t('Quickly generate a custom act/chapter structure with optional placeholder scenes.')
-        });
-
-        let customActs = 3;
-        let customChaptersPerAct = 5;
-        let customScenesPerChapter = 1;
-        let customCreateScenes = false;
-
-        const customRow = contentEl.createDiv('structure-add-row');
-        new Setting(customRow)
-            .setName(t('Number of acts'))
-            .addText(text => {
-                text.setValue('3');
-                text.inputEl.type = 'number';
-                text.inputEl.addClass('structure-number-input');
-                text.onChange(v => { customActs = parseInt(v) || 3; });
-            });
-        new Setting(customRow)
-            .setName(t('Chapters per act'))
-            .addText(text => {
-                text.setValue('5');
-                text.inputEl.type = 'number';
-                text.inputEl.addClass('structure-number-input');
-                text.onChange(v => { customChaptersPerAct = parseInt(v) || 5; });
-            });
-        new Setting(customRow)
-            .setName(t('Scenes per chapter'))
-            .setDesc(t('Set to 0 to skip creating scenes.'))
-            .addText(text => {
-                text.setValue('1');
-                text.inputEl.type = 'number';
-                text.inputEl.addClass('structure-number-input');
-                text.onChange(v => { customScenesPerChapter = parseInt(v) || 0; });
-            });
-        new Setting(customRow)
-            .setName(t('Create placeholder scenes'))
-            .setDesc(t('Generate one "idea" scene per chapter (or per scene slot if > 1).'))
-            .addToggle(toggle => {
-                toggle.setValue(false);
-                toggle.onChange(v => { customCreateScenes = v; });
-            });
-
-        const customApplyRow = contentEl.createDiv('structure-close-row');
-        customApplyRow.createEl('button', { text: t('Apply Custom Structure'), cls: 'mod-cta' })
-            .addEventListener('click', async () => {
-                if (customActs < 1 || customChaptersPerAct < 1) {
-                    new Notice(t('Enter at least 1 act and 1 chapter per act.'));
-                    return;
-                }
-                const result = await this.sceneManager.applyCustomStructure(
-                    customActs,
-                    customChaptersPerAct,
-                    customScenesPerChapter,
-                    customCreateScenes,
-                );
-                renderActsList();
-                renderChaptersList();
-                const msg = customCreateScenes
-                    ? t('Created {acts} acts, {chapters} chapters, {scenes} placeholder scene(s).', result)
-                    : t('Created {acts} acts and {chapters} chapters.', result);
-                new Notice(msg);
-            });
-
-        // Close button
-        const closeRow = contentEl.createDiv('structure-close-row');
-        const closeBtn = closeRow.createEl('button', { text: t('Done'), cls: 'mod-cta' });
-        closeBtn.addEventListener('click', () => {
-            modal.close();
-            this.refreshBoard();
-        });
-
-        modal.open();
-
-        // Issue #214 — on iOS/iPadOS the modal opens scrolled past the top,
-        // hiding the Beat Sheet Templates section, because Obsidian auto-focuses
-        // the first text input (in the Acts section) and iOS scrolls that field
-        // into view. Blur the focused field and reset scroll on every scroll
-        // ancestor of the content, repeated across a few frames to beat the
-        // browser's own scroll-into-view timing.
-        const resetScroll = () => {
-            const active = activeDocument.activeElement as HTMLElement | null;
-            if (active && modal.contentEl.contains(active) && typeof active.blur === 'function') {
-                active.blur();
-            }
-            let node: HTMLElement | null = contentEl;
-            while (node) {
-                if (node.scrollTop) node.scrollTop = 0;
-                node = node.parentElement;
-            }
-            // Also explicitly zero the known Obsidian modal scroll containers.
-            modal.containerEl.querySelectorAll('.modal-content, .modal, .modal-container').forEach(el => {
-                (el as HTMLElement).scrollTop = 0;
-            });
-        };
-        // Run immediately, then on the next few frames to override iOS's
-        // deferred scroll-into-view after autofocus.
-        resetScroll();
-        window.requestAnimationFrame(() => { resetScroll(); window.requestAnimationFrame(resetScroll); });
-        window.setTimeout(resetScroll, 50);
-        window.setTimeout(resetScroll, 150);
-        window.setTimeout(resetScroll, 300);
-    }
-
-    /**
      * Open the Quick Add modal
      */
     private openQuickAdd(presetColumn?: string): void {
@@ -4324,14 +4015,12 @@ export class BoardView extends ItemView {
         // typed (issue #190). The cache version is still bumped so the next
         // refresh after editing ends will pick up changes.
         if (this.editingNotePath) {
-            this._lastCacheVersion = this.sceneManager.cacheVersion;
             return;
         }
         if (this._pendingRefresh) { cancelAnimationFrame(this._pendingRefresh); }
         this._pendingRefresh = window.requestAnimationFrame(() => {
             this._pendingRefresh = null;
             if (!this.rootContainer) return;
-            this._lastCacheVersion = this.sceneManager.cacheVersion;
             const prevSelectedPath = this.selectedScene?.filePath ?? null;
             const inspectorWasVisible = this.inspectorComponent?.isVisible() ?? false;
 
@@ -4426,7 +4115,7 @@ export class BoardView extends ItemView {
         const imgSrc = resolveImagePath(this.app, scene.corkboardNoteImage!);
         const imgEl = editorWrap.createEl('img', {
             cls: 'story-line-corkboard-note-img',
-            attr: { src: imgSrc, alt: scene.corkboardNoteCaption || 'Image note' },
+            attr: { src: imgSrc, alt: scene.corkboardNoteCaption || t('Image note') },
         });
 
         // Click image → open lightbox
@@ -4573,7 +4262,7 @@ export class BoardView extends ItemView {
 
         // Titlebar
         const titlebar = win.createDiv('gallery-lightbox-titlebar');
-        titlebar.createSpan({ cls: 'gallery-lightbox-title', text: caption || 'Image' });
+        titlebar.createSpan({ cls: 'gallery-lightbox-title', text: caption || t('Image') });
         const closeBtn = titlebar.createEl('button', { cls: 'gallery-lightbox-close', attr: { title: t('Close') } });
         obsidian.setIcon(closeBtn, 'x');
         closeBtn.addEventListener('click', () => { cleanup(); win.remove(); });
@@ -4582,7 +4271,7 @@ export class BoardView extends ItemView {
         const contentRow = win.createDiv('gallery-lightbox-content-row');
         const imgContainer = contentRow.createDiv('gallery-lightbox-content');
         if (src) {
-            const img = imgContainer.createEl('img', { attr: { src, alt: caption || 'Image note' } });
+            const img = imgContainer.createEl('img', { attr: { src, alt: caption || t('Image note') } });
             img.setCssStyles({ transformOrigin: 'center center' });
         }
 
@@ -4827,4 +4516,4 @@ export class BoardView extends ItemView {
         });
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

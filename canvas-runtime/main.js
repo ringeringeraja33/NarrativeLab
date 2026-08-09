@@ -1,4 +1,5 @@
 const { AbstractInputSuggest, ItemView, MarkdownRenderer, Notice, Plugin, PluginSettingTab, Setting, SuggestModal, TFile, TFolder, normalizePath, parseYaml, requestUrl } = require("obsidian");
+const { applyObsidianCanvasLayout, getNarrativeCanvasProjectionPath, projectToObsidianCanvas, validateNarrativeCanvasProjection } = require("./native-canvas");
 
 const VIEW_TYPE = "narrative-lab-canvas-view";
 const PLUGIN_ID = "narrative-lab";
@@ -100,7 +101,7 @@ const PLUGIN_TEXT = {
     "Sample project": "示例项目",
     "Save project file to vault": "保存项目文件到库",
     "Seconds between automatic Narrative Canvas saves. Leave empty to use the default interval ({value}).": "Narrative Canvas 自动保存的间隔秒数。留空则使用默认间隔（{value}）。",
-    "Each new project gets its own folder here, containing the .ncanvas file and a Library folder. Leave empty to use the vault root.": "每个新项目会在此路径下创建独立文件夹，其中包含 .ncanvas 文件和 Library 资料库文件夹。留空则使用库根目录。",
+    "Each new project gets its own folder here, containing the .ncanvas file and a Library folder. Leave empty to use the vault root.": "每个新项目会在此路径下创建独立文件夹，其中包含 .ncanvas 文件和资料库文件夹。留空则使用仓库根目录。",
     "Available placeholders: ": "可用占位符："
   }
 };
@@ -257,12 +258,35 @@ function normalizeCodexMarkdownExtraFields(value) {
   return normalized;
 }
 
+function fileTitleFromVaultPath(path) {
+  return String(path || "").split("/").pop()?.replace(/\.md$/i, "").trim() || "";
+}
+
+/** Prefer frontmatter name/title; treat Untitled placeholders as missing → file title. */
+function resolveCodexDisplayName(rawName, rawTitle, path) {
+  const placeholders = new Set(["untitled", "未命名", "unnamed", "untitled note", "未命名笔记"]);
+  for (const raw of [rawName, rawTitle]) {
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        const nested = resolveCodexDisplayName(item, undefined, "");
+        if (nested && nested !== "Untitled") return nested;
+      }
+      continue;
+    }
+    const value = String(raw == null ? "" : raw).trim();
+    if (!value || placeholders.has(value.toLowerCase())) continue;
+    return value;
+  }
+  return fileTitleFromVaultPath(path) || "Untitled";
+}
+
 function normalizeCodexEntryForMarkdown(entry, index = 0) {
   const source = entry && typeof entry === "object" ? entry : {};
   const images = normalizeCodexMarkdownImages(source.images, source.imageFile || source.image || "");
+  const fallbackName = `Library Entry ${index + 1}`;
   return {
     id: String(source.id || `c${index}`).trim() || `c${index}`,
-    name: String(source.name || `Library Entry ${index + 1}`).trim() || `Library Entry ${index + 1}`,
+    name: resolveCodexDisplayName(source.name, source.title, source.codexFile) || fallbackName,
     kind: normalizeCodexMarkdownKind(source.kind || source.category),
     role: String(source.role || ""),
     voice: String(source.voice || ""),
@@ -333,7 +357,7 @@ function parseCodexMarkdownFile(path, text) {
     .map(([key, value]) => ({ key, value }));
   return normalizeCodexEntryForMarkdown({
     id: data.id || `codex-${stableCodexPathHash(path)}`,
-    name: data.name || data.title || String(path || "").split("/").pop()?.replace(/\.md$/i, ""),
+    name: resolveCodexDisplayName(data.name, data.title, path),
     category: data.category || data.kind || frontmatterType,
     role: data.role,
     voice: data.voice,
@@ -951,6 +975,36 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       return text;
     }
     return null;
+  }
+
+  getPairedNativeCanvasPath(projectPath = this.getCurrentProjectPath()) {
+    const path = normalizeVaultPath(projectPath);
+    if (!path) return "";
+    return normalizeVaultPath(getNarrativeCanvasProjectionPath(path));
+  }
+
+  async writeNativeCanvasProjection(project, options = {}) {
+    const path = this.getPairedNativeCanvasPath();
+    if (!path) throw new Error("No Narrative Canvas project file is open.");
+    const exists = vaultFileExists(this.app, path);
+    if (exists && options.overwrite !== true) return { ok: false, reason: "exists", path };
+    const converted = projectToObsidianCanvas(project, { sourcePath: this.getCurrentProjectPath() });
+    await writeVaultText(this.app, path, JSON.stringify(converted.canvas, null, "\t"));
+    return { ok: true, path, created: !exists, report: converted.report };
+  }
+
+  async readNativeCanvasProjection(project) {
+    const path = this.getPairedNativeCanvasPath();
+    if (!path) throw new Error("No Narrative Canvas project file is open.");
+    if (!vaultFileExists(this.app, path)) return { ok: false, reason: "missing", path };
+    const text = await readVaultText(this.app, path);
+    const canvas = validateNarrativeCanvasProjection(
+      JSON.parse(text),
+      project,
+      this.getCurrentProjectPath()
+    );
+    const converted = applyObsidianCanvasLayout(project, canvas);
+    return { ok: true, path, project: converted.project, report: converted.report };
   }
 
   async saveProjectFile(savedStateJson) {
@@ -2150,6 +2204,8 @@ class NarrativeCanvasView extends ItemView {
         searchVaultFiles: (query, limit, options) => this.plugin.searchVaultFiles(query, limit, options),
         openVaultFile: (reference) => this.plugin.openVaultFile(reference),
         readVaultFile: (reference) => this.plugin.readVaultFile(reference),
+        writeNativeCanvasProjection: (project, options) => this.plugin.writeNativeCanvasProjection(project, options),
+        readNativeCanvasProjection: (project) => this.plugin.readNativeCanvasProjection(project),
         getVaultResourceUrl: (reference) => this.plugin.getVaultResourceUrl(reference),
         importCodexImage: (file, entryName, entry) => this.plugin.importCodexImage(file, entryName, entry),
         loadCodexEntries: () => this.plugin.loadCodexEntries(),
@@ -3118,6 +3174,23 @@ const CANVAS_STYLE_CSS = [
   "  box-sizing: border-box;",
   "}",
   "",
+  ".app-shell[data-ui-mode=\"basic\"] .nc-advanced-only {",
+  "  display: none !important;",
+  "}",
+  "",
+  ".app-shell[data-ui-mode=\"basic\"] .project-file-section > h2,",
+  ".app-shell[data-ui-mode=\"basic\"] .project-file-card {",
+  "  display: none;",
+  "}",
+  "",
+  ".app-shell[data-ui-mode=\"basic\"] .project-file-section {",
+  "  padding-top: 8px;",
+  "}",
+  "",
+  ".app-shell[data-ui-mode=\"basic\"] .project-file-actions .save-project-button {",
+  "  width: 100%;",
+  "}",
+  "",
   "*::-webkit-scrollbar {",
   "  width: 10px;",
   "  height: 10px;",
@@ -3139,13 +3212,14 @@ const CANVAS_STYLE_CSS = [
   "  background-clip: padding-box;",
   "}",
   "",
-  ":host {",
+  "html,",
+  "body {",
   "  width: 100%;",
   "  height: 100%;",
   "  margin: 0;",
   "}",
   "",
-  ":host {",
+  "body {",
   "  position: relative;",
   "  overflow: hidden;",
   "  background: var(--background-primary);",
@@ -3354,7 +3428,7 @@ const CANVAS_STYLE_CSS = [
   "  border-bottom: 1px solid var(--background-modifier-border);",
   "}",
   "",
-  ".pane-header \u003e div:first-child {",
+  ".pane-header > div:first-child {",
   "  min-width: 0;",
   "}",
   "",
@@ -3998,6 +4072,20 @@ const CANVAS_STYLE_CSS = [
   "  gap: 8px;",
   "}",
   "",
+  ".custom-node-form > summary,",
+  ".nc-disclosure > summary {",
+  "  color: var(--text-muted);",
+  "  font-size: 12px;",
+  "  font-weight: 650;",
+  "  cursor: pointer;",
+  "}",
+  "",
+  ".custom-node-form[open] > summary,",
+  ".nc-disclosure[open] > summary {",
+  "  margin-bottom: 8px;",
+  "  color: var(--text-normal);",
+  "}",
+  "",
   ".custom-node-form input,",
   ".custom-node-form select {",
   "  min-width: 0;",
@@ -4090,6 +4178,18 @@ const CANVAS_STYLE_CSS = [
   "  align-items: center;",
   "  gap: 4px;",
   "  flex: 0 0 auto;",
+  "}",
+  "",
+  ".ui-mode-toggle {",
+  "  min-width: 64px;",
+  "  height: 30px;",
+  "  border-color: var(--background-modifier-border);",
+  "  background: var(--background-secondary-alt);",
+  "}",
+  "",
+  ".ui-mode-toggle[aria-pressed=\"true\"] {",
+  "  border-color: var(--interactive-accent);",
+  "  color: var(--text-accent);",
   "}",
   "",
   ".canvas-workspace-tabs {",
@@ -4864,7 +4964,7 @@ const CANVAS_STYLE_CSS = [
   "  position: relative;",
   "}",
   "",
-  ".node-vault-file-input-wrap \u003e input {",
+  ".node-vault-file-input-wrap > input {",
   "  width: 100%;",
   "}",
   "",
@@ -5284,7 +5384,7 @@ const CANVAS_STYLE_CSS = [
   "  border-bottom: 1px solid var(--background-modifier-border);",
   "}",
   "",
-  ".document-header \u003e div {",
+  ".document-header > div {",
   "  min-width: 0;",
   "}",
   "",
@@ -5335,7 +5435,7 @@ const CANVAS_STYLE_CSS = [
   "  gap: 6px;",
   "}",
   "",
-  ".project-file-box-title \u003e span:not(.project-feature-badge) {",
+  ".project-file-box-title > span:not(.project-feature-badge) {",
   "  color: var(--text-muted);",
   "  font-size: 12px;",
   "  font-weight: 700;",
@@ -5365,6 +5465,10 @@ const CANVAS_STYLE_CSS = [
   ".project-export-controls {",
   "  display: grid;",
   "  gap: 8px;",
+  "}",
+  "",
+  ".project-export-controls > summary {",
+  "  padding: 7px 0 2px;",
   "}",
   "",
   ".project-control-group {",
@@ -5436,13 +5540,13 @@ const CANVAS_STYLE_CSS = [
   "  font-size: 12px;",
   "}",
   "",
-  ".document-restore-bar \u003e span {",
+  ".document-restore-bar > span {",
   "  flex: 0 0 auto;",
   "  font-weight: 650;",
   "  color: var(--text-muted);",
   "}",
   "",
-  ".document-restore-bar \u003e .filter-chip {",
+  ".document-restore-bar > .filter-chip {",
   "  max-width: min(100%, 220px);",
   "  overflow: hidden;",
   "  text-overflow: ellipsis;",
@@ -5649,8 +5753,8 @@ const CANVAS_STYLE_CSS = [
   "  pointer-events: none;",
   "}",
   "",
-  ".node-stack \u003e .node,",
-  ".node-stack \u003e .port {",
+  ".node-stack > .node,",
+  ".node-stack > .port {",
   "  pointer-events: auto;",
   "}",
   "",
@@ -6132,11 +6236,11 @@ const CANVAS_STYLE_CSS = [
   "  white-space: normal;",
   "}",
   "",
-  ".node-vault-preview.is-markdown \u003e :first-child {",
+  ".node-vault-preview.is-markdown > :first-child {",
   "  margin-top: 0;",
   "}",
   "",
-  ".node-vault-preview.is-markdown \u003e :last-child {",
+  ".node-vault-preview.is-markdown > :last-child {",
   "  margin-bottom: 0;",
   "}",
   "",
@@ -6475,15 +6579,15 @@ const CANVAS_STYLE_CSS = [
   "  white-space: nowrap;",
   "}",
   "",
-  ".node-cast-chip \u003e span,",
-  ".node-cast-chip \u003e small {",
+  ".node-cast-chip > span,",
+  ".node-cast-chip > small {",
   "  min-width: 0;",
   "  overflow: hidden;",
   "  text-overflow: ellipsis;",
   "  white-space: nowrap;",
   "}",
   "",
-  ".node-cast-chip \u003e small {",
+  ".node-cast-chip > small {",
   "  color: var(--text-faint);",
   "  font-size: 9px;",
   "  font-weight: 550;",
@@ -7130,9 +7234,9 @@ const CANVAS_STYLE_CSS = [
   "  padding: 4px 8px;",
   "}",
   "",
-  "/* Custom checkbox WITHOUT fighting the host. The native \u003cinput\u003e stays for interaction and",
+  "/* Custom checkbox WITHOUT fighting the host. The native <input> stays for interaction and",
   "   accessibility but is laid transparently over the whole field (see .nc-checkbox-field); the visible",
-  "   box and checkmark live on a sibling \u003cspan class=\"nc-checkbox-box\"\u003e that Obsidian never targets.",
+  "   box and checkmark live on a sibling <span class=\"nc-checkbox-box\"> that Obsidian never targets.",
   "   Because the host's checkbox styles land on the invisible input, nothing needs to override them —",
   "   so there are no priority overrides or geometry resets fighting the host CSS. */",
   ".nc-checkbox-box {",
@@ -7231,10 +7335,20 @@ const CANVAS_STYLE_CSS = [
   "",
   ".inspector-tab-group {",
   "  display: grid;",
-  "  grid-template-columns: minmax(0, 1fr) 26px;",
+  "  grid-template-columns: minmax(0, 1fr);",
   "  min-width: 0;",
   "  border: 1px solid transparent;",
   "  border-radius: var(--radius-s);",
+  "}",
+  "",
+  ".inspector-current-float-button svg {",
+  "  width: 14px;",
+  "  height: 14px;",
+  "  fill: none;",
+  "  stroke: currentColor;",
+  "  stroke-linecap: round;",
+  "  stroke-linejoin: round;",
+  "  stroke-width: 2;",
   "}",
   "",
   ".inspector-tab {",
@@ -7445,9 +7559,17 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
+  ".node-secondary-actions {",
+  "  padding-top: 2px;",
+  "}",
+  "",
+  ".node-secondary-actions .button-row {",
+  "  margin-top: 8px;",
+  "}",
+  "",
   ".stat-grid {",
   "  display: grid;",
-  "  grid-template-columns: repeat(2, minmax(0, 1fr));",
+  "  grid-template-columns: repeat(auto-fit, minmax(76px, 1fr));",
   "  gap: 8px;",
   "}",
   "",
@@ -7766,7 +7888,7 @@ const CANVAS_STYLE_CSS = [
   "",
   "/* The button is the single interactive surface; children never intercept the",
   "   pointer, so hit-testing and synthetic clicks always land on the chip itself. */",
-  ".node-cast-chip-button \u003e * {",
+  ".node-cast-chip-button > * {",
   "  pointer-events: none;",
   "}",
   "",
@@ -7775,7 +7897,7 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
-  ".codex-overview-image \u003e img {",
+  ".codex-overview-image > img {",
   "  position: absolute;",
   "  inset: 0;",
   "  display: block;",
@@ -7867,8 +7989,8 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
-  ".codex-overview-tags \u003e span,",
-  ".codex-overview-tags \u003e small {",
+  ".codex-overview-tags > span,",
+  ".codex-overview-tags > small {",
   "  max-width: 100%;",
   "  padding: 2px 6px;",
   "  overflow: hidden;",
@@ -8174,7 +8296,7 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
-  ".codex-vault-file-input-wrap \u003e input {",
+  ".codex-vault-file-input-wrap > input {",
   "  width: 100%;",
   "}",
   "",
@@ -8202,8 +8324,8 @@ const CANVAS_STYLE_CSS = [
   "  align-items: center;",
   "}",
   "",
-  ".codex-extra-field-row \u003e input,",
-  ".codex-extra-field-row \u003e select {",
+  ".codex-extra-field-row > input,",
+  ".codex-extra-field-row > select {",
   "  min-width: 0;",
   "  width: 100%;",
   "}",
@@ -8213,7 +8335,7 @@ const CANVAS_STYLE_CSS = [
   "    grid-template-columns: minmax(0, 1fr) minmax(92px, 120px) auto;",
   "  }",
   "",
-  "  .codex-extra-field-row \u003e input[data-character-extra-part=\"value\"] {",
+  "  .codex-extra-field-row > input[data-character-extra-part=\"value\"] {",
   "    grid-column: 1 / -1;",
   "    grid-row: 2;",
   "  }",
@@ -8433,7 +8555,7 @@ const CANVAS_STYLE_CSS = [
   "  display: none;",
   "}",
   "",
-  ".codex-tag-chip \u003e span:first-child {",
+  ".codex-tag-chip > span:first-child {",
   "  min-width: 0;",
   "  overflow: hidden;",
   "  text-overflow: ellipsis;",
@@ -8530,14 +8652,14 @@ const CANVAS_STYLE_CSS = [
   "  display: none;",
   "}",
   "",
-  ".codex-tag-suggestion \u003e span {",
+  ".codex-tag-suggestion > span {",
   "  min-width: 0;",
   "  overflow: hidden;",
   "  text-overflow: ellipsis;",
   "  white-space: nowrap;",
   "}",
   "",
-  ".codex-tag-suggestion \u003e small {",
+  ".codex-tag-suggestion > small {",
   "  color: var(--text-faint);",
   "  font-size: 11px;",
   "}",
@@ -8582,7 +8704,7 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
-  ".character-card-header \u003e .field {",
+  ".character-card-header > .field {",
   "  flex: 1 1 auto;",
   "  min-width: 0;",
   "}",
@@ -8622,7 +8744,7 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
-  ".codex-managed-file-row \u003e span {",
+  ".codex-managed-file-row > span {",
   "  display: grid;",
   "  min-width: 0;",
   "  gap: 2px;",
@@ -8650,7 +8772,7 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
-  ".vision-board-toolbar \u003e div {",
+  ".vision-board-toolbar > div {",
   "  display: flex;",
   "  flex-wrap: wrap;",
   "  justify-content: flex-end;",
@@ -8718,7 +8840,7 @@ const CANVAS_STYLE_CSS = [
   "  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);",
   "}",
   "",
-  ".vision-board-tile \u003e img {",
+  ".vision-board-tile > img {",
   "  display: block;",
   "  width: 100%;",
   "  height: 100%;",
@@ -8754,7 +8876,7 @@ const CANVAS_STYLE_CSS = [
   "  opacity: 1;",
   "}",
   "",
-  ".vision-board-tile-actions \u003e button {",
+  ".vision-board-tile-actions > button {",
   "  display: grid;",
   "  place-items: center;",
   "  width: 28px;",
@@ -8774,8 +8896,8 @@ const CANVAS_STYLE_CSS = [
   "  cursor: pointer;",
   "}",
   "",
-  ".vision-board-tile-actions \u003e button::before,",
-  ".vision-board-tile-actions \u003e button::after {",
+  ".vision-board-tile-actions > button::before,",
+  ".vision-board-tile-actions > button::after {",
   "  display: none;",
   "  content: none;",
   "}",
@@ -8817,7 +8939,7 @@ const CANVAS_STYLE_CSS = [
   "    flex-direction: column;",
   "  }",
   "",
-  "  .vision-board-toolbar \u003e div {",
+  "  .vision-board-toolbar > div {",
   "    justify-content: flex-start;",
   "  }",
   "",
@@ -8842,7 +8964,7 @@ const CANVAS_STYLE_CSS = [
   "  gap: 6px;",
   "}",
   "",
-  ".codex-image-picker-head \u003e input {",
+  ".codex-image-picker-head > input {",
   "  width: 100%;",
   "  min-width: 0;",
   "}",
@@ -8862,7 +8984,7 @@ const CANVAS_STYLE_CSS = [
   "  align-items: center;",
   "}",
   "",
-  ".vault-file-suggestion.codex-image-suggestion \u003e img {",
+  ".vault-file-suggestion.codex-image-suggestion > img {",
   "  width: 46px;",
   "  height: 46px;",
   "  border-radius: var(--radius-s);",
@@ -8870,7 +8992,7 @@ const CANVAS_STYLE_CSS = [
   "  background: var(--background-primary);",
   "}",
   "",
-  ".vault-file-suggestion.codex-image-suggestion \u003e span {",
+  ".vault-file-suggestion.codex-image-suggestion > span {",
   "  display: grid;",
   "  gap: 2px;",
   "  min-width: 0;",
@@ -8960,7 +9082,7 @@ const CANVAS_STYLE_CSS = [
   "  font-size: 12px;",
   "}",
   "",
-  ".character-backlink-group \u003e .linked-node-list {",
+  ".character-backlink-group > .linked-node-list {",
   "  padding: 8px;",
   "  border-top: 1px solid var(--background-modifier-border);",
   "}",
@@ -9077,7 +9199,7 @@ const CANVAS_STYLE_CSS = [
   "  gap: 12px;",
   "}",
   "",
-  ".playbook-section-header \u003e div:first-child {",
+  ".playbook-section-header > div:first-child {",
   "  min-width: 0;",
   "}",
   "",
@@ -9225,7 +9347,7 @@ const CANVAS_STYLE_CSS = [
   "  opacity: 0.95;",
   "}",
   "",
-  ".workspace-toc-button \u003e svg {",
+  ".workspace-toc-button > svg {",
   "  display: block;",
   "  width: 20px;",
   "  height: 20px;",
@@ -9309,10 +9431,10 @@ const CANVAS_STYLE_CSS = [
   "  font-weight: 650;",
   "}",
   "",
-  ".playbook-gate-row \u003e input,",
-  ".playbook-gate-row \u003e select,",
-  ".playbook-gate-condition \u003e input,",
-  ".playbook-gate-condition \u003e select {",
+  ".playbook-gate-row > input,",
+  ".playbook-gate-row > select,",
+  ".playbook-gate-condition > input,",
+  ".playbook-gate-condition > select {",
   "  width: 100%;",
   "  min-width: 0;",
   "}",
@@ -9438,8 +9560,8 @@ const CANVAS_STYLE_CSS = [
   "  background: var(--background-secondary);",
   "}",
   "",
-  ".playbook-action-row \u003e input,",
-  ".playbook-action-row \u003e select {",
+  ".playbook-action-row > input,",
+  ".playbook-action-row > select {",
   "  width: 100%;",
   "  min-width: 0;",
   "}",
@@ -9450,8 +9572,8 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
-  ".playbook-state-key-cell \u003e input,",
-  ".playbook-state-key-cell \u003e select {",
+  ".playbook-state-key-cell > input,",
+  ".playbook-state-key-cell > select {",
   "  width: 100%;",
   "  min-width: 0;",
   "}",
@@ -9533,13 +9655,13 @@ const CANVAS_STYLE_CSS = [
   "  line-height: 1.3;",
   "}",
   "",
-  ".script-node-link \u003e strong {",
+  ".script-node-link > strong {",
   "  width: 100%;",
   "  white-space: normal;",
   "  word-break: break-word;",
   "}",
   "",
-  ".script-node-link \u003e small {",
+  ".script-node-link > small {",
   "  width: 100%;",
   "  color: var(--text-faint);",
   "  font-size: 11px;",
@@ -9623,7 +9745,7 @@ const CANVAS_STYLE_CSS = [
   "  background: var(--background-secondary);",
   "}",
   "",
-  ".state-report-export-blocks \u003e strong {",
+  ".state-report-export-blocks > strong {",
   "  color: var(--text-warning, #c9962b);",
   "  font-size: 12px;",
   "}",
@@ -9759,7 +9881,7 @@ const CANVAS_STYLE_CSS = [
   "  overflow-wrap: anywhere;",
   "}",
   "",
-  ".state-report-initial \u003e div {",
+  ".state-report-initial > div {",
   "  min-width: 0;",
   "}",
   "",
@@ -10024,10 +10146,10 @@ const CANVAS_STYLE_CSS = [
   "  padding-inline: 8px;",
   "}",
   "",
-  ".variable-heading \u003e span:nth-last-child(2),",
-  ".playbook-action-heading \u003e span:nth-last-child(2),",
-  ".playbook-gate-heading \u003e span:last-child,",
-  ".script-node-heading \u003e span:last-child {",
+  ".variable-heading > span:nth-last-child(2),",
+  ".playbook-action-heading > span:nth-last-child(2),",
+  ".playbook-gate-heading > span:last-child,",
+  ".script-node-heading > span:last-child {",
   "  justify-self: center;",
   "  text-align: center;",
   "}",
@@ -10047,7 +10169,7 @@ const CANVAS_STYLE_CSS = [
   "  background: var(--background-secondary);",
   "}",
   "",
-  ".node-logic-box \u003e header {",
+  ".node-logic-box > header {",
   "  display: flex;",
   "  align-items: center;",
   "  justify-content: space-between;",
@@ -10102,8 +10224,8 @@ const CANVAS_STYLE_CSS = [
   "  grid-template-columns: minmax(120px, 1fr) minmax(92px, 0.8fr) minmax(110px, 1fr) auto;",
   "}",
   "",
-  ".logic-draft-row \u003e input,",
-  ".logic-draft-row \u003e select {",
+  ".logic-draft-row > input,",
+  ".logic-draft-row > select {",
   "  min-width: 0;",
   "  width: 100%;",
   "}",
@@ -10141,8 +10263,8 @@ const CANVAS_STYLE_CSS = [
   "  background: color-mix(in srgb, var(--background-secondary) 92%, transparent);",
   "}",
   "",
-  ".choice-options-editor \u003e header,",
-  ".dialog-turns-editor \u003e header {",
+  ".choice-options-editor > header,",
+  ".dialog-turns-editor > header {",
   "  display: flex;",
   "  align-items: center;",
   "  justify-content: space-between;",
@@ -10247,7 +10369,7 @@ const CANVAS_STYLE_CSS = [
   "  gap: 8px;",
   "}",
   "",
-  ".choice-option-condition-head \u003e span {",
+  ".choice-option-condition-head > span {",
   "  min-width: 0;",
   "  overflow: hidden;",
   "  font-size: 11px;",
@@ -10473,7 +10595,7 @@ const CANVAS_STYLE_CSS = [
   "  align-items: center;",
   "}",
   "",
-  ".dialog-turn-split-row \u003e span {",
+  ".dialog-turn-split-row > span {",
   "  height: 1px;",
   "  background: var(--background-modifier-border);",
   "}",
@@ -10779,8 +10901,8 @@ const CANVAS_STYLE_CSS = [
   "  text-transform: uppercase;",
   "}",
   "",
-  ".cast-editor-header \u003e span,",
-  ".cast-auto-row \u003e span,",
+  ".cast-editor-header > span,",
+  ".cast-auto-row > span,",
   ".cast-empty {",
   "  color: var(--text-faint);",
   "  font-size: 12px;",
@@ -11131,13 +11253,13 @@ const CANVAS_STYLE_CSS = [
   "  cursor: grabbing;",
   "}",
   "",
-  ".event-sheet-table tbody tr.event-row-drop-before \u003e td:first-child,",
-  ".event-sheet-table tbody tr.event-row-drop-before \u003e th {",
+  ".event-sheet-table tbody tr.event-row-drop-before > td:first-child,",
+  ".event-sheet-table tbody tr.event-row-drop-before > th {",
   "  box-shadow: inset 0 2px 0 var(--interactive-accent);",
   "}",
   "",
-  ".event-sheet-table tbody tr.event-row-drop-after \u003e td:first-child,",
-  ".event-sheet-table tbody tr.event-row-drop-after \u003e th {",
+  ".event-sheet-table tbody tr.event-row-drop-after > td:first-child,",
+  ".event-sheet-table tbody tr.event-row-drop-after > th {",
   "  box-shadow: inset 0 -2px 0 var(--interactive-accent);",
   "}",
   "",
@@ -11679,7 +11801,7 @@ const CANVAS_STYLE_CSS = [
   "  min-width: 0;",
   "}",
   "",
-  ".type-dialog-field-row \u003e .type-dialog-setting-label {",
+  ".type-dialog-field-row > .type-dialog-setting-label {",
   "  flex: 0 0 auto;",
   "  min-width: 62px;",
   "  font-weight: 600;",
@@ -12580,11 +12702,11 @@ const CANVAS_STYLE_CSS = [
   "  white-space: normal;",
   "}",
   "",
-  ".node-text-rendered \u003e :first-child {",
+  ".node-text-rendered > :first-child {",
   "  margin-top: 0;",
   "}",
   "",
-  ".node-text-rendered \u003e :last-child {",
+  ".node-text-rendered > :last-child {",
   "  margin-bottom: 0;",
   "}",
   "",
@@ -13052,7 +13174,7 @@ const CANVAS_STYLE_CSS = [
   "    gap: 8px;",
   "  }",
   "",
-  "  .dialog-turn-row \u003e :not(.dialog-turn-actions) {",
+  "  .dialog-turn-row > :not(.dialog-turn-actions) {",
   "    grid-column: 1;",
   "  }",
   "",
@@ -13211,7 +13333,7 @@ const CANVAS_STYLE_CSS = [
   "  display: block;",
   "}",
   "",
-  ".playbook-json-frame \u003e textarea {",
+  ".playbook-json-frame > textarea {",
   "  display: block;",
   "  width: 100%;",
   "}",
@@ -13315,16 +13437,16 @@ const CANVAS_STYLE_CSS = [
   ".ai-messages { display:flex; flex-direction:column; gap:10px; min-height:180px; max-height:42vh; overflow:auto; }",
   ".ai-message { position:relative; padding:10px; border:1px solid var(--background-modifier-border); border-radius:10px; line-height:1.45; overflow-wrap:anywhere; }",
   ".ai-message-header { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:5px; }",
-  ".ai-message-header \u003e strong { margin:0; font-size:11px; text-transform:uppercase; color:var(--text-muted); }",
+  ".ai-message-header > strong { margin:0; font-size:11px; text-transform:uppercase; color:var(--text-muted); }",
   ".ai-copy-button { display:inline-flex; align-items:center; justify-content:center; min-width:26px; min-height:24px; padding:2px 6px; border:1px solid transparent; border-radius:5px; background:transparent; color:var(--text-muted); cursor:pointer; }",
   ".ai-copy-button:hover, .ai-copy-button:focus-visible { border-color:var(--background-modifier-border); background:var(--background-modifier-hover); color:var(--text-normal); }",
   ".ai-copy-button svg { width:14px; height:14px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }",
   ".ai-message-user { background:color-mix(in srgb, var(--interactive-accent) 12%, transparent); }",
-  ".ai-message.streaming \u003e .ai-markdown::after { content:\"\"; display:inline-block; width:7px; height:1em; margin-left:3px; border-radius:2px; vertical-align:-2px; background:var(--interactive-accent); animation:ai-stream-caret .8s steps(1) infinite; }",
+  ".ai-message.streaming > .ai-markdown::after { content:\"\"; display:inline-block; width:7px; height:1em; margin-left:3px; border-radius:2px; vertical-align:-2px; background:var(--interactive-accent); animation:ai-stream-caret .8s steps(1) infinite; }",
   "@keyframes ai-stream-caret { 50% { opacity:.2; } }",
   ".ai-markdown { color:var(--text-normal); }",
-  ".ai-markdown \u003e :first-child { margin-top:0; }",
-  ".ai-markdown \u003e :last-child { margin-bottom:0; }",
+  ".ai-markdown > :first-child { margin-top:0; }",
+  ".ai-markdown > :last-child { margin-bottom:0; }",
   ".ai-markdown :is(p, ul, ol, blockquote, pre) { margin:0.55em 0; }",
   ".ai-markdown :is(h1, h2, h3, h4) { margin:0.75em 0 0.35em; line-height:1.25; color:var(--text-normal); }",
   ".ai-markdown h1 { font-size:1.35em; }",
@@ -13495,17 +13617,17 @@ const CANVAS_INDEX_HTML = [
   "            \u003csmall id=\"projectFilePath\"\u003eSaved in this browser\u003c/small\u003e",
   "          \u003c/div\u003e",
   "          \u003cdiv class=\"project-file-actions\"\u003e",
-  "            \u003cbutton class=\"small-button\" data-action=\"open-project-file\" type=\"button\"\u003eOpen\u003c/button\u003e",
-  "            \u003cbutton class=\"small-button\" data-action=\"reload-project-file\" type=\"button\"\u003eReload\u003c/button\u003e",
-  "            \u003cbutton class=\"small-button\" data-action=\"clear-browser-storage\" data-web-only type=\"button\"\u003eClear storage\u003c/button\u003e",
-  "            \u003cbutton class=\"small-button project-file-sample-button\" data-action=\"open-sample-project\" data-web-only type=\"button\"\u003eOpen sample file\u003c/button\u003e",
+  "            \u003cbutton class=\"small-button nc-advanced-only\" data-action=\"open-project-file\" type=\"button\"\u003eOpen\u003c/button\u003e",
+  "            \u003cbutton class=\"small-button nc-advanced-only\" data-action=\"reload-project-file\" type=\"button\"\u003eReload\u003c/button\u003e",
+  "            \u003cbutton class=\"small-button nc-advanced-only\" data-action=\"clear-browser-storage\" data-web-only type=\"button\"\u003eClear storage\u003c/button\u003e",
+  "            \u003cbutton class=\"small-button project-file-sample-button nc-advanced-only\" data-action=\"open-sample-project\" data-web-only type=\"button\"\u003eOpen sample file\u003c/button\u003e",
   "            \u003cbutton class=\"small-button save-project-button\" title=\"Save project state\" data-action=\"save-project\" type=\"button\"\u003eSave\u003c/button\u003e",
-  "            \u003cbutton class=\"small-button new-project-button\" title=\"New project\" data-action=\"new-project\" type=\"button\"\u003eNew\u003c/button\u003e",
+  "            \u003cbutton class=\"small-button new-project-button nc-advanced-only\" title=\"New project\" data-action=\"new-project\" type=\"button\"\u003eNew\u003c/button\u003e",
   "          \u003c/div\u003e",
   "        \u003c/section\u003e",
   "",
   "        \u003csection class=\"nav-section\"\u003e",
-  "          \u003ch2\u003eFiles\u003c/h2\u003e",
+  "          \u003ch2\u003eWorkspace\u003c/h2\u003e",
   "          \u003cbutton class=\"nc-file-item active\" data-file-id=\"adventure\"\u003e",
   "            \u003cspan class=\"file-dot\"\u003e\u003c/span\u003e",
   "            \u003cspan class=\"nc-file-item-label\"\u003eNarrative.canvas\u003c/span\u003e",
@@ -13514,7 +13636,7 @@ const CANVAS_INDEX_HTML = [
   "            \u003cspan class=\"file-dot muted\"\u003e\u003c/span\u003e",
   "            \u003cspan class=\"nc-file-item-label\"\u003eDocument.md\u003c/span\u003e",
   "          \u003c/button\u003e",
-  "          \u003cbutton class=\"nc-file-item\" data-file-id=\"events\"\u003e",
+  "          \u003cbutton class=\"nc-file-item nc-advanced-only\" data-file-id=\"events\"\u003e",
   "            \u003cspan class=\"file-dot muted\"\u003e\u003c/span\u003e",
   "            \u003cspan class=\"nc-file-item-label\"\u003eEvents Sheet.csv\u003c/span\u003e",
   "          \u003c/button\u003e",
@@ -13522,7 +13644,7 @@ const CANVAS_INDEX_HTML = [
   "            \u003cspan class=\"file-dot muted\"\u003e\u003c/span\u003e",
   "            \u003cspan class=\"nc-file-item-label\"\u003eLibrary.md\u003c/span\u003e",
   "          \u003c/button\u003e",
-  "          \u003cbutton class=\"nc-file-item\" data-file-id=\"variables\"\u003e",
+  "          \u003cbutton class=\"nc-file-item nc-advanced-only\" data-file-id=\"variables\"\u003e",
   "            \u003cspan class=\"file-dot muted\"\u003e\u003c/span\u003e",
   "            \u003cspan class=\"nc-file-item-label\"\u003ePlaybook.json\u003c/span\u003e",
   "          \u003c/button\u003e",
@@ -13531,7 +13653,8 @@ const CANVAS_INDEX_HTML = [
   "        \u003csection class=\"nav-section palette\"\u003e",
   "          \u003ch2\u003eNode Library\u003c/h2\u003e",
   "          \u003cdiv id=\"nodePalette\" class=\"palette-list\"\u003e\u003c/div\u003e",
-  "          \u003cdiv class=\"custom-node-form node-type-form\"\u003e",
+  "          \u003cdetails class=\"custom-node-form node-type-form nc-advanced-only\"\u003e",
+  "            \u003csummary\u003eManage node types\u003c/summary\u003e",
   "            \u003cdiv class=\"custom-node-row\"\u003e",
   "              \u003cinput id=\"customNodeName\" placeholder=\"Name\" spellcheck=\"false\"\u003e",
   "              \u003cinput id=\"customNodeColor\" type=\"color\" value=\"#7fdbca\" title=\"Node color\"\u003e",
@@ -13544,7 +13667,7 @@ const CANVAS_INDEX_HTML = [
   "              \u003coption value=\"frame\"\u003eFrame\u003c/option\u003e",
   "            \u003c/select\u003e",
   "            \u003ctextarea id=\"customNodeFields\" class=\"custom-node-fields\" rows=\"3\" placeholder=\"Fields, one per line\" spellcheck=\"false\"\u003e\u003c/textarea\u003e",
-  "          \u003c/div\u003e",
+  "          \u003c/details\u003e",
   "        \u003c/section\u003e",
   "      \u003c/aside\u003e",
   "      \u003cdiv class=\"sidebar-resizer sidebar-resizer-left\" data-sidebar-resizer=\"left\" role=\"separator\" aria-orientation=\"vertical\" aria-label=\"Resize left sidebar\"\u003e\u003c/div\u003e",
@@ -13556,17 +13679,18 @@ const CANVAS_INDEX_HTML = [
   "            \u003cstrong id=\"activeFileTab\"\u003eNarrative.canvas\u003c/strong\u003e",
   "          \u003c/div\u003e",
   "          \u003cdiv class=\"workspace-global-actions\"\u003e",
+  "            \u003cbutton id=\"uiModeToggle\" class=\"small-button ui-mode-toggle\" data-action=\"toggle-ui-mode\" type=\"button\" aria-pressed=\"false\" title=\"Show advanced tools\"\u003eBasic\u003c/button\u003e",
   "            \u003cspan class=\"project-history\" role=\"group\" aria-label=\"History\"\u003e",
   "              \u003cbutton id=\"languageToggle\" class=\"language-toggle-button\" data-web-only data-action=\"toggle-language\" type=\"button\" title=\"Switch language\" aria-label=\"Switch language\"\u003e",
   "                \u003cspan class=\"language-toggle-option\" data-lang=\"en\"\u003eEN\u003c/span\u003e",
   "                \u003cspan class=\"language-toggle-divider\" aria-hidden=\"true\"\u003e/\u003c/span\u003e",
   "                \u003cspan class=\"language-toggle-option\" data-lang=\"zh\"\u003e中\u003c/span\u003e",
   "              \u003c/button\u003e",
-  "              \u003cbutton id=\"fullscreenButton\" class=\"icon-button history-button immersive-toggle-button\" data-action=\"toggle-immersive-fullscreen\" type=\"button\" title=\"Enter immersive fullscreen\" aria-label=\"Enter immersive fullscreen\" aria-pressed=\"false\"\u003e\u003csvg class=\"history-icon immersive-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"\u003e\u003cpath d=\"M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
+  "              \u003cbutton id=\"fullscreenButton\" class=\"icon-button history-button immersive-toggle-button nc-advanced-only\" data-action=\"toggle-immersive-fullscreen\" type=\"button\" title=\"Enter immersive fullscreen\" aria-label=\"Enter immersive fullscreen\" aria-pressed=\"false\"\u003e\u003csvg class=\"history-icon immersive-icon\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\"\u003e\u003cpath d=\"M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "              \u003cbutton id=\"undoButton\" class=\"icon-button history-button\" data-action=\"undo\" type=\"button\" title=\"Undo (Ctrl+Z)\" aria-label=\"Undo\" disabled\u003e↶\u003c/button\u003e",
   "              \u003cbutton id=\"redoButton\" class=\"icon-button history-button\" data-action=\"redo\" type=\"button\" title=\"Redo (Ctrl+Shift+Z or Ctrl+Y)\" aria-label=\"Redo\" disabled\u003e↷\u003c/button\u003e",
   "            \u003c/span\u003e",
-  "            \u003cbutton id=\"themeToggle\" class=\"icon-button theme-toggle-button\" title=\"Switch theme\" data-action=\"toggle-theme\" type=\"button\" aria-pressed=\"true\"\u003eDark\u003c/button\u003e",
+  "            \u003cbutton id=\"themeToggle\" class=\"icon-button theme-toggle-button\" data-web-only title=\"Switch theme\" data-action=\"toggle-theme\" type=\"button\" aria-pressed=\"true\"\u003eDark\u003c/button\u003e",
   "          \u003c/div\u003e",
   "        \u003c/header\u003e",
   "        \u003cheader id=\"workspaceToolbar\" class=\"canvas-workspace-tabs\"\u003e",
@@ -13575,7 +13699,7 @@ const CANVAS_INDEX_HTML = [
   "            \u003cspan id=\"zoomReadout\" class=\"zoom-readout\" data-files=\"adventure\"\u003e100%\u003c/span\u003e",
   "            \u003cbutton class=\"toolbar-button\" data-action=\"zoom-in\" data-files=\"adventure\" title=\"Zoom in\"\u003e+\u003c/button\u003e",
   "            \u003cbutton class=\"toolbar-button\" data-action=\"center-view\" data-files=\"adventure\" title=\"Center canvas\"\u003eCenter\u003c/button\u003e",
-  "            \u003cbutton id=\"snapGridButton\" class=\"toolbar-button\" data-action=\"toggle-snap-grid\" data-files=\"adventure\" type=\"button\" title=\"Snap nodes to grid\" aria-label=\"Snap nodes to grid\" aria-pressed=\"false\"\u003eSnap\u003c/button\u003e",
+  "            \u003cbutton id=\"snapGridButton\" class=\"toolbar-button nc-advanced-only\" data-action=\"toggle-snap-grid\" data-files=\"adventure\" type=\"button\" title=\"Snap nodes to grid\" aria-label=\"Snap nodes to grid\" aria-pressed=\"false\"\u003eSnap\u003c/button\u003e",
   "            \u003cbutton class=\"toolbar-button primary\" data-action=\"play\" data-files=\"adventure\" title=\"Play from entry\"\u003ePlay\u003c/button\u003e",
   "          \u003c/div\u003e",
   "          \u003cdiv id=\"frameCanvasScope\" class=\"frame-canvas-scope\" hidden\u003e",
@@ -13583,7 +13707,7 @@ const CANVAS_INDEX_HTML = [
   "            \u003cstrong id=\"frameCanvasTitle\"\u003e\u003c/strong\u003e",
   "            \u003cbutton id=\"frameCanvasExitButton\" class=\"toolbar-button\" data-action=\"exit-frame-canvas\" type=\"button\" title=\"Exit frame canvas\" aria-label=\"Exit frame canvas\"\u003eExit\u003c/button\u003e",
   "          \u003c/div\u003e",
-  "          \u003cdiv class=\"toolbar-group toolbar-group-right\" data-files=\"adventure\"\u003e",
+  "          \u003cdiv class=\"toolbar-group toolbar-group-right nc-advanced-only\" data-files=\"adventure\"\u003e",
   "            \u003cspan class=\"export-image-controls\" role=\"group\" aria-label=\"Image export\"\u003e",
   "              \u003cbutton class=\"toolbar-button export-image-button\" data-action=\"export-image\" title=\"Export canvas as PNG\"\u003eExport PNG\u003c/button\u003e",
   "              \u003clabel class=\"export-image-scale-label\" title=\"Image export resolution\"\u003e",
@@ -13656,7 +13780,7 @@ const CANVAS_INDEX_HTML = [
   "          \u003c/button\u003e",
   "        \u003c/div\u003e",
   "",
-  "        \u003cbutton id=\"aiFloatingButton\" class=\"ai-floating-button\" data-action=\"toggle-ai-window\" type=\"button\" title=\"Open AI assistant\" aria-label=\"Open AI assistant\" aria-expanded=\"false\"\u003e",
+  "        \u003cbutton id=\"aiFloatingButton\" class=\"ai-floating-button nc-advanced-only\" data-action=\"toggle-ai-window\" type=\"button\" title=\"Open AI assistant\" aria-label=\"Open AI assistant\" aria-expanded=\"false\"\u003e",
   "          \u003cspan aria-hidden=\"true\"\u003eAI\u003c/span\u003e",
   "        \u003c/button\u003e",
   "      \u003c/main\u003e",
@@ -13712,6 +13836,7 @@ const CANVAS_INDEX_HTML = [
   "      \u003caside class=\"sidebar sidebar-right\" data-sidebar=\"right\"\u003e",
   "        \u003cheader class=\"pane-header compact\"\u003e",
   "          \u003cdiv class=\"header-actions\"\u003e",
+  "            \u003cbutton class=\"icon-button inspector-current-float-button\" data-action=\"float-current-inspector\" type=\"button\" title=\"Open current inspector in center\" aria-label=\"Open current inspector in center\"\u003e\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M17 17 7 7M7 7v7M7 7h7\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "            \u003cbutton class=\"icon-button sidebar-toggle-button\" title=\"Collapse right sidebar\" aria-label=\"Collapse right sidebar\" data-sidebar-toggle=\"right\" type=\"button\"\u003e",
   "              \u003cspan class=\"sidebar-toggle-icon sidebar-toggle-icon-right\" aria-hidden=\"true\"\u003e\u003c/span\u003e",
   "            \u003c/button\u003e",
@@ -13725,15 +13850,12 @@ const CANVAS_INDEX_HTML = [
   "        \u003cdiv class=\"inspector-tabs\"\u003e",
   "          \u003cdiv class=\"inspector-tab-group\"\u003e",
   "            \u003cbutton class=\"inspector-tab active\" data-panel=\"project\"\u003eProject\u003c/button\u003e",
-  "            \u003cbutton class=\"inspector-float-button\" data-action=\"float-inspector-panel\" data-float-panel=\"project\" type=\"button\" title=\"Open Project in center\" aria-label=\"Open Project in center\"\u003e\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M17 17 7 7M7 7v7M7 7h7\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "          \u003c/div\u003e",
   "          \u003cdiv class=\"inspector-tab-group\"\u003e",
   "            \u003cbutton class=\"inspector-tab\" data-panel=\"node\"\u003eNode\u003c/button\u003e",
-  "            \u003cbutton class=\"inspector-float-button\" data-action=\"float-inspector-panel\" data-float-panel=\"node\" type=\"button\" title=\"Open Node in center\" aria-label=\"Open Node in center\"\u003e\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M17 17 7 7M7 7v7M7 7h7\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "          \u003c/div\u003e",
   "          \u003cdiv class=\"inspector-tab-group\"\u003e",
   "            \u003cbutton class=\"inspector-tab\" data-panel=\"story\"\u003eStory\u003c/button\u003e",
-  "            \u003cbutton class=\"inspector-float-button\" data-action=\"float-inspector-panel\" data-float-panel=\"story\" type=\"button\" title=\"Open Story in center\" aria-label=\"Open Story in center\"\u003e\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M17 17 7 7M7 7v7M7 7h7\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "          \u003c/div\u003e",
   "        \u003c/div\u003e",
   "",
@@ -13897,7 +14019,7 @@ const CANVAS_INDEX_HTML = [
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"bold\" title=\"Bold\" aria-label=\"Bold\"\u003e\u003cb\u003eB\u003c/b\u003e\u003c/button\u003e",
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"italic\" title=\"Italic\" aria-label=\"Italic\"\u003e\u003ci\u003eI\u003c/i\u003e\u003c/button\u003e",
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"strike\" title=\"Strikethrough\" aria-label=\"Strikethrough\"\u003e\u003cs\u003eS\u003c/s\u003e\u003c/button\u003e",
-  "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"code\" title=\"Inline code\" aria-label=\"Inline code\"\u003e\u003ccode\u003e\u0026lt;/\u0026gt;\u003c/code\u003e\u003c/button\u003e",
+  "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"code\" title=\"Inline code\" aria-label=\"Inline code\"\u003e\u003ccode\u003e&lt;/&gt;\u003c/code\u003e\u003c/button\u003e",
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"highlight\" title=\"Highlight\" aria-label=\"Highlight\"\u003e\u003cmark\u003eH\u003c/mark\u003e\u003c/button\u003e",
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"link\" title=\"Link\" aria-label=\"Link\"\u003e\u003cu\u003eA\u003c/u\u003e\u003c/button\u003e",
   "          \u003cspan class=\"expand-editor-toolbar-sep\" aria-hidden=\"true\"\u003e\u003c/span\u003e",
@@ -13905,7 +14027,7 @@ const CANVAS_INDEX_HTML = [
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"h2\" title=\"Heading 2\" aria-label=\"Heading 2\"\u003eH2\u003c/button\u003e",
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"h3\" title=\"Heading 3\" aria-label=\"Heading 3\"\u003eH3\u003c/button\u003e",
   "          \u003cspan class=\"expand-editor-toolbar-sep\" aria-hidden=\"true\"\u003e\u003c/span\u003e",
-  "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"quote\" title=\"Quote\" aria-label=\"Quote\"\u003e\u0026gt;\u003c/button\u003e",
+  "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"quote\" title=\"Quote\" aria-label=\"Quote\"\u003e&gt;\u003c/button\u003e",
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"list\" title=\"Bullet list\" aria-label=\"Bullet list\"\u003e•\u003c/button\u003e",
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"ordered\" title=\"Numbered list\" aria-label=\"Numbered list\"\u003e1.\u003c/button\u003e",
   "          \u003cbutton class=\"expand-format-button\" type=\"button\" data-action=\"expand-editor-format\" data-format=\"task\" title=\"Task list\" aria-label=\"Task list\"\u003e☑\u003c/button\u003e",
@@ -14115,6 +14237,7 @@ function installNarrativeCanvasApp() {
   const SAVED_STATE_VERSION = 1;
   const CODEX_KINDS = ["Character", "Location", "Item", "Lore"];
   const CODEX_ALL_FILTER = "All";
+  const WEB_STORAGE_KEY = "narrative-canvas-state-v1";
   const WEB_LANGUAGE_STORAGE_KEY = "narrative-canvas-language-v1";
   const FRAME_CONTAINMENT_INDEX_CELL_SIZE = 1024;
   const PLAYBOOK_FILE_NAME = "Playbook.json";
@@ -14305,6 +14428,7 @@ function installNarrativeCanvasApp() {
     Marker: { badge: "M", color: "#7fdbca", width: 170 },
     Event: { badge: "E", color: DEFAULT_EVENT_FRAME_COLOR, width: 420 }
   };
+  const BASIC_NODE_TYPE_SET = new Set(["Content", "Dialog", "Choice", "Event"]);
 
   const SPECIAL_EDITOR_NODE_TYPES = ["Choice", "Dialog"];
   const NODE_TYPE_TEMPLATES = new Set(["node", "dialog", "choice", "frame"]);
@@ -15334,9 +15458,11 @@ function installNarrativeCanvasApp() {
       "Collapse left sidebar": "折叠左侧栏",
       "Collapse right sidebar": "折叠右侧栏",
       "Create": "创建",
+      "Click to edit": "点击编辑",
       "CSV": "CSV",
       "Dark": "深色",
       "Delete": "删除",
+      "Delete \"{name}\"?": "确定删除“{name}”吗？",
       "Delete character": "删除角色",
       "Delete choice": "删除选项",
       "Delete frame": "删除框架",
@@ -15364,7 +15490,9 @@ function installNarrativeCanvasApp() {
       "Condition added.": "已添加条件。",
       "Condition expression is empty.": "条件表达式为空。",
       "Condition expression": "条件表达式",
+      "Invalid condition syntax": "条件语法无效",
       "Content": "内容",
+      "Entry": "起始节点",
       "Choices": "选项",
       "Custom fields": "自定义字段",
       "Add field": "添加字段",
@@ -15372,7 +15500,7 @@ function installNarrativeCanvasApp() {
       "Field name": "字段名",
       "Field value": "字段值",
       "Remove field": "删除字段",
-      "No custom fields yet. Fields sync to the entry's markdown frontmatter.": "还没有自定义字段。字段会同步到条目 markdown 文件的 frontmatter。",
+      "No custom fields yet. Fields sync to the entry's markdown frontmatter.": "还没有自定义字段。字段会同步到条目 Markdown 文件的 YAML 属性。",
       "Field name {key} is reserved.": "字段名 {key} 为保留字段。",
       "Category fields": "分类字段模板",
       "Library": "资料库",
@@ -15395,6 +15523,8 @@ function installNarrativeCanvasApp() {
       "Field {key} added to {count} entries.": "字段 {key} 已添加到 {count} 个条目。",
       "Field {key} removed from the template. Entry values are kept.": "已从模板移除字段 {key}，条目中的已有值保留。",
       "Recent cards": "刚刚经过的卡片",
+      "Untitled": "未命名",
+      "You": "你",
       "Showing the last {count} cards.": "仅显示最近 {count} 张卡片。",
       "Return to this card": "回到此卡片",
       "Rewind the story to this card. Later steps are discarded.": "回到这张卡片重新开始。之后的步骤会被丢弃。",
@@ -15517,6 +15647,13 @@ function installNarrativeCanvasApp() {
       "File": "文件",
       "Fields, one per line": "字段，每行一个",
       "Files": "文件",
+      "Workspace": "工作区",
+      "Basic": "基础",
+      "Advanced": "高级",
+      "Show advanced tools": "显示高级工具",
+      "Use basic tools": "使用基础工具",
+      "Advanced tools shown.": "已显示高级工具。",
+      "Basic tools shown.": "已显示基础工具。",
       "Find": "查找",
       "Find character": "查找角色",
       "Find library entries": "查找资料",
@@ -15619,6 +15756,8 @@ function installNarrativeCanvasApp() {
       "Node choose": "节点选择时",
       "Node color": "节点颜色",
       "Node Library": "节点库",
+      "Manage node types": "管理节点类型",
+      "More node actions": "更多节点操作",
       "Node visit": "节点进入时",
       "Nodes": "节点",
       "Notes": "笔记",
@@ -15655,6 +15794,25 @@ function installNarrativeCanvasApp() {
       "Dock preview to the right": "将演示停靠回右侧",
       "Project": "项目",
       "Project File": "项目文件",
+      "More export and import options": "更多导入与导出选项",
+      "Sync to .canvas": "同步到 .canvas",
+      "Read from .canvas": "从 .canvas 回读",
+      "Create or update the paired Obsidian Canvas": "创建或更新同名的 Obsidian 原生画布",
+      "Read positions, groups, and ordinary links from the paired Obsidian Canvas": "从同名 Obsidian 原生画布回读坐标、分组和普通连线",
+      "Obsidian Canvas": "Obsidian 画布",
+      "Replace paired Obsidian Canvas?": "替换同名 Obsidian 画布？",
+      "The file {path} already exists. Replacing it rebuilds the visual projection from the current .ncanvas project.": "文件 {path} 已存在。替换后会按当前 .ncanvas 项目重新生成可视投影。",
+      "Replace .canvas": "替换 .canvas",
+      "Apply native Canvas layout?": "应用原生画布布局？",
+      "Coordinates, sizes, group membership, and ordinary links will be read from {path}. Ordinary links missing there will be removed; narrative nodes, Choice branches, conditions, variables, and Playbook data stay in .ncanvas.": "将从 {path} 回读坐标、尺寸、分组归属和普通连线；原生画布里缺失的普通连线会从 .ncanvas 移除。叙事节点、Choice 分支、条件、变量和 Playbook 数据仍以 .ncanvas 为准。",
+      "Apply layout": "应用布局",
+      "Native Canvas updated: {nodes} nodes, {groups} groups, {edges} edges.": "原生画布已更新：{nodes} 个节点、{groups} 个分组、{edges} 条连线。",
+      "Native Canvas layout applied: {nodes} nodes updated, {added} links added, {removed} links removed; {semantic} narrative links preserved.": "原生画布布局已应用：更新 {nodes} 个节点，新增 {added} 条普通连线，移除 {removed} 条普通连线，保留 {semantic} 条叙事连线。",
+      "No paired Obsidian Canvas was found at {path}.": "未找到同名 Obsidian 画布：{path}。",
+      "This feature requires the Obsidian plugin.": "此功能只能在 Obsidian 插件中使用。",
+      "Could not update the paired Obsidian Canvas.": "无法更新同名 Obsidian 画布。",
+      "Could not read the paired Obsidian Canvas.": "无法读取同名 Obsidian 画布。",
+      "Open current inspector in center": "在中央打开当前检查器",
       "Project name": "项目名称",
       "Project notes": "项目备注",
       "Project title": "项目标题",
@@ -16454,6 +16612,7 @@ function installNarrativeCanvasApp() {
     inlineEditLinkInitialValue: "",
     panel: "project",
     activeFileId: "adventure",
+    uiMode: "basic",
     language: "en",
     theme: "dark",
     exportImageScale: 1,
@@ -16644,7 +16803,6 @@ function installNarrativeCanvasApp() {
     setTheme,
     getTheme: () => state.theme,
     createSampleProjectFile,
-    createSampleProjectAtPath,
     ensureVaultFile: ensureVaultProjectFile,
     loadVaultProject: loadCurrentVaultProject,
     handleExternalProjectChange,
@@ -16761,6 +16919,9 @@ function installNarrativeCanvasApp() {
       const hostTheme = getHostTheme();
       if (hostTheme) state.theme = hostTheme;
       const restoredView = await loadSavedState(false);
+      if (!isAdvancedUiMode() && ["events", "variables"].includes(state.activeFileId)) {
+        state.activeFileId = "adventure";
+      }
       resetHistory();
       renderAll();
       bindEvents();
@@ -16807,6 +16968,7 @@ function installNarrativeCanvasApp() {
     dom.undoButton = dom.scope.querySelector("#undoButton");
     dom.redoButton = dom.scope.querySelector("#redoButton");
     dom.themeToggle = dom.scope.querySelector("#themeToggle");
+    dom.uiModeToggle = dom.scope.querySelector("#uiModeToggle");
     dom.languageToggle = dom.scope.querySelector("#languageToggle");
     dom.exportImageScale = dom.scope.querySelector("#exportImageScale");
     dom.snapGridButton = dom.scope.querySelector("#snapGridButton");
@@ -17415,7 +17577,7 @@ function installNarrativeCanvasApp() {
       play: eventIsInside(getFloatingWindowElement("play")),
       ai: eventIsInside(getFloatingWindowElement("ai"))
     };
-    const inspectorLauncher = target.closest("[data-action='float-inspector-panel']");
+    const inspectorLauncher = target.closest("[data-action='float-inspector-panel'], [data-action='float-current-inspector']");
     const aiLauncher = target.closest("#aiFloatingButton");
     ["inspector", "play", "ai"].forEach((kind) => {
       if (!isFloatingWindowActive(kind) || isFloatingWindowPinned(kind) || inside[kind]) return;
@@ -18403,8 +18565,25 @@ function installNarrativeCanvasApp() {
     }
   }
 
+  function isAdvancedUiMode() {
+    return state.uiMode === "advanced";
+  }
+
+  function toggleUiMode() {
+    state.uiMode = isAdvancedUiMode() ? "basic" : "advanced";
+    if (!isAdvancedUiMode()) {
+      if (["events", "variables"].includes(state.activeFileId)) state.activeFileId = "adventure";
+      if (state.aiOpen) toggleAiWindow(false);
+    }
+    invalidateCanvasSurface();
+    invalidateDocumentSurfaces();
+    renderAll();
+    setStatus(isAdvancedUiMode() ? "Advanced tools shown." : "Basic tools shown.");
+  }
+
   function renderShellState() {
     dom.root?.setAttribute("data-theme", state.theme);
+    dom.root?.setAttribute("data-ui-mode", isAdvancedUiMode() ? "advanced" : "basic");
     dom.root?.setAttribute("lang", state.language === "zh" ? "zh-CN" : "en");
     applySpellCheckSetting();
     dom.themeHost?.setAttribute("data-theme", state.theme);
@@ -18424,6 +18603,13 @@ function installNarrativeCanvasApp() {
       dom.languageToggle.dataset.activeLang = state.language;
       dom.languageToggle.title = nextLanguageLabel;
       dom.languageToggle.setAttribute("aria-label", nextLanguageLabel);
+    }
+    if (dom.uiModeToggle) {
+      const advanced = isAdvancedUiMode();
+      dom.uiModeToggle.textContent = t(advanced ? "Advanced" : "Basic");
+      dom.uiModeToggle.setAttribute("aria-pressed", String(advanced));
+      dom.uiModeToggle.title = t(advanced ? "Use basic tools" : "Show advanced tools");
+      dom.uiModeToggle.setAttribute("aria-label", dom.uiModeToggle.title);
     }
     if (dom.exportImageScale) {
       dom.exportImageScale.value = getExportImageScalePreset().value;
@@ -18506,8 +18692,9 @@ function installNarrativeCanvasApp() {
 
     [
       [".project-file-section h2", "Project File"],
-      [".sidebar-left .nav-section:nth-of-type(2) h2", "Files"],
+      [".sidebar-left .nav-section:nth-of-type(2) h2", "Workspace"],
       [".palette h2", "Node Library"],
+      [".custom-node-form > summary", "Manage node types"],
       [".workspace-file-label .pane-kicker", "File"],
       [".sidebar-right .pane-kicker", "Inspector"],
       ["[data-panel='project']", "Project"],
@@ -18580,6 +18767,8 @@ function installNarrativeCanvasApp() {
       [".project-history", "aria-label", "History"],
       ["#fullscreenButton", "title", "Enter immersive fullscreen"],
       ["#fullscreenButton", "aria-label", "Enter immersive fullscreen"],
+      ["[data-action='float-current-inspector']", "title", "Open current inspector in center"],
+      ["[data-action='float-current-inspector']", "aria-label", "Open current inspector in center"],
       ["[data-float-panel='project']", "title", "Open Project in center"],
       ["[data-float-panel='project']", "aria-label", "Open Project in center"],
       ["[data-float-panel='node']", "title", "Open Node in center"],
@@ -20574,37 +20763,24 @@ function installNarrativeCanvasApp() {
 
   // Overview cover precedence: entry icon → board snapshot → preview-image board
   // snapshot (all images in their layout, scaled) → category placeholder.
-  function getCodexFallbackIcon(kind, kindLabel) {
-    const normalized = String(kind || "").trim().toLowerCase();
-    if (normalized === "character") return "\u{1F464}";
-    if (normalized === "location") return "\u{1F4CD}";
-    if (normalized === "item") return "\u{25C6}";
-    if (normalized === "lore") return "\u{1F4D6}";
-    return String(kindLabel || "?").trim().slice(0, 1) || "?";
-  }
-
   function renderCodexOverviewCover(character, imageUrl, kindLabel, host) {
-    const iconUrl = character.icon && host?.getVaultResourceUrl
-      ? host.getVaultResourceUrl(character.icon)
-      : "";
-    if (iconUrl) return `<img src="${escapeAttr(iconUrl)}" alt="" loading="lazy">`;
+    if (character.icon && host?.getVaultResourceUrl) {
+      return `<img src="${escapeAttr(host.getVaultResourceUrl(character.icon))}" alt="" loading="lazy">`;
+    }
     const canvasPath = normalizeNodeVaultFileReference(character.canvasFile);
     if (canvasPath && host?.readVaultFile) {
       return `<span class="codex-overview-canvas" data-codex-canvas-embed data-canvas-cover="true" data-canvas-path="${escapeAttr(canvasPath)}" aria-hidden="true"></span>`;
     }
     const images = host?.getVaultResourceUrl ? getCharacterImages(character) : [];
-    const resolvedImages = images
-      .map((image) => ({ image, url: host.getVaultResourceUrl(image.path) }))
-      .filter(({ url }) => Boolean(url));
-    if (resolvedImages.length) {
-      return `<span class="codex-overview-board" aria-hidden="true">${resolvedImages.map(({ image, url }) => `
-        <img src="${escapeAttr(url)}" style="left:${image.x}%;top:${image.y}%;width:${image.w}%" alt="" loading="lazy" draggable="false">
+    if (images.length) {
+      return `<span class="codex-overview-board" aria-hidden="true">${images.map((image) => `
+        <img src="${escapeAttr(host.getVaultResourceUrl(image.path))}" style="left:${image.x}%;top:${image.y}%;width:${image.w}%" alt="" loading="lazy" draggable="false">
       `).join("")}</span>`;
     }
     if (imageUrl) {
       return `<img src="${escapeAttr(imageUrl)}" alt="" loading="lazy">`;
     }
-    return `<span class="codex-overview-placeholder" aria-hidden="true">${escapeHtml(getCodexFallbackIcon(character.kind, kindLabel))}</span>`;
+    return `<span class="codex-overview-placeholder" aria-hidden="true">${escapeHtml(kindLabel.slice(0, 1))}</span>`;
   }
 
   function renderCharacterCard(character, context = getCharacterRenderContext(), options = {}) {
@@ -20614,14 +20790,11 @@ function installNarrativeCanvasApp() {
       ? (context?.backlinkIndex?.get(character.id) || getCharacterBacklinkGroups(character))
       : [];
     const kindLabels = getCodexKindFieldLabels(character.kind);
-    const iconUrl = window.NarrativeCanvasHost?.getVaultResourceUrl && character.icon
-      ? window.NarrativeCanvasHost.getVaultResourceUrl(character.icon)
-      : "";
     return `
       <article class="character-card ${isFocused ? "focused" : ""}" data-character-card-id="${escapeAttr(character.id)}" data-codex-kind="${escapeAttr(character.kind)}">
         <div class="character-card-header">
-          ${iconUrl
-            ? `<img class="codex-icon-avatar" src="${escapeAttr(iconUrl)}" alt="" loading="lazy">`
+          ${window.NarrativeCanvasHost?.getVaultResourceUrl && character.icon
+            ? `<img class="codex-icon-avatar" src="${escapeAttr(window.NarrativeCanvasHost.getVaultResourceUrl(character.icon))}" alt="" loading="lazy">`
             : ""}
           <label class="field">
             <span>${t("Name")}</span>
@@ -24129,7 +24302,7 @@ function installNarrativeCanvasApp() {
   }
 
   function renderPalette() {
-    const entries = getNodeTypeEntries();
+    const entries = getAddableNodeTypeEntries();
     const visibleRows = entries.length ? entries
       .map(([type, meta]) => {
         const deleteControl = meta.system
@@ -24148,10 +24321,12 @@ function installNarrativeCanvasApp() {
       })
       .join("") : `<div class="custom-node-empty">${t("No visible node types.")}</div>`;
     dom.palette.innerHTML = `
-      <div class="palette-tools">
-        <button class="small-button" data-action="restore-default-node-types" type="button">${t("Restore default types")}</button>
-      </div>
-      ${renderHiddenNodeTypeSection()}
+      ${isAdvancedUiMode() ? `
+        <div class="palette-tools">
+          <button class="small-button" data-action="restore-default-node-types" type="button">${t("Restore default types")}</button>
+        </div>
+        ${renderHiddenNodeTypeSection()}
+      ` : ""}
       ${visibleRows}
     `;
   }
@@ -24950,12 +25125,19 @@ function installNarrativeCanvasApp() {
         kind: typeDef.kind,
         template: getNodeTypeTemplate(typeDef),
         fields: typeDef.fields || [],
-        hidden: Boolean(typeDef.hidden)
+        hidden: Boolean(typeDef.hidden),
+        system: Boolean(typeDef.system)
       }]);
     if (includeType && !entries.some(([type]) => type === includeType)) {
       entries.push([includeType, { ...getNodeMeta(includeType), removed: true }]);
     }
     return entries;
+  }
+
+  function getAddableNodeTypeEntries() {
+    const entries = getNodeTypeEntries();
+    if (isAdvancedUiMode()) return entries;
+    return entries.filter(([type, meta]) => BASIC_NODE_TYPE_SET.has(type) || meta.custom);
   }
 
   function getHiddenNodeTypeEntries() {
@@ -26021,7 +26203,14 @@ function installNarrativeCanvasApp() {
   }
 
   function renderProjectExportControls() {
+    const nativeCanvasActions = window.NarrativeCanvasHost?.writeNativeCanvasProjection
+      ? [
+        { action: "sync-native-canvas", label: "Sync to .canvas", title: "Create or update the paired Obsidian Canvas" },
+        { action: "read-native-canvas", label: "Read from .canvas", title: "Read positions, groups, and ordinary links from the paired Obsidian Canvas" }
+      ]
+      : [];
     const actions = [
+      ...nativeCanvasActions,
       { action: "export-json", label: "Project .json", title: "Export editable project file (.json)" },
       { action: "export-story-md", label: "Story .md", title: "Export readable story text (.md)" },
       { action: "export-story-layout", label: "Layout .json", title: "Export canvas layout sidecar (.json)" },
@@ -26044,7 +26233,8 @@ function installNarrativeCanvasApp() {
       }
     ];
     return `
-      <div class="project-export-controls">
+      <details class="project-export-controls nc-disclosure nc-advanced-only">
+        <summary>${escapeHtml(t("More export and import options"))}</summary>
         ${sections.map((section) => `
           <section class="project-control-group" role="group">
             <div class="project-control-grid">
@@ -26059,7 +26249,7 @@ function installNarrativeCanvasApp() {
             </div>
           </section>
         `).join("")}
-      </div>
+      </details>
     `;
   }
 
@@ -26102,7 +26292,6 @@ function installNarrativeCanvasApp() {
           <div class="stat-card"><div class="stat-label">${t("Nodes")}</div><div class="stat-value">${nodeCount}</div></div>
           <div class="stat-card"><div class="stat-label">${t("Links")}</div><div class="stat-value">${links}</div></div>
           <div class="stat-card"><div class="stat-label">${t("Variables")}</div><div class="stat-value">${variableCount}</div></div>
-          <div class="stat-card"><div class="stat-label">${t("Zoom")}</div><div class="stat-value">${Math.round(state.view.scale * 100)}%</div></div>
         </div>
       </div>
     `;
@@ -26145,13 +26334,16 @@ function installNarrativeCanvasApp() {
           ${renderTypeFields(node)}
           ${renderCustomFields(node)}
         `}
-        <div class="button-row">
-          ${isFrameNode(node) ? `<button class="small-button" data-action="open-frame-canvas" data-node-id="${escapeAttr(node.id)}">${t("Open frame canvas")}</button>` : ""}
-          <button class="small-button" data-action="duplicate-node">${t("Duplicate")}</button>
-          <button class="small-button" data-action="focus-node">${t("Canvas focus")}</button>
-          ${!isFrameNode(node) ? `<button class="small-button" data-action="focus-node-document">${t("Document focus")}</button>` : ""}
-          <button class="small-button danger-button" data-action="delete-node">${t("Delete node")}</button>
-        </div>
+        ${isFrameNode(node) ? `<div class="button-row"><button class="small-button" data-action="open-frame-canvas" data-node-id="${escapeAttr(node.id)}">${t("Open frame canvas")}</button></div>` : ""}
+        <details class="node-secondary-actions nc-disclosure">
+          <summary>${escapeHtml(t("More node actions"))}</summary>
+          <div class="button-row">
+            <button class="small-button" data-action="duplicate-node">${t("Duplicate")}</button>
+            <button class="small-button" data-action="focus-node">${t("Canvas focus")}</button>
+            ${!isFrameNode(node) ? `<button class="small-button" data-action="focus-node-document">${t("Document focus")}</button>` : ""}
+            <button class="small-button danger-button" data-action="delete-node">${t("Delete node")}</button>
+          </div>
+        </details>
       </div>
     `;
     if (keepScroll && scroller) scroller.scrollTop = scrollTop;
@@ -27990,6 +28182,10 @@ function installNarrativeCanvasApp() {
       openFloatingInspector(target.dataset.floatPanel);
       return;
     }
+    if (action === "float-current-inspector") {
+      openFloatingInspector(state.panel);
+      return;
+    }
     if (action === "close-floating-inspector") {
       closeFloatingInspector();
       return;
@@ -28159,10 +28355,13 @@ function installNarrativeCanvasApp() {
     if (action === "zoom-in") setZoom(state.view.scale + 0.1);
     if (action === "zoom-out") setZoom(state.view.scale - 0.1);
     if (action === "toggle-snap-grid") toggleSnapToGrid();
+    if (action === "toggle-ui-mode") toggleUiMode();
     if (action === "toggle-theme") toggleTheme();
     if (action === "toggle-language") toggleLanguage();
     if (action === "center-view") centerView();
     if (action === "export-all") exportAll();
+    if (action === "sync-native-canvas") void syncProjectToNativeCanvas();
+    if (action === "read-native-canvas") void readProjectFromNativeCanvas();
     if (action === "export-play-session") exportPlaySession();
     if (action === "export-json") exportJson();
     if (action === "export-story-md") exportStoryMarkdown();
@@ -28257,6 +28456,92 @@ function installNarrativeCanvasApp() {
     state.pendingImportKind = "json";
     if (dom.fileInput) dom.fileInput.accept = "application/json,.json,.ncanvas,.narrativecanvas";
     dom.fileInput?.click();
+  }
+
+  async function syncProjectToNativeCanvas(options = {}) {
+    const host = window.NarrativeCanvasHost;
+    if (!host?.writeNativeCanvasProjection) {
+      setStatus("This feature requires the Obsidian plugin.");
+      return;
+    }
+    try {
+      const result = await host.writeNativeCanvasProjection(cloneProject(normalizeProject(state.project)), {
+        overwrite: options.overwrite === true
+      });
+      if (result?.reason === "exists") {
+        showGenericConfirm({
+          kicker: "Obsidian Canvas",
+          title: "Replace paired Obsidian Canvas?",
+          message: t("The file {path} already exists. Replacing it rebuilds the visual projection from the current .ncanvas project.", { path: result.path || ".canvas" }),
+          confirmLabel: "Replace .canvas",
+          danger: true,
+          onConfirm: () => syncProjectToNativeCanvas({ overwrite: true })
+        });
+        return;
+      }
+      const report = result?.report || {};
+      const message = t("Native Canvas updated: {nodes} nodes, {groups} groups, {edges} edges.", {
+        nodes: report.nodeCount || 0,
+        groups: report.groupCount || 0,
+        edges: report.edgeCount || 0
+      });
+      setStatus(message);
+      host.showNotice?.(message);
+    } catch (error) {
+      console.error(error);
+      const message = t("Could not update the paired Obsidian Canvas.");
+      setStatus(message);
+      host.showNotice?.(message);
+    }
+  }
+
+  async function readProjectFromNativeCanvas() {
+    const host = window.NarrativeCanvasHost;
+    if (!host?.readNativeCanvasProjection) {
+      setStatus("This feature requires the Obsidian plugin.");
+      return;
+    }
+    try {
+      const result = await host.readNativeCanvasProjection(cloneProject(normalizeProject(state.project)));
+      if (result?.reason === "missing") {
+        const message = t("No paired Obsidian Canvas was found at {path}.", { path: result.path || ".canvas" });
+        setStatus(message);
+        host.showNotice?.(message);
+        return;
+      }
+      if (!result?.ok || !result.project) throw new Error("Native Canvas conversion returned no project.");
+      showGenericConfirm({
+        kicker: "Obsidian Canvas",
+        title: "Apply native Canvas layout?",
+        message: t("Coordinates, sizes, group membership, and ordinary links will be read from {path}. Ordinary links missing there will be removed; narrative nodes, Choice branches, conditions, variables, and Playbook data stay in .ncanvas.", { path: result.path || ".canvas" }),
+        confirmLabel: "Apply layout",
+        danger: false,
+        onConfirm: () => applyNativeCanvasProjection(result)
+      });
+    } catch (error) {
+      console.error(error);
+      const message = t("Could not read the paired Obsidian Canvas.");
+      setStatus(message);
+      host.showNotice?.(message);
+    }
+  }
+
+  function applyNativeCanvasProjection(result) {
+    const before = getHistorySnapshot();
+    state.project = normalizeProject(result.project);
+    markProjectStructureChanged({ nodeTypes: true });
+    commitHistoryFromSnapshot(before);
+    setProjectDirty(true);
+    renderAll();
+    const report = result.report || {};
+    const message = t("Native Canvas layout applied: {nodes} nodes updated, {added} links added, {removed} links removed; {semantic} narrative links preserved.", {
+      nodes: report.updatedNodeCount || 0,
+      added: report.addedOrdinaryEdgeCount || 0,
+      removed: report.removedOrdinaryEdgeCount || 0,
+      semantic: report.preservedSemanticEdgeCount || 0
+    });
+    setStatus(message);
+    window.NarrativeCanvasHost?.showNotice?.(message);
   }
 
   function importStoryMarkdownFromUi() {
@@ -28561,13 +28846,13 @@ function installNarrativeCanvasApp() {
   }
 
   function getRadialFrameNodeType() {
-    const entries = getNodeTypeEntries();
+    const entries = getAddableNodeTypeEntries();
     const frameEntry = entries.find(([type]) => type === "Frame") || entries.find(([, meta]) => isFrameKind(meta.kind));
     return frameEntry ? frameEntry[0] : "";
   }
 
   function renderCanvasRadialAddList(spawn) {
-    const entries = getNodeTypeEntries();
+    const entries = getAddableNodeTypeEntries();
     if (!entries.length) return `<div class="radial-add-empty">${t("No visible node types.")}</div>`;
     return entries.map(([type, meta]) => `
       <button class="radial-add-item" type="button" role="menuitem" data-action="add-node" data-type="${escapeAttr(type)}" data-spawn-x="${escapeAttr(String(spawn.x))}" data-spawn-y="${escapeAttr(String(spawn.y))}">
@@ -28856,6 +29141,7 @@ function installNarrativeCanvasApp() {
 
   function selectFile(fileId) {
     if (!fileViews[fileId]) return;
+    if (["events", "variables"].includes(fileId)) state.uiMode = "advanced";
     if (state.activeFileId === fileId) {
       if (fileId === "characters" && state.codexSelectedEntryId) closeCodexEntryDetail();
       return;
@@ -36475,36 +36761,6 @@ function installNarrativeCanvasApp() {
     }
   }
 
-  /** Write a CN/EN guide sample to an exact vault path (NarrativeLab project NCanvas/). */
-  async function createSampleProjectAtPath(targetPath, language = "en") {
-    const project = getSampleProject(language);
-    const saved = buildSavedStateForProject(project, {
-      selectedNodeId: project.nodes?.[0]?.id || null,
-      activeFileId: "adventure"
-    });
-    const text = JSON.stringify(saved, null, 2);
-    const host = window.NarrativeCanvasHost;
-    if (!host?.writeAndOpenProjectAtPath) {
-      throw new Error("Canvas host did not expose writeAndOpenProjectAtPath.");
-    }
-    setStatus("Creating sample project...");
-    const path = await host.writeAndOpenProjectAtPath(targetPath, text);
-    // Sync in-memory state with what we just wrote (open may race with loadVaultProject).
-    state.project = cloneProject(project);
-    markProjectStructureChanged({ nodeTypes: true });
-    state.selectedNodeId = state.project.nodes[0]?.id || null;
-    state.selectedLinkId = null;
-    state.panel = "project";
-    state.activeFileId = "adventure";
-    centerViewAtScale(DEFAULT_CANVAS_ZOOM, false);
-    resetHistory();
-    setProjectDirty(false);
-    renderAll();
-    renderProjectFileStatus();
-    setStatus(path ? `Sample project created at ${path}.` : "Sample project opened.");
-    return path || targetPath;
-  }
-
   async function loadCurrentVaultProject() {
     const restoredView = await loadFromVault(true);
     if (restoredView === null) return false;
@@ -44051,7 +44307,7 @@ function installNarrativeCanvasApp() {
       extraFields: normalizeCodexExtraFields(character.extraFields),
       vaultFiles: normalizeCodexVaultFiles(character.vaultFiles ?? character.files),
       canvasFile: normalizeNodeVaultFileReference(character.canvasFile ?? character.canvas ?? ""),
-      icon: normalizeNodeVaultFileReference(character.icon ?? "") || images[0]?.path || "",
+      icon: normalizeNodeVaultFileReference(character.icon ?? ""),
       codexFile: normalizeNodeVaultFileReference(character.codexFile || ""),
       images,
       imageFile: images[0]?.path || "",

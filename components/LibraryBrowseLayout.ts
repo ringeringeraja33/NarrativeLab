@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
  * Library Browse layout mode (list / cards / table) — Bases-style toggle
  * shared by Characters, Locations, and Codex category overviews.
@@ -77,8 +77,9 @@ export function compareLibraryTableValues(left: unknown, right: unknown): number
     const normalize = (value: unknown): string | number => {
         if (value === undefined || value === null) return '';
         if (typeof value === 'number') return value;
-        if (Array.isArray(value)) return value.join(', ');
-        return String(value);
+        if (typeof value === 'string' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+        if (Array.isArray(value)) return value.map(item => safeDisplayValue(item)).join(', ');
+        return safeDisplayValue(value);
     };
     const a = normalize(left);
     const b = normalize(right);
@@ -232,8 +233,21 @@ export function evaluateLibraryTableFormula(
     return expression.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, key: string) => {
         const value = resolveValue(key.trim());
         if (value === undefined || value === null) return '';
-        return Array.isArray(value) ? value.join(', ') : String(value);
+        return Array.isArray(value)
+            ? value.map(item => safeDisplayValue(item)).join(', ')
+            : safeDisplayValue(value);
     });
+}
+
+function safeDisplayValue(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return String(value);
+    try {
+        const serialized = JSON.stringify(value);
+        return typeof serialized === 'string' ? serialized : '';
+    } catch {
+        return '';
+    }
 }
 
 const LAYOUT_OPTS: Array<{ id: LibraryBrowseLayout; icon: string; label: string }> = [
@@ -709,4 +723,4 @@ export function renderLibraryBrowseToolbar(
 
     return { root, searchInput, chipHost };
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

@@ -1,18 +1,29 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { App, Notice, normalizePath } from 'obsidian';
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+import { App, Notice, TFile, TFolder, normalizePath } from 'obsidian';
 import type SceneCardsPlugin from '../main';
-import { SeriesMetadata, deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
+import { SeriesMetadata, StoryLineProject, deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
+import { t } from '../utils/i18n';
+
+interface LibraryTransferJournal {
+    movedFiles: Array<{ from: string; to: string }>;
+    copiedFiles: string[];
+    duplicateFiles: string[];
+}
+
+function createLibraryTransferJournal(): LibraryTransferJournal {
+    return { movedFiles: [], copiedFiles: [], duplicateFiles: [] };
+}
 
 /**
- * Manages series — groups of book projects sharing a common codex.
+ * Manages series — groups of book projects sharing a common Library.
  *
  * Series folder layout:
  *   MySeriesFolder/
  *     series.json        ← SeriesMetadata
- *     Codex/
+ *     Library/
  *       Characters/
  *       Locations/
- *       [other codex categories]
+ *       [other Library categories]
  *     Book1/             ← NarrativeLab project (scenes, .storyline)
  *     Book2/
  */
@@ -77,12 +88,84 @@ export class SeriesManager {
     // ── Create ─────────────────────────────────────────
 
     /**
+     * Create a series and its first project directly in the final nested
+     * location. This avoids creating a temporary standalone project and then
+     * moving/copying it into the series.
+     */
+    async createSeriesWithNewProject(
+        seriesName: string,
+        projectTitle: string,
+        description = '',
+        customParentPath?: string,
+    ): Promise<StoryLineProject> {
+        const safeSeriesName = seriesName.replace(/[\\/:*?"<>|]/g, '-');
+        const parentPath = normalizePath(
+            customParentPath ?? this.plugin.settings.storyLineRoot ?? '',
+        );
+        const seriesFolder = normalizePath(
+            [parentPath, safeSeriesName].filter(Boolean).join('/'),
+        );
+        const adapter = this.app.vault.adapter;
+        if (await adapter.exists(seriesFolder)) {
+            throw new Error(t('A folder named "{name}" already exists at the selected location.', {
+                name: safeSeriesName,
+            }));
+        }
+
+        await this.ensureFolder(seriesFolder);
+        let project: StoryLineProject | null = null;
+        try {
+            const seriesLibrary = normalizePath(`${seriesFolder}/Library`);
+            await this.ensureFolder(seriesLibrary);
+            await this.ensureFolder(normalizePath(`${seriesLibrary}/Characters`));
+            await this.ensureFolder(normalizePath(`${seriesLibrary}/Locations`));
+
+            project = await this.plugin.sceneManager.createProject(
+                projectTitle,
+                description,
+                seriesFolder,
+            );
+
+            const meta: SeriesMetadata = {
+                name: seriesName,
+                bookOrder: [projectTitle.replace(/[\\/:*?"<>|]/g, '-')],
+                created: new Date().toISOString().split('T')[0],
+            };
+            await this.saveSeriesMetadata(seriesFolder, meta);
+
+            project.seriesId = safeSeriesName;
+            await this.plugin.sceneManager.saveProjectFrontmatter(project);
+            await this.plugin.sceneManager.setActiveProject(project);
+
+            // A newly-created project only contains empty seed Library folders;
+            // merge them into the shared Library and remove the empty local copy.
+            const projectFolders = deriveProjectFoldersFromFilePath(project.filePath);
+            const localLibrary = this.resolveExistingLibraryFolder(projectFolders.baseFolder);
+            if (await adapter.exists(localLibrary)) {
+                await this.migrateCodexFolder(localLibrary, seriesLibrary);
+            }
+
+            new Notice(t('Series "{name}" created', { name: seriesName }));
+            return project;
+        } catch (error) {
+            // The series folder did not exist before this operation, so removing
+            // it is a safe rollback of files created by this failed attempt.
+            const createdFolder = this.app.vault.getAbstractFileByPath(seriesFolder);
+            if (createdFolder instanceof TFolder) {
+                await this.app.fileManager.trashFile(createdFolder).catch(() => undefined);
+            }
+            if (project) await this.plugin.sceneManager.scanProjects().catch(() => undefined);
+            throw error;
+        }
+    }
+
+    /**
      * Create a new series from the currently active project.
      *
      * Steps:
      * 1. Create series folder (parent-level) inside NarrativeLab root
      * 2. Move the current book project folder into the series folder
-     * 3. Move the book's codex to the shared series codex folder
+     * 3. Move the book's Library to the shared series Library folder
      * 4. Write series.json
      * 5. Update the project's seriesId
      */
@@ -91,7 +174,7 @@ export class SeriesManager {
         this.checkLinkSettings();
 
         const project = this.plugin.sceneManager.activeProject;
-        if (!project) throw new Error('No active project');
+        if (!project) throw new Error(t('No active project'));
 
         // Determine current book base folder
         const bookFolders = deriveProjectFoldersFromFilePath(project.filePath);
@@ -109,67 +192,91 @@ export class SeriesManager {
         // subfolder triggers an infinite recursive move.
         if (safeName.toLowerCase() === bookBaseName.toLowerCase()) {
             throw new Error(
-                `Series name "${seriesName}" matches the current project's folder name. ` +
-                `Please choose a different series name (e.g. "${seriesName} Series").`
+                t('Series name "{name}" matches the current project folder. Choose a different name, such as "{name} Series".', { name: seriesName })
             );
         }
 
-        // Ensure series folder exists
-        await this.ensureFolder(seriesFolder);
+        if (await adapter.exists(seriesFolder)) {
+            throw new Error(t('A folder named "{name}" already exists at the selected location.', {
+                name: safeName,
+            }));
+        }
 
-        // If the book is not already inside the series folder, move it
+        const originalBookFolder = normalizePath(bookFolders.baseFolder);
+        const originalProjectFile = normalizePath(project.filePath);
         const targetBookFolder = normalizePath(`${seriesFolder}/${bookBaseName}`);
-        if (normalizePath(bookFolders.baseFolder) !== targetBookFolder) {
-            await this.moveFolderRecursive(bookFolders.baseFolder, targetBookFolder);
-            // Also move the project .md file if it's at root level
-            const oldProjectFile = project.filePath;
-            const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
-            if (normalizePath(oldProjectFile) !== newProjectFile) {
-                // The project file should already be inside the book folder after move
-                // but handle root-level project files (legacy layout)
-                if (await adapter.exists(oldProjectFile)) {
-                    await this.app.fileManager.renameFile(
-                        this.app.vault.getAbstractFileByPath(oldProjectFile)!,
-                        newProjectFile
-                    );
+        const libraryJournal = createLibraryTransferJournal();
+        let movedProject = false;
+        try {
+            await this.ensureFolder(seriesFolder);
+
+            if (originalBookFolder !== targetBookFolder) {
+                await this.moveProjectFolder(originalBookFolder, targetBookFolder);
+                movedProject = true;
+                // Handle legacy manifests that were not nested under the project folder.
+                const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
+                if (originalProjectFile !== newProjectFile && await adapter.exists(originalProjectFile)) {
+                    const oldManifest = this.app.vault.getAbstractFileByPath(originalProjectFile);
+                    if (oldManifest) await this.app.fileManager.renameFile(oldManifest, newProjectFile);
                 }
             }
-        }
 
-        // Create shared Codex folder structure at series level
-        const seriesCodexFolder = normalizePath(`${seriesFolder}/Library`);
-        await this.ensureFolder(seriesCodexFolder);
-        await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Characters`));
-        await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Locations`));
+            const seriesCodexFolder = normalizePath(`${seriesFolder}/Library`);
+            await this.ensureFolder(seriesCodexFolder);
+            await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Characters`));
+            await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Locations`));
 
-        // Move book's codex entries to the shared series codex
-        const bookCodexFolder = normalizePath(`${targetBookFolder}/Library`);
-        if (await adapter.exists(bookCodexFolder)) {
-            await this.migrateCodexFolder(bookCodexFolder, seriesCodexFolder);
-        }
+            const bookCodexFolder = this.resolveExistingLibraryFolder(targetBookFolder);
+            if (await adapter.exists(bookCodexFolder)) {
+                await this.migrateCodexFolder(bookCodexFolder, seriesCodexFolder, libraryJournal);
+            }
 
-        // Write series.json
-        const now = new Date().toISOString().split('T')[0];
-        const meta: SeriesMetadata = {
-            name: seriesName,
-            bookOrder: [bookBaseName],
-            created: now,
-        };
-        await this.saveSeriesMetadata(seriesFolder, meta);
+            const meta: SeriesMetadata = {
+                name: seriesName,
+                bookOrder: [bookBaseName],
+                created: new Date().toISOString().split('T')[0],
+            };
+            await this.saveSeriesMetadata(seriesFolder, meta);
 
-        // Update project's seriesId and re-derive paths
-        const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
-        await this.plugin.sceneManager.scanProjects();
-        const updatedProject = this.plugin.sceneManager.getProjects()
-            .find(p => normalizePath(p.filePath) === newProjectFile);
-        if (updatedProject) {
+            const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
+            await this.plugin.sceneManager.scanProjects();
+            const updatedProject = this.plugin.sceneManager.getProjects()
+                .find(p => normalizePath(p.filePath) === newProjectFile);
+            if (!updatedProject) throw new Error(t('Could not find the moved project after creating the series.'));
             updatedProject.seriesId = safeName;
             await this.plugin.sceneManager.setActiveProject(updatedProject);
             await this.plugin.sceneManager.saveProjectFrontmatter(updatedProject);
-        }
+            await this.trashDuplicateLibraryFiles(libraryJournal);
 
-        new Notice(`Series "${seriesName}" created`);
-        return seriesFolder;
+            new Notice(t('Series "{name}" created', { name: seriesName }));
+            return seriesFolder;
+        } catch (error) {
+            let rollbackIncomplete = false;
+            await this.rollbackMovedLibraryFiles(libraryJournal).catch(rollbackError => {
+                rollbackIncomplete = true;
+                console.error('[NarrativeLab] Failed to roll back series Library migration:', rollbackError);
+            });
+            if (movedProject && await adapter.exists(targetBookFolder) && !await adapter.exists(originalBookFolder)) {
+                await this.moveProjectFolder(targetBookFolder, originalBookFolder).catch(rollbackError => {
+                    rollbackIncomplete = true;
+                    console.error('[NarrativeLab] Failed to restore project folder after series creation:', rollbackError);
+                });
+            }
+            const createdSeries = this.app.vault.getAbstractFileByPath(seriesFolder);
+            if (createdSeries instanceof TFolder && !rollbackIncomplete) {
+                await this.app.fileManager.trashFile(createdSeries).catch(() => undefined);
+            }
+            this.plugin.settings.activeProjectFile = originalProjectFile;
+            await this.plugin.sceneManager.scanProjects().catch(() => undefined);
+            const restored = this.plugin.sceneManager.getProjects()
+                .find(candidate => normalizePath(candidate.filePath) === originalProjectFile);
+            if (restored) {
+                delete restored.seriesId;
+                await this.plugin.sceneManager.saveProjectFrontmatter(restored).catch(() => undefined);
+                await this.plugin.sceneManager.setActiveProject(restored).catch(() => undefined);
+            }
+            throw error;
+        }
     }
 
     // ── Add existing project to series ─────────────────
@@ -179,7 +286,7 @@ export class SeriesManager {
      *
      * Steps:
      * 1. Move book folder into the series folder
-     * 2. Migrate book's codex to the shared series codex (handling duplicates)
+     * 2. Migrate the book Library to the shared series Library (handling duplicates)
      * 3. Update series.json bookOrder
      * 4. Set seriesId on the project
      */
@@ -187,10 +294,10 @@ export class SeriesManager {
         this.checkLinkSettings();
 
         const project = this.plugin.sceneManager.activeProject;
-        if (!project) throw new Error('No active project');
+        if (!project) throw new Error(t('No active project'));
 
         const meta = await this.loadSeriesMetadata(seriesFolder);
-        if (!meta) throw new Error('Invalid series folder — no series.json found');
+        if (!meta) throw new Error(t('Invalid series folder: series.json was not found.'));
 
         const adapter = this.app.vault.adapter;
         const bookFolders = deriveProjectFoldersFromFilePath(project.filePath);
@@ -201,65 +308,87 @@ export class SeriesManager {
         // the book folder \u2014 would attempt to move the book into itself.
         if (seriesFolderName.toLowerCase() === bookBaseName.toLowerCase()) {
             throw new Error(
-                `Series folder "${seriesFolderName}" has the same name as the project folder. ` +
-                `Rename the project or the series before adding.`
+                t('Series folder "{name}" has the same name as the project folder. Rename the project or series before adding it.', { name: seriesFolderName })
             );
         }
 
         const targetBookFolder = normalizePath(`${seriesFolder}/${bookBaseName}`);
+        const originalBookFolder = normalizePath(bookFolders.baseFolder);
+        const originalProjectFile = normalizePath(project.filePath);
+        const metadataSnapshot: SeriesMetadata = { ...meta, bookOrder: [...meta.bookOrder] };
+        const libraryJournal = createLibraryTransferJournal();
+        let movedProject = false;
+        try {
+            if (originalBookFolder !== targetBookFolder) {
+                await this.moveProjectFolder(originalBookFolder, targetBookFolder);
+                movedProject = true;
+            }
 
-        // Move the book folder into the series
-        if (normalizePath(bookFolders.baseFolder) !== targetBookFolder) {
-            await this.moveFolderRecursive(bookFolders.baseFolder, targetBookFolder);
-        }
+            const seriesCodexFolder = this.resolveExistingLibraryFolder(seriesFolder);
+            await this.ensureFolder(seriesCodexFolder);
+            await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Characters`));
+            await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Locations`));
 
-        // Migrate codex
-        const seriesCodexFolder = normalizePath(`${seriesFolder}/Library`);
-        await this.ensureFolder(seriesCodexFolder);
-        await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Characters`));
-        await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Locations`));
+            const bookCodexFolder = this.resolveExistingLibraryFolder(targetBookFolder);
+            if (await adapter.exists(bookCodexFolder)) {
+                await this.migrateCodexFolder(bookCodexFolder, seriesCodexFolder, libraryJournal);
+            }
 
-        const bookCodexFolder = normalizePath(`${targetBookFolder}/Library`);
-        if (await adapter.exists(bookCodexFolder)) {
-            await this.migrateCodexFolder(bookCodexFolder, seriesCodexFolder);
-        }
+            const safeName = seriesFolder.split('/').pop() ?? '';
+            if (!meta.bookOrder.includes(bookBaseName)) meta.bookOrder.push(bookBaseName);
+            await this.saveSeriesMetadata(seriesFolder, meta);
 
-        // Update series.json
-        const safeName = seriesFolder.split('/').pop() ?? '';
-        if (!meta.bookOrder.includes(bookBaseName)) {
-            meta.bookOrder.push(bookBaseName);
-        }
-        await this.saveSeriesMetadata(seriesFolder, meta);
-
-        // Re-scan and set active with seriesId
-        const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
-        await this.plugin.sceneManager.scanProjects();
-        const updatedProject = this.plugin.sceneManager.getProjects()
-            .find(p => normalizePath(p.filePath) === newProjectFile);
-        if (updatedProject) {
+            const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
+            await this.plugin.sceneManager.scanProjects();
+            const updatedProject = this.plugin.sceneManager.getProjects()
+                .find(p => normalizePath(p.filePath) === newProjectFile);
+            if (!updatedProject) throw new Error(t('Could not find the moved project after adding it to the series.'));
             updatedProject.seriesId = safeName;
             await this.plugin.sceneManager.setActiveProject(updatedProject);
             await this.plugin.sceneManager.saveProjectFrontmatter(updatedProject);
-        }
+            await this.trashDuplicateLibraryFiles(libraryJournal);
 
-        new Notice(`Project added to series "${meta.name}"`);
+            new Notice(t('Project added to series "{name}"', { name: meta.name }));
+        } catch (error) {
+            await this.saveSeriesMetadata(seriesFolder, metadataSnapshot).catch(rollbackError => {
+                console.error('[NarrativeLab] Failed to restore series metadata:', rollbackError);
+            });
+            await this.rollbackMovedLibraryFiles(libraryJournal).catch(rollbackError => {
+                console.error('[NarrativeLab] Failed to restore project Library:', rollbackError);
+            });
+            if (movedProject && await adapter.exists(targetBookFolder) && !await adapter.exists(originalBookFolder)) {
+                await this.moveProjectFolder(targetBookFolder, originalBookFolder).catch(rollbackError => {
+                    console.error('[NarrativeLab] Failed to restore project folder:', rollbackError);
+                });
+            }
+            this.plugin.settings.activeProjectFile = originalProjectFile;
+            await this.plugin.sceneManager.scanProjects().catch(() => undefined);
+            const restored = this.plugin.sceneManager.getProjects()
+                .find(candidate => normalizePath(candidate.filePath) === originalProjectFile);
+            if (restored) {
+                delete restored.seriesId;
+                await this.plugin.sceneManager.saveProjectFrontmatter(restored).catch(() => undefined);
+                await this.plugin.sceneManager.setActiveProject(restored).catch(() => undefined);
+            }
+            throw error;
+        }
     }
 
     // ── Remove from series ─────────────────────────────
 
     /**
      * Remove the active project from its series.
-     * Moves the book folder back out and copies its current shared codex entities locally.
+     * Moves the book folder back out and copies its current shared Library entities locally.
      */
     async removeProjectFromSeries(): Promise<void> {
         const project = this.plugin.sceneManager.activeProject;
-        if (!project?.seriesId) throw new Error('Project is not in a series');
+        if (!project?.seriesId) throw new Error(t('Project is not in a series.'));
 
         const seriesFolder = this.plugin.sceneManager.getSeriesFolder();
-        if (!seriesFolder) throw new Error('Cannot determine series folder');
+        if (!seriesFolder) throw new Error(t('Cannot determine the series folder.'));
 
         const meta = await this.loadSeriesMetadata(seriesFolder);
-        if (!meta) throw new Error('Invalid series metadata');
+        if (!meta) throw new Error(t('Invalid series metadata.'));
 
         const bookFolders = deriveProjectFoldersFromFilePath(project.filePath);
         const bookBaseName = bookFolders.baseFolder.split('/').pop() ?? '';
@@ -268,33 +397,200 @@ export class SeriesManager {
             : '';
         const targetBookFolder = normalizePath([seriesParent, bookBaseName].filter(Boolean).join('/'));
 
-        // Copy shared codex entries into the book's local codex before moving
-        const seriesCodexFolder = normalizePath(`${seriesFolder}/Library`);
+        const sourceBookFolder = normalizePath(bookFolders.baseFolder);
+        const originalProjectFile = normalizePath(project.filePath);
+        const metadataSnapshot: SeriesMetadata = { ...meta, bookOrder: [...meta.bookOrder] };
+        const copyJournal = createLibraryTransferJournal();
+        const seriesCodexFolder = this.resolveExistingLibraryFolder(seriesFolder);
         const localCodexFolder = normalizePath(`${bookFolders.baseFolder}/Library`);
-        await this.ensureFolder(localCodexFolder);
-        await this.copyFolderRecursive(seriesCodexFolder, localCodexFolder);
+        let movedProject = false;
+        try {
+            await this.ensureFolder(localCodexFolder);
+            await this.copyFolderRecursive(seriesCodexFolder, localCodexFolder, copyJournal);
 
-        // Move book folder out of series folder
-        if (normalizePath(bookFolders.baseFolder) !== targetBookFolder) {
-            await this.moveFolderRecursive(bookFolders.baseFolder, targetBookFolder);
-        }
+            if (sourceBookFolder !== targetBookFolder) {
+                await this.moveProjectFolder(sourceBookFolder, targetBookFolder);
+                movedProject = true;
+            }
 
-        // Update series.json
-        meta.bookOrder = meta.bookOrder.filter(b => b !== bookBaseName);
-        await this.saveSeriesMetadata(seriesFolder, meta);
+            meta.bookOrder = meta.bookOrder.filter(b => b !== bookBaseName);
+            await this.saveSeriesMetadata(seriesFolder, meta);
 
-        // Re-scan and clear seriesId
-        const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
-        await this.plugin.sceneManager.scanProjects();
-        const updatedProject = this.plugin.sceneManager.getProjects()
-            .find(p => normalizePath(p.filePath) === newProjectFile);
-        if (updatedProject) {
+            const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
+            await this.plugin.sceneManager.scanProjects();
+            const updatedProject = this.plugin.sceneManager.getProjects()
+                .find(p => normalizePath(p.filePath) === newProjectFile);
+            if (!updatedProject) throw new Error(t('Could not find the moved project after removing it from the series.'));
             delete updatedProject.seriesId;
             await this.plugin.sceneManager.setActiveProject(updatedProject);
             await this.plugin.sceneManager.saveProjectFrontmatter(updatedProject);
+
+            new Notice(t('Project removed from series "{name}"', { name: meta.name }));
+        } catch (error) {
+            await this.saveSeriesMetadata(seriesFolder, metadataSnapshot).catch(rollbackError => {
+                console.error('[NarrativeLab] Failed to restore series metadata:', rollbackError);
+            });
+            if (movedProject && await this.app.vault.adapter.exists(targetBookFolder)
+                && !await this.app.vault.adapter.exists(sourceBookFolder)) {
+                await this.moveProjectFolder(targetBookFolder, sourceBookFolder).catch(rollbackError => {
+                    console.error('[NarrativeLab] Failed to move project back into series:', rollbackError);
+                });
+            }
+            await this.rollbackCopiedLibraryFiles(copyJournal).catch(rollbackError => {
+                console.error('[NarrativeLab] Failed to remove copied Library files:', rollbackError);
+            });
+            this.plugin.settings.activeProjectFile = originalProjectFile;
+            await this.plugin.sceneManager.scanProjects().catch(() => undefined);
+            const restored = this.plugin.sceneManager.getProjects()
+                .find(candidate => normalizePath(candidate.filePath) === originalProjectFile);
+            if (restored) {
+                restored.seriesId = seriesFolder.split('/').pop() ?? restored.seriesId;
+                await this.plugin.sceneManager.saveProjectFrontmatter(restored).catch(() => undefined);
+                await this.plugin.sceneManager.setActiveProject(restored).catch(() => undefined);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Dissolve a series into standalone projects.
+     *
+     * Every direct child project receives a copy of the shared Library before
+     * it is moved beside the series folder. The remaining series container is
+     * moved to trash only after collision and unmanaged-content preflights pass.
+     */
+    async dissolveSeries(seriesFolder: string): Promise<StoryLineProject[]> {
+        this.checkLinkSettings();
+
+        const folder = normalizePath(seriesFolder);
+        const meta = await this.loadSeriesMetadata(folder);
+        if (!meta) throw new Error(t('Invalid series metadata.'));
+
+        await this.plugin.sceneManager.scanProjects();
+        const projects = this.plugin.sceneManager.getProjects();
+        const directProjects = projects.filter(project => {
+            const base = normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
+            const parent = base.includes('/') ? base.slice(0, base.lastIndexOf('/')) : '';
+            return parent === folder;
+        });
+        if (directProjects.length === 0) {
+            throw new Error(t('This series does not contain any NarrativeLab projects.'));
         }
 
-        new Notice(`Project removed from series "${meta.name}"`);
+        const order = new Map(meta.bookOrder.map((name, index) => [name, index]));
+        directProjects.sort((a, b) => {
+            const aName = deriveProjectFoldersFromFilePath(a.filePath).baseFolder.split('/').pop() ?? '';
+            const bName = deriveProjectFoldersFromFilePath(b.filePath).baseFolder.split('/').pop() ?? '';
+            return (order.get(aName) ?? Number.MAX_SAFE_INTEGER)
+                - (order.get(bName) ?? Number.MAX_SAFE_INTEGER);
+        });
+
+        const parent = folder.includes('/') ? folder.slice(0, folder.lastIndexOf('/')) : '';
+        const moves = directProjects.map(project => {
+            const source = normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
+            const name = source.split('/').pop() ?? project.title;
+            const target = normalizePath([parent, name].filter(Boolean).join('/'));
+            const sourcePrefix = `${source}/`;
+            const filePath = normalizePath(project.filePath);
+            const nextFilePath = filePath.startsWith(sourcePrefix)
+                ? normalizePath(`${target}/${filePath.slice(sourcePrefix.length)}`)
+                : normalizePath(`${target}/${name}.md`);
+            return { project, source, target, nextFilePath };
+        });
+
+        const adapter = this.app.vault.adapter;
+        for (const move of moves) {
+            if (move.source === move.target || await adapter.exists(move.target)) {
+                throw new Error(t('Cannot dissolve this series because "{path}" already exists.', {
+                    path: move.target,
+                }));
+            }
+        }
+
+        // Refuse to trash anything the series manager does not own.
+        const listing = await adapter.list(folder);
+        const managedFolders = new Set<string>([
+            ...moves.map(move => move.source),
+            normalizePath(`${folder}/Library`),
+            normalizePath(`${folder}/Codex`),
+        ]);
+        const unexpected = [
+            ...listing.files.filter(path => normalizePath(path) !== normalizePath(`${folder}/series.json`)),
+            ...listing.folders.filter(path => !managedFolders.has(normalizePath(path))),
+        ];
+        if (unexpected.length > 0) {
+            throw new Error(t('The series folder contains unmanaged files or folders: {items}. Move them elsewhere before dissolving the series.', {
+                items: unexpected.map(path => path.split('/').pop() ?? path).join(', '),
+            }));
+        }
+
+        const seriesEntry = this.app.vault.getAbstractFileByPath(folder);
+        if (!(seriesEntry instanceof TFolder)) {
+            throw new Error(t('Could not find the indexed series folder. Wait for Obsidian to finish indexing and try again.'));
+        }
+
+        const previousActivePath = normalizePath(this.plugin.sceneManager.activeProject?.filePath ?? '');
+        const activeMove = moves.find(move => normalizePath(move.project.filePath) === previousActivePath);
+        const sharedLibrary = this.resolveExistingLibraryFolder(folder);
+        const copyJournals = new Map<string, LibraryTransferJournal>();
+        const movedProjects: typeof moves = [];
+        try {
+            for (const move of moves) {
+                const localLibrary = normalizePath(`${move.source}/Library`);
+                const journal = createLibraryTransferJournal();
+                copyJournals.set(move.source, journal);
+                await this.ensureFolder(localLibrary);
+                await this.copyFolderRecursive(sharedLibrary, localLibrary, journal);
+            }
+            for (const move of moves) {
+                await this.moveProjectFolder(move.source, move.target);
+                movedProjects.push(move);
+            }
+
+            // Trash is the commit point. Before this succeeds every move and
+            // every copied Library file can still be reversed in place.
+            await this.app.fileManager.trashFile(seriesEntry);
+        } catch (error) {
+            for (const move of [...movedProjects].reverse()) {
+                if (await adapter.exists(move.target) && !await adapter.exists(move.source)) {
+                    await this.moveProjectFolder(move.target, move.source).catch(rollbackError => {
+                        console.error('[NarrativeLab] Failed to restore project while rolling back series dissolve:', rollbackError);
+                    });
+                }
+            }
+            for (const move of [...moves].reverse()) {
+                const journal = copyJournals.get(move.source);
+                if (!journal) continue;
+                await this.rollbackCopiedLibraryFiles(journal).catch(rollbackError => {
+                    console.error('[NarrativeLab] Failed to remove copied Library files:', rollbackError);
+                });
+            }
+            await this.plugin.sceneManager.scanProjects().catch(() => undefined);
+            throw error;
+        }
+
+        if (activeMove) {
+            this.plugin.settings.activeProjectFile = activeMove.nextFilePath;
+        }
+        await this.plugin.sceneManager.scanProjects();
+
+        const standalone: StoryLineProject[] = [];
+        for (const move of moves) {
+            const updated = this.plugin.sceneManager.getProjects()
+                .find(project => normalizePath(project.filePath) === move.nextFilePath);
+            if (!updated) continue;
+            delete updated.seriesId;
+            await this.plugin.sceneManager.saveProjectFrontmatter(updated).catch(error => {
+                console.error('[NarrativeLab] Failed to clear series metadata after dissolve:', error);
+            });
+            standalone.push(updated);
+        }
+
+        const nextActive = activeMove
+            ? standalone.find(project => normalizePath(project.filePath) === activeMove.nextFilePath)
+            : this.plugin.sceneManager.activeProject;
+        if (nextActive) await this.plugin.sceneManager.setActiveProject(nextActive);
+        return standalone;
     }
 
     // ── Scan for series folders ────────────────────────
@@ -348,31 +644,68 @@ export class SeriesManager {
         const alwaysUpdate = vaultConfig.alwaysUpdateLinks === true;
         if (!alwaysUpdate) {
             throw new Error(
-                'Series migration requires "Automatically update internal links" to be ON.\n\n' +
-                'Go to Settings → Files & Links and enable it, then try again.'
+                t('Series migration requires “Automatically update internal links”. Enable it under Settings → Files & Links, then try again.')
             );
         }
 
         const newLinkFormat = vaultConfig.newLinkFormat;
         if (newLinkFormat && newLinkFormat !== 'shortest') {
-            new Notice(
-                'Tip: Setting "New link format" to "Shortest path when possible" ' +
-                'is recommended before migrating to a series.',
-                8000
-            );
+            new Notice(t('Before moving a project into a series, set "New link format" to "Shortest path when possible".'), 8000);
         }
     }
 
     // ── File operations ────────────────────────────────
 
+    /** Move one project folder as a single vault operation. */
+    private async moveProjectFolder(source: string, destination: string): Promise<void> {
+        const src = normalizePath(source);
+        const dest = normalizePath(destination);
+        if (src === dest) return;
+        if (dest.startsWith(`${src}/`)) {
+            throw new Error(t('Cannot move "{source}" into its own subfolder "{destination}". Choose a different destination name.', {
+                source: src,
+                destination: dest,
+            }));
+        }
+        if (await this.app.vault.adapter.exists(dest)) {
+            throw new Error(t('A project folder named "{name}" already exists in this series.', {
+                name: dest.split('/').pop() || dest,
+            }));
+        }
+
+        const sourceFolder = this.app.vault.getAbstractFileByPath(src);
+        if (sourceFolder instanceof TFolder) {
+            await this.app.fileManager.renameFile(sourceFolder, dest);
+            return;
+        }
+
+        throw new Error(t('Could not find the indexed project folder: {path}. Wait for Obsidian to finish indexing and try again.', {
+            path: src,
+        }));
+    }
+
+    /** Prefer the current Library name while continuing to open legacy Codex folders. */
+    private resolveExistingLibraryFolder(ownerFolder: string): string {
+        const library = normalizePath(`${ownerFolder}/Library`);
+        const legacyCodex = normalizePath(`${ownerFolder}/Codex`);
+        if (this.app.vault.getAbstractFileByPath(library)) return library;
+        if (this.app.vault.getAbstractFileByPath(legacyCodex)) return legacyCodex;
+        return library;
+    }
+
     /**
-     * Migrate all files from a book's Codex folder to the series Codex folder.
-     * Skips files that already exist in the destination (no overwrite).
-     * Removes the source codex folder when done (if empty).
+     * Migrate all files from a book's Library folder to the series Library folder.
+     * Identical duplicates are recorded for post-commit cleanup. A same-name
+     * file with different bytes aborts before either version can be lost.
+     * Removes the source Library folder when done (if empty).
      */
-    private async migrateCodexFolder(sourceCodex: string, destCodex: string): Promise<void> {
+    private async migrateCodexFolder(
+        sourceCodex: string,
+        destCodex: string,
+        journal: LibraryTransferJournal = createLibraryTransferJournal(),
+    ): Promise<LibraryTransferJournal> {
         const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(sourceCodex)) return;
+        if (!await adapter.exists(sourceCodex)) return journal;
 
         const listing = await adapter.list(sourceCodex);
 
@@ -381,14 +714,23 @@ export class SeriesManager {
             const fileName = filePath.split('/').pop() ?? '';
             const destFile = normalizePath(`${destCodex}/${fileName}`);
             if (await adapter.exists(destFile)) {
-                // Duplicate — skip (series version takes precedence)
+                if (!await this.filesHaveSameBytes(filePath, destFile)) {
+                    throw new Error(t('Cannot merge Library file because a different file already exists at {path}.', {
+                        path: destFile,
+                    }));
+                }
+                journal.duplicateFiles.push(normalizePath(filePath));
                 continue;
             }
             // Use fileManager.renameFile for safe link updates
             const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (file) {
-                await this.app.fileManager.renameFile(file, destFile);
+            if (!(file instanceof TFile)) {
+                throw new Error(t('Could not find the indexed Library file: {path}. Wait for Obsidian to finish indexing and try again.', {
+                    path: filePath,
+                }));
             }
+            await this.app.fileManager.renameFile(file, destFile);
+            journal.movedFiles.push({ from: normalizePath(filePath), to: destFile });
         }
 
         // Recursively migrate subfolders
@@ -396,7 +738,7 @@ export class SeriesManager {
             const subName = subFolder.split('/').pop() ?? '';
             const destSub = normalizePath(`${destCodex}/${subName}`);
             await this.ensureFolder(destSub);
-            await this.migrateCodexFolder(subFolder, destSub);
+            await this.migrateCodexFolder(subFolder, destSub, journal);
         }
 
         // Remove source folder if empty
@@ -406,63 +748,19 @@ export class SeriesManager {
                 await adapter.rmdir(sourceCodex, false);
             }
         } catch { /* non-fatal */ }
-    }
-
-    /**
-     * Move an entire folder tree from source to destination.
-     * Uses fileManager.renameFile for each file to preserve links.
-     */
-    private async moveFolderRecursive(source: string, dest: string): Promise<void> {
-        const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(source)) return;
-
-        const normSource = normalizePath(source);
-        const normDest = normalizePath(dest);
-        // Defensive guard against pathological inputs (e.g. dest inside source
-        // due to a same-name collision between series and book — issue #82).
-        // Without this we would recurse forever moving the destination subtree
-        // back into itself.
-        if (normSource === normDest) return;
-        if (normDest.startsWith(`${normSource}/`)) {
-            throw new Error(
-                `Cannot move "${normSource}" into its own subfolder "${normDest}". ` +
-                `Choose a different destination name.`
-            );
-        }
-
-        await this.ensureFolder(dest);
-        const listing = await adapter.list(source);
-
-        for (const filePath of listing.files) {
-            const fileName = filePath.split('/').pop() ?? '';
-            const destFile = normalizePath(`${dest}/${fileName}`);
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (file) {
-                await this.app.fileManager.renameFile(file, destFile);
-            }
-        }
-
-        for (const subFolder of listing.folders) {
-            const subName = subFolder.split('/').pop() ?? '';
-            const destSub = normalizePath(`${dest}/${subName}`);
-            await this.moveFolderRecursive(subFolder, destSub);
-        }
-
-        // Remove source folder if empty
-        try {
-            const remaining = await adapter.list(source);
-            if (remaining.files.length === 0 && remaining.folders.length === 0) {
-                await adapter.rmdir(source, false);
-            }
-        } catch { /* non-fatal */ }
+        return journal;
     }
 
     /**
      * Copy folder contents (non-destructive, for restore when leaving a series).
      */
-    private async copyFolderRecursive(source: string, dest: string): Promise<void> {
+    private async copyFolderRecursive(
+        source: string,
+        dest: string,
+        journal: LibraryTransferJournal = createLibraryTransferJournal(),
+    ): Promise<LibraryTransferJournal> {
         const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(source)) return;
+        if (!await adapter.exists(source)) return journal;
 
         await this.ensureFolder(dest);
         const listing = await adapter.list(source);
@@ -470,24 +768,81 @@ export class SeriesManager {
         for (const filePath of listing.files) {
             const fileName = filePath.split('/').pop() ?? '';
             const destFile = normalizePath(`${dest}/${fileName}`);
-            if (await adapter.exists(destFile)) continue;
-            try {
-                const content = await adapter.read(filePath);
-                await adapter.write(destFile, content);
-            } catch { /* skip unreadable */ }
+            if (await adapter.exists(destFile)) {
+                if (await this.filesHaveSameBytes(filePath, destFile)) continue;
+                throw new Error(t('Cannot copy shared Library file because a different file already exists at {path}.', {
+                    path: destFile,
+                }));
+            }
+            // Library folders may contain images, PDFs, or other binary assets.
+            // Binary I/O preserves both text and non-text files byte-for-byte.
+            const content = await adapter.readBinary(filePath);
+            await adapter.writeBinary(destFile, content);
+            journal.copiedFiles.push(destFile);
         }
 
         for (const subFolder of listing.folders) {
             const subName = subFolder.split('/').pop() ?? '';
-            await this.copyFolderRecursive(subFolder, normalizePath(`${dest}/${subName}`));
+            await this.copyFolderRecursive(subFolder, normalizePath(`${dest}/${subName}`), journal);
+        }
+        return journal;
+    }
+
+    private async filesHaveSameBytes(leftPath: string, rightPath: string): Promise<boolean> {
+        const adapter = this.app.vault.adapter;
+        const [left, right] = await Promise.all([
+            adapter.readBinary(leftPath),
+            adapter.readBinary(rightPath),
+        ]);
+        if (left.byteLength !== right.byteLength) return false;
+        const leftBytes = new Uint8Array(left);
+        const rightBytes = new Uint8Array(right);
+        for (let index = 0; index < leftBytes.length; index += 1) {
+            if (leftBytes[index] !== rightBytes[index]) return false;
+        }
+        return true;
+    }
+
+    private async trashDuplicateLibraryFiles(journal: LibraryTransferJournal): Promise<void> {
+        for (const path of journal.duplicateFiles) {
+            const file = this.app.vault.getAbstractFileByPath(path);
+            if (!(file instanceof TFile)) continue;
+            await this.app.fileManager.trashFile(file).catch(error => {
+                console.warn('[NarrativeLab] Could not remove identical Library duplicate:', path, error);
+            });
+        }
+    }
+
+    private async rollbackMovedLibraryFiles(journal: LibraryTransferJournal): Promise<void> {
+        for (const move of [...journal.movedFiles].reverse()) {
+            const destination = this.app.vault.getAbstractFileByPath(move.to);
+            if (!(destination instanceof TFile)) continue;
+            if (await this.app.vault.adapter.exists(move.from)) continue;
+            await this.ensureFolder(move.from.slice(0, move.from.lastIndexOf('/')));
+            await this.app.fileManager.renameFile(destination, move.from);
+        }
+    }
+
+    private async rollbackCopiedLibraryFiles(journal: LibraryTransferJournal): Promise<void> {
+        for (const path of [...journal.copiedFiles].reverse()) {
+            const file = this.app.vault.getAbstractFileByPath(path);
+            if (file instanceof TFile) {
+                await this.app.fileManager.trashFile(file);
+                continue;
+            }
+            if (await this.app.vault.adapter.exists(path)) {
+                await this.app.vault.adapter.remove(path);
+            }
         }
     }
 
     private async ensureFolder(folderPath: string): Promise<void> {
         const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(folderPath)) {
-            await adapter.mkdir(folderPath);
-        }
+        const folder = normalizePath(folderPath);
+        if (!folder || await adapter.exists(folder)) return;
+        const slash = folder.lastIndexOf('/');
+        if (slash > 0) await this.ensureFolder(folder.slice(0, slash));
+        if (!await adapter.exists(folder)) await adapter.mkdir(folder);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment -- end of file-wide suppression block opened at line 1 */

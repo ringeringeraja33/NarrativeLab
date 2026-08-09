@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { App, TFile, TFolder, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import {
@@ -10,6 +10,7 @@ import {
     withLinkingSection,
 } from '../models/Codex';
 import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
+import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 
 /**
  * Manages generic Codex entries — loading, saving, creating, and deleting
@@ -17,7 +18,7 @@ import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } f
  * Culture, Systems, and user-defined custom categories).
  *
  * Characters and Locations retain their specialised managers;
- * CodexManager handles everything else inside the project's Codex/ folder.
+ * CodexManager handles everything else inside the project's Library/ folder.
  */
 export class CodexManager {
     private app: App;
@@ -102,7 +103,7 @@ export class CodexManager {
     // ── Load ───────────────────────────────────────────
 
     /**
-     * Load all entries for every enabled category from the Codex folder.
+     * Load all entries for every enabled category from the Library folder.
      * Expects structure:  `codexFolder/<CategoryFolder>/entry.md`
      */
     async loadAll(codexFolder: string): Promise<void> {
@@ -464,12 +465,11 @@ export class CodexManager {
         if (safeFm.type !== catDef.id && !folderFallback) return null;
 
         const body = this.extractBody(content);
-        const basename = filePath.split('/').pop()?.replace(/\.md$/i, '') ?? filePath;
 
         const entry: CodexEntry = {
             filePath,
             type: catDef.id,
-            name: String(safeFm.name || basename),
+            name: resolveLibraryEntityName(safeFm.name, filePath, safeFm.title),
             image: safeFm.image,
             gallery: this.parseGallery(safeFm.gallery),
             created: safeFm.created,
@@ -510,9 +510,10 @@ export class CodexManager {
                     custom[key] = value.map(String).join(', ');
                 } else {
                     try {
-                        custom[key] = JSON.stringify(value);
+                        const serialized = JSON.stringify(value);
+                        if (typeof serialized === 'string') custom[key] = serialized;
                     } catch {
-                        custom[key] = String(value);
+                        // Unsupported custom values are omitted instead of becoming "[object Object]".
                     }
                 }
             }
@@ -565,4 +566,4 @@ export class CodexManager {
         await this.app.vault.createFolder(normalized);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

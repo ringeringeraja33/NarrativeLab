@@ -1,4 +1,5 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex -- shared localization helpers; dynamic Intl.Segmenter access needs untyped indexing on older lib targets */
+
+import { coerceString } from './narrow';
 
 /**
  * Locale & i18n helpers for word counting, reading time, dialogue, and prose
@@ -315,7 +316,7 @@ export const SUPPORTED_STORYLINE_LOCALES: ReadonlyArray<{ code: string; label: s
  * (or `DEFAULT_STORYLINE_LOCALE` when blank).
  */
 export function normalizeStoryLineLocale(value: unknown): StoryLineLocale {
-    const raw = String(value ?? '').trim().toLowerCase().replace('_', '-');
+    const raw = coerceString(value).trim().toLowerCase().replace('_', '-');
     if (!raw) return DEFAULT_STORYLINE_LOCALE;
     if (raw === AUTO_DETECT_LOCALE) return AUTO_DETECT_LOCALE;
     const base = raw.split('-')[0];
@@ -505,5 +506,3 @@ export function isSignificantWord(word: string, locale: StoryLineLocale, stopWor
 export function supportsSyllableMetrics(locale: StoryLineLocale): boolean {
     return getLocaleProfile(locale).supportsSyllables;
 }
-
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex -- end of file-wide suppression block */

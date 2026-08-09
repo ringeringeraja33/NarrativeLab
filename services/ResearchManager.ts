@@ -1,8 +1,9 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, TFile, TFolder, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { ResearchPost, ResearchType } from '../models/Research';
 import type SceneCardsPlugin from '../main';
 import { tokenizeWords, DEFAULT_STORYLINE_LOCALE } from '../utils/locale';
+import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 
 /**
  * ResearchManager — CRUD, indexing, and search for research posts.
@@ -83,12 +84,15 @@ export class ResearchManager {
 
             return {
                 filePath: file.path,
-                title: fm.title || file.basename,
+                title: resolveLibraryEntityName(fm.title, file.path, fm.name),
                 researchType: fm.researchType || 'note',
                 tags: Array.isArray(fm.tags) ? fm.tags : [],
                 body,
                 sourceUrl: fm.sourceUrl || undefined,
                 resolved: fm.resolved ?? false,
+                inactive: Object.prototype.hasOwnProperty.call(fm, 'active')
+                    ? fm.active !== true
+                    : fm.inactive === true,
                 created: fm.created || file.stat.ctime.toString(),
                 modified: fm.modified || new Date(file.stat.mtime).toISOString(),
             };
@@ -101,8 +105,9 @@ export class ResearchManager {
     //  Getters
     // ────────────────────────────────────
 
-    getAllPosts(): ResearchPost[] {
-        return Array.from(this.posts.values());
+    getAllPosts(includeInactive = false): ResearchPost[] {
+        const posts = Array.from(this.posts.values());
+        return includeInactive ? posts : posts.filter(post => !post.inactive);
     }
 
     getPost(filePath: string): ResearchPost | undefined {
@@ -112,7 +117,7 @@ export class ResearchManager {
     /** Get all unique tags across all research posts. */
     getAllTags(): string[] {
         const tags = new Set<string>();
-        for (const post of this.posts.values()) {
+        for (const post of this.getAllPosts()) {
             post.tags.forEach(t => tags.add(t));
         }
         return Array.from(tags).sort();
@@ -121,7 +126,7 @@ export class ResearchManager {
     /** Count of unresolved questions. */
     getOpenQuestionCount(): number {
         let count = 0;
-        for (const post of this.posts.values()) {
+        for (const post of this.getAllPosts()) {
             if (post.researchType === 'question' && !post.resolved) count++;
         }
         return count;
@@ -135,8 +140,8 @@ export class ResearchManager {
      * Search posts by free text query. Matches title, body, and tags.
      * Uses case-insensitive prefix matching for a lightweight fuzzy feel.
      */
-    search(query: string, tagFilter?: string, typeFilter?: ResearchType): ResearchPost[] {
-        let results = this.getAllPosts();
+    search(query: string, tagFilter?: string, typeFilter?: ResearchType, includeInactive = false): ResearchPost[] {
+        let results = this.getAllPosts(includeInactive);
 
         if (typeFilter) {
             results = results.filter(p => p.researchType === typeFilter);
@@ -163,12 +168,12 @@ export class ResearchManager {
      * Auto-suggest: find posts relevant to the current scene's metadata.
      * Matches scene characters, location, tags, and title words against post content.
      */
-    autoSuggest(sceneKeywords: string[]): ResearchPost[] {
+    autoSuggest(sceneKeywords: string[], includeInactive = false): ResearchPost[] {
         if (sceneKeywords.length === 0) return [];
         const lower = sceneKeywords.map(k => k.toLowerCase());
 
         const scored: { post: ResearchPost; score: number }[] = [];
-        for (const post of this.posts.values()) {
+        for (const post of this.getAllPosts(includeInactive)) {
             const haystack = `${post.title} ${post.body} ${post.tags.join(' ')}`.toLowerCase();
             let score = 0;
             for (const kw of lower) {
@@ -208,6 +213,7 @@ export class ResearchManager {
             title,
             researchType,
             tags,
+            active: true,
             created: now,
             modified: now,
         };
@@ -233,7 +239,7 @@ export class ResearchManager {
     }
 
     /** Update frontmatter fields on an existing post. */
-    async updatePost(filePath: string, updates: Partial<Pick<ResearchPost, 'title' | 'tags' | 'researchType' | 'sourceUrl' | 'resolved'>>): Promise<void> {
+    async updatePost(filePath: string, updates: Partial<Pick<ResearchPost, 'title' | 'tags' | 'researchType' | 'sourceUrl' | 'resolved' | 'inactive'>>): Promise<void> {
         const post = this.posts.get(filePath);
         if (!post) return;
 
@@ -252,6 +258,11 @@ export class ResearchManager {
         if (updates.researchType !== undefined) { fm.researchType = updates.researchType; post.researchType = updates.researchType; }
         if (updates.sourceUrl !== undefined) { fm.sourceUrl = updates.sourceUrl; post.sourceUrl = updates.sourceUrl; }
         if (updates.resolved !== undefined) { fm.resolved = updates.resolved; post.resolved = updates.resolved; }
+        if (updates.inactive !== undefined) {
+            fm.active = !updates.inactive;
+            delete fm.inactive;
+            post.inactive = updates.inactive;
+        }
 
         fm.modified = new Date().toISOString();
         post.modified = fm.modified;
@@ -260,13 +271,17 @@ export class ResearchManager {
         await this.app.vault.modify(file, newContent);
     }
 
-    /** Delete a research post from disk and index. */
+    /**
+     * Legacy delete entry point. Research removal now means disabling the
+     * post; the Markdown file remains available for recovery.
+     */
     async deletePost(filePath: string): Promise<void> {
-        this.posts.delete(filePath);
-        const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (file instanceof TFile) {
-            await this.app.fileManager.trashFile(file);
-        }
+        await this.setPostActive(filePath, false);
+    }
+
+    /** Enable or disable a post without deleting its file. */
+    async setPostActive(filePath: string, active: boolean): Promise<void> {
+        await this.updatePost(filePath, { inactive: !active });
     }
 
     // ────────────────────────────────────
@@ -313,6 +328,7 @@ export class ResearchManager {
         let tags: string[] = [];
         let body = '';
         let researchType: ResearchType = 'note';
+        let inactive = false;
 
         if (isBinary) {
             // Images and other binary files — show as image type with path reference
@@ -333,6 +349,9 @@ export class ResearchManager {
                         const fm = parseYaml(fmMatch[1]);
                         if (fm?.title) title = fm.title;
                         if (Array.isArray(fm?.tags)) tags = fm.tags;
+                        inactive = Object.prototype.hasOwnProperty.call(fm || {}, 'active')
+                            ? fm.active !== true
+                            : fm?.inactive === true;
                     } catch { /* ignore bad frontmatter */ }
                     body = content.substring(fmMatch[0].length).trim();
                 }
@@ -345,6 +364,7 @@ export class ResearchManager {
             researchType,
             tags,
             body,
+            inactive,
             isLinked: true,
             created: new Date(file.stat.ctime).toISOString(),
             modified: new Date(file.stat.mtime).toISOString(),
@@ -397,4 +417,4 @@ export class ResearchManager {
         }
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument -- end of file-wide suppression block opened at line 1 */

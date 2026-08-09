@@ -1,5 +1,5 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { StoryLineProject, ProjectDraft, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER, DEFAULT_CANVAS_FOLDER } from '../models/StoryLineProject';
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-floating-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+import { StoryLineProject, ProjectDraft, SeriesMetadata, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER, DEFAULT_CANVAS_FOLDER, DEFAULT_PROJECT_LIBRARY_FOLDERS, DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES } from '../models/StoryLineProject';
 import { MetadataParser, setWordcountLocale, setSceneTitleToStemMap } from './MetadataParser';
 import { normalizeStoryLineLocale, resolveLocale, DEFAULT_STORYLINE_LOCALE, AUTO_DETECT_LOCALE, type StoryLineLocale } from '../utils/locale';
 import { UndoManager } from './UndoManager';
@@ -7,8 +7,9 @@ import { SceneQueryService, ISceneStore } from './SceneQueryService';
 import { formatActChapterPrefix, sanitizeActChapterForPath, compareActChapter } from '../utils/actChapter';
 import type SceneCardsPlugin from '../main';
 import { App, Notice, TFile, TFolder, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
-import { BeatSheetTemplate, FilterPreset, Scene, SceneStatus, getStatusOrder } from '../models/Scene';
-import { localizeForLanguage } from '../utils/i18n';
+import { BeatSheetApplyOptions, BeatSheetApplyPreview, BeatSheetTemplate, FilterPreset, Scene, SceneStatus, SceneTemplate, getStatusOrder } from '../models/Scene';
+import { localizeForLanguage, t } from '../utils/i18n';
+import { coerceString } from '../utils/narrow';
 
 /**
  * Normalize a frontmatter `acts` / `chapters` value into a clean sorted
@@ -69,7 +70,7 @@ function normalizeLibraryFoldersMap(raw: unknown): Record<string, string> {
     const out: Record<string, string> = {};
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
         const id = String(k || '').trim();
-        const name = String(v ?? '').trim().replace(/[\\/:*?"<>|]/g, '-');
+        const name = coerceString(v).trim().replace(/[\\/:*?"<>|]/g, '-');
         if (id && name) out[id] = name;
     }
     return out;
@@ -344,7 +345,11 @@ export class SceneManager implements ISceneStore {
         if (this._activeProject) {
             const base = deriveProjectFoldersFromFilePath(this._activeProject.filePath).baseFolder;
             const parentDir = base.substring(0, base.lastIndexOf('/'));
-            return normalizePath(`${parentDir}/Library`);
+            const library = normalizePath(`${parentDir}/Library`);
+            const legacyCodex = normalizePath(`${parentDir}/Codex`);
+            if (this.app.vault.getAbstractFileByPath(library)) return library;
+            if (this.app.vault.getAbstractFileByPath(legacyCodex)) return legacyCodex;
+            return library;
         }
         const root = this.plugin.settings.storyLineRoot;
         return root ? `${root}/Library` : 'Library';
@@ -416,10 +421,13 @@ export class SceneManager implements ISceneStore {
         this.projects.clear();
         const rootPath = this.plugin.settings.storyLineRoot;
         const adapter = this.app.vault.adapter;
-        const isDiscardedPath = (path: string): boolean =>
-            normalizePath(path).split('/').some(segment =>
-                segment === '.trash' || segment === '.obsidian'
-            );
+        const configDir = normalizePath(this.app.vault.configDir);
+        const isDiscardedPath = (path: string): boolean => {
+            const normalized = normalizePath(path);
+            return normalized.split('/').includes('.trash')
+                || normalized === configDir
+                || normalized.startsWith(`${configDir}/`);
+        };
 
         // Helper: try to parse a .md file at the given path as a project
         const tryParse = async (filePath: string) => {
@@ -562,21 +570,7 @@ export class SceneManager implements ISceneStore {
         const defaultLang = (this.plugin.settings as { defaultProjectLanguage?: string }).defaultProjectLanguage ?? DEFAULT_STORYLINE_LOCALE;
         const projectLocale = normalizeStoryLineLocale(defaultLang);
 
-        const libraryFolders: Record<string, string> = {
-            characters: 'Characters',
-            locations: 'Locations',
-        };
-        for (const id of this.plugin.settings.codexEnabledCategories || []) {
-            const custom = this.plugin.settings.codexCustomCategories?.find(c => c.id === id);
-            if (custom?.label) libraryFolders[id] = custom.label;
-            else if (id === 'items') libraryFolders[id] = 'Items';
-            else if (id === 'creatures') libraryFolders[id] = 'Creatures';
-            else if (id === 'lore') libraryFolders[id] = 'Lore';
-            else if (id === 'organizations') libraryFolders[id] = 'Organizations';
-            else if (id === 'culture') libraryFolders[id] = 'Culture';
-            else if (id === 'systems') libraryFolders[id] = 'Systems';
-            else libraryFolders[id] = id;
-        }
+        const libraryFolders: Record<string, string> = { ...DEFAULT_PROJECT_LIBRARY_FOLDERS };
 
         const frontmatter: Record<string, unknown> = {
             type: 'narrative-lab',
@@ -596,19 +590,31 @@ export class SceneManager implements ISceneStore {
             // Create project file inside the folder
             await this.app.vault.create(filePath, content);
 
-            // Default Library tabs (special + enabled categories) — folders
-            // match tab labels and can be renamed later.
+            // New projects start with only Characters and Locations. Optional
+            // categories and their folders are created when the user adds them.
             const libraryFolder = normalizePath(folders.codexFolder);
             await this.ensureFolder(libraryFolder);
             for (const folderName of Object.values(libraryFolders)) {
                 const categoryFolder = normalizePath(`${libraryFolder}/${folderName}`);
                 await this.ensureFolder(categoryFolder);
-                await this.ensureFolder(normalizePath(`${categoryFolder}/${DEFAULT_ATTACHMENT_FOLDER}`));
             }
 
             // Create System folder for project data files
             const systemFolder = normalizePath(`${baseFolder}/System`);
             await this.ensureFolder(systemFolder);
+
+            // Do not inherit Library categories from the previously active
+            // project when this project is opened for the first time.
+            await this.app.vault.create(
+                normalizePath(`${systemFolder}/library-categories.json`),
+                JSON.stringify({
+                    enabledCategories: [],
+                    customCategories: [],
+                    categoryOrder: [],
+                    hiddenFixedCategories: [...DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES],
+                    deletedPresetCategories: [],
+                }, null, 2),
+            );
 
             // Authored content folders at project root (not under System/)
             await this.ensureFolder(normalizePath(folders.basesFolder));
@@ -659,10 +665,10 @@ export class SceneManager implements ISceneStore {
             };
 
             this.projects.set(filePath, project);
-            new Notice(`Project "${title}" created`);
+            new Notice(t('Project "{title}" created', { title }));
             return project;
         } catch (err) {
-            new Notice('Failed to create project file or folders: ' + String(err));
+            new Notice(t('Failed to create project files or folders: {error}', { error: String(err) }));
             throw err;
         }
     }
@@ -684,6 +690,7 @@ export class SceneManager implements ISceneStore {
         await this.plugin.loadProjectSystemData();
         // Reload universal field templates for the new project
         await this.plugin.fieldTemplates.load();
+        await this.plugin.templateCenter.load();
         await this.loadCorkboardPositions();
         await this.plugin.saveSettings();
         await this.initialize();
@@ -712,6 +719,8 @@ export class SceneManager implements ISceneStore {
      * Uses fileManager.renameFile() so all vault links stay valid.
      */
     async renameProject(project: StoryLineProject, newTitle: string): Promise<StoryLineProject> {
+        const wasActive = this._activeProject === project
+            || normalizePath(this.plugin.settings.activeProjectFile || '') === normalizePath(project.filePath);
         const safeName = newTitle.replace(/[\\/:*?"<>|]/g, '-');
         const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const oldBaseFolder = folders.baseFolder;
@@ -737,7 +746,12 @@ export class SceneManager implements ISceneStore {
         }
 
         // Remove old project entry and add new one
-        this.projects.delete(project.filePath);
+        // A folder-level rename watcher may already have re-keyed this same
+        // object while renameFile() was awaiting Obsidian. Remove every stale
+        // key that still points at it before installing the final manifest path.
+        for (const [path, candidate] of [...this.projects.entries()]) {
+            if (candidate === project) this.projects.delete(path);
+        }
         project.filePath = newFilePath;
         project.title = newTitle;
         // Re-derive folder paths
@@ -768,7 +782,7 @@ export class SceneManager implements ISceneStore {
         }
 
         // If this was the active project, update settings
-        if (this._activeProject?.filePath === newFilePath || this.plugin.settings.activeProjectFile === project.filePath) {
+        if (wasActive) {
             this._activeProject = project;
             this.plugin.settings.activeProjectFile = newFilePath;
             await this.plugin.saveSettings();
@@ -808,19 +822,25 @@ export class SceneManager implements ISceneStore {
     async deleteProject(project: StoryLineProject): Promise<boolean> {
         const filePath = normalizePath(project.filePath);
         if (!this.projects.has(filePath)) {
-            new Notice(`Project "${project.title}" was not found. It may have already been deleted.`);
+            new Notice(t('Project "{title}" was not found. It may have already been deleted.', { title: project.title }));
             return false;
         }
 
         const folders = deriveProjectFoldersFromFilePath(filePath);
         const baseFolder = normalizePath(folders.baseFolder);
 
-        // ── Remove from series metadata (if applicable) ──────────────
+        let seriesMetadataRollback: { folder: string; meta: SeriesMetadata } | null = null;
+        // Update series metadata first, but keep an exact snapshot so a failed
+        // trash operation cannot leave a live project missing from bookOrder.
         if (project.seriesId) {
             // Series folder is the parent of the book's base folder.
             const seriesFolder = baseFolder.substring(0, baseFolder.lastIndexOf('/'));
             const meta = await this.plugin.seriesManager.loadSeriesMetadata(seriesFolder);
             if (meta) {
+                seriesMetadataRollback = {
+                    folder: seriesFolder,
+                    meta: { ...meta, bookOrder: [...meta.bookOrder] },
+                };
                 const bookBaseName = baseFolder.split('/').pop() ?? '';
                 meta.bookOrder = meta.bookOrder.filter(b => b !== bookBaseName);
                 await this.plugin.seriesManager.saveSeriesMetadata(seriesFolder, meta);
@@ -831,16 +851,26 @@ export class SceneManager implements ISceneStore {
         // `fileManager.trashFile()` accepts a TFile or TFolder and recursively
         // trashes all children. It respects the user's "Deleted files" setting
         // (Settings → Files & Links → Deleted files).
-        const folderEntry = this.app.vault.getAbstractFileByPath(baseFolder);
-        if (folderEntry) {
-            await this.app.fileManager.trashFile(folderEntry);
-        } else {
-            // Folder entry not found — try to trash the .md file directly
-            // so the project stops being discovered by the vault-wide scan.
-            const mdEntry = this.app.vault.getAbstractFileByPath(filePath);
-            if (mdEntry) {
-                await this.app.fileManager.trashFile(mdEntry);
+        try {
+            const folderEntry = this.app.vault.getAbstractFileByPath(baseFolder);
+            if (folderEntry) {
+                await this.app.fileManager.trashFile(folderEntry);
+            } else {
+                // Folder entry not found — try to trash the .md file directly
+                // so the project stops being discovered by the vault-wide scan.
+                const mdEntry = this.app.vault.getAbstractFileByPath(filePath);
+                if (mdEntry) await this.app.fileManager.trashFile(mdEntry);
             }
+        } catch (error) {
+            if (seriesMetadataRollback) {
+                await this.plugin.seriesManager.saveSeriesMetadata(
+                    seriesMetadataRollback.folder,
+                    seriesMetadataRollback.meta,
+                ).catch(rollbackError => {
+                    console.error('[NarrativeLab] Failed to restore series metadata after project deletion failed:', rollbackError);
+                });
+            }
+            throw error;
         }
 
         // ── Update in-memory state ───────────────────────────────────
@@ -863,7 +893,7 @@ export class SceneManager implements ISceneStore {
         // any stray files that may have been left behind).
         await this.scanProjects();
 
-        new Notice(`Project "${project.title}" deleted.`);
+        new Notice(t('Project "{title}" deleted.', { title: project.title }));
         return true;
     }
 
@@ -910,7 +940,11 @@ export class SceneManager implements ISceneStore {
         }
 
         const sceneCount = sourceFolder instanceof TFolder ? sourceFolder.children.filter(c => c instanceof TFile).length : 0;
-        new Notice(`Forked "${source.title}" → "${newTitle}" (${sceneCount} scenes copied)`);
+        new Notice(t('Copied "{source}" to "{target}" ({count} scenes)', {
+            source: source.title,
+            target: newTitle,
+            count: sceneCount,
+        }));
         return newProject;
     }
     /**
@@ -1088,9 +1122,9 @@ export class SceneManager implements ISceneStore {
             } else {
                 await MetadataParser.updateFrontmatter(this.app, file, {
                     type: 'scene',
-                    title: String(fm?.title || file.basename),
+                    title: coerceString(fm?.title, file.basename),
                     status: ((fm?.status as Scene['status']) || 'idea'),
-                    created: String(fm?.created || today),
+                    created: coerceString(fm?.created, today),
                     corkboardNote: true,
                 });
             }
@@ -1259,7 +1293,7 @@ export class SceneManager implements ISceneStore {
         const file = await this.app.vault.create(filePath, content);
 
         // Record undo snapshot for create
-        this.undoManager.recordCreate(file.path, content, `Create "${sceneData.title || 'scene'}"`);
+        this.undoManager.recordCreate(file.path, content, t('Create "{name}"', { name: sceneData.title || t('scene') }));
 
         // Add to index
         const scene = await MetadataParser.parseFile(this.app, file);
@@ -1284,60 +1318,70 @@ export class SceneManager implements ISceneStore {
     /**
      * Update an existing scene's metadata
      */
-    async updateScene(filePath: string, updates: Partial<Scene>): Promise<string | void> {
+    async updateScene(
+        filePath: string,
+        updates: Partial<Scene>,
+        options: { recordUndo?: boolean } = {},
+    ): Promise<string | void> {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!file || !(file instanceof TFile)) {
-            new Notice('Scene file not found');
+            new Notice(t('Scene file not found'));
             return;
         }
 
-        // Record undo snapshot before applying changes
         const oldSnap = this.scenes.get(filePath);
-        if (oldSnap) {
-            const label = `Update "${oldSnap.title}"`;
-            this.undoManager.recordUpdate(filePath, oldSnap as unknown as Record<string, unknown>, updates, label);
-        }
-
-        // Issue #212 — populate the title→fileStem map so setup/payoff wikilinks
-        // are written as `[[stem|title]]`, letting Obsidian’s graph resolve the
-        // link to the real file while NarrativeLab still matches by title.
-        if (updates.setup_scenes !== undefined || updates.payoff_scenes !== undefined) {
-            const stemMap = new Map<string, string>();
-            for (const [p, s] of this.scenes) {
-                if (s.title) {
-                    const stem = p.split('/').pop()?.replace(/\.md$/, '') ?? s.title;
-                    stemMap.set(s.title, stem);
-                }
-            }
-            setSceneTitleToStemMap(stemMap);
-        }
-
-        await MetadataParser.updateFrontmatter(this.app, file, updates);
-
-        // Refresh index
-        const scene = await MetadataParser.parseFile(this.app, file);
-        if (scene) {
-            this.scenes.set(filePath, scene);
-            this.bumpVersion(filePath);
-        }
-
+        const undoToken = oldSnap && options.recordUndo !== false
+            ? await this.undoManager.beginUpdate(filePath, t('Update "{name}"', { name: oldSnap.title }))
+            : null;
         let currentPath = filePath;
 
-        // If the act changed, relocate the file to the correct Act folder and
-        // update the act prefix in the filename.
-        if (updates.act !== undefined && oldSnap && updates.act !== oldSnap.act) {
-            currentPath = await this.relocateSceneForAct(filePath, updates.act);
-        }
+        try {
+            // Issue #212 — populate the title→fileStem map so setup/payoff wikilinks
+            // are written as `[[stem|title]]`, letting Obsidian’s graph resolve the
+            // link to the real file while NarrativeLab still matches by title.
+            if (updates.setup_scenes !== undefined || updates.payoff_scenes !== undefined) {
+                const stemMap = new Map<string, string>();
+                for (const [p, s] of this.scenes) {
+                    if (s.title) {
+                        const stem = p.split('/').pop()?.replace(/\.md$/, '') ?? s.title;
+                        stemMap.set(s.title, stem);
+                    }
+                }
+                setSceneTitleToStemMap(stemMap);
+            }
 
-        if (
-            updates.title !== undefined ||
-            updates.sequence !== undefined ||
-            (updates.act !== undefined && oldSnap && updates.act !== oldSnap.act)
-        ) {
-            currentPath = await this.syncSceneFileName(currentPath);
-        }
+            await MetadataParser.updateFrontmatter(this.app, file, updates);
 
-        return currentPath;
+            // Refresh index
+            const scene = await MetadataParser.parseFile(this.app, file);
+            if (scene) {
+                this.scenes.set(filePath, scene);
+                this.bumpVersion(filePath);
+            }
+
+            // If the act changed, relocate the file to the correct Act folder and
+            // update the act prefix in the filename.
+            const updatesAct = Object.prototype.hasOwnProperty.call(updates, 'act');
+            if (updatesAct && oldSnap && updates.act !== oldSnap.act) {
+                currentPath = await this.relocateSceneForAct(filePath, updates.act);
+            }
+
+            if (
+                updates.title !== undefined ||
+                updates.sequence !== undefined ||
+                (updatesAct && oldSnap && updates.act !== oldSnap.act)
+            ) {
+                currentPath = await this.syncSceneFileName(currentPath);
+            }
+
+            await this.undoManager.commitUpdate(undoToken, currentPath);
+            return currentPath;
+        } catch (error) {
+            // Preserve a partial change as an undoable action if a later rename or
+            // index refresh failed after the file content had already changed.
+            await this.undoManager.commitUpdate(undoToken, currentPath);
+            throw error;
+        }
     }
 
     /**
@@ -1495,7 +1539,7 @@ export class SceneManager implements ISceneStore {
     async moveNoteToSceneFolder(filePath: string): Promise<string> {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!file || !(file instanceof TFile)) {
-            new Notice('Note file not found');
+            new Notice(t('Note file not found'));
             return filePath;
         }
 
@@ -1553,19 +1597,19 @@ export class SceneManager implements ISceneStore {
      */
     async convertFileToScene(filePath: string): Promise<string | null> {
         if (!this._activeProject) {
-            new Notice('No active NarrativeLab project. Open one first.');
+            new Notice(t('No active NarrativeLab project. Open one first.'));
             return null;
         }
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!file || !(file instanceof TFile) || file.extension !== 'md') {
-            new Notice('Selected file is not a markdown note.');
+            new Notice(t('Selected file is not a Markdown note.'));
             return null;
         }
 
         // Refuse if it's already indexed as a real (non-corkboard) scene.
         const existing = this.scenes.get(filePath);
         if (existing && existing.type === 'scene' && !existing.corkboardNote) {
-            new Notice('This file is already a scene.');
+            new Notice(t('This file is already a scene.'));
             return filePath;
         }
 
@@ -1597,14 +1641,14 @@ export class SceneManager implements ISceneStore {
 
         // Now move it into Scenes/<Act N> if needed (reuses existing logic).
         const newPath = await this.moveNoteToSceneFolder(filePath);
-        new Notice(`Converted "${file.basename}" to a scene.`);
+        new Notice(t('Converted "{name}" to a scene.', { name: file.basename }));
         return newPath;
     }
 
     async archiveScene(filePath: string): Promise<string> {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!file || !(file instanceof TFile)) {
-            new Notice('Scene file not found');
+            new Notice(t('Scene file not found'));
             return filePath;
         }
 
@@ -1621,7 +1665,7 @@ export class SceneManager implements ISceneStore {
         // Move the file
         await this.app.fileManager.renameFile(file, newPath);
 
-        new Notice(`"${scene?.title || file.basename}" archived`);
+        new Notice(t('Archived "{name}"', { name: scene?.title || file.basename }));
         return newPath;
     }
 
@@ -1633,7 +1677,7 @@ export class SceneManager implements ISceneStore {
     async restoreScene(filePath: string): Promise<string> {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!file || !(file instanceof TFile)) {
-            new Notice('Archived file not found');
+            new Notice(t('Archived file not found'));
             return filePath;
         }
 
@@ -1669,7 +1713,7 @@ export class SceneManager implements ISceneStore {
             }
         }
 
-        new Notice(`"${file.basename}" restored from archive (sequence renumbered)`);
+        new Notice(t('Restored "{name}" from the archive and assigned a new sequence number', { name: file.basename }));
         return newPath;
     }
 
@@ -1706,7 +1750,7 @@ export class SceneManager implements ISceneStore {
         // Record undo snapshot before deleting
         const fileContent = await this.app.vault.read(file);
         const scene = this.scenes.get(filePath);
-        const label = scene ? `Delete "${scene.title}"` : 'Delete scene';
+        const label = scene ? t('Delete "{name}"', { name: scene.title }) : t('Delete scene');
         this.undoManager.recordDelete(filePath, fileContent, label);
 
         await this.app.fileManager.trashFile(file);
@@ -1724,7 +1768,7 @@ export class SceneManager implements ISceneStore {
         const scene = this.scenes.get(filePath);
         if (!scene) return null;
 
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure to omit filePath/body from the duplicated scene metadata
+
         const { filePath: _fp, body: _body, ...rest } = scene;
         const newScene: Partial<Scene> = {
             ...rest,
@@ -1868,6 +1912,105 @@ export class SceneManager implements ISceneStore {
         await this.syncDraftScenePaths(oldPath, file.path);
         await this.plugin.plotlineManager?.syncScenePath(oldPath, file.path);
         this.bumpVersion(file.path);
+    }
+
+    /**
+     * Rebase all in-memory project paths after Obsidian moves a project or
+     * series folder. Folder moves do not emit rename events for every child,
+     * so keeping the old manifest path would make the next refresh recreate
+     * the former System/Library/Bases tree.
+     */
+    async handleProjectTreeFolderRename(oldPath: string, newPath: string): Promise<boolean> {
+        const from = normalizePath(oldPath);
+        const to = normalizePath(newPath);
+        if (!from || from === to) return false;
+
+        const fromPrefix = `${from}/`;
+        const rebase = (path: string): string => {
+            const normalized = normalizePath(path);
+            if (normalized === from) return to;
+            if (!normalized.startsWith(fromPrefix)) return normalized;
+            return normalizePath(`${to}/${normalized.slice(fromPrefix.length)}`);
+        };
+        const isMoved = (path: string | undefined): boolean => {
+            if (!path) return false;
+            const normalized = normalizePath(path);
+            return normalized === from || normalized.startsWith(fromPrefix);
+        };
+
+        const movedProjects = [...this.projects.entries()]
+            .filter(([, project]) => isMoved(project.filePath));
+        const activeMoved = isMoved(this._activeProject?.filePath);
+        const savedActiveMoved = isMoved(this.plugin.settings.activeProjectFile);
+        const rootMoved = isMoved(this.plugin.settings.storyLineRoot);
+        if (movedProjects.length === 0 && !activeMoved && !savedActiveMoved && !rootMoved) {
+            return false;
+        }
+
+        const rebaseProject = (project: StoryLineProject): void => {
+            project.filePath = rebase(project.filePath);
+            project.sceneFolder = rebase(project.sceneFolder);
+            project.characterFolder = rebase(project.characterFolder);
+            project.locationFolder = rebase(project.locationFolder);
+            project.codexFolder = rebase(project.codexFolder);
+            project.notesFolder = rebase(project.notesFolder);
+            project.sceneNotesFolder = rebase(project.sceneNotesFolder);
+            project.archiveFolder = rebase(project.archiveFolder);
+            project.researchFolder = rebase(project.researchFolder);
+            if (project.coverImage && isMoved(project.coverImage)) {
+                project.coverImage = rebase(project.coverImage);
+            }
+            for (const draft of project.drafts ?? []) {
+                if (!draft.scenePaths) continue;
+                draft.scenePaths = draft.scenePaths.map(path => rebase(path));
+            }
+            project.corkboardPositions = Object.fromEntries(
+                Object.entries(project.corkboardPositions ?? {}).map(([path, position]) => [
+                    rebase(path),
+                    position,
+                ]),
+            );
+        };
+
+        const rebased = new Set<StoryLineProject>();
+        for (const [mapPath, project] of movedProjects) {
+            this.projects.delete(mapPath);
+            rebaseProject(project);
+            this.projects.set(project.filePath, project);
+            rebased.add(project);
+        }
+        if (activeMoved && this._activeProject && !rebased.has(this._activeProject)) {
+            rebaseProject(this._activeProject);
+            this.projects.set(this._activeProject.filePath, this._activeProject);
+            rebased.add(this._activeProject);
+        }
+
+        if (savedActiveMoved) {
+            this.plugin.settings.activeProjectFile = rebase(this.plugin.settings.activeProjectFile);
+        }
+        if (rootMoved) {
+            this.plugin.settings.storyLineRoot = rebase(this.plugin.settings.storyLineRoot);
+        }
+
+        // Re-key the currently loaded scene/note index immediately. This closes
+        // the window in which another watcher could still write through an old path.
+        for (const [path, scene] of [...this.scenes.entries()]) {
+            if (!isMoved(path)) continue;
+            const nextPath = rebase(path);
+            this.scenes.delete(path);
+            scene.filePath = nextPath;
+            this.scenes.set(nextPath, scene);
+        }
+        this.bumpVersion();
+
+        // Persist only the global path settings here. A full saveSettings()
+        // also writes project System files and is unnecessary during a move.
+        await this.plugin.saveData(this.plugin.settings);
+        for (const project of rebased) {
+            await this.saveProjectFrontmatter(project);
+        }
+        if (activeMoved) await this.initialize();
+        return true;
     }
 
     /** Keep draft reading-order lists in sync when a scene path changes or is removed. */
@@ -2020,7 +2163,7 @@ export class SceneManager implements ISceneStore {
     async updateSceneTags(filePath: string, tags: string[]): Promise<void> {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!file || !(file instanceof TFile)) {
-            new Notice('Scene file not found');
+            new Notice(t('Scene file not found'));
             return;
         }
 
@@ -2028,19 +2171,19 @@ export class SceneManager implements ISceneStore {
         const oldTags = oldSnap?.tags ?? [];
         const uniqueTags = [...new Set(tags.map(t => String(t)).filter(Boolean))];
 
-        if (oldSnap) {
-            this.undoManager.recordUpdate(
-                filePath,
-                oldSnap as unknown as Record<string, unknown>,
-                { tags: uniqueTags },
-                `Update tags of "${oldSnap.title}"`,
-            );
+        const undoToken = oldSnap
+            ? await this.undoManager.beginUpdate(filePath, t('Update tags for "{name}"', { name: oldSnap.title }))
+            : null;
+        try {
+            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                if (uniqueTags.length > 0) fm.tags = uniqueTags;
+                else delete fm.tags;
+            });
+            await this.undoManager.commitUpdate(undoToken);
+        } catch (error) {
+            await this.undoManager.commitUpdate(undoToken);
+            throw error;
         }
-
-        await this.app.fileManager.processFrontMatter(file, (fm) => {
-            if (uniqueTags.length > 0) fm.tags = uniqueTags;
-            else delete fm.tags;
-        });
 
         const cached = this.scenes.get(filePath);
         if (cached) {
@@ -2202,7 +2345,7 @@ export class SceneManager implements ISceneStore {
      * @returns The chapter number that was assigned to the new chapter.
      */
     async insertChapter(beforeChapter?: number): Promise<number> {
-        if (!this._activeProject) throw new Error('No active project');
+        if (!this._activeProject) throw new Error(t('No active project'));
 
         const existing = this.getDefinedChapters();
         if (existing.length === 0 || beforeChapter === undefined ||
@@ -2343,29 +2486,124 @@ export class SceneManager implements ISceneStore {
         await this.saveProjectFrontmatter(this._activeProject);
     }
 
-    /** Apply a beat sheet template — sets acts, chapters, and act labels */
-    async applyBeatSheet(template: BeatSheetTemplate): Promise<void> {
-        if (!this._activeProject) return;
-        // Merge acts
-        const mergedActs = new Set([...this._activeProject.definedActs, ...template.acts]);
-        this._activeProject.definedActs = Array.from(mergedActs).sort((a, b) => a - b);
-        // Merge chapters
-        if (template.chapters.length > 0) {
-            const mergedChapters = new Set([...this._activeProject.definedChapters, ...template.chapters]);
-            this._activeProject.definedChapters = Array.from(mergedChapters).sort((a, b) => a - b);
-        }
-        // Apply act labels (overwrite existing for matching acts)
-        for (const [act, label] of Object.entries(template.actLabels)) {
-            this._activeProject.actLabels[Number(act)] = label;
-        }
-        // Apply chapter labels (overwrite existing for matching chapters)
-        if (template.chapterLabels) {
-            for (const [ch, label] of Object.entries(template.chapterLabels)) {
-                this._activeProject.chapterLabels[Number(ch)] = label;
+    previewBeatSheetApplication(
+        template: BeatSheetTemplate,
+        options: BeatSheetApplyOptions = {},
+    ): BeatSheetApplyPreview {
+        const project = this._activeProject;
+        const mode = options.mode || 'merge';
+        const existingScenes = options.existingScenes || 'keep';
+        const scenes = this.getAllScenes().filter(scene => !scene.corkboardNote);
+        const sceneActs = scenes
+            .map(scene => Number(scene.act))
+            .filter(Number.isFinite);
+        const sceneChapters = scenes
+            .map(scene => Number(scene.chapter))
+            .filter(Number.isFinite);
+        const actsAfter = mode === 'merge'
+            ? new Set([...(project?.definedActs || []), ...template.acts, ...sceneActs]).size
+            : existingScenes === 'keep'
+                ? new Set([...template.acts, ...sceneActs]).size
+                : template.acts.length;
+        const chaptersAfter = mode === 'merge'
+            ? new Set([...(project?.definedChapters || []), ...template.chapters, ...sceneChapters]).size
+            : existingScenes === 'keep'
+                ? new Set([...template.chapters, ...sceneChapters]).size
+                : template.chapters.length;
+        const existingBeatKeys = new Set(scenes.map(scene => `${scene.beatsheet || ''}\u0000${scene.title}\u0000${scene.act ?? ''}\u0000${scene.chapter ?? ''}`));
+        const placeholdersToCreate = options.createPlaceholderScenes
+            ? template.beats.filter((beat, index) => {
+                const chapter = this.resolveBeatChapter(template, beat.chapter, index);
+                return !existingBeatKeys.has(`${template.name}\u0000${beat.label}\u0000${beat.act}\u0000${chapter ?? ''}`);
+            }).length
+            : 0;
+        return {
+            mode,
+            existingScenes,
+            actsBefore: project?.definedActs.length || 0,
+            actsAfter,
+            chaptersBefore: project?.definedChapters.length || 0,
+            chaptersAfter,
+            scenesToRemap: mode === 'replace' && existingScenes === 'remap'
+                ? scenes.filter(scene => scene.act !== undefined || scene.chapter !== undefined).length
+                : 0,
+            scenesToUncategorize: mode === 'replace' && existingScenes === 'uncategorized'
+                ? scenes.filter(scene => scene.act !== undefined || scene.chapter !== undefined).length
+                : 0,
+            placeholdersToCreate,
+        };
+    }
+
+    /** Apply a structure without deleting scene files. Replacement has explicit scene handling. */
+    async applyBeatSheet(
+        template: BeatSheetTemplate,
+        options: BeatSheetApplyOptions = {},
+    ): Promise<{ scenesChanged: number; scenesCreated: number }> {
+        if (!this._activeProject) return { scenesChanged: 0, scenesCreated: 0 };
+        const mode = options.mode || 'merge';
+        const existingScenes = options.existingScenes || 'keep';
+        const project = this._activeProject;
+        let scenesChanged = 0;
+
+        if (mode === 'replace' && existingScenes !== 'keep') {
+            const scenes = this.getAllScenes().filter(scene => !scene.corkboardNote);
+            const oldActs = [...new Set(scenes.map(scene => scene.act).filter(value => value !== undefined))]
+                .sort(compareActChapter);
+            const oldChapters = [...new Set(scenes.map(scene => scene.chapter).filter(value => value !== undefined))]
+                .sort(compareActChapter);
+            const actMap = new Map(oldActs.map((value, index) => [String(value), template.acts[Math.min(index, Math.max(0, template.acts.length - 1))]]));
+            const chapterMap = new Map(oldChapters.map((value, index) => [String(value), template.chapters[Math.min(index, Math.max(0, template.chapters.length - 1))]]));
+            for (const scene of scenes) {
+                if (scene.act === undefined && scene.chapter === undefined) continue;
+                const updates: Partial<Scene> = {};
+                if (existingScenes === 'uncategorized') {
+                    updates.act = undefined;
+                    updates.chapter = undefined;
+                } else {
+                    if (scene.act !== undefined) updates.act = template.acts.length > 0
+                        ? actMap.get(String(scene.act))
+                        : undefined;
+                    if (scene.chapter !== undefined) updates.chapter = template.chapters.length > 0
+                        ? chapterMap.get(String(scene.chapter))
+                        : undefined;
+                }
+                await this.updateScene(scene.filePath, updates);
+                scenesChanged++;
             }
         }
-        this._activeProject.activeBeatSheet = template.name;
-        await this.saveProjectFrontmatter(this._activeProject);
+
+        const sceneActs = this.getAllScenes().map(scene => Number(scene.act)).filter(Number.isFinite);
+        const sceneChapters = this.getAllScenes().map(scene => Number(scene.chapter)).filter(Number.isFinite);
+        project.definedActs = mode === 'merge'
+            ? [...new Set([...project.definedActs, ...template.acts, ...sceneActs])].sort((a, b) => a - b)
+            : existingScenes === 'keep'
+                ? [...new Set([...template.acts, ...sceneActs])].sort((a, b) => a - b)
+                : [...template.acts];
+        project.definedChapters = mode === 'merge'
+            ? [...new Set([...project.definedChapters, ...template.chapters, ...sceneChapters])].sort((a, b) => a - b)
+            : existingScenes === 'keep'
+                ? [...new Set([...template.chapters, ...sceneChapters])].sort((a, b) => a - b)
+                : [...template.chapters];
+
+        if (mode === 'replace') {
+            const preservedActLabels = existingScenes === 'keep'
+                ? Object.fromEntries(Object.entries(project.actLabels).filter(([key]) => sceneActs.includes(Number(key)) && !template.acts.includes(Number(key))))
+                : {};
+            const preservedChapterLabels = existingScenes === 'keep'
+                ? Object.fromEntries(Object.entries(project.chapterLabels).filter(([key]) => sceneChapters.includes(Number(key)) && !template.chapters.includes(Number(key))))
+                : {};
+            project.actLabels = { ...preservedActLabels, ...template.actLabels };
+            project.chapterLabels = { ...preservedChapterLabels, ...template.chapterLabels };
+        } else {
+            project.actLabels = { ...project.actLabels, ...template.actLabels };
+            project.chapterLabels = { ...project.chapterLabels, ...template.chapterLabels };
+        }
+        project.activeBeatSheet = template.name;
+        await this.saveProjectFrontmatter(project);
+        const scenesCreated = options.createPlaceholderScenes
+            ? await this.createScenesFromBeats(template, options.sceneTemplate)
+            : 0;
+        return { scenesChanged, scenesCreated };
     }
 
     /**
@@ -2379,14 +2617,9 @@ export class SceneManager implements ISceneStore {
      *  - Otherwise, derive chapter from beat order within each act
      *    (1st beat in act 1 → chapter 1, 2nd → chapter 2, etc.).
      */
-    async createScenesFromBeats(template: BeatSheetTemplate): Promise<number> {
+    async createScenesFromBeats(template: BeatSheetTemplate, sceneTemplate?: SceneTemplate): Promise<number> {
         if (!this._activeProject) return 0;
         let created = 0;
-
-        // Global chapter counter for templates without a chapters array.
-        // Each beat gets the next chapter number globally so chapters are
-        // unique across all acts (beat 1 in act 1 → ch 1, beat 1 in act 2 → ch 4, etc.).
-        let globalChapter = 0;
 
         // Global sequence counter — always assign sequential sequence numbers
         // so placeholder scenes sort correctly regardless of autoGenerateSequence.
@@ -2394,23 +2627,14 @@ export class SceneManager implements ISceneStore {
             .map(s => s.sequence ?? 0)
             .sort((a, b) => a - b);
         let nextSeq = allSequences.length > 0 ? allSequences[allSequences.length - 1] + 1 : 1;
+        const existingBeatKeys = new Set(this.getAllScenes().map(scene => `${scene.beatsheet || ''}\u0000${scene.title}\u0000${scene.act ?? ''}\u0000${scene.chapter ?? ''}`));
 
         for (let i = 0; i < template.beats.length; i++) {
             const beat = template.beats[i];
 
-            // Determine chapter
-            let chapter: number | undefined;
-            if (beat.chapter !== undefined) {
-                // Explicit chapter on beat definition
-                chapter = beat.chapter;
-            } else if (template.chapters.length > 0 && i < template.chapters.length) {
-                // Template has chapters array — map beat index to chapter
-                chapter = template.chapters[i];
-            } else {
-                // No chapters array — assign globally incrementing chapter numbers
-                globalChapter++;
-                chapter = globalChapter;
-            }
+            const chapter = this.resolveBeatChapter(template, beat.chapter, i);
+            const beatKey = `${template.name}\u0000${beat.label}\u0000${beat.act}\u0000${chapter ?? ''}`;
+            if (existingBeatKeys.has(beatKey)) continue;
 
             // Fill missing chapter labels from beat labels for act-only templates
             if (chapter !== undefined && !this._activeProject.chapterLabels[chapter]) {
@@ -2418,14 +2642,17 @@ export class SceneManager implements ISceneStore {
             }
 
             await this.createScene({
+                ...(sceneTemplate?.defaultFields || {}),
                 title: beat.label,
                 act: beat.act,
                 chapter,
                 sequence: nextSeq++,
                 beatsheet: template.name,
                 synopsis: beat.description,
-                status: 'idea' as SceneStatus,
+                status: sceneTemplate?.defaultFields.status || ('idea' as SceneStatus),
+                body: sceneTemplate?.bodyTemplate || '',
             });
+            existingBeatKeys.add(beatKey);
             created++;
         }
 
@@ -2435,6 +2662,12 @@ export class SceneManager implements ISceneStore {
         }
 
         return created;
+    }
+
+    private resolveBeatChapter(template: BeatSheetTemplate, explicitChapter: number | undefined, index: number): number | undefined {
+        if (explicitChapter !== undefined) return explicitChapter;
+        if (template.chapters.length > 0) return template.chapters[index];
+        return index + 1;
     }
 
     /**
@@ -2469,8 +2702,8 @@ export class SceneManager implements ISceneStore {
                     for (let s = 1; s <= scenesPerChapter; s++) {
                         const chLabel = this._activeProject.chapterLabels[chapterNum];
                         const title = chLabel
-                            ? `Chapter ${chapterNum} — ${chLabel}`
-                            : `Chapter ${chapterNum}`;
+                            ? `${t('Chapter')} ${chapterNum} — ${chLabel}`
+                            : `${t('Chapter')} ${chapterNum}`;
                         await this.createScene({
                             title,
                             act: a,
@@ -3089,7 +3322,10 @@ export class SceneManager implements ISceneStore {
                     dedupe++;
                 }
                 await this.app.vault.copy(srcFile, dest);
-                const copied = await MetadataParser.parseFile(this.app, this.app.vault.getAbstractFileByPath(dest) as TFile);
+                const copiedFile = this.app.vault.getAbstractFileByPath(dest);
+                const copied = copiedFile instanceof TFile
+                    ? await MetadataParser.parseFile(this.app, copiedFile)
+                    : null;
                 if (copied) {
                     this.scenes.set(dest, copied);
                     this.bumpVersion(dest);
@@ -3105,7 +3341,7 @@ export class SceneManager implements ISceneStore {
 
         if (dirty) {
             await this.saveProjectFrontmatter(project);
-            new Notice('Drafts migrated to Scenes/ subfolders');
+            new Notice(t('Drafts moved into Scenes subfolders'));
         }
     }
 
@@ -3157,7 +3393,10 @@ export class SceneManager implements ISceneStore {
                 dedupe++;
             }
             await this.app.vault.copy(srcFile, dest);
-            const copied = await MetadataParser.parseFile(this.app, this.app.vault.getAbstractFileByPath(dest) as TFile);
+            const copiedFile = this.app.vault.getAbstractFileByPath(dest);
+            const copied = copiedFile instanceof TFile
+                ? await MetadataParser.parseFile(this.app, copiedFile)
+                : null;
             if (copied) {
                 this.scenes.set(dest, copied);
                 this.bumpVersion(dest);
@@ -3175,7 +3414,7 @@ export class SceneManager implements ISceneStore {
         this._activeProject.drafts = [...(this._activeProject.drafts ?? []), draft];
         this._activeProject.activeDraftId = draft.id;
         await this.saveProjectFrontmatter(this._activeProject);
-        new Notice(`Draft folder created: Scenes/${folderName}`);
+        new Notice(t('Draft folder created: {path}', { path: `Scenes/${folderName}` }));
         return draft;
     }
 
@@ -3316,11 +3555,9 @@ export class SceneManager implements ISceneStore {
         await this.saveProjectFrontmatter(project);
         this.bumpVersion();
         if (removedTitles.length > 0) {
-            new Notice(
-                removedTitles.length === 1
-                    ? `Draft folder removed: ${removedTitles[0]}`
-                    : `Removed ${removedTitles.length} missing draft folders`
-            );
+            new Notice(removedTitles.length === 1
+                ? t('Draft folder removed: {name}', { name: removedTitles[0] })
+                : t('Removed {count} missing draft folders', { count: removedTitles.length }));
         }
         return true;
     }
@@ -3479,7 +3716,7 @@ export class SceneManager implements ISceneStore {
         titleB?: string,
     ): Promise<[TFile, TFile]> {
         const scene = this.scenes.get(filePath);
-        if (!scene) throw new Error('Scene not found');
+        if (!scene) throw new Error(t('Scene not found'));
 
         const body = scene.body || '';
         const bodyA = body.substring(0, splitOffset).trim();
@@ -3487,7 +3724,7 @@ export class SceneManager implements ISceneStore {
 
         // Scene A: update existing file with first half
         const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (!file || !(file instanceof TFile)) throw new Error('Scene file not found');
+        if (!file || !(file instanceof TFile)) throw new Error(t('Scene file not found'));
 
         const updatesA: Partial<Scene> = { body: bodyA };
         if (titleA) updatesA.title = titleA;
@@ -3506,7 +3743,7 @@ export class SceneManager implements ISceneStore {
         }
 
         // Scene B: create new file inheriting metadata
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars -- destructure to strip per-file fields before cloning
+
         const { filePath: _fp, body: _body, wordcount: _wc, created: _cr, modified: _mod, ...inherited } = scene;
         const sceneB: Partial<Scene> = {
             ...inherited,
@@ -3516,7 +3753,7 @@ export class SceneManager implements ISceneStore {
         };
 
         const fileB = await this.createScene(sceneB);
-        new Notice(`Split "${scene.title}" into two scenes`);
+        new Notice(t('Split "{name}" into two scenes', { name: scene.title }));
         return [file, fileB];
     }
 
@@ -3530,10 +3767,10 @@ export class SceneManager implements ISceneStore {
      * @returns The merged scene's TFile
      */
     async mergeScenes(filePaths: string[], mergedTitle?: string): Promise<TFile> {
-        if (filePaths.length < 2) throw new Error('Need at least 2 scenes to merge');
+        if (filePaths.length < 2) throw new Error(t('Select at least two scenes to merge.'));
 
         const scenes = filePaths.map(fp => this.scenes.get(fp)).filter(Boolean) as Scene[];
-        if (scenes.length < 2) throw new Error('Could not find all scenes');
+        if (scenes.length < 2) throw new Error(t('Some selected scenes could not be found.'));
 
         const primary = scenes[0];
         const rest = scenes.slice(1);
@@ -3594,7 +3831,7 @@ export class SceneManager implements ISceneStore {
 
         // Update the primary scene
         const primaryFile = this.app.vault.getAbstractFileByPath(primary.filePath);
-        if (!primaryFile || !(primaryFile instanceof TFile)) throw new Error('Primary scene file not found');
+        if (!primaryFile || !(primaryFile instanceof TFile)) throw new Error(t('Primary scene file not found.'));
         await MetadataParser.updateFrontmatter(this.app, primaryFile, updates);
         const parsed = await MetadataParser.parseFile(this.app, primaryFile);
         if (parsed) this.scenes.set(primaryFile.path, parsed);
@@ -3611,8 +3848,8 @@ export class SceneManager implements ISceneStore {
             .map(s => s.filePath);
         await this.resequenceScenes(ordered);
 
-        new Notice(`Merged ${scenes.length} scenes into "${updates.title}"`);
+        new Notice(t('Merged {count} scenes into "{name}"', { count: scenes.length, name: updates.title || '' }));
         return primaryFile;
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-floating-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- end of file-wide suppression block opened at line 1 */

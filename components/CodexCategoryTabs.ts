@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-redundant-type-constituents -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
  * Shared Codex category tab bar — rendered in CodexView, CharacterView, and LocationView
  * so the user can switch between categories from any of those views.
@@ -9,14 +9,23 @@
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE } from '../constants';
-import { renderLibraryModeToggle } from './LibraryModeBar';
+import { renderLibraryModeToggle, type LibraryProfileModeAction } from './LibraryModeBar';
 import {
+    applyCategoryFolderLabels,
     deleteLibraryCategory,
     renameLibraryCategory,
     resolveLibraryCategoryLabel,
 } from '../services/LibraryCategorySync';
 import { t } from '../utils/i18n';
-import { UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
+import {
+    getBuiltinCodexCategory,
+    makeCustomCodexCategory,
+    makeProfileCodexCategory,
+    UNCATEGORIZED_CATEGORY_ID,
+} from '../models/Codex';
+import { setLibraryCategoryProfileSetting } from '../utils/libraryCategoryTransactions';
+
+const FIXED_PROFILE_CATEGORY_IDS = new Set(['characters', 'locations']);
 
 export interface CodexTabsOptions {
     /** The view type that should be highlighted as active ('Characters' | 'Locations' | category id) */
@@ -29,6 +38,8 @@ export interface CodexTabsOptions {
     showModeToggle?: boolean;
     /** Called when Browse / Story Graph mode changes */
     onModeChange?: () => void;
+    /** Optional profile-page mode placed beside Browse / Story Graph. */
+    profileMode?: LibraryProfileModeAction;
     /** Optional controls rendered immediately before Browse / Story Graph. */
     renderBeforeModeActions?: (container: HTMLElement) => void;
     /** Optional controls rendered immediately after Browse / Story Graph. */
@@ -51,6 +62,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         plugin,
         showModeToggle,
         onModeChange,
+        profileMode,
         onCategoriesChanged,
         renderBeforeModeActions,
         renderAfterModeActions,
@@ -218,7 +230,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         const actions = tabs.createDiv('codex-category-actions');
         renderBeforeModeActions?.(actions);
         if (showModeToggle !== false && onModeChange) {
-            renderLibraryModeToggle(actions, plugin, onModeChange);
+            renderLibraryModeToggle(actions, plugin, onModeChange, profileMode);
         }
         renderAfterModeActions?.(actions);
         if (showManageCategories) {
@@ -334,6 +346,21 @@ function attachRenameMenu(
             .onClick(() => {
                 promptRenameCategory(plugin, categoryId, onCategoriesChanged);
             }));
+        if (!FIXED_PROFILE_CATEGORY_IDS.has(categoryId) && categoryId !== UNCATEGORIZED_CATEGORY_ID) {
+            const profileEnabled = isLibraryCategoryProfilePageEnabled(plugin, categoryId);
+            menu.addItem(item => item
+                .setTitle(t(profileEnabled ? 'Disable profile page' : 'Enable profile page'))
+                .setIcon('contact')
+                .setChecked(profileEnabled)
+                .onClick(() => {
+                    void setLibraryCategoryProfilePage(
+                        plugin,
+                        categoryId,
+                        !profileEnabled,
+                        onCategoriesChanged,
+                    );
+                }));
+        }
         if (allowDelete) {
             menu.addItem(item => item
                 .setTitle(t('Delete'))
@@ -344,6 +371,80 @@ function attachRenameMenu(
         }
         menu.showAtMouseEvent(e);
     });
+}
+
+function isLibraryCategoryProfilePageEnabled(
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+): boolean {
+    if (FIXED_PROFILE_CATEGORY_IDS.has(categoryId)) return true;
+    return plugin.settings.codexCustomCategories
+        ?.find(category => category.id === categoryId)
+        ?.hasProfilePage === true;
+}
+
+async function setLibraryCategoryProfilePage(
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+    enabled: boolean,
+    onCategoriesChanged?: () => void,
+): Promise<void> {
+    const previousCategories = (plugin.settings.codexCustomCategories || []).map(category => ({ ...category }));
+    const previousLayout = { ...(plugin.settings.libraryBrowseLayout || {}) };
+    const previousSidebar = [...(plugin.settings.codexSidebarCategories || [])];
+    const resolved = plugin.codexManager.getCategoryDef(categoryId);
+    const builtin = getBuiltinCodexCategory(categoryId);
+    const fallback = {
+        id: categoryId,
+        label: resolveLibraryCategoryLabel(
+            plugin,
+            categoryId,
+            resolved?.label || builtin?.label || plugin.sceneManager.getLibraryFolderName(categoryId),
+        ),
+        icon: resolved?.icon || builtin?.icon || 'file-text',
+        preset: Boolean(builtin),
+    };
+    plugin.settings.codexCustomCategories = setLibraryCategoryProfileSetting(
+        plugin.settings.codexCustomCategories || [],
+        fallback,
+        enabled,
+    );
+
+    if (!plugin.settings.libraryBrowseLayout) plugin.settings.libraryBrowseLayout = {};
+    if (enabled && !plugin.settings.libraryBrowseLayout[categoryId]) {
+        plugin.settings.libraryBrowseLayout[categoryId] = 'cards';
+    }
+    const sidebar = new Set(plugin.settings.codexSidebarCategories || []);
+    if (enabled) sidebar.add(categoryId);
+    else sidebar.delete(categoryId);
+    plugin.settings.codexSidebarCategories = Array.from(sidebar);
+
+    try {
+        await plugin.saveSettings();
+    } catch (error) {
+        plugin.settings.codexCustomCategories = previousCategories;
+        plugin.settings.libraryBrowseLayout = previousLayout;
+        plugin.settings.codexSidebarCategories = previousSidebar;
+        console.error('[NarrativeLab] Failed to update Library category profile page:', error);
+        new obsidian.Notice(t('Failed to update profile page'));
+        return;
+    }
+    try {
+        const customDefs = (plugin.settings.codexCustomCategories || []).map(category =>
+            category.hasProfilePage
+                ? makeProfileCodexCategory(category.id, category.label, category.icon)
+                : makeCustomCodexCategory(category.id, category.label, category.icon));
+        plugin.codexManager.initCategories(plugin.settings.codexEnabledCategories || [], customDefs);
+        applyCategoryFolderLabels(plugin);
+        plugin.libraryCategoriesStructureEpoch += 1;
+        await plugin.reloadEntities();
+        onCategoriesChanged?.();
+        void plugin.refreshOpenViews();
+        new obsidian.Notice(t(enabled ? 'Profile page enabled' : 'Profile page disabled'));
+    } catch (error) {
+        console.error('[NarrativeLab] Library category profile page saved but refresh failed:', error);
+        new obsidian.Notice(t('Profile page setting saved; refresh the view to apply it.'));
+    }
 }
 
 export function promptDeleteCategory(
@@ -365,6 +466,16 @@ export function promptDeleteCategory(
         cls: 'setting-item-description',
         text: t('Move keeps every file by placing it directly in the Library root (Uncategorized entries). Delete moves the entire category folder to the trash.'),
     });
+    modal.contentEl.createEl('p', {
+        cls: 'setting-item-description mod-warning',
+        text: t('Both options remove this category from the project and delete its linked Base, field templates, table layout, sorting, formulas, and Story Graph color settings.'),
+    });
+    if (plugin.sceneManager.activeProject?.seriesId) {
+        modal.contentEl.createEl('p', {
+            cls: 'setting-item-description mod-warning',
+            text: t('This category is stored in the shared series Library. Deleting it affects every project in the series.'),
+        });
+    }
     new obsidian.Setting(modal.contentEl)
         .addButton(button => button
             .setButtonText(t('Cancel'))
@@ -447,4 +558,4 @@ function switchTo(leaf: obsidian.WorkspaceLeaf, plugin: SceneCardsPlugin, viewTy
         plugin.activateView(viewType);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

@@ -1,9 +1,10 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { openConfirmModal } from '../components/ConfirmModal';
-import { SceneManager } from '../services/SceneManager';
 import { SceneCardComponent } from '../components/SceneCard';
+import { SceneManager } from '../services/SceneManager';
 import { InspectorComponent } from '../components/Inspector';
 import { QuickAddModal } from '../components/QuickAddModal';
+import { BeatSheetApplyModal } from '../components/BeatSheetApplyModal';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
 import { enableDragToPan } from '../components/DragToPan';
 import type SceneCardsPlugin from '../main';
@@ -13,9 +14,9 @@ import { applyMobileClass } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
 import { ButtonComponent, DropdownComponent, ItemView, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
-import { BUILTIN_BEAT_SHEETS, Scene, SceneStatus, TIMELINE_MODES, TIMELINE_MODE_ICONS, TIMELINE_MODE_LABELS, TimelineMode, formatSceneLength, getStatusOrder, resolveStatusCfg } from '../models/Scene';
+import { BUILTIN_BEAT_SHEETS, BUILTIN_SCENE_TEMPLATES, Scene, SceneStatus, TIMELINE_MODES, TIMELINE_MODE_ICONS, TIMELINE_MODE_LABELS, TimelineMode, formatSceneLength, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import { getActDisplayLabel } from '../utils/actChapter';
-import { t, localizeBeatSheet } from '../utils/i18n';
+import { t, localizeBeatSheet, localizeSceneTemplate } from '../utils/i18n';
 
 /**
  * Timeline ordering mode
@@ -38,8 +39,6 @@ export class TimelineView extends ItemView {
     private zoomLevel = 1;
     private rootContainer: HTMLElement | null = null;
     private _pendingRefresh: number | null = null;
-    private cardComponent: SceneCardComponent;
-    private _lastCacheVersion = -1;
     /** When true, display multi-lane swimlane view instead of single-column */
     private swimlaneMode = false;
     /** How to group lanes in swimlane mode */
@@ -51,7 +50,6 @@ export class TimelineView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
-        this.cardComponent = new SceneCardComponent(plugin);
         // Restore persisted filter states from settings
         this.timelineOrder = plugin.settings.timelineOrder === 'chronological' ? 'chronological' : 'reading';
         this.swimlaneMode = plugin.settings.timelineSwimlaneMode ?? false;
@@ -68,7 +66,7 @@ export class TimelineView extends ItemView {
     }
 
     getIcon(): string {
-        return 'clock';
+        return 'list-ordered';
     }
 
     async onOpen(): Promise<void> {
@@ -116,15 +114,7 @@ export class TimelineView extends ItemView {
         });
         addBtn.addEventListener('click', () => this.openQuickAdd());
 
-        // Add acts/chapters button
-        const structBtn = controls.createEl('button', {
-            cls: 'clickable-icon',
-        });
-        obsidian.setIcon(structBtn, 'columns-3');
-        attachTooltip(structBtn, t('Add acts or chapters'));
-        structBtn.addEventListener('click', () => this.openStructureModal());
-
-        // Swimlane toggle
+        // Swimlane toggle (layout)
         const swimToggle = controls.createEl('button', {
             cls: `clickable-icon${this.swimlaneMode ? ' is-active' : ''}`,
         });
@@ -136,6 +126,15 @@ export class TimelineView extends ItemView {
             void this.plugin.saveSettings();
             this.refresh();
         });
+
+        // Add acts/chapters — beside the swimlane layout control
+        const structBtn = controls.createEl('button', {
+            cls: 'clickable-icon',
+            attr: { 'aria-label': t('Add acts or chapters') },
+        });
+        obsidian.setIcon(structBtn, 'layers');
+        attachTooltip(structBtn, t('Beat Sheet Templates / Add acts or chapters'));
+        structBtn.addEventListener('click', () => this.openStructureModal());
 
         // Reading order / Chronological order toggle
         const orderSelect = controls.createEl('select', {
@@ -491,7 +490,7 @@ export class TimelineView extends ItemView {
                 if (item.actNum !== undefined) {
                     const addInAct = divider.createEl('button', {
                         cls: 'timeline-act-add-btn clickable-icon',
-                        attr: { 'aria-label': `Add scene to ${item.actLabel}` }
+                        attr: { 'aria-label': t('Add scene to {label}', { label: item.actLabel }) }
                     });
                     obsidian.setIcon(addInAct, 'plus');
                     const actForClosure = item.actNum;
@@ -508,7 +507,7 @@ export class TimelineView extends ItemView {
                 divider.createSpan({ cls: 'timeline-act-label', text: item.actLabel });
                 const addInAct = divider.createEl('button', {
                     cls: 'timeline-act-add-btn clickable-icon',
-                    attr: { 'aria-label': `Add scene to ${item.actLabel}` }
+                    attr: { 'aria-label': t('Add scene to {label}', { label: item.actLabel }) }
                 });
                 obsidian.setIcon(addInAct, 'plus');
                 const actForClosure = item.actNum;
@@ -643,7 +642,11 @@ export class TimelineView extends ItemView {
                 if (row.actNum !== undefined) {
                     const addBtn = divider.createEl('button', {
                         cls: 'timeline-act-add-btn clickable-icon',
-                        attr: { 'aria-label': `Add scene to ${row.actLabel}` },
+                        attr: {
+                            'aria-label': t('Add scene to {label}', {
+                                label: row.actLabel ?? getActDisplayLabel(row.actNum),
+                            }),
+                        },
                     });
                     obsidian.setIcon(addBtn, 'plus');
                     const actForClosure = row.actNum;
@@ -746,7 +749,7 @@ export class TimelineView extends ItemView {
         }
         card.dataset.path = scene.filePath;
 
-        card.createDiv({ cls: 'timeline-card-title', text: scene.title || 'Untitled' });
+        card.createDiv({ cls: 'timeline-card-title', text: scene.title || t('Untitled') });
 
         // Timeline mode badge (for non-linear scenes)
         const slMode = scene.timeline_mode || 'linear';
@@ -921,7 +924,7 @@ export class TimelineView extends ItemView {
             card.style.setProperty('--sl-scene-bg', scene.color);
         }
 
-        card.createDiv({ cls: 'timeline-card-title', text: scene.title || 'Untitled' });
+        card.createDiv({ cls: 'timeline-card-title', text: scene.title || t('Untitled') });
 
         // Timeline mode badge (for non-linear scenes)
         const tlMode = scene.timeline_mode || 'linear';
@@ -957,11 +960,11 @@ export class TimelineView extends ItemView {
 
         if (dateInvalid && dateBadge) {
             dateBadge.addClass('timeline-date-invalid');
-            dateBadge.setAttr('title', 'Date out of order');
+            dateBadge.setAttr('title', t('Date out of order'));
         }
         if (timeInvalid && timeBadge) {
             timeBadge.addClass('timeline-time-invalid');
-            timeBadge.setAttr('title', 'Time out of order');
+            timeBadge.setAttr('title', t('Time out of order'));
         }
 
         if (scene.conflict) {
@@ -1059,14 +1062,14 @@ export class TimelineView extends ItemView {
                     const ss = m[3] ? parseInt(m[3], 10) : 0;
                     if (!isNaN(h) && !isNaN(mm)) {
                         const val = (h * 3600 + mm * 60 + ss) * 1000;
-                        
+
                         return val;
                     }
                 }
                 // Try parsing as Date on epoch day
                 const parsed = Date.parse('1970-01-01 ' + timePart);
                 if (!isNaN(parsed)) {
-                    
+
                     return parsed;
                 }
             }
@@ -1119,7 +1122,7 @@ export class TimelineView extends ItemView {
 
         // Scene color picker
         menu.addItem(item => {
-            item.setTitle(scene.color ? 'Change Color' : 'Set Color')
+            item.setTitle(t(scene.color ? 'Change Color' : 'Set Color'))
                 .setIcon('palette')
                 .onClick(() => {
                     SceneCardComponent.openColorPicker(this.app, scene, this.sceneManager, () => this.refresh());
@@ -1228,7 +1231,8 @@ export class TimelineView extends ItemView {
         });
 
         const templateGrid = contentEl.createDiv('beat-sheet-list');
-        for (const rawTemplate of BUILTIN_BEAT_SHEETS) {
+        const structureTemplates = [...BUILTIN_BEAT_SHEETS, ...this.plugin.templateCenter.getStructureTemplates()];
+        for (const rawTemplate of structureTemplates) {
             const template = localizeBeatSheet(rawTemplate);
             const row = templateGrid.createDiv('beat-sheet-row');
 
@@ -1270,13 +1274,52 @@ export class TimelineView extends ItemView {
             });
 
             const applyBtn = row.createEl('button', { text: t('Apply'), cls: 'mod-cta beat-sheet-apply-btn' });
-            applyBtn.addEventListener('click', async () => {
-                await this.sceneManager.applyBeatSheet(template);
-                renderActsList();
-                renderChaptersList();
-                new Notice(t('Applied "{name}" template', { name: template.name }));
+            applyBtn.addEventListener('click', () => {
+                new BeatSheetApplyModal(
+                    this.app,
+                    this.sceneManager,
+                    template,
+                    [...BUILTIN_SCENE_TEMPLATES.map(localizeSceneTemplate), ...this.plugin.templateCenter.getSceneTemplates()],
+                    async () => {
+                        renderActsList();
+                        renderChaptersList();
+                        this.refresh();
+                    },
+                ).open();
             });
         }
+
+        contentEl.createEl('h3', { text: t('Quick Structure Generator') });
+        contentEl.createEl('p', {
+            cls: 'setting-item-description',
+            text: t('Generate a regular act/chapter structure. Use Template Center when you want named beats or a reusable custom structure.'),
+        });
+        let generatedActs = 3;
+        let chaptersPerAct = 5;
+        let generatedScenesPerChapter = 1;
+        let generateScenes = false;
+        new Setting(contentEl).setName(t('Number of acts')).addText(input => {
+            input.setValue('3').onChange(value => generatedActs = Math.max(1, Number(value) || 1));
+            input.inputEl.type = 'number';
+            input.inputEl.min = '1';
+        });
+        new Setting(contentEl).setName(t('Chapters per act')).addText(input => {
+            input.setValue('5').onChange(value => chaptersPerAct = Math.max(1, Number(value) || 1));
+            input.inputEl.type = 'number';
+            input.inputEl.min = '1';
+        });
+        new Setting(contentEl).setName(t('Scenes per chapter')).addText(input => {
+            input.setValue('1').onChange(value => generatedScenesPerChapter = Math.max(1, Number(value) || 1));
+            input.inputEl.type = 'number';
+            input.inputEl.min = '1';
+        });
+        new Setting(contentEl).setName(t('Create placeholder scenes')).addToggle(toggle => toggle.setValue(false).onChange(value => generateScenes = value));
+        new Setting(contentEl).addButton(button => button.setButtonText(t('Generate Structure')).setCta().onClick(async () => {
+            const result = await this.sceneManager.applyCustomStructure(generatedActs, chaptersPerAct, generatedScenesPerChapter, generateScenes);
+            renderActsList();
+            renderChaptersList();
+            new Notice(t('Generated {acts} act(s), {chapters} chapter(s), and {scenes} scene(s).', result));
+        }));
 
         // ── Acts section ──
         contentEl.createEl('h3', { text: t('Acts') });
@@ -1639,7 +1682,7 @@ export class TimelineView extends ItemView {
             .setDesc(t('The order this event happens in story time (for non-linear narratives)'))
             .addText((text: TextComponent) => {
                 text.setValue(chronoOrder)
-                    .setPlaceholder('e.g. 5')
+                    .setPlaceholder(t('e.g. 5'))
                     .onChange((v: string) => (chronoOrder = v));
                 text.inputEl.type = 'number';
                 text.inputEl.min = '1';
@@ -1668,7 +1711,7 @@ export class TimelineView extends ItemView {
             .setDesc(t('Name for this timeline strand (e.g. "1943", "Outer frame", "Sarah\'s past")'))
             .addText((text: TextComponent) => {
                 text.setValue(timelineStrand)
-                    .setPlaceholder('e.g. 1943')
+                    .setPlaceholder(t('e.g. 1943'))
                     .onChange((v: string) => (timelineStrand = v));
             });
         // Only show strand field for parallel/frame modes
@@ -1721,7 +1764,6 @@ export class TimelineView extends ItemView {
         this._pendingRefresh = window.requestAnimationFrame(() => {
             this._pendingRefresh = null;
             if (!this.rootContainer) return;
-            this._lastCacheVersion = this.sceneManager.cacheVersion;
             // Save scroll position before re-render
             const scrollEl = this.rootContainer.querySelector('.story-line-main-area') as HTMLElement | null;
             const savedScroll = scrollEl ? { top: scrollEl.scrollTop, left: scrollEl.scrollLeft } : null;
@@ -1747,4 +1789,4 @@ export class TimelineView extends ItemView {
         });
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- end of file-wide suppression block opened at line 1 */

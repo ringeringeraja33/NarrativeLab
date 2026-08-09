@@ -1,10 +1,10 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { App } from 'obsidian';
+/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { CharacterManager } from './CharacterManager';
 import { LocationManager } from './LocationManager';
 import { SceneManager } from './SceneManager';
 import { Scene } from '../models/Scene';
 import { CharacterRelation } from '../models/Character';
+import { t } from '../utils/i18n';
 
 /**
  * Preview result describing what a rename will affect.
@@ -28,8 +28,7 @@ export interface RenamePreview {
  */
 export class CascadeRenameService {
     constructor(
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reserved for future use
-        private app: App,
+
         private sceneManager: SceneManager,
         private characterManager: CharacterManager,
         private locationManager: LocationManager,
@@ -281,19 +280,24 @@ export class CascadeRenameService {
     buildSummary(preview: RenamePreview): string {
         const parts: string[] = [];
         if (preview.sceneCount > 0) {
-            parts.push(`${preview.sceneCount} scene${preview.sceneCount !== 1 ? 's' : ''}`);
+            parts.push(t(preview.sceneCount === 1 ? '{n} scene' : '{n} scenes', { n: preview.sceneCount }));
         }
         if (preview.relationCount > 0) {
-            parts.push(`${preview.relationCount} relationship${preview.relationCount !== 1 ? 's' : ''}`);
+            parts.push(t(preview.relationCount === 1 ? '{n} relationship' : '{n} relationships', { n: preview.relationCount }));
         }
         if (preview.locationCount > 0) {
-            parts.push(`${preview.locationCount} location${preview.locationCount !== 1 ? 's' : ''}`);
+            parts.push(t(preview.locationCount === 1 ? '{n} location' : '{n} locations', { n: preview.locationCount }));
         }
         if (preview.characterLocationCount > 0) {
-            parts.push(`${preview.characterLocationCount} character location ref${preview.characterLocationCount !== 1 ? 's' : ''}`);
+            parts.push(t(
+                preview.characterLocationCount === 1
+                    ? '{n} character location reference'
+                    : '{n} character location references',
+                { n: preview.characterLocationCount },
+            ));
         }
-        if (parts.length === 0) return 'No other references found.';
-        return `This will update ${parts.join(', ')}.`;
+        if (parts.length === 0) return t('No other references found.');
+        return t('This will update {items}.', { items: parts.join(', ') });
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

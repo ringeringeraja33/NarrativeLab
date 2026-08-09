@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 import { App, Modal, Notice, Setting } from 'obsidian';
 import { UniversalFieldTemplate, UniversalFieldType, generateId, suggestTopLevelKey, isReservedTopLevelKey } from '../services/FieldTemplateService';
 import { CHARACTER_CATEGORIES } from '../models/Character';
@@ -79,7 +79,7 @@ export class AddFieldModal extends Modal {
         contentEl.addClass('storyline-add-field-modal');
 
         contentEl.createEl('h3', {
-            text: this.existing ? 'Edit Universal Field' : 'Add Universal Field',
+            text: this.existing ? t('Edit Universal Field') : t('Add Universal Field'),
         });
 
         const sheetLabel = this.customSectionNames ? 'entry' : 'character sheet';
@@ -281,7 +281,7 @@ export class AddFieldModal extends Modal {
 
         const confirmBtn = footer.createEl('button', {
             cls: 'mod-cta',
-            text: this.existing ? 'Save' : 'Add field',
+            text: this.existing ? t('Save') : t('Add field'),
         });
         confirmBtn.addEventListener('click', () => {
             // Read input value directly in case onChange hasn't fired yet (issue #115)
@@ -337,4 +337,3 @@ export class AddFieldModal extends Modal {
         this.contentEl.empty();
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

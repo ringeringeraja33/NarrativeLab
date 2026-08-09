@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
@@ -18,6 +18,7 @@ import {
     NARRATIVE_CANVAS_VIEW_TYPE,
 } from '../constants';
 import { getBuiltinCodexCategory, makeCustomCodexCategory, makeProfileCodexCategory } from '../models/Codex';
+import { resolveLibraryCategoryLabel } from '../services/LibraryCategorySync';
 import { t } from '../utils/i18n';
 
 export interface ViewSwitcherEntry {
@@ -30,7 +31,7 @@ export const VIEW_ENTRIES: ViewSwitcherEntry[] = [
     { type: BOARD_VIEW_TYPE, label: 'Board', icon: 'layout-grid' },
     { type: PLOTGRID_VIEW_TYPE, label: 'Table', icon: 'table' },
     { type: STORYLINE_VIEW_TYPE, label: 'Plotlines', icon: 'git-branch' },
-    { type: TIMELINE_VIEW_TYPE, label: 'Timeline', icon: 'clock' },
+    { type: TIMELINE_VIEW_TYPE, label: 'Order', icon: 'list-ordered' },
     { type: MANUSCRIPT_VIEW_TYPE, label: 'Manuscript', icon: 'book-open-text' },
     { type: CODEX_VIEW_TYPE, label: 'Library', icon: 'library-big' },
 ];
@@ -42,10 +43,10 @@ const STATS_ENTRY: ViewSwitcherEntry = {
     icon: 'bar-chart-2',
 };
 
-/** Playmode opens the NCanvas manager — kept after Export in the top toolbar. */
+/** Opens the Narrative Canvas manager after Export in the top toolbar. */
 const PLAYMODE_ENTRY: ViewSwitcherEntry = {
     type: NARRATIVE_CANVAS_VIEW_TYPE,
-    label: 'Playmode in Canvas',
+    label: 'Play in Canvas',
     icon: 'monitor-play',
 };
 
@@ -128,18 +129,19 @@ export function renderViewSwitcher(
     host?.querySelectorAll('.nl-corner-actions').forEach((el) => el.remove());
     host?.removeClass('nl-has-corner-actions');
 
-    // Stats / Export / Playmode — trailing group in the top toolbar.
-    const actions = switcher.createDiv('story-line-view-actions');
+    // Stats / Converter / Playmode — sibling of the tab strip (not nested),
+    // so they never collide with primary tabs or the filter row below.
+    container.querySelectorAll(':scope > .story-line-view-actions').forEach((el) => el.remove());
+    const actions = container.createDiv('story-line-view-actions');
 
     const statsActive = activeViewType === STATS_VIEW_TYPE;
     const statsTab = actions.createEl('button', {
-        cls: `story-line-view-tab${statsActive ? ' active' : ''}`,
-        attr: { type: 'button' },
+        cls: `story-line-view-tab story-line-view-tab-icon${statsActive ? ' active' : ''}`,
+        attr: { type: 'button', 'aria-label': t(STATS_ENTRY.label) },
     });
     attachTooltip(statsTab, t(STATS_ENTRY.label));
     const statsIcon = statsTab.createSpan({ cls: 'view-tab-icon' });
     obsidian.setIcon(statsIcon, STATS_ENTRY.icon);
-    statsTab.createSpan({ cls: 'view-tab-label', text: t(STATS_ENTRY.label) });
     if (!statsActive) {
         statsTab.addEventListener('click', async (e) => {
             e.preventDefault();
@@ -153,13 +155,12 @@ export function renderViewSwitcher(
     }
 
     const exportTab = actions.createEl('button', {
-        cls: 'story-line-view-tab',
-        attr: { type: 'button' },
+        cls: 'story-line-view-tab story-line-view-tab-icon',
+        attr: { type: 'button', 'aria-label': t('Converter') },
     });
     attachTooltip(exportTab, t('Converter'));
     const exportIcon = exportTab.createSpan({ cls: 'view-tab-icon' });
     obsidian.setIcon(exportIcon, 'arrow-left-right');
-    exportTab.createSpan({ cls: 'view-tab-label', text: t('Converter') });
     exportTab.addEventListener('click', (e) => {
         e.preventDefault();
         new ConverterModal(plugin).open();
@@ -168,7 +169,7 @@ export function renderViewSwitcher(
     const playmodeActive = activeViewType === NARRATIVE_CANVAS_VIEW_TYPE;
     const playmodeTab = actions.createEl('button', {
         cls: `story-line-view-tab story-line-view-tab-playmode${playmodeActive ? ' active' : ''}`,
-        attr: { type: 'button' },
+        attr: { type: 'button', 'aria-label': t(PLAYMODE_ENTRY.label) },
     });
     attachTooltip(playmodeTab, t('Choose, create, or open an ncanvas for this project'));
     const playIcon = playmodeTab.createSpan({ cls: 'view-tab-icon' });
@@ -179,14 +180,8 @@ export function renderViewSwitcher(
         plugin.openNCanvasManager();
     });
 
-    // v1.10.17 — collapse view-tab labels when the toolbar is too narrow
-    // to fit everything on one row. CSS container queries on the switcher
-    // itself don't work here because the switcher is `width: auto` (= its
-    // natural content width). Instead we observe the parent toolbar and
-    // toggle a class on the switcher when the labels would overflow.
-    //
-    // Opt-out: setting `autoHideViewLabels = false` clears the body class
-    // `sl-auto-hide-tab-labels`; we honor that here by short-circuiting.
+    // Collapse primary-tab labels when the toolbar is too narrow.
+    // Opt-out: `autoHideViewLabels = false`.
     if (plugin.settings.autoHideViewLabels !== false) {
         installAutoHideLabels(switcher);
     }
@@ -195,40 +190,45 @@ export function renderViewSwitcher(
 }
 
 /**
- * Toggle the `sl-collapsed` class on the switcher based on whether its
- * natural width would overflow its parent (the toolbar). Re-measured on
- * every parent resize and once after layout settles.
+ * Toggle `sl-collapsed` on the tab strip when primary labels would overflow
+ * the free space between the title and the trailing action cluster.
  */
 function installAutoHideLabels(switcher: HTMLElement): void {
     const parent = switcher.parentElement;
     if (!parent) return;
 
     const measure = () => {
-        // Temporarily remove the collapsed class so we can measure the
-        // switcher's natural (uncollapsed) width.
-        const wasCollapsed = switcher.classList.contains('sl-collapsed');
         switcher.classList.remove('sl-collapsed');
-        // Force a reflow read.
-        const naturalWidth = switcher.scrollWidth;
-        const available = parent.clientWidth;
-        // Reserve ~80px for the project selector / title that sits next to
-        // the switcher in the toolbar so we don't fight for the last pixel.
-        const shouldCollapse = naturalWidth > available - 80;
-        if (shouldCollapse) {
+        parent.classList.remove('sl-toolbar-compact');
+
+        let reserved = 0;
+        let sameRowSiblings = 0;
+        for (const child of Array.from(parent.children)) {
+            const el = child as HTMLElement;
+            // Full-width control rows sit on their own line — ignore for width budget.
+            if (el.classList.contains('story-line-toolbar-controls')) continue;
+            if (child === switcher) continue;
+            reserved += el.offsetWidth;
+            sameRowSiblings += 1;
+        }
+        const styles = window.getComputedStyle(parent);
+        const gap = parseFloat(styles.columnGap || styles.gap || '0') || 0;
+        // title + actions (+ gaps) leave this much room for primary tabs
+        const available = parent.clientWidth - reserved - gap * sameRowSiblings - 8;
+        if (switcher.scrollWidth > Math.max(0, available)) {
             switcher.classList.add('sl-collapsed');
-        } else if (wasCollapsed) {
-            // Already removed above; nothing more to do.
+        }
+        // If icon-only tabs + Playmode label still overflow, compact Playmode too.
+        if (switcher.scrollWidth > Math.max(0, available)) {
+            parent.classList.add('sl-toolbar-compact');
         }
     };
 
-    // Initial measure after layout.
     window.requestAnimationFrame(measure);
 
-    // Re-measure on parent resize.
     const ro = new ResizeObserver(() => measure());
     ro.observe(parent);
 
-    // Clean up when the switcher is removed from the DOM.
     const cleanup = () => ro.disconnect();
     const mo = new MutationObserver(() => {
         if (!switcher.isConnected) {
@@ -271,11 +271,14 @@ function showCodexDropdown(
         } catch { plugin.activateView(viewType); }
     };
 
+    const charactersLabel = resolveLibraryCategoryLabel(plugin, 'characters', 'Characters');
+    const locationsLabel = resolveLibraryCategoryLabel(plugin, 'locations', 'Locations');
+
     // Characters — NarrativeLab dedicated view
-    addDropdownItem(menu, 'users', t('Characters'), activeViewType === CHARACTER_VIEW_TYPE, () => switchTo(CHARACTER_VIEW_TYPE));
+    addDropdownItem(menu, 'users', charactersLabel, activeViewType === CHARACTER_VIEW_TYPE, () => switchTo(CHARACTER_VIEW_TYPE));
 
     // Locations
-    addDropdownItem(menu, 'map-pin', t('Locations'), activeViewType === LOCATION_VIEW_TYPE, () => switchTo(LOCATION_VIEW_TYPE));
+    addDropdownItem(menu, 'map-pin', locationsLabel, activeViewType === LOCATION_VIEW_TYPE, () => switchTo(LOCATION_VIEW_TYPE));
 
     // Enabled codex categories
     const enabledIds = plugin.settings.codexEnabledCategories || [];
@@ -341,4 +344,4 @@ function addDropdownItem(
         onClick();
     });
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- end of file-wide suppression block opened at line 1 */

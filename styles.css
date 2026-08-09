@@ -423,6 +423,57 @@ body.narrative-lab-theme-dark .plot-grid-root {
     font-style: italic;
 }
 
+.sl-series-section-title {
+    margin: 16px 0 4px;
+}
+
+.sl-series-section-title:first-child {
+    margin-top: 0;
+}
+
+.sl-series-section-desc {
+    margin: 0 0 8px;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+}
+
+.sl-series-project-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 16px;
+}
+
+.sl-series-project-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+}
+
+.sl-series-project-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.sl-series-project-name {
+    font-weight: 600;
+}
+
+.sl-series-project-path {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: var(--font-ui-smaller);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sl-series-convert-btn {
+    flex-shrink: 0;
+}
+
 .sl-series-card {
     border: 1px solid var(--background-modifier-border);
     border-radius: 6px;
@@ -519,6 +570,9 @@ body.narrative-lab-theme-dark .plot-grid-root {
 
 .sl-series-add-row {
     margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
 }
 
 .sl-series-add-btn {
@@ -532,6 +586,10 @@ body.narrative-lab-theme-dark .plot-grid-root {
 .sl-series-add-btn span svg {
     width: 14px;
     height: 14px;
+}
+
+.sl-series-dissolve-btn {
+    color: var(--text-warning);
 }
 
 /* Shared entity badge (shown on codex entries that live in the series folder) */
@@ -588,6 +646,14 @@ body.narrative-lab-theme-dark .plot-grid-root {
     align-items: center;
 }
 
+/* Order / Timeline controls: own row under tabs so they don't fight
+   Stats / Converter / Play-in-Canvas for margin-left: auto. */
+.workspace-leaf-content[data-type="narrative-lab-timeline"] .story-line-toolbar-controls {
+    flex: 1 1 100%;
+    margin-left: 0;
+    justify-content: flex-start;
+}
+
 /* Kill Obsidian/theme button padding so CJK labels sit on the true
    vertical center of fixed-height toolbar controls. */
 .story-line-toolbar button.mod-cta.story-line-add-btn,
@@ -630,8 +696,10 @@ body.narrative-lab-theme-dark .plot-grid-root {
     align-items: center;
     gap: 0;
     height: 28px;
+    flex: 1 1 auto;
     flex-shrink: 1;
     min-width: 0;
+    overflow: hidden;
 }
 
 .story-line-view-tab.story-line-view-tab {
@@ -692,21 +760,34 @@ body.narrative-lab-theme-dark .plot-grid-root {
     line-height: 1;
 }
 
-/* Trailing Stats / Export / Playmode group in the top view switcher */
+/* Trailing Stats / Converter / Playmode — sits beside the tab strip */
 .story-line-view-actions {
     display: inline-flex;
     align-items: center;
-    gap: 0;
-    margin-left: 8px;
-    padding-left: 8px;
+    gap: 2px;
+    margin-left: auto;
+    padding-left: 10px;
     border-left: 1px solid var(--background-modifier-border);
+    flex: 0 0 auto;
+    flex-shrink: 0;
+    height: 28px;
+}
+.story-line-view-tab.story-line-view-tab-icon {
+    width: 28px;
+    min-width: 28px;
+    padding: 0;
+    border-bottom-color: transparent;
+}
+.story-line-view-tab.story-line-view-tab-icon.active {
+    border-bottom-color: var(--interactive-accent);
 }
 .story-line-view-tab.story-line-view-tab-playmode {
     border: 1px solid color-mix(in srgb, var(--interactive-accent) 45%, transparent);
     border-radius: 999px;
     border-bottom-width: 1px;
     margin-left: 4px;
-    padding: 2px 10px;
+    padding: 0 10px;
+    height: 28px;
     background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
     color: var(--interactive-accent);
     font-weight: 600;
@@ -723,18 +804,37 @@ body.narrative-lab-theme-dark .plot-grid-root {
     border-bottom-color: var(--interactive-accent);
 }
 
-/* Auto-hide view-tab labels when the toolbar is too narrow to fit them
-   alongside the icons (v1.10.17). The `sl-collapsed` class is toggled by a
-   ResizeObserver in `components/ViewSwitcher.ts` ??see `installAutoHideLabels`.
-   CSS container queries can't be used directly because the switcher is
-   `width: auto` (= its content width), so the container never reports a
-   constrained width to query against. */
+/* Auto-hide view-tab labels when the toolbar is too narrow (v1.10.17+). */
 body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .view-tab-label {
     display: none;
 }
 body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-view-tab {
     padding-left: 6px;
     padding-right: 6px;
+}
+/* Compact toolbar: Playmode becomes icon-only so it cannot overlap filters. */
+.story-line-toolbar.sl-toolbar-compact .story-line-view-tab-playmode .view-tab-label {
+    display: none;
+}
+.story-line-toolbar.sl-toolbar-compact .story-line-view-tab-playmode {
+    width: 28px;
+    min-width: 28px;
+    padding: 0;
+    margin-left: 2px;
+}
+
+/* Manuscript filter row: keep search/filter and toggles from colliding */
+.story-line-manuscript-container .story-line-filter-bar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    column-gap: 8px;
+}
+.story-line-manuscript-container .story-line-filter-bar .sl-toggle-wrap {
+    margin-left: 0;
+}
+.story-line-manuscript-container .story-line-filter-bar .story-line-search-wrapper {
+    flex: 1 1 180px;
+    max-width: 280px;
 }
 
 .story-line-group-control {
@@ -4568,7 +4668,10 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     overflow: hidden;
     scroll-snap-align: start;
     background: var(--background-primary);
-    box-shadow: 0 1px 0 var(--background-modifier-border);
+    /* Stronger than --background-modifier-border so columns stay readable in light theme */
+    border: 1px solid color-mix(in srgb, var(--text-muted) 42%, var(--background-modifier-border));
+    border-radius: var(--sc-radius);
+    box-shadow: none;
 }
 
 .character-detail-board-track > .character-section:first-of-type,
@@ -4638,6 +4741,26 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     overflow-y: auto;
     position: static;
     padding-right: 2px;
+    padding-left: 12px;
+    border-left: 1px solid color-mix(in srgb, var(--text-muted) 42%, var(--background-modifier-border));
+}
+
+/* Right rail cards (gallery, scene stats, notes) — match board column contrast */
+.character-detail-side .character-gallery,
+.character-detail-side .character-side-stats,
+.character-detail-side .character-progress,
+.character-detail-side .character-references-panel,
+.character-detail-side .character-linked-aliases-panel,
+.character-detail-side .codex-side-section,
+.character-detail-side .entity-notes-section {
+    border: 1px solid color-mix(in srgb, var(--text-muted) 42%, var(--background-modifier-border));
+    border-radius: var(--sc-radius);
+}
+
+.character-detail-side .character-progress {
+    padding: 12px;
+    background: var(--background-secondary);
+    margin: 0 0 12px;
 }
 
 @media (max-width: 800px) {
@@ -4659,6 +4782,8 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     .character-detail-layout--board .character-detail-side {
         width: 100%;
         max-height: none;
+        padding-left: 0;
+        border-left: none;
     }
 }
 
@@ -5266,6 +5391,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     border-radius: var(--sc-radius);
     padding: 12px;
     margin-bottom: 12px;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 42%, var(--background-modifier-border));
 }
 .character-gallery-header {
     display: flex;
@@ -5563,6 +5689,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     background: var(--background-secondary);
     border-radius: var(--sc-radius);
     margin-bottom: 12px;
+    border: 1px solid color-mix(in srgb, var(--text-muted) 42%, var(--background-modifier-border));
 }
 .character-side-stats h4 {
     margin: 0 0 10px;
@@ -8873,6 +9000,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
 }
 
 .story-graph-wrapper {
+    position: relative;
     width: 100%;
     flex: 1 1 auto;
     min-height: 450px;
@@ -8880,6 +9008,17 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     border-radius: 8px;
     overflow: hidden;
     background: var(--background-primary);
+}
+
+.story-graph-filter-empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    color: var(--text-muted);
+    text-align: center;
+    pointer-events: none;
 }
 
 .story-graph-svg {
@@ -8899,10 +9038,12 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     stroke: #fff;
     stroke-width: 1.75;
     filter: drop-shadow(0 1px 2px rgba(20, 30, 50, 0.22));
+    pointer-events: none;
 }
 
 .story-graph-edge-arrow {
     stroke: none;
+    pointer-events: none;
 }
 
 .story-graph-node {
@@ -12995,6 +13136,51 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     display: flex;
     flex-direction: column;
     margin-bottom: 0;
+    overflow: hidden;
+    background: var(--background-primary);
+}
+.entity-notes-header {
+    min-height: 42px;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    background: var(--background-secondary);
+    border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 30%, var(--background-modifier-border));
+}
+.entity-notes-icon {
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+}
+.entity-notes-icon svg {
+    width: 15px;
+    height: 15px;
+}
+.entity-notes-header .entity-notes-title {
+    min-width: 0;
+    margin: 0;
+    flex: 1 1 auto;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--text-normal);
+}
+.entity-notes-format {
+    padding: 2px 6px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 999px;
+    color: var(--text-faint);
+    background: var(--background-primary);
+    font-family: var(--font-monospace);
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    line-height: 1.4;
 }
 
 /* Gallery grid */
@@ -13041,34 +13227,44 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     width: 100%;
     min-height: 240px;
     flex: 1 1 auto;
-    padding: 8px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
+    padding: 12px;
+    border: 0;
+    border-radius: 0;
     background: var(--background-primary);
     color: var(--text-normal);
     font-size: 13px;
     font-family: inherit;
-    resize: vertical;
+    line-height: 1.6;
+    resize: none;
     box-sizing: border-box;
+    box-shadow: none;
+    transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.codex-notes-textarea::placeholder {
+    color: var(--text-faint);
+    opacity: 1;
 }
 .codex-notes-textarea:focus {
-    border-color: var(--interactive-accent);
     outline: none;
+    background: color-mix(in srgb, var(--background-primary) 96%, var(--interactive-accent));
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 52%, transparent);
 }
 
 /* ?? Category manager modal ??????????????????????????? */
 
 .codex-category-manager-modal {
-    width: min(680px, calc(100vw - 32px));
-    max-width: min(680px, calc(100vw - 32px));
+    width: min(760px, calc(100vw - 32px));
+    max-width: min(760px, calc(100vw - 32px));
 }
 .codex-category-manager-modal .modal-content {
     overflow-x: hidden;
+    scrollbar-gutter: stable;
 }
 .codex-category-manager {
     width: 100%;
     max-width: 100%;
     min-width: 0;
+    padding-inline-end: 20px;
     box-sizing: border-box;
 }
 .codex-category-manager-list {
@@ -13079,7 +13275,7 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
 }
 .codex-category-manager-row {
     display: grid;
-    grid-template-columns: 22px 36px minmax(120px, 1fr) auto auto 28px;
+    grid-template-columns: 22px 36px minmax(120px, 1fr) auto 64px auto 28px;
     align-items: center;
     gap: 10px;
     padding: 7px 8px;
@@ -13098,12 +13294,17 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     font-weight: 600;
 }
 .codex-category-manager-header .codex-category-manager-preset,
+.codex-category-manager-header .codex-category-manager-profile-col,
 .codex-category-manager-header .codex-category-manager-fields-col {
     padding: 0;
     background: transparent;
     color: inherit;
     border: 0;
     font-weight: 600;
+}
+.codex-category-manager-profile-col,
+.codex-category-manager-profile-toggle {
+    justify-self: center;
 }
 .codex-category-manager-row input[type="checkbox"] {
     margin: 0;
@@ -13295,6 +13496,7 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     }
     .codex-category-manager {
         width: 100%;
+        padding-inline-end: 14px;
     }
     .codex-category-manager-row {
         grid-template-columns: 18px minmax(100px, 1fr) auto 32px;
@@ -14587,6 +14789,10 @@ body.narrative-lab-theme-dark .codex-stale-header {
     border-color: var(--interactive-accent);
 }
 
+.sl-research-card.is-inactive {
+    opacity: 0.62;
+}
+
 .sl-research-card-header {
     display: flex;
     align-items: center;
@@ -14619,6 +14825,15 @@ body.narrative-lab-theme-dark .codex-stale-header {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.sl-research-card-inactive-badge {
+    flex-shrink: 0;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--background-modifier-border);
+    color: var(--text-muted);
+    font-size: 0.7em;
 }
 
 .sl-research-card-link-icon {

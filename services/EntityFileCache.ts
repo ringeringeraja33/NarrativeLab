@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 /**
  * Shared mtime/size stamp cache for Library entity loaders (ncanvas-style).
  * Skip vault reads + YAML parse when the file stamp is unchanged.
@@ -55,6 +55,21 @@ export function renameAllEntityCaches(oldPath: string, newPath: string): void {
         if (hit) {
             c.delete(from);
             c.set(to, hit);
+        }
+    }
+}
+
+/** Rename every cached file below a moved folder across all namespaces. */
+export function renameAllEntityCachePrefixes(oldFolder: string, newFolder: string): void {
+    const from = normalizePath(oldFolder);
+    const to = normalizePath(newFolder);
+    if (!from || from === to) return;
+    const fromPrefix = `${from}/`;
+    for (const c of caches.values()) {
+        for (const [path, hit] of [...c.entries()]) {
+            if (!path.startsWith(fromPrefix)) continue;
+            c.delete(path);
+            c.set(normalizePath(`${to}/${path.slice(fromPrefix.length)}`), hit);
         }
     }
 }
@@ -131,4 +146,3 @@ export async function loadWithStampCache<T>(
         return null;
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

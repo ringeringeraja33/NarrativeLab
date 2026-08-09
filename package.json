@@ -4,9 +4,15 @@
   "description": "Unified narrative database and canvas workspace for Obsidian",
   "main": "main.js",
   "scripts": {
-    "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production",
-    "lint:obsidian": "eslint \"**/*.ts\" manifest.json",
+    "bundle:canvas": "node scripts/bundle-canvas-runtime.mjs",
+    "dev": "npm run bundle:canvas && node esbuild.config.mjs",
+    "build": "npm run bundle:canvas && node esbuild.config.mjs production",
+    "typecheck": "tsc --noEmit",
+    "lint:obsidian": "eslint \"**/*.ts\"",
+    "audit:i18n": "node scripts/audit-i18n-duplicates.mjs && node scripts/audit-i18n-coverage.mjs",
+    "test:unit": "node --test tests/project-bundle-validation.test.mjs tests/library-category-transactions.test.mjs tests/project-library-defaults.test.mjs tests/canvas-ui-mode.test.mjs tests/native-canvas-projection.test.mjs tests/data-safety-regressions.test.mjs tests/library-entity-name.test.mjs",
+    "test": "npm run typecheck && npm run audit:i18n && npm run test:unit && node scripts/check-release.mjs",
+    "check": "npm test && npm run build",
     "version": "node version-bump.mjs && git add manifest.json versions.json",
     "postinstall": "node scripts/keep-nm-local.js"
   },
@@ -36,10 +42,8 @@
     "typescript": "5.3.3"
   },
   "dependencies": {
-    "@pdf-lib/fontkit": "^1.1.1",
     "fflate": "^0.8.2",
     "highlight.js": "^11.11.1",
-    "lucide": "^0.336.0",
     "markdown-it": "^14.1.1",
     "markdown-it-emoji": "^3.0.0",
     "markdown-it-mark": "^4.0.0",

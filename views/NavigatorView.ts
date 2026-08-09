@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { ItemView, WorkspaceLeaf, Menu, Modal, Notice, Setting, TFile, setIcon } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { ManuscriptView } from './ManuscriptView';
@@ -1169,7 +1169,7 @@ export class NavigatorView extends ItemView {
             const menu = new Menu();
 
             menu.addItem((item) => {
-                item.setTitle(isPinned ? 'Unpin' : 'Pin to top');
+                item.setTitle(t(isPinned ? 'Unpin' : 'Pin to top'));
                 item.setIcon(isPinned ? 'pin-off' : 'pin');
                 item.onClick(() => {
                     if (isPinned) {
@@ -1196,7 +1196,7 @@ export class NavigatorView extends ItemView {
 
             // Scene color picker
             menu.addItem((item) => {
-                item.setTitle(scene.color ? 'Change Color' : 'Set Color');
+                item.setTitle(t(scene.color ? 'Change Color' : 'Set Color'));
                 item.setIcon('palette');
                 item.onClick(() => {
                     SceneCardComponent.openColorPicker(this.app, scene, this.sceneManager, () => this.renderList());
@@ -1218,7 +1218,7 @@ export class NavigatorView extends ItemView {
             for (const status of statuses) {
                 menu.addItem((item) => {
                     const cfg = resolveStatusCfg(status);
-                    item.setTitle(cfg.label);
+                    item.setTitle(t(cfg.label));
                     item.setIcon(cfg.icon);
                     if (scene.status === status) item.setChecked(true);
                     item.onClick(async () => {
@@ -1363,7 +1363,10 @@ export class NavigatorView extends ItemView {
             const fill = this.progressBar.querySelector('.sl-nav-progress-fill') as HTMLElement;
             if (fill) fill.setCssStyles({ width: '0%' });
             const totalScenes = this.sceneManager.getAllScenes().filter(s => !s.corkboardNote && !s.inactive).length;
-            this.progressLabel.textContent = `${this.formatWords(totalWords)} words · ${totalScenes} scenes`;
+            this.progressLabel.textContent = t('{words} words · {scenes} scenes', {
+                words: this.formatWords(totalWords),
+                scenes: totalScenes,
+            });
         }
     }
 
@@ -1416,4 +1419,4 @@ class DraftNameModal extends Modal {
         await this.onSubmit(name);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

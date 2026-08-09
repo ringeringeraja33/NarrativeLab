@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents -- Obsidian's dynamic API requires compatibility assertions; matching enable at end of file */
 /**
  * StoryGraph — interactive SVG graph showing how scenes connect to
  * characters, locations, and other entities via wikilinks detected in
@@ -16,10 +16,10 @@
  */
 
 import * as obsidian from 'obsidian';
-import { Menu, Notice, normalizePath } from 'obsidian';
+import { Menu, Notice } from 'obsidian';
 import type { Scene } from '../models/Scene';
 import type { Character } from '../models/Character';
-import { RELATION_BASE_TYPE_BY_CATEGORY, extractCharacterProps, extractCharacterLocationTags } from '../models/Character';
+import { extractCharacterProps, extractCharacterLocationTags } from '../models/Character';
 import type { LinkScanResult } from '../services/LinkScanner';
 import type { RelationshipEdgeInfo, RelationshipType } from './RelationshipMap';
 import type { StoryGraphFocusEdge } from './StoryGraphFocusView';
@@ -34,6 +34,7 @@ import {
     resolveCharacterRelationStyle,
     type StoryGraphCharacterRelationType,
 } from '../utils/storyGraphCharacterRelations';
+import { UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
 import { t } from '../utils/i18n';
 
 /** Node payload for connect / focus helpers outside the graph. */
@@ -262,7 +263,7 @@ export interface StoryGraphEntityColorStyle {
 export type StoryGraphEntityColorMap = Partial<Record<StoryGraphEntityType, StoryGraphEntityColorStyle>>;
 
 export function normalizeStoryGraphHexColor(raw: unknown, fallback: string): string {
-    const value = String(raw ?? '').trim();
+    const value = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
     if (/^#[0-9a-fA-F]{6}$/.test(value)) return value.toUpperCase();
     if (/^#[0-9a-fA-F]{3}$/.test(value)) {
         const r = value[1];
@@ -400,6 +401,7 @@ interface StoryEdgeDom {
     /** Focus-style rim ports at attachment points. */
     portStart?: SVGCircleElement;
     portEnd?: SVGCircleElement;
+    hiddenByLegend?: boolean;
 }
 
 /** Base sizes at stroke ≈ 2; tips/ports grow with thicker parent edges. */
@@ -460,17 +462,17 @@ function setEdgeGeometry(
 ): { midX: number; midY: number } {
     const count = strandCount && strandCount > 1 ? strandCount : 1;
     const index = strandIndex ?? 0;
-    if (count > 1 && el instanceof SVGPathElement) {
+    if (count > 1 && el.instanceOf(SVGPathElement)) {
         const curve = parallelStrandPath(x1, y1, x2, y2, index, count);
         el.setAttribute('d', curve.d);
         return { midX: curve.midX, midY: curve.midY };
     }
-    if (el instanceof SVGLineElement) {
+    if (el.instanceOf(SVGLineElement)) {
         el.setAttribute('x1', String(x1));
         el.setAttribute('y1', String(y1));
         el.setAttribute('x2', String(x2));
         el.setAttribute('y2', String(y2));
-    } else if (el instanceof SVGPathElement) {
+    } else if (el.instanceOf(SVGPathElement)) {
         el.setAttribute('d', `M ${x1} ${y1} L ${x2} ${y2}`);
     }
     return { midX: (x1 + x2) / 2, midY: (y1 + y2) / 2 };
@@ -662,12 +664,17 @@ export class StoryGraph {
     private onLinkEdgeContextMenu?: (edge: StoryGraphLinkEdgeInfo, event: MouseEvent) => void;
     /** Open the relation-category manager from the graph toolbar. */
     private onManageRelationCategories?: () => void;
-    /** Solo-focus from interactive legend (null = show all enabled filters). */
-    private legendFocus:
-        | { kind: 'entity'; type: EntityType }
-        | { kind: 'library'; categoryId: string }
-        | { kind: 'edge'; key: string }
-        | null = null;
+    /**
+     * Node-type legend selection (multi-select).
+     * Keys: `entity:scene|character|location` or `library:<categoryId>`.
+     * Empty = show all node types.
+     */
+    private legendNodeKeys = new Set<string>();
+    /** Edge-type legend selection (multi-select). Empty = show all edge types. */
+    private legendEdgeKeys = new Set<string>();
+    private legendNodeButtons = new Map<string, HTMLButtonElement>();
+    private legendEdgeButtons = new Map<string, HTMLButtonElement>();
+    private filterEmptyEl: HTMLElement | null = null;
     private onLegendEditEntity?: (type: StoryGraphEntityType) => void;
     private onLegendEditCharRelation?: (style: StoryGraphCharacterRelationType) => void;
     private onLegendEditLinkCategory?: (category: StoryGraphRelationCategory | 'default') => void;
@@ -1039,6 +1046,7 @@ export class StoryGraph {
         this.svgBuilt = false;
         this.edgeDom = [];
         this.nodeDom.clear();
+        this.filterEmptyEl = null;
         this.panX = keepPanX;
         this.panY = keepPanY;
         this.zoom = keepZoom;
@@ -1520,7 +1528,6 @@ export class StoryGraph {
         port.setAttribute('r', String(STORY_GRAPH_PORT_R));
         port.setAttribute('cx', String(node.x + r));
         port.setAttribute('cy', String(node.y));
-        port.style.pointerEvents = 'none';
 
         const line = activeDocument.createElementNS(svgNS, 'line');
         line.setAttribute('x1', String(node.x + r));
@@ -1533,11 +1540,9 @@ export class StoryGraph {
         line.setAttribute('stroke-opacity', '0.95');
         line.setAttribute('stroke-linecap', 'butt');
         line.classList.add('story-graph-connect-drag-line');
-        line.style.pointerEvents = 'none';
 
         const tip = activeDocument.createElementNS(svgNS, 'polygon');
         tip.classList.add('story-graph-edge-arrow');
-        tip.style.pointerEvents = 'none';
         setArrowPolygon(tip, node.x + r, node.y, 1, 0, 'var(--interactive-accent)');
 
         this.layer.appendChild(line);
@@ -1804,7 +1809,12 @@ export class StoryGraph {
     /** Empty graph: keep tools + legend visible and offer a way back when filters hid everything. */
     private renderEmptyGraphState(): void {
         const empty = this.container.createDiv('story-graph-empty');
-        if (this.legendFocus || !this.anyEntityFilterOn() || !this.allEntityFiltersOn()) {
+        if (
+            this.legendNodeKeys.size > 0
+            || this.legendEdgeKeys.size > 0
+            || !this.anyEntityFilterOn()
+            || !this.allEntityFiltersOn()
+        ) {
             empty.createEl('p', {
                 text: t('Nothing matches the current legend focus. Click the active legend again to show all, or reset filters.'),
             });
@@ -1932,7 +1942,9 @@ export class StoryGraph {
     }
 
     private resetAllFilters(): void {
-        this.legendFocus = null;
+        const requiresRebuild = !this.allEntityFiltersOn() || !this.svgBuilt;
+        this.legendNodeKeys.clear();
+        this.legendEdgeKeys.clear();
         this.showScenes = true;
         this.showCharacters = true;
         this.showLocations = true;
@@ -1941,12 +1953,12 @@ export class StoryGraph {
         this.showProps = true;
         this.showOther = true;
         this.emitFilters();
-        this.render();
+        if (requiresRebuild) this.render();
+        else this.applyLegendFilters();
     }
 
     private enableAllEntityFiltersForFocus(): void {
-        // Keep every entity type enabled while building — focus filters afterwards
-        // so Character↔Skill (etc.) links still surface both endpoints.
+        // Build the full graph first; both legend selections filter afterwards.
         this.showScenes = true;
         this.showCharacters = true;
         this.showLocations = true;
@@ -1956,37 +1968,145 @@ export class StoryGraph {
         this.showRelationships = true;
     }
 
-    private setEntityLegendFocus(type: EntityType): void {
-        if (this.legendFocus?.kind === 'entity' && this.legendFocus.type === type) {
-            this.resetAllFilters();
-            return;
+    private nodeLegendKeyForEntity(type: EntityType): string | null {
+        if (type === 'scene' || type === 'character' || type === 'location') {
+            return `entity:${type}`;
         }
-        this.legendFocus = { kind: 'entity', type };
+        return null;
+    }
+
+    private nodeLegendKeyForLibrary(categoryId: string): string {
+        return `library:${categoryId}`;
+    }
+
+    private isNodeLegendSelected(key: string): boolean {
+        return this.legendNodeKeys.has(key);
+    }
+
+    /** Toggle a node-type chip; multi-select. Empty selection = show all. */
+    private toggleNodeLegendKey(key: string): void {
+        const requiresRebuild = !this.allEntityFiltersOn();
+        if (this.legendNodeKeys.has(key)) this.legendNodeKeys.delete(key);
+        else this.legendNodeKeys.add(key);
         this.enableAllEntityFiltersForFocus();
         this.emitFilters();
-        this.render();
+        if (requiresRebuild) this.render();
+        else this.applyLegendFilters();
+    }
+
+    private setEntityLegendFocus(type: EntityType): void {
+        const key = this.nodeLegendKeyForEntity(type);
+        if (!key) return;
+        this.toggleNodeLegendKey(key);
     }
 
     private setLibraryLegendFocus(categoryId: string): void {
-        if (this.legendFocus?.kind === 'library' && this.legendFocus.categoryId === categoryId) {
-            this.resetAllFilters();
-            return;
-        }
-        this.legendFocus = { kind: 'library', categoryId };
-        this.enableAllEntityFiltersForFocus();
-        this.emitFilters();
-        this.render();
+        this.toggleNodeLegendKey(this.nodeLegendKeyForLibrary(categoryId));
     }
 
     private setEdgeLegendFocus(key: string): void {
-        if (this.legendFocus?.kind === 'edge' && this.legendFocus.key === key) {
-            this.resetAllFilters();
-            return;
-        }
-        this.legendFocus = { kind: 'edge', key };
+        const requiresRebuild = !this.allEntityFiltersOn();
+        if (this.legendEdgeKeys.has(key)) this.legendEdgeKeys.delete(key);
+        else this.legendEdgeKeys.add(key);
         this.enableAllEntityFiltersForFocus();
         this.emitFilters();
-        this.render();
+        if (requiresRebuild) this.render();
+        else this.applyLegendFilters();
+    }
+
+    private nodeMatchesLegendSelection(node: StoryGraphNode): boolean {
+        if (this.legendNodeKeys.size === 0) return true;
+        if (node.entityType === 'scene') {
+            return this.legendNodeKeys.has('entity:scene');
+        }
+        if (node.entityType === 'character') {
+            return this.legendNodeKeys.has('entity:character');
+        }
+        if (node.entityType === 'location') {
+            return this.legendNodeKeys.has('entity:location');
+        }
+        if (node.entityType === 'codex') {
+            const catId = node.libraryCategoryId || UNCATEGORIZED_CATEGORY_ID;
+            return this.legendNodeKeys.has(this.nodeLegendKeyForLibrary(catId));
+        }
+        // Props / other: only when no specific library/entity filter is needed —
+        // hide them while any node legend chip is selected.
+        return false;
+    }
+
+    private syncLegendSelectionButtons(): void {
+        for (const [key, button] of this.legendNodeButtons) {
+            const active = this.legendNodeKeys.has(key);
+            button.toggleClass('is-focused', active);
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }
+        for (const [key, button] of this.legendEdgeButtons) {
+            const active = this.legendEdgeKeys.has(key);
+            button.toggleClass('is-focused', active);
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        }
+    }
+
+    /** Apply both legend rows as independent filters without rebuilding the SVG. */
+    private applyLegendFilters(): void {
+        this.syncLegendSelectionButtons();
+        if (!this.svgBuilt) return;
+
+        const seedNodeIds = new Set(
+            this.nodes
+                .filter(node => this.nodeMatchesLegendSelection(node))
+                .map(node => node.id),
+        );
+        const matchingEdges = this.edges.filter(edge => (
+            (this.legendEdgeKeys.size === 0 || this.legendEdgeKeys.has(this.parentIdForEdge(edge)))
+            && (this.legendNodeKeys.size === 0
+                || seedNodeIds.has(edge.source)
+                || seedNodeIds.has(edge.target))
+        ));
+        const visibleNodeIds = this.legendNodeKeys.size > 0
+            ? new Set(seedNodeIds)
+            : this.legendEdgeKeys.size === 0
+                ? new Set(this.nodes.map(node => node.id))
+                : new Set<string>();
+        for (const edge of matchingEdges) {
+            visibleNodeIds.add(edge.source);
+            visibleNodeIds.add(edge.target);
+        }
+        const visibleEdgeSet = new Set(matchingEdges);
+
+        for (const [id, dom] of this.nodeDom) {
+            const display = visibleNodeIds.has(id) ? '' : 'none';
+            dom.shape.style.display = display;
+            dom.label.style.display = display;
+            // Clear legacy SVG presentation attribute so style.display can win.
+            dom.label.removeAttribute('display');
+            dom.shape.removeAttribute('display');
+        }
+        for (const dom of this.edgeDom) {
+            const display = visibleEdgeSet.has(dom.edge) ? '' : 'none';
+            dom.hiddenByLegend = display === 'none';
+            dom.line.style.display = display;
+            if (dom.hit) dom.hit.style.display = display;
+            if (dom.label) dom.label.style.display = display;
+            if (dom.arrowStart) dom.arrowStart.style.display = display;
+            if (dom.arrowEnd) dom.arrowEnd.style.display = display;
+            if (dom.portStart) dom.portStart.style.display = display;
+            if (dom.portEnd) dom.portEnd.style.display = display;
+        }
+
+        const filtersActive = this.legendNodeKeys.size > 0 || this.legendEdgeKeys.size > 0;
+        const showEmpty = filtersActive && visibleNodeIds.size === 0;
+        if (showEmpty && this.wrapper) {
+            if (!this.filterEmptyEl) {
+                this.filterEmptyEl = this.wrapper.createDiv({
+                    cls: 'story-graph-filter-empty',
+                    text: t('Nothing matches the current legend focus. Click the active legend again to show all, or reset filters.'),
+                });
+            }
+        } else {
+            this.filterEmptyEl?.remove();
+            this.filterEmptyEl = null;
+        }
     }
 
     private libraryCategoryIndex(categoryId: string): number {
@@ -2019,17 +2139,19 @@ export class StoryGraph {
     private renderLegend(): void {
         const legend = this.container.createDiv('story-graph-legend');
         const palette = resolveStoryGraphEntityColors(this.entityColorMap);
+        this.legendNodeButtons.clear();
+        this.legendEdgeButtons.clear();
 
         // Row 1: Scenes (graph-only) + Library categories in manager/tab order
         const nodeRow = legend.createDiv('story-graph-legend-row is-nodes');
         {
             const type: EntityType = 'scene';
-            const active = this.legendFocus?.kind === 'entity' && this.legendFocus.type === type;
+            const active = this.isNodeLegendSelected('entity:scene');
             const item = nodeRow.createEl('button', {
                 cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
                 attr: {
                     type: 'button',
-                    title: t('Click to focus · Right-click to edit'),
+                    title: t('Click to filter node types · multi-select · Right-click to edit'),
                     'aria-pressed': active ? 'true' : 'false',
                 },
             });
@@ -2038,6 +2160,7 @@ export class StoryGraph {
                 backgroundColor: palette[type].fill,
                 boxShadow: `inset 0 0 0 1.5px ${palette[type].border}`,
             });
+            this.legendNodeButtons.set('entity:scene', item);
             item.createSpan({ text: t('Scenes') });
             item.addEventListener('click', () => this.setEntityLegendFocus(type));
             item.addEventListener('contextmenu', (evt) => {
@@ -2057,17 +2180,17 @@ export class StoryGraph {
                         this.libraryCategoryColors,
                         this.entityColorMap,
                     );
-            const active = category.focus === 'character'
-                ? (this.legendFocus?.kind === 'entity' && this.legendFocus.type === 'character')
+            const legendKey = category.focus === 'character'
+                ? 'entity:character'
                 : category.focus === 'location'
-                    ? (this.legendFocus?.kind === 'entity' && this.legendFocus.type === 'location')
-                    : (this.legendFocus?.kind === 'library'
-                        && this.legendFocus.categoryId === category.id);
+                    ? 'entity:location'
+                    : this.nodeLegendKeyForLibrary(category.id);
+            const active = this.isNodeLegendSelected(legendKey);
             const item = nodeRow.createEl('button', {
                 cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
                 attr: {
                     type: 'button',
-                    title: t('Click to focus · Right-click to edit'),
+                    title: t('Click to filter node types · multi-select · Right-click to edit'),
                     'aria-pressed': active ? 'true' : 'false',
                     'data-library-category': category.id,
                 },
@@ -2077,6 +2200,7 @@ export class StoryGraph {
                 backgroundColor: colors.fill,
                 boxShadow: `inset 0 0 0 1.5px ${colors.border}`,
             });
+            this.legendNodeButtons.set(legendKey, item);
             item.createSpan({ text: category.label });
             item.addEventListener('click', () => {
                 if (category.focus === 'character') this.setEntityLegendFocus('character');
@@ -2099,17 +2223,18 @@ export class StoryGraph {
         const edgeRow = legend.createDiv('story-graph-legend-row is-edges');
         for (const style of this.characterRelationTypes) {
             const key = `char:${style.id}`;
-            const active = this.legendFocus?.kind === 'edge' && this.legendFocus.key === key;
+            const active = this.legendEdgeKeys.has(key);
             const item = edgeRow.createEl('button', {
                 cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
                 attr: {
                     type: 'button',
-                    title: t('Click to focus · Right-click to edit'),
+                    title: t('Click to filter relationship types · multi-select · Right-click to edit'),
                     'aria-pressed': active ? 'true' : 'false',
                 },
             });
             const swatch = item.createSpan({ cls: 'story-graph-legend-swatch story-graph-legend-line' });
             swatch.setCssStyles({ borderBottomColor: style.color });
+            this.legendEdgeButtons.set(key, item);
             item.createSpan({ text: displayCharacterRelationLabel(style) });
             item.addEventListener('click', () => this.setEdgeLegendFocus(key));
             item.addEventListener('contextmenu', (evt) => {
@@ -2121,12 +2246,12 @@ export class StoryGraph {
 
         {
             const key = 'link:default';
-            const active = this.legendFocus?.kind === 'edge' && this.legendFocus.key === key;
+            const active = this.legendEdgeKeys.has(key);
             const defaultLink = edgeRow.createEl('button', {
                 cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
                 attr: {
                     type: 'button',
-                    title: t('Click to focus · Right-click to edit'),
+                    title: t('Click to filter relationship types · multi-select · Right-click to edit'),
                     'aria-pressed': active ? 'true' : 'false',
                 },
             });
@@ -2136,6 +2261,7 @@ export class StoryGraph {
             defaultLinkSwatch.setCssStyles({
                 borderBottomColor: resolveColor('--text-muted', '#6B7280'),
             });
+            this.legendEdgeButtons.set(key, defaultLink);
             defaultLink.createSpan({ text: t('Default link') });
             defaultLink.addEventListener('click', () => this.setEdgeLegendFocus(key));
             defaultLink.addEventListener('contextmenu', (evt) => {
@@ -2147,17 +2273,18 @@ export class StoryGraph {
 
         for (const category of this.relationCategories) {
             const key = `link:${category.id}`;
-            const active = this.legendFocus?.kind === 'edge' && this.legendFocus.key === key;
+            const active = this.legendEdgeKeys.has(key);
             const item = edgeRow.createEl('button', {
                 cls: `story-graph-legend-item is-interactive${active ? ' is-focused' : ''}`,
                 attr: {
                     type: 'button',
-                    title: t('Click to focus · Right-click to edit'),
+                    title: t('Click to filter relationship types · multi-select · Right-click to edit'),
                     'aria-pressed': active ? 'true' : 'false',
                 },
             });
             const swatch = item.createSpan({ cls: 'story-graph-legend-swatch story-graph-legend-line' });
             swatch.setCssStyles({ borderBottomColor: category.color });
+            this.legendEdgeButtons.set(key, item);
             item.createSpan({ text: category.label });
             item.addEventListener('click', () => this.setEdgeLegendFocus(key));
             item.addEventListener('contextmenu', (evt) => {
@@ -2167,17 +2294,15 @@ export class StoryGraph {
             });
         }
 
-        // Keep + at the start of the edge row so it stays visible / clickable
-        // when many relation chips wrap to extra lines.
+        // Add follows every relationship type, including when the row wraps.
         const addBtn = edgeRow.createEl('button', {
             cls: 'story-graph-legend-item is-add',
             attr: {
                 type: 'button',
-                title: t('Add character relation'),
-                'aria-label': t('Add character relation'),
+                title: t('Add relation'),
+                'aria-label': t('Add relation'),
             },
         });
-        edgeRow.insertBefore(addBtn, edgeRow.firstChild);
         const addIcon = addBtn.createSpan({ cls: 'story-graph-legend-add-icon' });
         obsidian.setIcon(addIcon, 'plus');
         addBtn.createSpan({ text: t('Add') });
@@ -2490,76 +2615,26 @@ export class StoryGraph {
             }
         }
 
-        // ── 4. Legend edge focus — keep only matching edges + their nodes ──
-        if (this.legendFocus?.kind === 'edge') {
-            const focusKey = this.legendFocus.key;
-            edgeList = edgeList.filter(edge => this.parentIdForEdge(edge) === focusKey);
-            const keepIds = new Set<string>();
-            for (const edge of edgeList) {
-                keepIds.add(edge.source);
-                keepIds.add(edge.target);
-            }
-            for (const id of [...nodeMap.keys()]) {
-                if (!keepIds.has(id)) nodeMap.delete(id);
-            }
+        // ── 4. Include unlinked documents ──────────────────────
+        // The default graph is an overview of the whole project, so a Library
+        // file must remain visible even when it has no detected relationship.
+        for (const document of this.documents) {
+            if (!isVisible(document.entityType)) continue;
+            ensureNode(
+                documentNodeId(document),
+                document.label,
+                document.entityType,
+                document.filePath,
+                document.image,
+                document.libraryCategoryId,
+            );
+        }
+        if (this.showCharacters) {
+            for (const character of this.characters) ensureNamedNode(character.name, 'character');
         }
 
-        // ── 4b. Legend entity / Library-category focus — type + 1-hop neighbors ──
-        if (this.legendFocus?.kind === 'entity' || this.legendFocus?.kind === 'library') {
-            const focusEntity = this.legendFocus.kind === 'entity' ? this.legendFocus.type : null;
-            const focusLibrary = this.legendFocus.kind === 'library'
-                ? this.legendFocus.categoryId
-                : null;
-            const matchesFocus = (node: StoryGraphNode | undefined): boolean => {
-                if (!node) return false;
-                if (focusLibrary) return node.libraryCategoryId === focusLibrary;
-                return node.entityType === focusEntity;
-            };
-            for (const document of this.documents) {
-                if (focusLibrary) {
-                    if (document.libraryCategoryId !== focusLibrary) continue;
-                } else if (document.entityType !== focusEntity) {
-                    continue;
-                }
-                ensureNode(
-                    documentNodeId(document),
-                    document.label,
-                    document.entityType,
-                    document.filePath,
-                    document.image,
-                    document.libraryCategoryId,
-                );
-            }
-            if (focusEntity === 'character') {
-                for (const char of this.characters) {
-                    ensureNamedNode(char.name, 'character');
-                }
-            }
-            edgeList = edgeList.filter(edge =>
-                matchesFocus(nodeMap.get(edge.source)) || matchesFocus(nodeMap.get(edge.target)));
-            const keepIds = new Set<string>();
-            for (const node of nodeMap.values()) {
-                if (matchesFocus(node)) keepIds.add(node.id);
-            }
-            for (const edge of edgeList) {
-                keepIds.add(edge.source);
-                keepIds.add(edge.target);
-            }
-            for (const id of [...nodeMap.keys()]) {
-                if (!keepIds.has(id)) nodeMap.delete(id);
-            }
-        }
-
-        // ── 5. Clean up orphan scene nodes ─────────────────────
-
-        const connectedScenes = new Set(edgeList.map(e => e.source));
-        for (const [id, node] of nodeMap) {
-            if (node.entityType === 'scene' && !connectedScenes.has(id)) {
-                // Keep orphan scenes when the legend is focusing Scenes.
-                if (this.legendFocus?.kind === 'entity' && this.legendFocus.type === 'scene') continue;
-                nodeMap.delete(id);
-            }
-        }
+        // Legend filtering is applied to the existing SVG after it is built.
+        // Keeping the full data set here avoids remounting the canvas on every click.
 
         // Cap node count for SVG + JS physics (keep highest-weight nodes).
         let nodes = Array.from(nodeMap.values());
@@ -2763,9 +2838,9 @@ export class StoryGraph {
                 stroke,
                 layout.arrowSize,
             );
-            ed.arrowStart.style.display = '';
+            ed.arrowStart.setCssProps({ display: ed.hiddenByLegend ? 'none' : '' });
         } else if (ed.arrowStart) {
-            ed.arrowStart.style.display = 'none';
+            ed.arrowStart.setCssProps({ display: 'none' });
         }
         if (ed.arrowEnd && layout.tipEnd) {
             setArrowPolygon(
@@ -2777,25 +2852,25 @@ export class StoryGraph {
                 stroke,
                 layout.arrowSize,
             );
-            ed.arrowEnd.style.display = '';
+            ed.arrowEnd.setCssProps({ display: ed.hiddenByLegend ? 'none' : '' });
         } else if (ed.arrowEnd) {
-            ed.arrowEnd.style.display = 'none';
+            ed.arrowEnd.setCssProps({ display: 'none' });
         }
         if (ed.portStart && layout.portStart) {
             ed.portStart.setAttribute('cx', String(layout.portStart.x));
             ed.portStart.setAttribute('cy', String(layout.portStart.y));
             ed.portStart.setAttribute('r', String(layout.portR));
-            ed.portStart.style.display = '';
+            ed.portStart.setCssProps({ display: ed.hiddenByLegend ? 'none' : '' });
         } else if (ed.portStart) {
-            ed.portStart.style.display = 'none';
+            ed.portStart.setCssProps({ display: 'none' });
         }
         if (ed.portEnd && layout.portEnd) {
             ed.portEnd.setAttribute('cx', String(layout.portEnd.x));
             ed.portEnd.setAttribute('cy', String(layout.portEnd.y));
             ed.portEnd.setAttribute('r', String(layout.portR));
-            ed.portEnd.style.display = '';
+            ed.portEnd.setCssProps({ display: ed.hiddenByLegend ? 'none' : '' });
         } else if (ed.portEnd) {
-            ed.portEnd.style.display = 'none';
+            ed.portEnd.setCssProps({ display: 'none' });
         }
         return mid;
     }
@@ -2810,7 +2885,6 @@ export class StoryGraph {
         this.ensureSvgDefs(svgNS);
         this.applyEntityColorCssVars();
 
-        const palette = resolveStoryGraphEntityColors(this.entityColorMap);
         const g = activeDocument.createElementNS(svgNS, 'g');
         this.layer = g;
         this.svg.appendChild(g);
@@ -2841,7 +2915,7 @@ export class StoryGraph {
                 hit.setAttribute('fill', 'none');
                 hit.setAttribute('stroke', 'transparent');
                 hit.setAttribute('stroke-width', String(Math.max(14, strokeWidth + 10)));
-                hit.style.cursor = 'pointer';
+                hit.setCssProps({ cursor: 'pointer' });
                 hit.classList.add('story-graph-edge-hit');
                 g.appendChild(hit);
 
@@ -2958,7 +3032,6 @@ export class StoryGraph {
                     stroke,
                     layout.arrowSize,
                 );
-                arrowStart.style.pointerEvents = 'none';
                 g.appendChild(arrowStart);
             }
             if (layout.tipEnd) {
@@ -2973,7 +3046,6 @@ export class StoryGraph {
                     stroke,
                     layout.arrowSize,
                 );
-                arrowEnd.style.pointerEvents = 'none';
                 g.appendChild(arrowEnd);
             }
 
@@ -2985,7 +3057,6 @@ export class StoryGraph {
                 portStart.setAttribute('r', String(layout.portR));
                 portStart.setAttribute('cx', String(layout.portStart.x));
                 portStart.setAttribute('cy', String(layout.portStart.y));
-                portStart.style.pointerEvents = 'none';
             }
             if (layout.portEnd) {
                 portEnd = activeDocument.createElementNS(svgNS, 'circle');
@@ -2993,7 +3064,6 @@ export class StoryGraph {
                 portEnd.setAttribute('r', String(layout.portR));
                 portEnd.setAttribute('cx', String(layout.portEnd.x));
                 portEnd.setAttribute('cy', String(layout.portEnd.y));
-                portEnd.style.pointerEvents = 'none';
             }
 
             let label: SVGTextElement | undefined;
@@ -3164,11 +3234,10 @@ export class StoryGraph {
             text.setAttribute('font-weight', hasAvatar || node.entityType !== 'scene' ? '600' : '400');
             if (hasAvatar) text.classList.add('story-graph-node-label-outer');
             const maxLen = node.entityType === 'scene' ? 18 : 16;
-            text.textContent = node.label.length > maxLen
-                ? node.label.substring(0, maxLen - 1) + '…'
-                : node.label;
-            // Hide labels when very dense — keep avatar labels visible (user intent).
-            if (!hasAvatar && this.nodes.length > 70) text.setAttribute('display', 'none');
+            const labelText = String(node.label || '').trim();
+            text.textContent = labelText.length > maxLen
+                ? labelText.substring(0, maxLen - 1) + '…'
+                : labelText;
             g.appendChild(text);
 
             this.nodeDom.set(node.id, {
@@ -3191,6 +3260,7 @@ export class StoryGraph {
         }
 
         this.svgBuilt = true;
+        this.applyLegendFilters();
     }
 
     private updatePositions(): void {
@@ -3313,14 +3383,9 @@ export class StoryGraph {
                 const href = img.getAttribute('href') || img.getAttribute('xlink:href') || '';
                 if (!href || href.startsWith('data:')) return;
                 try {
-                    const res = await fetch(href);
-                    const blob = await res.blob();
-                    const dataUrl = await new Promise<string>((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onload = () => resolve(String(reader.result || ''));
-                        reader.onerror = () => reject(reader.error);
-                        reader.readAsDataURL(blob);
-                    });
+                    const res = await obsidian.requestUrl(href);
+                    const mime = res.headers['content-type']?.split(';')[0] || 'image/png';
+                    const dataUrl = `data:${mime};base64,${obsidian.arrayBufferToBase64(res.arrayBuffer)}`;
                     if (dataUrl) {
                         img.setAttribute('href', dataUrl);
                         img.removeAttribute('xlink:href');
@@ -3449,4 +3514,4 @@ export class StoryGraph {
 function iterationsSalt(i: number): number {
     return (i * 2654435761) >>> 0;
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents -- Obsidian's dynamic API requires compatibility assertions; matching enable at end of file */
 /**
  * Library content mode (Browse / Story Graph) — shared across Characters,
  * Locations, and Codex category pages.
@@ -25,7 +25,6 @@ import {
     type StoryGraphConnectNode,
     type StoryGraphDocument,
     type StoryGraphEntityColorMap,
-    type StoryGraphEntityType,
     type StoryGraphFilterState,
     type StoryGraphLayoutState,
     type StoryGraphLibraryCategoryColorMap,
@@ -75,8 +74,15 @@ import {
     type StoryGraphCharacterRelationType,
 } from '../utils/storyGraphCharacterRelations';
 import { localizeForLanguage, seedUiLanguage, t } from '../utils/i18n';
+import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 
 export type LibraryContentMode = 'browse' | 'story-graph';
+
+export interface LibraryProfileModeAction {
+    label: string;
+    active: boolean;
+    onClick: () => void;
+}
 
 const DEFAULT_FILTERS: StoryGraphFilterState = {
     showScenes: true,
@@ -115,37 +121,54 @@ export function renderLibraryModeToggle(
     parent: HTMLElement,
     plugin: SceneCardsPlugin,
     onChange: () => void,
+    profileMode?: LibraryProfileModeAction,
 ): HTMLElement | null {
-    if (isMobile) return null;
+    if (isMobile && !profileMode) return null;
 
     const mode = getLibraryContentMode(plugin);
     const toggle = parent.createDiv('library-mode-toggle character-mode-toggle');
 
+    if (profileMode) {
+        const profileBtn = toggle.createEl('button', {
+            cls: `character-mode-btn ${profileMode.active ? 'active' : ''}`,
+            attr: { 'data-mode': 'profile', 'aria-label': profileMode.label },
+        });
+        const profileIcon = profileBtn.createSpan();
+        obsidian.setIcon(profileIcon, 'contact-round');
+        profileBtn.createSpan({ text: profileMode.label });
+        profileBtn.addEventListener('click', () => {
+            if (profileMode.active) return;
+            profileMode.onClick();
+        });
+    }
+
     const browseBtn = toggle.createEl('button', {
-        cls: `character-mode-btn ${mode === 'browse' ? 'active' : ''}`,
+        cls: `character-mode-btn ${mode === 'browse' && !profileMode?.active ? 'active' : ''}`,
         attr: { 'data-mode': 'browse', 'aria-label': t('Browse') },
     });
     const browseIcon = browseBtn.createSpan();
     obsidian.setIcon(browseIcon, 'layout-grid');
     browseBtn.createSpan({ text: t(' Browse') });
     browseBtn.addEventListener('click', () => {
-        if (getLibraryContentMode(plugin) === 'browse') return;
+        if (getLibraryContentMode(plugin) === 'browse' && !profileMode?.active) return;
         setLibraryContentMode(plugin, 'browse');
         onChange();
     });
 
-    const graphBtn = toggle.createEl('button', {
-        cls: `character-mode-btn ${mode === 'story-graph' ? 'active' : ''}`,
-        attr: { 'data-mode': 'story-graph', 'aria-label': t('Story Graph') },
-    });
-    const graphIcon = graphBtn.createSpan();
-    obsidian.setIcon(graphIcon, 'share-2');
-    graphBtn.createSpan({ text: t(' Story Graph') });
-    graphBtn.addEventListener('click', () => {
-        if (getLibraryContentMode(plugin) === 'story-graph') return;
-        setLibraryContentMode(plugin, 'story-graph');
-        onChange();
-    });
+    if (!isMobile) {
+        const graphBtn = toggle.createEl('button', {
+            cls: `character-mode-btn ${mode === 'story-graph' ? 'active' : ''}`,
+            attr: { 'data-mode': 'story-graph', 'aria-label': t('Story Graph') },
+        });
+        const graphIcon = graphBtn.createSpan();
+        obsidian.setIcon(graphIcon, 'share-2');
+        graphBtn.createSpan({ text: t(' Story Graph') });
+        graphBtn.addEventListener('click', () => {
+            if (getLibraryContentMode(plugin) === 'story-graph') return;
+            setLibraryContentMode(plugin, 'story-graph');
+            onChange();
+        });
+    }
 
     return toggle;
 }
@@ -214,7 +237,7 @@ function collectStoryGraphDocuments(
     for (const character of characters) {
         add({
             filePath: character.filePath,
-            label: character.name,
+            label: resolveLibraryEntityName(character.name, character.filePath),
             entityType: 'character',
             image: character.image,
         });
@@ -222,7 +245,7 @@ function collectStoryGraphDocuments(
     for (const world of plugin.locationManager.getAllWorlds()) {
         add({
             filePath: world.filePath,
-            label: world.name,
+            label: resolveLibraryEntityName(world.name, world.filePath),
             entityType: 'location',
             image: world.image,
         });
@@ -230,7 +253,7 @@ function collectStoryGraphDocuments(
     for (const location of plugin.locationManager.getAllLocations()) {
         add({
             filePath: location.filePath,
-            label: location.name,
+            label: resolveLibraryEntityName(location.name, location.filePath),
             entityType: 'location',
             image: location.image,
         });
@@ -238,7 +261,7 @@ function collectStoryGraphDocuments(
     for (const entry of plugin.codexManager.getAllEntries()) {
         add({
             filePath: entry.filePath,
-            label: entry.name,
+            label: resolveLibraryEntityName(entry.name, entry.filePath),
             entityType: 'codex',
             libraryCategoryId: entry.type,
             image: entry.image,
@@ -250,12 +273,15 @@ function collectStoryGraphDocuments(
 /**
  * Legend chips that mirror Library category manager / tabs
  * (Skills, Characters, Locations, Uncategorized, …) in saved order.
+ * Source of truth = enabled Library categories (+ Characters / Locations),
+ * not a separate Story Graph type list.
  */
 export function collectStoryGraphLegendLibraryCategories(
     plugin: SceneCardsPlugin,
 ): StoryGraphLibraryCategoryLegend[] {
     const hidden = new Set(plugin.settings.libraryHiddenFixedCategories || []);
     const order = plugin.settings.libraryCategoryOrder || [];
+    const enabled = new Set(plugin.settings.codexEnabledCategories || []);
     const items: StoryGraphLibraryCategoryLegend[] = [];
     const seen = new Set<string>();
 
@@ -276,41 +302,43 @@ export function collectStoryGraphLegendLibraryCategories(
         focus: 'location',
     });
 
-    // Enabled Codex / custom categories from the live manager (Skills, Lore, …)
-    for (const category of plugin.codexManager.getCategories()) {
-        if (
-            category.id === UNCATEGORIZED_CATEGORY_ID
-            || category.id === 'characters'
-            || category.id === 'locations'
-        ) continue;
-        push({
-            id: category.id,
-            label: resolveLibraryCategoryLabel(plugin, category.id, category.label),
-            focus: 'library',
-        });
-    }
-
-    // Fallback: settings may list enabled categories before CodexManager is fully primed
-    for (const id of plugin.settings.codexEnabledCategories || []) {
+    const pushLibraryCategory = (id: string, fallbackLabel: string) => {
         if (
             id === UNCATEGORIZED_CATEGORY_ID
             || id === 'characters'
             || id === 'locations'
-            || seen.has(id)
-        ) continue;
-        const custom = plugin.settings.codexCustomCategories?.find(c => c.id === id);
-        const builtin = getBuiltinCodexCategory(id)
-            || BUILTIN_CODEX_CATEGORIES.find(c => c.id === id);
-        if (!custom && !builtin) continue;
+        ) return;
+        if (!enabled.has(id) && !plugin.codexManager.getCategoryDef(id)) return;
         push({
             id,
-            label: resolveLibraryCategoryLabel(
-                plugin,
-                id,
-                custom?.label || builtin?.label || id,
-            ),
+            label: resolveLibraryCategoryLabel(plugin, id, fallbackLabel),
             focus: 'library',
         });
+    };
+
+    // Live Codex manager first (folder labels applied).
+    for (const category of plugin.codexManager.getCategories()) {
+        pushLibraryCategory(category.id, category.label);
+    }
+
+    // Settings-backed customs / builtins (covers brand-new categories before reload).
+    for (const custom of plugin.settings.codexCustomCategories || []) {
+        if (!enabled.has(custom.id)) continue;
+        pushLibraryCategory(custom.id, custom.label || custom.id);
+    }
+    for (const id of enabled) {
+        const builtin = getBuiltinCodexCategory(id)
+            || BUILTIN_CODEX_CATEGORIES.find(c => c.id === id);
+        if (!builtin) continue;
+        pushLibraryCategory(id, builtin.label);
+    }
+
+    // Project Library folder map — keep node types aligned with vault subfolders.
+    const folders = plugin.sceneManager.activeProject?.libraryFolders || {};
+    for (const [id, folderName] of Object.entries(folders)) {
+        if (!folderName?.trim()) continue;
+        if (!enabled.has(id) && id !== 'characters' && id !== 'locations') continue;
+        pushLibraryCategory(id, folderName.trim());
     }
 
     push({
@@ -333,6 +361,47 @@ export function collectStoryGraphLegendLibraryCategories(
         return ai - bi;
     });
     return items;
+}
+
+/**
+ * Seed default node colors for current Library categories and drop orphans.
+ * Keeps Story Graph 「节点颜色」 in lockstep with Library tabs / subfolders.
+ */
+export function syncStoryGraphLibraryNodeTypes(plugin: SceneCardsPlugin): boolean {
+    const libraryCats = collectStoryGraphLegendLibraryCategories(plugin)
+        .filter(category => category.focus === 'library');
+    const keep = new Set(libraryCats.map(category => category.id));
+    const prev = plugin.settings.storyGraphLibraryCategoryColors || {};
+    const next: StoryGraphLibraryCategoryColorMap = {};
+    const defaultBorder = resolveStoryGraphEntityColors(
+        plugin.settings.storyGraphEntityColors,
+    ).codex.border;
+    let dirty = false;
+
+    libraryCats.forEach((category, index) => {
+        const existing = prev[category.id];
+        if (existing?.fill) {
+            next[category.id] = {
+                fill: existing.fill,
+                border: existing.border || defaultBorder,
+            };
+            if (!existing.border) dirty = true;
+        } else {
+            next[category.id] = {
+                fill: defaultLibraryCategoryFill(category.id, index),
+                border: defaultBorder,
+            };
+            dirty = true;
+        }
+    });
+    for (const id of Object.keys(prev)) {
+        if (!keep.has(id)) dirty = true;
+    }
+    if (!dirty && Object.keys(prev).length === Object.keys(next).length) {
+        return false;
+    }
+    plugin.settings.storyGraphLibraryCategoryColors = next;
+    return true;
 }
 
 function collectStoryGraphWikilinks(
@@ -567,8 +636,8 @@ export function renderLibraryStoryGraph(
             onLegendEditEntity: () => openStoryGraphRelationCategoriesModal(plugin, onRefresh),
             onLegendEditCharRelation: () => openStoryGraphRelationCategoriesModal(plugin, onRefresh),
             onLegendEditLinkCategory: () => openStoryGraphRelationCategoriesModal(plugin, onRefresh),
-            // Left-click + → add character relation; right-click → full add menu.
-            onLegendAdd: () => openQuickAddCharacterRelationModal(plugin, onRefresh),
+            // Left-click + → add a general graph relation; right-click → full add menu.
+            onLegendAdd: () => openNewStoryGraphRelationCategoryModal(plugin, async () => onRefresh()),
             onLegendAddMenu: (evt) => showStoryGraphLegendAddMenu(plugin, onRefresh, evt),
         },
     );
@@ -576,7 +645,7 @@ export function renderLibraryStoryGraph(
     return graph;
 }
 
-/** Legend “+” — add character relation, wikilink category, or open full manager. */
+/** Legend “+” — add a general relation, a character-only relation, or open the manager. */
 function showStoryGraphLegendAddMenu(
     plugin: SceneCardsPlugin,
     onDone: () => void,
@@ -584,16 +653,16 @@ function showStoryGraphLegendAddMenu(
 ): void {
     const menu = new Menu();
     menu.addItem(item => {
-        item.setTitle(t('Add character relation'));
-        item.setIcon('heart-handshake');
-        item.onClick(() => openQuickAddCharacterRelationModal(plugin, onDone));
-    });
-    menu.addItem(item => {
-        item.setTitle(t('Add wikilink category'));
+        item.setTitle(t('Add relation'));
         item.setIcon('link');
         item.onClick(() => openNewStoryGraphRelationCategoryModal(plugin, async () => {
             onDone();
         }));
+    });
+    menu.addItem(item => {
+        item.setTitle(t('Add character relation'));
+        item.setIcon('heart-handshake');
+        item.onClick(() => openQuickAddCharacterRelationModal(plugin, onDone));
     });
     menu.addSeparator();
     menu.addItem(item => {
@@ -622,6 +691,7 @@ function showStoryGraphLegendAddMenu(
 function openQuickAddCharacterRelationModal(
     plugin: SceneCardsPlugin,
     onDone: () => void,
+    applyTo?: { from: string; to: string },
 ): void {
     const modal = new Modal(plugin.app);
     modal.titleEl.setText(t('Add character relation'));
@@ -681,6 +751,15 @@ function openQuickAddCharacterRelationModal(
                     next,
                 ];
                 await plugin.saveSettings();
+                if (applyTo) {
+                    await updateCharacterRelation(
+                        plugin,
+                        applyTo.from,
+                        applyTo.to,
+                        next.baseType,
+                        { id: next.id, category: next.category },
+                    );
+                }
                 modal.close();
                 onDone();
             }));
@@ -760,6 +839,21 @@ export function showStoryGraphLinkEdgeMenu(
     const categories = plugin.settings.storyGraphRelationCategories || [];
     const assignments = plugin.settings.storyGraphLinkRelationAssignments || {};
     const current = assignments[edge.key];
+    const fromChar = plugin.characterManager.findByName(edge.from);
+    const toChar = plugin.characterManager.findByName(edge.to);
+    const bothCharacters = !!(fromChar && toChar);
+    const charStyles = bothCharacters
+        ? mergeCharacterRelationTypes(
+            plugin.settings.storyGraphCharacterRelationTypes,
+            plugin.characterManager.getAllCharacters(),
+            seedUiLanguage(plugin.app),
+        )
+        : [];
+    const currentCharRel = bothCharacters && fromChar
+        ? normalizeCharacterRelations(fromChar.relations).find(
+            r => r.target.toLowerCase() === edge.to.toLowerCase(),
+        )
+        : undefined;
 
     menu.addItem(item => {
         item.setTitle(`${edge.from} → ${edge.to}`);
@@ -772,6 +866,51 @@ export function showStoryGraphLinkEdgeMenu(
             item.setIcon('scan-eye');
             item.onClick(() => onFocus(edge));
         });
+        menu.addSeparator();
+    }
+    if (bothCharacters) {
+        menu.addItem(item => {
+            item.setTitle(t('Character relations'));
+            item.setDisabled(true);
+        });
+        for (const style of charStyles) {
+            menu.addItem(item => {
+                item.setTitle(displayCharacterRelationLabel(style));
+                if (currentCharRel && (
+                    style.id === currentCharRel.type
+                    || style.baseType === currentCharRel.type
+                )) {
+                    item.setChecked(true);
+                }
+                item.onClick(() => {
+                    void updateCharacterRelation(
+                        plugin,
+                        edge.from,
+                        edge.to,
+                        style.baseType,
+                        { id: style.id, category: style.category },
+                    ).then(onDone);
+                });
+            });
+        }
+        menu.addItem(item => {
+            item.setTitle(t('Add character relation'));
+            item.setIcon('heart-handshake');
+            item.onClick(() => openQuickAddCharacterRelationModal(
+                plugin,
+                onDone,
+                { from: edge.from, to: edge.to },
+            ));
+        });
+        if (currentCharRel) {
+            menu.addItem(item => {
+                item.setTitle(t('Remove relationship'));
+                item.setIcon('unlink');
+                item.onClick(() => {
+                    void updateCharacterRelation(plugin, edge.from, edge.to, null).then(onDone);
+                });
+            });
+        }
         menu.addSeparator();
     }
     menu.addItem(item => {
@@ -854,14 +993,22 @@ function openNewStoryGraphRelationCategoryModal(
     onCreated: (category: StoryGraphRelationCategory) => void | Promise<void>,
 ): void {
     const modal = new Modal(plugin.app);
-    modal.titleEl.setText(t('New relation category'));
-    let label = '';
+    modal.titleEl.setText(t('Add relation'));
+    const seedLang = seedUiLanguage(plugin.app);
+    let label = localizeForLanguage(seedLang, 'New relation');
     let color = '#6C7AE0';
     let arrow: StoryGraphRelationArrow = 'single';
 
     new Setting(modal.contentEl)
         .setName(t('Name'))
-        .addText(text => text.onChange(value => { label = value; }));
+        .addText(text => {
+            text.setValue(label);
+            text.onChange(value => { label = value; });
+            window.setTimeout(() => {
+                text.inputEl.focus();
+                text.inputEl.select();
+            }, 40);
+        });
     new Setting(modal.contentEl)
         .setName(t('Color'))
         .addColorPicker(picker => picker
@@ -929,6 +1076,10 @@ export function openStoryGraphRelationCategoriesModal(
             };
         }
     }
+    // Align node-type rows with current Library categories / folders first.
+    if (syncStoryGraphLibraryNodeTypes(plugin)) {
+        void plugin.saveSettings();
+    }
     const legendLibraryCats = collectStoryGraphLegendLibraryCategories(plugin);
     const libraryCats = legendLibraryCats.filter(category => category.focus === 'library');
     const libraryDraft: StoryGraphLibraryCategoryColorMap = {};
@@ -977,7 +1128,7 @@ export function openStoryGraphRelationCategoriesModal(
         content.createEl('h4', { text: t('Node colors') });
         content.createEl('p', {
             cls: 'setting-item-description',
-            text: t('Fill and border colors for Story Graph entity nodes.'),
+            text: t('Scenes plus Library categories (same as tabs / Library subfolders). New Library categories appear here automatically.'),
         });
         const nodeColorList = content.createDiv('story-graph-entity-color-list');
         const nodeHeader = nodeColorList.createDiv(
@@ -1472,4 +1623,4 @@ export async function updateCharacterRelation(
         new Notice(t('Failed to update relationship'));
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

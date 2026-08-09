@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument -- Obsidian frontmatter + cache */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access -- Obsidian frontmatter + cache */
 import { App, TFile, normalizePath } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { storyGraphPairKey } from './storyGraphStrands';

@@ -1,7 +1,10 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 import type SceneCardsPlugin from '../main';
-import type { ConceptGridDocument } from '../models/PlotGridData';
-import { normalizePath } from 'obsidian';
+import { createEmptyConceptGridDocument, type ConceptGridDocument } from '../models/PlotGridData';
+import { normalizePath, Notice, TFile } from 'obsidian';
+import { t } from '../utils/i18n';
+
+const VIEW_SNAPSHOT_VERSION = 2;
 
 export interface ViewSnapshotMeta {
     id: number;
@@ -12,6 +15,7 @@ export interface ViewSnapshotMeta {
 }
 
 export interface ViewSnapshot extends ViewSnapshotMeta {
+    version?: number;
     board: Record<string, { x: number; y: number; z?: number }>;
     plotgrid: ConceptGridDocument | null;
     /** Scene file paths → sequence numbers (kanban order) — legacy */
@@ -22,11 +26,11 @@ export interface ViewSnapshot extends ViewSnapshotMeta {
 
 /** Kanban-relevant properties captured per scene */
 interface SceneLayoutState {
-    sequence?: number;
-    act?: number | string;
-    chapter?: number | string;
-    status?: string;
-    pov?: string;
+    sequence?: number | null;
+    act?: number | string | null;
+    chapter?: number | string | null;
+    status?: string | null;
+    pov?: string | null;
 }
 
 /** Tracks which snapshot is currently active. Stored in System/Snapshots/active.json */
@@ -71,15 +75,19 @@ export class ViewSnapshotService {
             const adapter = this.plugin.app.vault.adapter;
             const p = this.activeStatePath();
             if (!await adapter.exists(p)) { this._activeId = null; return; }
-            const data = JSON.parse(await adapter.read(p)) as ActiveState;
-            this._activeId = data.activeSnapshotId ?? null;
-        } catch { this._activeId = null; }
+            const data: unknown = JSON.parse(await adapter.read(p));
+            if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error(t('Invalid snapshot state.'));
+            const activeId = (data as Partial<ActiveState>).activeSnapshotId;
+            this._activeId = typeof activeId === 'number' ? activeId : null;
+        } catch (error) {
+            console.error('[NarrativeLab] Failed to read active snapshot state:', error);
+            this._activeId = null;
+        }
     }
 
     private async saveActiveState(): Promise<void> {
         await this.ensureFolder();
-        const adapter = this.plugin.app.vault.adapter;
-        await adapter.write(this.activeStatePath(), JSON.stringify({ activeSnapshotId: this._activeId }, null, 2));
+        await this.writeJsonSafely(this.activeStatePath(), { activeSnapshotId: this._activeId });
     }
 
     // ── Auto-save ──────────────────────────────────────────
@@ -108,21 +116,21 @@ export class ViewSnapshotService {
         existing.board = this.plugin.sceneManager.getCorkboardPositions() ?? {};
         existing.plotgrid = await this.plugin.loadPlotGrid();
         existing.sceneLayout = this.captureSceneLayout();
+        existing.version = VIEW_SNAPSHOT_VERSION;
         existing.modified = new Date().toISOString();
 
-        const adapter = this.plugin.app.vault.adapter;
-        await adapter.write(this.snapshotPath(this._activeId), JSON.stringify(existing, null, 2));
+        await this.writeJsonSafely(this.snapshotPath(this._activeId), existing);
     }
 
     private captureSceneLayout(): Record<string, SceneLayoutState> {
         const layout: Record<string, SceneLayoutState> = {};
         for (const scene of this.plugin.sceneManager.getAllScenes()) {
             layout[scene.filePath] = {
-                sequence: scene.sequence,
-                act: scene.act,
-                chapter: scene.chapter,
-                status: scene.status,
-                pov: scene.pov,
+                sequence: scene.sequence ?? null,
+                act: scene.act ?? null,
+                chapter: scene.chapter ?? null,
+                status: scene.status ?? null,
+                pov: scene.pov ?? null,
             };
         }
         return layout;
@@ -178,6 +186,7 @@ export class ViewSnapshotService {
         const sequences = this.captureSceneLayout();
 
         const snapshot: ViewSnapshot = {
+            version: VIEW_SNAPSHOT_VERSION,
             id,
             name,
             created: new Date().toISOString(),
@@ -187,8 +196,7 @@ export class ViewSnapshotService {
             sceneLayout: sequences,
         };
 
-        const adapter = this.plugin.app.vault.adapter;
-        await adapter.write(this.snapshotPath(id), JSON.stringify(snapshot, null, 2));
+        await this.writeJsonSafely(this.snapshotPath(id), snapshot);
 
         // New snapshot becomes active; the previously active one is now frozen.
         this._activeId = id;
@@ -202,9 +210,9 @@ export class ViewSnapshotService {
         if (!snap) return;
         snap.name = name;
         snap.description = description || undefined;
+        snap.version = VIEW_SNAPSHOT_VERSION;
         snap.modified = new Date().toISOString();
-        const adapter = this.plugin.app.vault.adapter;
-        await adapter.write(this.snapshotPath(id), JSON.stringify(snap, null, 2));
+        await this.writeJsonSafely(this.snapshotPath(id), snap);
     }
 
     /** Load a snapshot by ID. */
@@ -214,8 +222,18 @@ export class ViewSnapshotService {
         if (!await adapter.exists(path)) return null;
         try {
             const txt = await adapter.read(path);
-            return JSON.parse(txt) as ViewSnapshot;
-        } catch {
+            const data: unknown = JSON.parse(txt);
+            if (!this.isViewSnapshot(data)) throw new Error(t('Invalid view snapshot.'));
+            if (typeof data.version === 'number' && data.version > VIEW_SNAPSHOT_VERSION) {
+                throw new Error(t('Unsupported view snapshot version: {version}', { version: data.version }));
+            }
+            return data;
+        } catch (error) {
+            console.error(`[NarrativeLab] Failed to load snapshot ${id}:`, error);
+            new Notice(t('Could not load view snapshot {id}: {message}', {
+                id,
+                message: error instanceof Error ? error.message : String(error),
+            }));
             return null;
         }
     }
@@ -235,14 +253,19 @@ export class ViewSnapshotService {
         }
 
         this._restoring = true;
+        const previousActiveId = this._activeId;
+        const previousBoard = this.plugin.sceneManager.getCorkboardPositions() ?? {};
+        const previousPlotgrid = await this.plugin.loadPlotGrid();
+        const restoredFiles: Array<{ originalPath: string; currentPath: string; content: string }> = [];
         try {
             // Restore board positions
             await this.plugin.sceneManager.setCorkboardPositions(snapshot.board ?? {});
 
             // Restore plotgrid
-            if (snapshot.plotgrid) {
-                await this.plugin.savePlotGrid(snapshot.plotgrid);
-            }
+            await this.plugin.savePlotGrid(
+                snapshot.plotgrid ?? createEmptyConceptGridDocument(),
+                { allowEmptyOverwrite: true },
+            );
 
             // Restore scene layout (act, chapter, status, pov, sequence)
             const layout = snapshot.sceneLayout ?? this.migrateLegacySequences(snapshot.sequences);
@@ -250,14 +273,24 @@ export class ViewSnapshotService {
                 for (const [filePath, state] of Object.entries(layout)) {
                     const scene = this.plugin.sceneManager.getAllScenes().find(s => s.filePath === filePath);
                     if (!scene) continue;
+                    const file = this.plugin.app.vault.getAbstractFileByPath(filePath);
+                    if (!(file instanceof TFile)) continue;
+                    const originalContent = await this.plugin.app.vault.read(file);
                     const updates: Record<string, unknown> = {};
-                    if (state.sequence !== undefined && scene.sequence !== state.sequence) updates.sequence = state.sequence;
-                    if (state.act !== undefined && scene.act !== state.act) updates.act = state.act;
-                    if (state.chapter !== undefined && scene.chapter !== state.chapter) updates.chapter = state.chapter;
-                    if (state.status !== undefined && scene.status !== state.status) updates.status = state.status;
-                    if (state.pov !== undefined && scene.pov !== state.pov) updates.pov = state.pov;
+                    if (state.sequence !== undefined && (scene.sequence ?? null) !== state.sequence) updates.sequence = state.sequence ?? undefined;
+                    if (state.act !== undefined && (scene.act ?? null) !== state.act) updates.act = state.act ?? undefined;
+                    if (state.chapter !== undefined && (scene.chapter ?? null) !== state.chapter) updates.chapter = state.chapter ?? undefined;
+                    if (state.status !== undefined && (scene.status ?? null) !== state.status) updates.status = state.status ?? undefined;
+                    if (state.pov !== undefined && (scene.pov ?? null) !== state.pov) updates.pov = state.pov ?? undefined;
                     if (Object.keys(updates).length > 0) {
-                        await this.plugin.sceneManager.updateScene(filePath, updates);
+                        const restoreState = {
+                            originalPath: filePath,
+                            currentPath: filePath,
+                            content: originalContent,
+                        };
+                        restoredFiles.push(restoreState);
+                        const result = await this.plugin.sceneManager.updateScene(filePath, updates, { recordUndo: false });
+                        restoreState.currentPath = typeof result === 'string' ? result : filePath;
                     }
                 }
             }
@@ -272,6 +305,34 @@ export class ViewSnapshotService {
 
             // Refresh all open views so they pick up the new state
             await this.plugin.refreshOpenViews();
+        } catch (error) {
+            for (const state of [...restoredFiles].reverse()) {
+                const current = this.plugin.app.vault.getAbstractFileByPath(state.currentPath);
+                const original = this.plugin.app.vault.getAbstractFileByPath(state.originalPath);
+                let file: TFile | null = current instanceof TFile
+                    ? current
+                    : original instanceof TFile ? original : null;
+                if (!file) continue;
+                if (file.path !== state.originalPath && !this.plugin.app.vault.getAbstractFileByPath(state.originalPath)) {
+                    await this.plugin.app.fileManager.renameFile(file, state.originalPath).catch(() => undefined);
+                    const renamed = this.plugin.app.vault.getAbstractFileByPath(state.originalPath);
+                    file = renamed instanceof TFile ? renamed : null;
+                }
+                if (file) {
+                    await this.plugin.app.vault.modify(file, state.content).catch(() => undefined);
+                }
+            }
+            await this.plugin.sceneManager.setCorkboardPositions(previousBoard).catch(() => undefined);
+            await this.plugin.savePlotGrid(
+                previousPlotgrid ?? createEmptyConceptGridDocument(),
+                { allowEmptyOverwrite: true },
+            ).catch(() => undefined);
+            this._activeId = previousActiveId;
+            await this.saveActiveState().catch(() => undefined);
+            await this.plugin.sceneManager.initialize().catch(() => undefined);
+            this.plugin.invalidateCorkboardCache();
+            await this.plugin.refreshOpenViews().catch(() => undefined);
+            throw error;
         } finally {
             this._restoring = false;
         }
@@ -283,7 +344,11 @@ export class ViewSnapshotService {
         const adapter = this.plugin.app.vault.adapter;
         const path = this.snapshotPath(id);
         if (await adapter.exists(path)) {
-            await adapter.remove(path);
+            const file = this.plugin.app.vault.getAbstractFileByPath(path);
+            if (!(file instanceof TFile)) {
+                throw new Error(t('The snapshot file is not indexed by Obsidian. Reopen the vault and try again.'));
+            }
+            await this.plugin.app.fileManager.trashFile(file);
         }
         if (this._activeId === id) {
             this._activeId = null;
@@ -300,5 +365,34 @@ export class ViewSnapshotService {
         }
         return layout;
     }
+
+    private isViewSnapshot(value: unknown): value is ViewSnapshot {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const snapshot = value as Partial<ViewSnapshot>;
+        return typeof snapshot.id === 'number'
+            && typeof snapshot.name === 'string'
+            && typeof snapshot.created === 'string'
+            && !!snapshot.board
+            && typeof snapshot.board === 'object'
+            && !Array.isArray(snapshot.board);
+    }
+
+    private async writeJsonSafely(path: string, value: unknown): Promise<void> {
+        const adapter = this.plugin.app.vault.adapter;
+        const payload = JSON.stringify(value, null, 2);
+        const tempPath = `${path}.tmp`;
+        if (await adapter.exists(path)) {
+            await adapter.write(`${path}.bak`, await adapter.read(path));
+        }
+        await adapter.write(tempPath, payload);
+        try {
+            await adapter.write(path, payload);
+            await adapter.remove(tempPath).catch(() => undefined);
+        } catch (error) {
+            throw new Error(t('Safe write failed for {name}: {message}', {
+                name: path.split('/').pop() || path,
+                message: error instanceof Error ? error.message : String(error),
+            }));
+        }
+    }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

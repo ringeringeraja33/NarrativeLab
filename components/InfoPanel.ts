@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- DOM/event handlers and Obsidian dynamic API */
+/* eslint-disable @typescript-eslint/no-misused-promises -- DOM/event handlers and Obsidian dynamic API */
 import * as obsidian from 'obsidian';
 import { Component } from 'obsidian';
 import type SceneCardsPlugin from '../main';
@@ -498,4 +498,4 @@ export class InfoPanelComponent {
         );
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- end file-wide suppression for Obsidian DOM and event APIs */
+/* eslint-enable @typescript-eslint/no-misused-promises -- end file-wide suppression for Obsidian DOM and event APIs */

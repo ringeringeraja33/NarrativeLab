@@ -1,10 +1,26 @@
-# StoryLine — Changelog
+# NarrativeLab — Changelog
 
-## Support StoryLine
+## 0.1.1
 
-If StoryLine helps your writing, please consider buying me a coffee. Donations keep the plugin actively maintained.
+- Story Graph: character↔character wikilink edges can add/change/remove character relations from the context menu.
+- Library entity names fall back to the note file title when frontmatter `name`/`title` is missing or a placeholder (`Untitled` / `未命名`).
+- Story Graph no longer permanently hides non-avatar node labels on large graphs (legend filters can show them again).
+- Unified project Library with shared-series and project-local category synchronization.
+- Library folders are now the category source of truth: externally created, renamed, and deleted folders update tabs, mappings, entity indexes, and orphan Base files.
+- Series project Bases now include both shared Library assets and book-local assets, with exact folder-boundary filters to prevent similarly named folders from leaking into each other.
+- New projects seed only Characters and Locations; additional categories are opt-in or discovered from Library subfolders.
+- Narrative Canvas integration, project bundles, view snapshots, Base views, and bilingual Chinese/English UI.
+- Data-safety fixes for full-file undo, System JSON backups, Library category rollback, snapshot restore, and bundle import.
+- Native narrative projections now use `<project>.narrative.canvas`, with source validation so they cannot overwrite or import the project corkboard Canvas.
+- Series promotion, membership changes, demotion, and dissolve now journal Library transfers and roll back partial moves; binary Library assets are copied byte-for-byte.
+- Unreadable corkboard Canvas files are preserved instead of rebuilt, stale Canvas selections cannot disable an older note, and shared-series category deletion shows its full scope.
+- Chinese UI coverage now audits direct UI literals in addition to `t()` calls; scene “Location” uses the contextual label “位置”, and Research/template/search dialogs no longer leak English copy.
+- Removed unused Series Arc scaffolding and obsolete alternate view implementations; TypeScript now rejects unused local code and parameters.
+- Added a unified Template Center for global and project scene templates, editable narrative structures, and project presets. Structure application now previews merge/replace changes, never deletes scenes, can remap or uncategorize existing assignments, and can create idempotent beat placeholders from a selected bilingual scene template. Project templates sync from `System/Templates/` with backup recovery, plus copy, reorder, import, and export controls.
 
-[![Donate with PayPal](https://www.paypalobjects.com/en_US/i/btn/btn_donate_LG.gif)](https://www.paypal.com/donate?hosted_button_id=A2N2LE7EUBL3A)
+## Legacy StoryLine history
+
+Entries below predate the NarrativeLab rename and retain their original version numbers and wording.
 
 ## Version 1.10.42
 

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
  * VirtualScroller — lightweight windowed renderer for lists inside a
  * scrollable container.
@@ -51,8 +51,6 @@ export class VirtualScroller<T> {
     private lastEnd = -1;
     /** Measured heights per item index (px). Filled in as items render. */
     private measuredHeights: Map<number, number> = new Map();
-    /** Running cumulative offset for each rendered item, rebuilt on scroll. */
-    private offsets: number[] = [];
 
     constructor(opts: VirtualScrollerOptions<T>) {
         this.container = opts.container;
@@ -91,7 +89,6 @@ export class VirtualScroller<T> {
         this.lastStart = -1;
         this.lastEnd = -1;
         this.measuredHeights.clear();
-        this.offsets = [];
         if (this.innerEl) {
             this.onScroll();
         }
@@ -217,4 +214,4 @@ export class VirtualScroller<T> {
         }
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

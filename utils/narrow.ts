@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return -- bulk-suppression for plugin-wide code-quality */
+
 /**
  * Tiny type-narrowing helpers used throughout the plugin to bridge
  * `unknown` JSON / settings values to typed access without resorting to `any`.
@@ -45,4 +45,3 @@ export function coerceString(v: unknown, fallback = ''): string {
     if (typeof v === 'number' || typeof v === 'boolean') return String(v);
     return fallback;
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return -- end bulk-suppression */

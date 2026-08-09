@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 /**
  * Codex data model — generic entries for any user-defined category.
  *
@@ -85,7 +85,7 @@ export interface CodexCategoryDef {
     label: string;
     /** Lucide icon name for tabs / menus */
     icon: string;
-    /** Folder name inside the Codex directory */
+    /** Folder name inside the Library directory */
     folder: string;
     /** Field categories for this codex type */
     categories: CodexFieldCategory[];
@@ -482,8 +482,8 @@ export function makeCustomCodexCategory(id: string, label: string, icon: string 
                 title: 'Overview',
                 icon: 'file-text',
                 fields: [
-                    { key: 'name', label: 'Name', placeholder: `Name of this ${label.toLowerCase()} entry` },
-                    { key: 'description', label: 'Description', placeholder: `Describe this ${label.toLowerCase()}`, multiline: true },
+                    { key: 'name', label: 'Name', placeholder: 'Entry name' },
+                    { key: 'description', label: 'Description', placeholder: 'Describe this entry', multiline: true },
                 ],
             },
         ],
@@ -506,7 +506,7 @@ export function makeProfileCodexCategory(
             title: 'Basic Information',
             icon: 'user',
             fields: [
-                { key: 'name', label: 'Name', placeholder: `Name of this ${label.toLowerCase()}` },
+                { key: 'name', label: 'Name', placeholder: 'Profile name' },
                 { key: 'nickname', label: 'Aliases', placeholder: 'Other names or titles' },
                 { key: 'role', label: 'Role', placeholder: 'Role in the story' },
                 { key: 'description', label: 'Summary', placeholder: 'Short summary', multiline: true },
@@ -596,4 +596,3 @@ export const CODEX_ICON_OPTIONS: Array<{ value: string; label: string }> = [
     { value: 'palette', label: 'Palette' },
     { value: 'heart', label: 'Heart' },
 ];
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

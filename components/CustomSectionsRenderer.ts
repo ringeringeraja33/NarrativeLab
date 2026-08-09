@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian DOM API forces dynamic dispatch */
+
 /**
  * Shared renderer for user-defined custom sections (#114, #120).
  *
@@ -859,7 +859,7 @@ export class AddCustomSectionModal extends Modal {
     }
 
     onOpen(): void {
-        this.titleEl.setText(this.initialTitle ? 'Rename Section' : 'Add Custom Section');
+        this.titleEl.setText(t(this.initialTitle ? 'Rename Section' : 'Add Custom Section'));
         let title = this.initialTitle;
         let nameInput: HTMLInputElement | null = null;
         new Setting(this.contentEl)
@@ -884,7 +884,7 @@ export class AddCustomSectionModal extends Modal {
 
         new Setting(this.contentEl)
             .addButton(btn => btn
-                .setButtonText(this.initialTitle ? 'Save' : 'Add')
+                .setButtonText(this.initialTitle ? t('Save') : t('Add'))
                 .setCta()
                 .onClick(() => {
                     const v = (nameInput?.value || title).trim();
@@ -921,7 +921,7 @@ export class AddSectionFieldModal extends Modal {
 
     onOpen(): void {
         const isEdit = !!this.existing;
-        this.titleEl.setText(isEdit ? 'Edit Field' : 'Add Field to Section');
+        this.titleEl.setText(t(isEdit ? 'Edit Field' : 'Add Field to Section'));
 
         let name = this.existing?.name ?? '';
         let type: CustomFieldType = this.existing?.type ?? 'text';
@@ -1000,7 +1000,7 @@ export class AddSectionFieldModal extends Modal {
 
         new Setting(this.contentEl)
             .addButton(btn => btn
-                .setButtonText(isEdit ? 'Save' : 'Add')
+                .setButtonText(isEdit ? t('Save') : t('Add'))
                 .setCta()
                 .onClick(() => this.submit()));
 
@@ -1033,4 +1033,3 @@ export class AddSectionFieldModal extends Modal {
     /** Replaced inside onOpen to capture modal form state at submit time. */
     private submit: () => void = () => {};
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- end file-wide suppression for Obsidian DOM event handlers */

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, no-useless-escape -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { StoryLineProject } from '../models/StoryLineProject';
 import { SceneManager } from './SceneManager';
 import { compareActChapter, getActDisplayLabel } from '../utils/actChapter';
@@ -10,6 +10,7 @@ import { App, Notice, TFile } from 'obsidian';
 import { Scene, resolveStatusCfg } from '../models/Scene';
 import { getRoleDisplay, relationDisplayLabel } from '../models/Character';
 import { StoryLocation } from '../models/Location';
+import { t } from '../utils/i18n';
 
 export type ExportFormat = 'md' | 'json' | 'html' | 'csv' | 'docx' | 'pdf';
 export type ExportScope = 'manuscript' | 'outline';
@@ -96,13 +97,13 @@ export class ExportService {
     async export(format: ExportFormat, scope: ExportScope): Promise<string | void> {
         const project = this.sceneManager.activeProject;
         if (!project) {
-            new Notice('No active project');
+            new Notice(t('No active project'));
             return;
         }
 
         const scenes = this.getSortedScenes();
         if (scenes.length === 0) {
-            new Notice('No scenes to export');
+            new Notice(t('No scenes to export'));
             return;
         }
 
@@ -173,7 +174,7 @@ export class ExportService {
 
         const filename = `${project.title} - ${scope === 'manuscript' ? 'Manuscript' : 'Outline'} (${this.timestamp()}).md`;
         const filePath = await this.writeExportFile(project, filename, lines.join('\n'));
-        new Notice(`Exported to ${filename}`);
+        new Notice(t('Exported to {filename}', { filename }));
         return filePath;
     }
 
@@ -468,7 +469,7 @@ export class ExportService {
 
         const filename = `${project.title} - ${scope === 'manuscript' ? 'Manuscript' : 'Outline'} (${this.timestamp()}).json`;
         const filePath = await this.writeExportFile(project, filename, JSON.stringify(data, null, 2));
-        new Notice(`Exported to ${filename}`);
+        new Notice(t('Exported to {filename}', { filename }));
         return filePath;
     }
 
@@ -492,7 +493,7 @@ export class ExportService {
         const printWindow = window.open(blobUrl, '_blank');
         if (!printWindow) {
             URL.revokeObjectURL(blobUrl);
-            new Notice(`Saved as ${filename} — open it in a browser to print as PDF`);
+            new Notice(t('Saved as {filename}. Open it in a browser to print as PDF.', { filename }));
             return filePath;
         }
 
@@ -504,7 +505,7 @@ export class ExportService {
             }
         }, 800);
 
-        new Notice(`Exported to ${filename}`);
+        new Notice(t('Exported to {filename}', { filename }));
         return filePath;
     }
 
@@ -751,7 +752,7 @@ ${body}
         // sep=, hint for Excel locale delimiter detection
         const csvWithBom = 'sep=,\r\n' + csv;
         const filePath = await this.writeCsvExportFile(project, filename, csvWithBom);
-        new Notice(`CSV exported → ${filePath}`);
+        new Notice(t('CSV exported: {path}', { path: filePath }));
         return filePath;
     }
 
@@ -1027,7 +1028,7 @@ ${body}
             }
         };
 
-        new Notice('Exporting to Word...');
+        new Notice(t('Exporting to Word…'));
 
         const blob = await converter.convert(
             markdown,
@@ -1050,7 +1051,7 @@ ${body}
         const filePath = `${exportFolder}/${filename}`;
         await this.app.vault.adapter.writeBinary(filePath, arrayBuffer);
 
-        new Notice(`Exported to ${filename}`, 5000);
+        new Notice(t('Exported to {filename}', { filename }), 5000);
         return filePath;
     }
 
@@ -1177,7 +1178,7 @@ ${body}
             headerFontSize: 24,
         };
 
-        new Notice('Exporting to PDF...');
+        new Notice(t('Exporting to PDF…'));
 
         // Uses Electron's <webview>.printToPDF() — Chrome's rendering engine
         // handles all Unicode/fonts natively. Only available on desktop.
@@ -1185,7 +1186,7 @@ ${body}
         const pdfBytes = await this.tryElectronPrintToPdf(html, settings);
 
         if (!pdfBytes) {
-            new Notice('PDF export requires the Obsidian desktop app.', 6000);
+            new Notice(t('PDF export requires the Obsidian desktop app.'), 6000);
             return '';
         }
 
@@ -1202,7 +1203,7 @@ ${body}
         const filePath = `${exportFolder}/${filename}`;
         await this.app.vault.adapter.writeBinary(filePath, pdfBytes);
 
-        new Notice(`Exported to ${filename}`, 5000);
+        new Notice(t('Exported to {filename}', { filename }), 5000);
         return filePath;
     }
 
@@ -1377,4 +1378,4 @@ ${body}
 </html>`;
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, no-useless-escape -- end of file-wide suppression block opened at line 1 */

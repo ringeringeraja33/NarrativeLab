@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian's API surface forces dynamic dispatch; floating promises are intentional in DOM/event handlers */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian's API surface forces dynamic dispatch; floating promises are intentional in DOM/event handlers */
 import { EventRef, ItemView, MarkdownView, TFile, WorkspaceLeaf, WorkspaceSplit, setIcon } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SceneManager } from '../services/SceneManager';
@@ -16,7 +16,6 @@ import { t } from '../utils/i18n';
  * mode so all editing round-trips through the same frontmatter pipeline.
  */
 export class NotesView extends ItemView {
-    private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private editorHost: HTMLElement | null = null;
     private editorLeaf: WorkspaceLeaf | null = null;
@@ -25,9 +24,8 @@ export class NotesView extends ItemView {
     private saveTimer: number | null = null;
     private emptyEl: HTMLElement | null = null;
 
-    constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
+    constructor(leaf: WorkspaceLeaf, _plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
-        this.plugin = plugin;
         this.sceneManager = sceneManager;
     }
 
@@ -262,4 +260,4 @@ export class NotesView extends ItemView {
         this.editorHost?.setCssStyles({ display: hasScene ? 'flex' : 'none' });
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- end of file-wide suppression block opened at line 1 */

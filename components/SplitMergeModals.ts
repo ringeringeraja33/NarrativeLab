@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 import { Modal, Setting, Notice } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { tokenizeWords, DEFAULT_STORYLINE_LOCALE } from '../utils/locale';
@@ -201,7 +201,7 @@ export class MergeSceneModal extends Modal {
         const list = contentEl.createEl('ol', { cls: 'storyline-merge-scene-list' });
         for (const s of this.scenes) {
             const li = list.createEl('li');
-            li.createEl('strong', { text: s.title || 'Untitled' });
+            li.createEl('strong', { text: s.title || t('Untitled') });
             li.createSpan({ text: t('— {words} words, status: {status}', { words: s.wordcount ?? 0, status: t(BUILTIN_STATUS_CONFIG[s.status as SceneStatus]?.label || String(s.status)) }) });
         }
 
@@ -302,4 +302,3 @@ export class MergeSceneModal extends Modal {
         this.contentEl.empty();
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

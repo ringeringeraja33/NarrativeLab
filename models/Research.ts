@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 /**
  * Research post data model.
  *
@@ -21,6 +21,8 @@ export interface ResearchPost {
     sourceUrl?: string;
     /** Whether a "question" type is resolved */
     resolved?: boolean;
+    /** Disabled posts stay on disk but are hidden from normal views and the corkboard. */
+    inactive?: boolean;
     /** True if this is a linked vault note (not stored in Research/) */
     isLinked?: boolean;
     /** ISO date string */
@@ -37,4 +39,3 @@ export const RESEARCH_TYPE_CONFIG: Record<ResearchType, { label: string; icon: s
     image: { label: 'Image', icon: 'image' },
     question: { label: 'Question', icon: 'help-circle' },
 };
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

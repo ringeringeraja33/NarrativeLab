@@ -1,8 +1,9 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { Character, CharacterRelation, CharacterRelationCategory, CHARACTER_FIELD_KEYS, LEGACY_RELATION_FIELDS_TO_CLEAN, normalizeCharacterRelations, normalizeRoleEntries } from '../models/Character';
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceString } from '../utils/narrow';
+import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
 
 /**
@@ -293,7 +294,7 @@ export class CharacterManager {
 
     /**
      * Move a character file to a different folder. Used by the Promote /
-     * Demote actions to shuttle a character between the per-project Codex/
+     * Demote actions to shuttle a character between the per-project Library/
      * Characters folder and the series-level shared folder.
      *
      * Wikilinks in scenes reference characters by NAME (not file path), so
@@ -335,13 +336,12 @@ export class CharacterManager {
         if (safeFm.type !== 'character' && !folderFallback) return null;
 
         const body = this.extractBody(content);
-        const basename = filePath.split('/').pop()?.replace(/\.md$/i, '') ?? filePath;
         const relations = normalizeCharacterRelations(this.parseRelations(safeFm.relations) || this.buildLegacyRelations(safeFm));
 
         const character: Character = {
             filePath,
             type: 'character',
-            name: safeFm.name || basename,
+            name: resolveLibraryEntityName(safeFm.name, filePath, safeFm.title),
             tagline: safeFm.tagline,
             image: safeFm.image,
             gallery: this.parseGallery(safeFm.gallery),
@@ -546,4 +546,4 @@ export class CharacterManager {
         return parsed.length ? parsed : undefined;
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

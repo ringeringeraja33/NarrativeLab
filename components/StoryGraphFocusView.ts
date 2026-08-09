@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian DOM + async save handlers */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- Obsidian DOM + async save handlers */
 import { Menu, Notice, TFile, normalizePath, setIcon } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { pickImage, resolveImagePath } from './ImagePicker';
@@ -311,7 +311,7 @@ export class StoryGraphFocusView {
 
     private loadStrands(): void {
         const found = lookupStoryGraphFocusBundle(
-            this.plugin.settings.storyGraphFocusBundles as Record<string, unknown>,
+            this.plugin.settings.storyGraphFocusBundles,
             this.left.filePath,
             this.right.filePath,
             this.parentId,
@@ -428,7 +428,7 @@ export class StoryGraphFocusView {
             this.renderCanvasToolbar();
         });
 
-        requestAnimationFrame(() => this.redrawCanvas());
+        window.requestAnimationFrame(() => this.redrawCanvas());
     }
 
     private mountNode(side: 'left' | 'right'): void {
@@ -649,9 +649,9 @@ export class StoryGraphFocusView {
     private syncPortsDom(): void {
         if (!this.nodesLayer) return;
         for (const side of ['left', 'right'] as const) {
-            const node = this.nodesLayer.querySelector(`[data-side="${side}"]`) as HTMLElement | null;
+            const node = this.nodesLayer.querySelector(`[data-side="${side}"]`);
             if (!node) continue;
-            const host = node.querySelector('.story-graph-focus-ports') as HTMLElement | null;
+            const host = node.querySelector('.story-graph-focus-ports');
             if (!host) continue;
             const ports = this.portsFor(side);
             host.empty();
@@ -710,7 +710,7 @@ export class StoryGraphFocusView {
             });
 
             // Place "+" just outside the outermost port fan.
-            const addBtn = node.querySelector('.story-graph-focus-add-port') as HTMLElement | null;
+            const addBtn = node.querySelector<HTMLElement>('.story-graph-focus-add-port');
             if (addBtn) {
                 const other = this.pixelPos(side === 'left' ? 'right' : 'left');
                 const base = Math.atan2(other.y - center.y, other.x - center.x);
@@ -803,7 +803,7 @@ export class StoryGraphFocusView {
                     value: this.strandSearchQuery,
                     'aria-label': t('Search strands'),
                 },
-            }) as HTMLInputElement;
+            });
             search.value = this.strandSearchQuery;
 
             const list = panel.createDiv({ cls: 'story-graph-focus-strand-list' });
@@ -825,7 +825,7 @@ export class StoryGraphFocusView {
             });
 
             if (focusSearch) {
-                requestAnimationFrame(() => {
+                window.requestAnimationFrame(() => {
                     search.focus();
                     const len = search.value.length;
                     search.setSelectionRange(len, len);
@@ -863,8 +863,8 @@ export class StoryGraphFocusView {
         for (const { strand, index } of entries) {
             list.appendChild(this.makeStrandCard(strand, index));
         }
-        requestAnimationFrame(() => {
-            const selected = list.querySelector('.story-graph-focus-strand-card.is-selected') as HTMLElement | null;
+        window.requestAnimationFrame(() => {
+            const selected = list.querySelector('.story-graph-focus-strand-card.is-selected');
             selected?.scrollIntoView({ block: 'nearest' });
         });
     }
@@ -943,7 +943,7 @@ export class StoryGraphFocusView {
                 placeholder: t('Short label'),
                 'aria-label': t('Strand label'),
             },
-        }) as HTMLInputElement;
+        });
         let labelUndoPushed = false;
         labelInput.addEventListener('focus', () => { labelUndoPushed = false; });
         labelInput.addEventListener('input', () => {
@@ -960,7 +960,7 @@ export class StoryGraphFocusView {
         const styleSelect = row.createEl('select', {
             cls: 'story-graph-focus-strand-style',
             attr: { 'aria-label': t('Line style') },
-        }) as HTMLSelectElement;
+        });
         for (const opt of [
             { value: 'solid', label: t('Solid') },
             { value: 'dashed', label: t('Dashed') },
@@ -986,7 +986,7 @@ export class StoryGraphFocusView {
                 value: strand.color,
                 'aria-label': t('Color'),
             },
-        }) as HTMLInputElement;
+        });
         let colorUndoPushed = false;
         color.addEventListener('pointerdown', () => { colorUndoPushed = false; });
         color.addEventListener('input', () => {
@@ -1305,7 +1305,7 @@ export class StoryGraphFocusView {
         if (lines.length === 0) return;
 
         const useReverse = (opts?.tangentX ?? 1) < 0 && !!opts?.reverseD;
-        const d = useReverse ? opts!.reverseD! : pathD;
+        const d = useReverse ? opts.reverseD! : pathD;
         const id = `${pathId}${useReverse ? '-r' : ''}`;
 
         const guide = activeDocument.createElementNS(SVG_NS, 'path');
@@ -1367,25 +1367,6 @@ export class StoryGraphFocusView {
         parent.appendChild(poly);
     }
 
-    /** Point on circle around `from` facing `to`. */
-    private rimPoint(
-        from: { x: number; y: number },
-        to: { x: number; y: number },
-        radius: number,
-    ): { x: number; y: number; ux: number; uy: number } {
-        const dx = to.x - from.x;
-        const dy = to.y - from.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const ux = dx / len;
-        const uy = dy / len;
-        return {
-            x: from.x + ux * radius,
-            y: from.y + uy * radius,
-            ux,
-            uy,
-        };
-    }
-
     private stageSize(): { w: number; h: number } {
         const rect = this.stage?.getBoundingClientRect();
         return {
@@ -1415,7 +1396,7 @@ export class StoryGraphFocusView {
         const right = this.pixelPos('right');
 
         for (const side of ['left', 'right'] as const) {
-            const node = this.nodesLayer.querySelector(`[data-side="${side}"]`) as HTMLElement | null;
+            const node = this.nodesLayer.querySelector<HTMLElement>(`[data-side="${side}"]`);
             if (!node) continue;
             const center = side === 'left' ? left : right;
             node.style.left = `${center.x}px`;
@@ -1727,7 +1708,7 @@ export class StoryGraphFocusView {
                 placeholder: t('Short label'),
                 'aria-label': t('Strand label'),
             },
-        }) as HTMLInputElement;
+        });
         input.value = strand.label;
         input.style.left = `${midX}px`;
         input.style.top = `${midY}px`;
@@ -1767,7 +1748,7 @@ export class StoryGraphFocusView {
         input.addEventListener('pointerdown', (e) => e.stopPropagation());
 
         // Focus after layout so the caret is visible.
-        requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
             input.focus();
             input.select();
         });
@@ -1782,7 +1763,7 @@ export class StoryGraphFocusView {
     private addStrandBetweenPorts(
         fromSide: 'left' | 'right',
         fromPortId: string,
-        toSide: 'left' | 'right',
+        _toSide: 'left' | 'right',
         toPortId: string,
         recordUndo = true,
     ): void {
@@ -1829,7 +1810,7 @@ export class StoryGraphFocusView {
     private hitTestNode(clientX: number, clientY: number): 'left' | 'right' | null {
         if (!this.nodesLayer) return null;
         for (const side of ['left', 'right'] as const) {
-            const node = this.nodesLayer.querySelector(`[data-side="${side}"]`) as HTMLElement | null;
+            const node = this.nodesLayer.querySelector(`[data-side="${side}"]`);
             if (!node) continue;
             const r = node.getBoundingClientRect();
             const pad = 12;

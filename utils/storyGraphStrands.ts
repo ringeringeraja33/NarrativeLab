@@ -267,7 +267,7 @@ export function normalizeStoryGraphFocusBundle(
 export function strandsForFocusOrientation(
     bundle: StoryGraphFocusBundle | undefined,
     leftPath: string,
-    rightPath: string,
+    _rightPath: string,
 ): StoryGraphStrand[] {
     if (!bundle) return [];
     const left = normalizePath(leftPath);
@@ -292,7 +292,7 @@ export function strandsForFocusOrientation(
 export function portsForFocusOrientation(
     bundle: StoryGraphFocusBundle | undefined,
     leftPath: string,
-    rightPath: string,
+    _rightPath: string,
 ): { leftPorts: StoryGraphFocusPort[]; rightPorts: StoryGraphFocusPort[] } {
     if (!bundle) {
         return { leftPorts: [createFocusPort()], rightPorts: [createFocusPort()] };

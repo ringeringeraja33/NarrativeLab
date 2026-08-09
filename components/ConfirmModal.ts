@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { Modal, App, Setting } from 'obsidian';
 import { t } from '../utils/i18n';
 
@@ -42,14 +41,14 @@ export function openConfirmModal(app: App, opts: ConfirmModalOptions): void {
 
     new Setting(modal.contentEl)
         .addButton(btn => {
-            btn.setButtonText(opts.cancelLabel ?? 'Cancel')
+            btn.setButtonText(opts.cancelLabel ?? t('Cancel'))
                 .onClick(() => {
                     modal.close();
                     opts.onCancel?.();
                 });
         })
         .addButton(btn => {
-            const b = btn.setButtonText(opts.confirmLabel ?? 'Confirm');
+            const b = btn.setButtonText(opts.confirmLabel ?? t('Confirm'));
             if (opts.confirmClass === 'mod-cta') {
                 b.setCta();
             } else {
@@ -63,4 +62,3 @@ export function openConfirmModal(app: App, opts: ConfirmModalOptions): void {
 
     modal.open();
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

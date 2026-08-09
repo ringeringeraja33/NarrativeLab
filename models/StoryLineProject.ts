@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 import { FilterPreset } from './Scene';
 
 /**
@@ -149,6 +149,14 @@ export const LEGACY_SYSTEM_BASES_FOLDER = 'System/Bases';
 /** Default attachment folder name inside each project root */
 export const DEFAULT_ATTACHMENT_FOLDER = 'Attachments';
 
+/** Only these Library categories are created for a brand-new project. */
+export const DEFAULT_PROJECT_LIBRARY_FOLDERS: Readonly<Record<'characters' | 'locations', string>> = Object.freeze({
+    characters: 'Characters',
+    locations: 'Locations',
+});
+/** Internal catch-all stays available but is hidden in a new project's tab bar. */
+export const DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES: readonly string[] = Object.freeze(['uncategorized']);
+
 /**
  * Build derived folder paths from a root folder and project title.
  */
@@ -236,4 +244,3 @@ export function deriveProjectFoldersFromFilePath(
         attachmentFolder: `${baseFolder}/${DEFAULT_ATTACHMENT_FOLDER}`,
     };
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

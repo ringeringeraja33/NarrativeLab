@@ -226,6 +226,7 @@ const nodeTypes = {
   Marker: { badge: "M", color: "#7fdbca", width: 170 },
   Event: { badge: "E", color: DEFAULT_EVENT_FRAME_COLOR, width: 420 }
 };
+const BASIC_NODE_TYPE_SET = new Set(["Content", "Dialog", "Choice", "Event"]);
 
 const SPECIAL_EDITOR_NODE_TYPES = ["Choice", "Dialog"];
 const NODE_TYPE_TEMPLATES = new Set(["node", "dialog", "choice", "frame"]);
@@ -1255,9 +1256,11 @@ const uiTranslations = {
     "Collapse left sidebar": "折叠左侧栏",
     "Collapse right sidebar": "折叠右侧栏",
     "Create": "创建",
+    "Click to edit": "点击编辑",
     "CSV": "CSV",
     "Dark": "深色",
     "Delete": "删除",
+    "Delete \"{name}\"?": "确定删除“{name}”吗？",
     "Delete character": "删除角色",
     "Delete choice": "删除选项",
     "Delete frame": "删除框架",
@@ -1285,7 +1288,9 @@ const uiTranslations = {
     "Condition added.": "已添加条件。",
     "Condition expression is empty.": "条件表达式为空。",
     "Condition expression": "条件表达式",
+    "Invalid condition syntax": "条件语法无效",
     "Content": "内容",
+    "Entry": "起始节点",
     "Choices": "选项",
     "Custom fields": "自定义字段",
     "Add field": "添加字段",
@@ -1293,7 +1298,7 @@ const uiTranslations = {
     "Field name": "字段名",
     "Field value": "字段值",
     "Remove field": "删除字段",
-    "No custom fields yet. Fields sync to the entry's markdown frontmatter.": "还没有自定义字段。字段会同步到条目 markdown 文件的 frontmatter。",
+    "No custom fields yet. Fields sync to the entry's markdown frontmatter.": "还没有自定义字段。字段会同步到条目 Markdown 文件的 YAML 属性。",
     "Field name {key} is reserved.": "字段名 {key} 为保留字段。",
     "Category fields": "分类字段模板",
     "Library": "资料库",
@@ -1316,6 +1321,8 @@ const uiTranslations = {
     "Field {key} added to {count} entries.": "字段 {key} 已添加到 {count} 个条目。",
     "Field {key} removed from the template. Entry values are kept.": "已从模板移除字段 {key}，条目中的已有值保留。",
     "Recent cards": "刚刚经过的卡片",
+    "Untitled": "未命名",
+    "You": "你",
     "Showing the last {count} cards.": "仅显示最近 {count} 张卡片。",
     "Return to this card": "回到此卡片",
     "Rewind the story to this card. Later steps are discarded.": "回到这张卡片重新开始。之后的步骤会被丢弃。",
@@ -1438,6 +1445,13 @@ const uiTranslations = {
     "File": "文件",
     "Fields, one per line": "字段，每行一个",
     "Files": "文件",
+    "Workspace": "工作区",
+    "Basic": "基础",
+    "Advanced": "高级",
+    "Show advanced tools": "显示高级工具",
+    "Use basic tools": "使用基础工具",
+    "Advanced tools shown.": "已显示高级工具。",
+    "Basic tools shown.": "已显示基础工具。",
     "Find": "查找",
     "Find character": "查找角色",
     "Find library entries": "查找资料",
@@ -1540,6 +1554,8 @@ const uiTranslations = {
     "Node choose": "节点选择时",
     "Node color": "节点颜色",
     "Node Library": "节点库",
+    "Manage node types": "管理节点类型",
+    "More node actions": "更多节点操作",
     "Node visit": "节点进入时",
     "Nodes": "节点",
     "Notes": "笔记",
@@ -1576,6 +1592,25 @@ const uiTranslations = {
     "Dock preview to the right": "将演示停靠回右侧",
     "Project": "项目",
     "Project File": "项目文件",
+    "More export and import options": "更多导入与导出选项",
+    "Sync to .canvas": "同步到 .canvas",
+    "Read from .canvas": "从 .canvas 回读",
+    "Create or update the paired Obsidian Canvas": "创建或更新同名的 Obsidian 原生画布",
+    "Read positions, groups, and ordinary links from the paired Obsidian Canvas": "从同名 Obsidian 原生画布回读坐标、分组和普通连线",
+    "Obsidian Canvas": "Obsidian 画布",
+    "Replace paired Obsidian Canvas?": "替换同名 Obsidian 画布？",
+    "The file {path} already exists. Replacing it rebuilds the visual projection from the current .ncanvas project.": "文件 {path} 已存在。替换后会按当前 .ncanvas 项目重新生成可视投影。",
+    "Replace .canvas": "替换 .canvas",
+    "Apply native Canvas layout?": "应用原生画布布局？",
+    "Coordinates, sizes, group membership, and ordinary links will be read from {path}. Ordinary links missing there will be removed; narrative nodes, Choice branches, conditions, variables, and Playbook data stay in .ncanvas.": "将从 {path} 回读坐标、尺寸、分组归属和普通连线；原生画布里缺失的普通连线会从 .ncanvas 移除。叙事节点、Choice 分支、条件、变量和 Playbook 数据仍以 .ncanvas 为准。",
+    "Apply layout": "应用布局",
+    "Native Canvas updated: {nodes} nodes, {groups} groups, {edges} edges.": "原生画布已更新：{nodes} 个节点、{groups} 个分组、{edges} 条连线。",
+    "Native Canvas layout applied: {nodes} nodes updated, {added} links added, {removed} links removed; {semantic} narrative links preserved.": "原生画布布局已应用：更新 {nodes} 个节点，新增 {added} 条普通连线，移除 {removed} 条普通连线，保留 {semantic} 条叙事连线。",
+    "No paired Obsidian Canvas was found at {path}.": "未找到同名 Obsidian 画布：{path}。",
+    "This feature requires the Obsidian plugin.": "此功能只能在 Obsidian 插件中使用。",
+    "Could not update the paired Obsidian Canvas.": "无法更新同名 Obsidian 画布。",
+    "Could not read the paired Obsidian Canvas.": "无法读取同名 Obsidian 画布。",
+    "Open current inspector in center": "在中央打开当前检查器",
     "Project name": "项目名称",
     "Project notes": "项目备注",
     "Project title": "项目标题",
@@ -2375,6 +2410,7 @@ function createInitialRuntimeState() {
   inlineEditLinkInitialValue: "",
   panel: "project",
   activeFileId: "adventure",
+  uiMode: "basic",
   language: "en",
   theme: "dark",
   exportImageScale: 1,
@@ -2681,6 +2717,9 @@ async function initNarrativeCanvas() {
     const hostTheme = getHostTheme();
     if (hostTheme) state.theme = hostTheme;
     const restoredView = await loadSavedState(false);
+    if (!isAdvancedUiMode() && ["events", "variables"].includes(state.activeFileId)) {
+      state.activeFileId = "adventure";
+    }
     resetHistory();
     renderAll();
     bindEvents();
@@ -2727,6 +2766,7 @@ function bindDom(scopeOverride = null) {
   dom.undoButton = dom.scope.querySelector("#undoButton");
   dom.redoButton = dom.scope.querySelector("#redoButton");
   dom.themeToggle = dom.scope.querySelector("#themeToggle");
+  dom.uiModeToggle = dom.scope.querySelector("#uiModeToggle");
   dom.languageToggle = dom.scope.querySelector("#languageToggle");
   dom.exportImageScale = dom.scope.querySelector("#exportImageScale");
   dom.snapGridButton = dom.scope.querySelector("#snapGridButton");
@@ -3335,7 +3375,7 @@ function handleFloatingWindowOutsideClick(event) {
     play: eventIsInside(getFloatingWindowElement("play")),
     ai: eventIsInside(getFloatingWindowElement("ai"))
   };
-  const inspectorLauncher = target.closest("[data-action='float-inspector-panel']");
+  const inspectorLauncher = target.closest("[data-action='float-inspector-panel'], [data-action='float-current-inspector']");
   const aiLauncher = target.closest("#aiFloatingButton");
   ["inspector", "play", "ai"].forEach((kind) => {
     if (!isFloatingWindowActive(kind) || isFloatingWindowPinned(kind) || inside[kind]) return;
@@ -4323,8 +4363,25 @@ function isAiNarrativeKnowledgeEnabled() {
   }
 }
 
+function isAdvancedUiMode() {
+  return state.uiMode === "advanced";
+}
+
+function toggleUiMode() {
+  state.uiMode = isAdvancedUiMode() ? "basic" : "advanced";
+  if (!isAdvancedUiMode()) {
+    if (["events", "variables"].includes(state.activeFileId)) state.activeFileId = "adventure";
+    if (state.aiOpen) toggleAiWindow(false);
+  }
+  invalidateCanvasSurface();
+  invalidateDocumentSurfaces();
+  renderAll();
+  setStatus(isAdvancedUiMode() ? "Advanced tools shown." : "Basic tools shown.");
+}
+
 function renderShellState() {
   dom.root?.setAttribute("data-theme", state.theme);
+  dom.root?.setAttribute("data-ui-mode", isAdvancedUiMode() ? "advanced" : "basic");
   dom.root?.setAttribute("lang", state.language === "zh" ? "zh-CN" : "en");
   applySpellCheckSetting();
   dom.themeHost?.setAttribute("data-theme", state.theme);
@@ -4344,6 +4401,13 @@ function renderShellState() {
     dom.languageToggle.dataset.activeLang = state.language;
     dom.languageToggle.title = nextLanguageLabel;
     dom.languageToggle.setAttribute("aria-label", nextLanguageLabel);
+  }
+  if (dom.uiModeToggle) {
+    const advanced = isAdvancedUiMode();
+    dom.uiModeToggle.textContent = t(advanced ? "Advanced" : "Basic");
+    dom.uiModeToggle.setAttribute("aria-pressed", String(advanced));
+    dom.uiModeToggle.title = t(advanced ? "Use basic tools" : "Show advanced tools");
+    dom.uiModeToggle.setAttribute("aria-label", dom.uiModeToggle.title);
   }
   if (dom.exportImageScale) {
     dom.exportImageScale.value = getExportImageScalePreset().value;
@@ -4426,8 +4490,9 @@ function localizeStaticShell() {
 
   [
     [".project-file-section h2", "Project File"],
-    [".sidebar-left .nav-section:nth-of-type(2) h2", "Files"],
+    [".sidebar-left .nav-section:nth-of-type(2) h2", "Workspace"],
     [".palette h2", "Node Library"],
+    [".custom-node-form > summary", "Manage node types"],
     [".workspace-file-label .pane-kicker", "File"],
     [".sidebar-right .pane-kicker", "Inspector"],
     ["[data-panel='project']", "Project"],
@@ -4500,6 +4565,8 @@ function localizeStaticShell() {
     [".project-history", "aria-label", "History"],
     ["#fullscreenButton", "title", "Enter immersive fullscreen"],
     ["#fullscreenButton", "aria-label", "Enter immersive fullscreen"],
+    ["[data-action='float-current-inspector']", "title", "Open current inspector in center"],
+    ["[data-action='float-current-inspector']", "aria-label", "Open current inspector in center"],
     ["[data-float-panel='project']", "title", "Open Project in center"],
     ["[data-float-panel='project']", "aria-label", "Open Project in center"],
     ["[data-float-panel='node']", "title", "Open Node in center"],
@@ -10033,7 +10100,7 @@ function renderVariableRow(key, value) {
 }
 
 function renderPalette() {
-  const entries = getNodeTypeEntries();
+  const entries = getAddableNodeTypeEntries();
   const visibleRows = entries.length ? entries
     .map(([type, meta]) => {
       const deleteControl = meta.system
@@ -10052,10 +10119,12 @@ function renderPalette() {
     })
     .join("") : `<div class="custom-node-empty">${t("No visible node types.")}</div>`;
   dom.palette.innerHTML = `
-    <div class="palette-tools">
-      <button class="small-button" data-action="restore-default-node-types" type="button">${t("Restore default types")}</button>
-    </div>
-    ${renderHiddenNodeTypeSection()}
+    ${isAdvancedUiMode() ? `
+      <div class="palette-tools">
+        <button class="small-button" data-action="restore-default-node-types" type="button">${t("Restore default types")}</button>
+      </div>
+      ${renderHiddenNodeTypeSection()}
+    ` : ""}
     ${visibleRows}
   `;
 }
@@ -10854,12 +10923,19 @@ function getNodeTypeEntries(includeType = null) {
       kind: typeDef.kind,
       template: getNodeTypeTemplate(typeDef),
       fields: typeDef.fields || [],
-      hidden: Boolean(typeDef.hidden)
+      hidden: Boolean(typeDef.hidden),
+      system: Boolean(typeDef.system)
     }]);
   if (includeType && !entries.some(([type]) => type === includeType)) {
     entries.push([includeType, { ...getNodeMeta(includeType), removed: true }]);
   }
   return entries;
+}
+
+function getAddableNodeTypeEntries() {
+  const entries = getNodeTypeEntries();
+  if (isAdvancedUiMode()) return entries;
+  return entries.filter(([type, meta]) => BASIC_NODE_TYPE_SET.has(type) || meta.custom);
 }
 
 function getHiddenNodeTypeEntries() {
@@ -11951,7 +12027,14 @@ function closeFloatingInspector(options = {}) {
 }
 
 function renderProjectExportControls() {
+  const nativeCanvasActions = window.NarrativeCanvasHost?.writeNativeCanvasProjection
+    ? [
+      { action: "sync-native-canvas", label: "Sync to .canvas", title: "Create or update the paired Obsidian Canvas" },
+      { action: "read-native-canvas", label: "Read from .canvas", title: "Read positions, groups, and ordinary links from the paired Obsidian Canvas" }
+    ]
+    : [];
   const actions = [
+    ...nativeCanvasActions,
     { action: "export-json", label: "Project .json", title: "Export editable project file (.json)" },
     { action: "export-story-md", label: "Story .md", title: "Export readable story text (.md)" },
     { action: "export-story-layout", label: "Layout .json", title: "Export canvas layout sidecar (.json)" },
@@ -11974,7 +12057,8 @@ function renderProjectExportControls() {
     }
   ];
   return `
-    <div class="project-export-controls">
+    <details class="project-export-controls nc-disclosure nc-advanced-only">
+      <summary>${escapeHtml(t("More export and import options"))}</summary>
       ${sections.map((section) => `
         <section class="project-control-group" role="group">
           <div class="project-control-grid">
@@ -11989,7 +12073,7 @@ function renderProjectExportControls() {
           </div>
         </section>
       `).join("")}
-    </div>
+    </details>
   `;
 }
 
@@ -12032,7 +12116,6 @@ function renderProjectPanel() {
         <div class="stat-card"><div class="stat-label">${t("Nodes")}</div><div class="stat-value">${nodeCount}</div></div>
         <div class="stat-card"><div class="stat-label">${t("Links")}</div><div class="stat-value">${links}</div></div>
         <div class="stat-card"><div class="stat-label">${t("Variables")}</div><div class="stat-value">${variableCount}</div></div>
-        <div class="stat-card"><div class="stat-label">${t("Zoom")}</div><div class="stat-value">${Math.round(state.view.scale * 100)}%</div></div>
       </div>
     </div>
   `;
@@ -12075,13 +12158,16 @@ function renderNodePanel(node) {
         ${renderTypeFields(node)}
         ${renderCustomFields(node)}
       `}
-      <div class="button-row">
-        ${isFrameNode(node) ? `<button class="small-button" data-action="open-frame-canvas" data-node-id="${escapeAttr(node.id)}">${t("Open frame canvas")}</button>` : ""}
-        <button class="small-button" data-action="duplicate-node">${t("Duplicate")}</button>
-        <button class="small-button" data-action="focus-node">${t("Canvas focus")}</button>
-        ${!isFrameNode(node) ? `<button class="small-button" data-action="focus-node-document">${t("Document focus")}</button>` : ""}
-        <button class="small-button danger-button" data-action="delete-node">${t("Delete node")}</button>
-      </div>
+      ${isFrameNode(node) ? `<div class="button-row"><button class="small-button" data-action="open-frame-canvas" data-node-id="${escapeAttr(node.id)}">${t("Open frame canvas")}</button></div>` : ""}
+      <details class="node-secondary-actions nc-disclosure">
+        <summary>${escapeHtml(t("More node actions"))}</summary>
+        <div class="button-row">
+          <button class="small-button" data-action="duplicate-node">${t("Duplicate")}</button>
+          <button class="small-button" data-action="focus-node">${t("Canvas focus")}</button>
+          ${!isFrameNode(node) ? `<button class="small-button" data-action="focus-node-document">${t("Document focus")}</button>` : ""}
+          <button class="small-button danger-button" data-action="delete-node">${t("Delete node")}</button>
+        </div>
+      </details>
     </div>
   `;
   if (keepScroll && scroller) scroller.scrollTop = scrollTop;
@@ -13920,6 +14006,10 @@ function handleAction(target) {
     openFloatingInspector(target.dataset.floatPanel);
     return;
   }
+  if (action === "float-current-inspector") {
+    openFloatingInspector(state.panel);
+    return;
+  }
   if (action === "close-floating-inspector") {
     closeFloatingInspector();
     return;
@@ -14089,10 +14179,13 @@ function handleAction(target) {
   if (action === "zoom-in") setZoom(state.view.scale + 0.1);
   if (action === "zoom-out") setZoom(state.view.scale - 0.1);
   if (action === "toggle-snap-grid") toggleSnapToGrid();
+  if (action === "toggle-ui-mode") toggleUiMode();
   if (action === "toggle-theme") toggleTheme();
   if (action === "toggle-language") toggleLanguage();
   if (action === "center-view") centerView();
   if (action === "export-all") exportAll();
+  if (action === "sync-native-canvas") void syncProjectToNativeCanvas();
+  if (action === "read-native-canvas") void readProjectFromNativeCanvas();
   if (action === "export-play-session") exportPlaySession();
   if (action === "export-json") exportJson();
   if (action === "export-story-md") exportStoryMarkdown();
@@ -14187,6 +14280,92 @@ async function openProjectFileFromUiConfirmed() {
   state.pendingImportKind = "json";
   if (dom.fileInput) dom.fileInput.accept = "application/json,.json,.ncanvas,.narrativecanvas";
   dom.fileInput?.click();
+}
+
+async function syncProjectToNativeCanvas(options = {}) {
+  const host = window.NarrativeCanvasHost;
+  if (!host?.writeNativeCanvasProjection) {
+    setStatus("This feature requires the Obsidian plugin.");
+    return;
+  }
+  try {
+    const result = await host.writeNativeCanvasProjection(cloneProject(normalizeProject(state.project)), {
+      overwrite: options.overwrite === true
+    });
+    if (result?.reason === "exists") {
+      showGenericConfirm({
+        kicker: "Obsidian Canvas",
+        title: "Replace paired Obsidian Canvas?",
+        message: t("The file {path} already exists. Replacing it rebuilds the visual projection from the current .ncanvas project.", { path: result.path || ".canvas" }),
+        confirmLabel: "Replace .canvas",
+        danger: true,
+        onConfirm: () => syncProjectToNativeCanvas({ overwrite: true })
+      });
+      return;
+    }
+    const report = result?.report || {};
+    const message = t("Native Canvas updated: {nodes} nodes, {groups} groups, {edges} edges.", {
+      nodes: report.nodeCount || 0,
+      groups: report.groupCount || 0,
+      edges: report.edgeCount || 0
+    });
+    setStatus(message);
+    host.showNotice?.(message);
+  } catch (error) {
+    console.error(error);
+    const message = t("Could not update the paired Obsidian Canvas.");
+    setStatus(message);
+    host.showNotice?.(message);
+  }
+}
+
+async function readProjectFromNativeCanvas() {
+  const host = window.NarrativeCanvasHost;
+  if (!host?.readNativeCanvasProjection) {
+    setStatus("This feature requires the Obsidian plugin.");
+    return;
+  }
+  try {
+    const result = await host.readNativeCanvasProjection(cloneProject(normalizeProject(state.project)));
+    if (result?.reason === "missing") {
+      const message = t("No paired Obsidian Canvas was found at {path}.", { path: result.path || ".canvas" });
+      setStatus(message);
+      host.showNotice?.(message);
+      return;
+    }
+    if (!result?.ok || !result.project) throw new Error("Native Canvas conversion returned no project.");
+    showGenericConfirm({
+      kicker: "Obsidian Canvas",
+      title: "Apply native Canvas layout?",
+      message: t("Coordinates, sizes, group membership, and ordinary links will be read from {path}. Ordinary links missing there will be removed; narrative nodes, Choice branches, conditions, variables, and Playbook data stay in .ncanvas.", { path: result.path || ".canvas" }),
+      confirmLabel: "Apply layout",
+      danger: false,
+      onConfirm: () => applyNativeCanvasProjection(result)
+    });
+  } catch (error) {
+    console.error(error);
+    const message = t("Could not read the paired Obsidian Canvas.");
+    setStatus(message);
+    host.showNotice?.(message);
+  }
+}
+
+function applyNativeCanvasProjection(result) {
+  const before = getHistorySnapshot();
+  state.project = normalizeProject(result.project);
+  markProjectStructureChanged({ nodeTypes: true });
+  commitHistoryFromSnapshot(before);
+  setProjectDirty(true);
+  renderAll();
+  const report = result.report || {};
+  const message = t("Native Canvas layout applied: {nodes} nodes updated, {added} links added, {removed} links removed; {semantic} narrative links preserved.", {
+    nodes: report.updatedNodeCount || 0,
+    added: report.addedOrdinaryEdgeCount || 0,
+    removed: report.removedOrdinaryEdgeCount || 0,
+    semantic: report.preservedSemanticEdgeCount || 0
+  });
+  setStatus(message);
+  window.NarrativeCanvasHost?.showNotice?.(message);
 }
 
 function importStoryMarkdownFromUi() {
@@ -14521,13 +14700,13 @@ function readNodeSpawnPoint(target) {
 }
 
 function getRadialFrameNodeType() {
-  const entries = getNodeTypeEntries();
+  const entries = getAddableNodeTypeEntries();
   const frameEntry = entries.find(([type]) => type === "Frame") || entries.find(([, meta]) => isFrameKind(meta.kind));
   return frameEntry ? frameEntry[0] : "";
 }
 
 function renderCanvasRadialAddList(spawn) {
-  const entries = getNodeTypeEntries();
+  const entries = getAddableNodeTypeEntries();
   if (!entries.length) return `<div class="radial-add-empty">${t("No visible node types.")}</div>`;
   return entries.map(([type, meta]) => `
     <button class="radial-add-item" type="button" role="menuitem" data-action="add-node" data-type="${escapeAttr(type)}" data-spawn-x="${escapeAttr(String(spawn.x))}" data-spawn-y="${escapeAttr(String(spawn.y))}">
@@ -14816,6 +14995,7 @@ function reparentChildrenOfDeletedFrames(deletedIds) {
 
 function selectFile(fileId) {
   if (!fileViews[fileId]) return;
+  if (["events", "variables"].includes(fileId)) state.uiMode = "advanced";
   if (state.activeFileId === fileId) {
     if (fileId === "characters" && state.codexSelectedEntryId) closeCodexEntryDetail();
     return;

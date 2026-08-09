@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+
 /**
  * Scene status progression.
  * Built-in statuses are the canonical six plus any user-defined custom ones.
@@ -254,6 +254,10 @@ export function formatSceneLength(
  * A reusable scene template with pre-filled defaults and body text
  */
 export interface SceneTemplate {
+    /** Stable identifier for user-created templates. Built-ins may omit it. */
+    id?: string;
+    /** Global templates live in plugin settings; project templates live in System/Templates/. */
+    scope?: 'global' | 'project';
     /** Template display name */
     name: string;
     /** Short description shown in the UI */
@@ -370,6 +374,10 @@ export interface BeatDefinition {
  * A named beat sheet template that pre-populates act/chapter structure
  */
 export interface BeatSheetTemplate {
+    /** Stable identifier for user-created templates. Built-ins may omit it. */
+    id?: string;
+    /** Global templates live in plugin settings; project templates live in System/Templates/. */
+    scope?: 'global' | 'project';
     /** Template display name */
     name: string;
     /** One-line summary */
@@ -384,6 +392,58 @@ export interface BeatSheetTemplate {
     chapterLabels: Record<number, string>;
     /** Detailed beat definitions for the template */
     beats: BeatDefinition[];
+}
+
+export type TemplateScope = 'global' | 'project';
+
+/** A reusable project setup that can restore structure, Library categories and custom fields. */
+export interface ProjectPresetTemplate {
+    id: string;
+    name: string;
+    description?: string;
+    scope: TemplateScope;
+    structureTemplateId?: string;
+    createPlaceholderScenes?: boolean;
+    placeholderSceneTemplateId?: string;
+    libraryCategories?: {
+        enabledCategories: string[];
+        customCategories: Array<{
+            id: string;
+            label: string;
+            icon: string;
+            showInSidebar?: boolean;
+            hasProfilePage?: boolean;
+            preset?: boolean;
+        }>;
+        categoryOrder: string[];
+        hiddenFixedCategories: string[];
+        deletedPresetCategories: string[];
+    };
+    fieldTemplates?: Array<Record<string, unknown>>;
+    /** Per-Library-category profile field names. */
+    libraryFieldTemplates?: Record<string, string[]>;
+}
+
+export type BeatSheetApplyMode = 'merge' | 'replace';
+export type ExistingSceneStructureHandling = 'keep' | 'remap' | 'uncategorized';
+
+export interface BeatSheetApplyOptions {
+    mode?: BeatSheetApplyMode;
+    existingScenes?: ExistingSceneStructureHandling;
+    createPlaceholderScenes?: boolean;
+    sceneTemplate?: SceneTemplate;
+}
+
+export interface BeatSheetApplyPreview {
+    mode: BeatSheetApplyMode;
+    existingScenes: ExistingSceneStructureHandling;
+    actsBefore: number;
+    actsAfter: number;
+    chaptersBefore: number;
+    chaptersAfter: number;
+    scenesToRemap: number;
+    scenesToUncategorize: number;
+    placeholdersToCreate: number;
 }
 
 /**
@@ -783,4 +843,3 @@ export function isWrittenLikeStatus(status: string | undefined): boolean {
     if (status === 'written' || status === 'revised' || status === 'final') return true;
     return _customStatuses.some(cs => cs.id === status && cs.countsAsWritten === true);
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */

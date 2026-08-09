@@ -1,11 +1,11 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { Scene, SceneStatus, SceneTemplate, BUILTIN_SCENE_TEMPLATES, getStatusOrder, getStatusConfig } from '../models/Scene';
 import { SceneManager } from '../services/SceneManager';
 import type SceneCardsPlugin from '../main';
 import { renderAutocompleteInput, renderTagPillInput } from './InlineSuggest';
 import { isPureNumericActChapter, nextNumericActChapter, getActDisplayLabel } from '../utils/actChapter';
 import { App, Modal, Notice, Setting } from 'obsidian';
-import { t } from '../utils/i18n';
+import { localizeSceneTemplate, t } from '../utils/i18n';
 
 /**
  * Modal for quickly creating new scenes
@@ -43,13 +43,16 @@ export class QuickAddModal extends Modal {
         contentEl.createEl('h2', { text: t('Create New Scene') });
 
         // Template selector
-        const allTemplates = [...BUILTIN_SCENE_TEMPLATES, ...this.plugin.settings.sceneTemplates];
+        const allTemplates = [
+            ...BUILTIN_SCENE_TEMPLATES.map(localizeSceneTemplate),
+            ...this.plugin.templateCenter.getSceneTemplates(),
+        ];
         new Setting(contentEl)
             .setName(t('Template'))
             .setDesc(t('Pre-fill fields and body from a template'))
             .addDropdown(dd => {
                 dd.addOption('', t('(none)'));
-                allTemplates.forEach((tpl, idx) => dd.addOption(String(idx), t(tpl.name)));
+                allTemplates.forEach((tpl, idx) => dd.addOption(String(idx), tpl.name));
                 dd.onChange(value => {
                     this.selectedTemplate = value === '' ? null : allTemplates[Number(value)];
                 });
@@ -164,8 +167,9 @@ export class QuickAddModal extends Modal {
             placeholder: t('Search characters…'),
         });
 
-        // Location (autocomplete input)
-        const locSetting = new Setting(contentEl).setName(t('Location'));
+        // Scene location (autocomplete input). Keep this wording separate from
+        // the Library category "Locations" (地点) in Chinese.
+        const locSetting = new Setting(contentEl).setName(t('Scene location'));
         const locContainer = locSetting.controlEl.createDiv('sl-quickadd-autocomplete');
         renderAutocompleteInput({
             container: locContainer,
@@ -210,7 +214,7 @@ export class QuickAddModal extends Modal {
 
         // Conflict section wrapper
         const conflictWrapper = contentEl.createDiv('story-line-conflict-section');
-        
+
         // Conflict header with toggle
         const conflictHeader = conflictWrapper.createDiv('story-line-conflict-header');
         const conflictToggle = conflictHeader.createEl('label', { cls: 'story-line-conflict-toggle' });
@@ -360,4 +364,4 @@ export class QuickAddModal extends Modal {
         return (value: string) => displayMap.get(value) || value;
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

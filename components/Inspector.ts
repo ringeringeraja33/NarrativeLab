@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian event handlers intentionally launch async work; matching enable at end of file */
 import { Modal, App, Notice, Component } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { openConfirmModal } from './ConfirmModal';
@@ -303,11 +303,11 @@ export class InspectorComponent {
         // ── Status dropdown (custom with Lucide icons) ──
         const statusSection = this.container.createDiv('inspector-section');
         statusSection.createSpan({ cls: 'inspector-label', text: t('Status: ') });
-        
+
         const statusDropdown = statusSection.createDiv('inspector-status-dropdown');
         const currentStatus = scene.status || 'idea';
         const currentCfg = resolveStatusCfg(currentStatus);
-        
+
         const statusButton = statusDropdown.createEl('button', {
             cls: 'inspector-status-button',
         });
@@ -357,10 +357,10 @@ export class InspectorComponent {
         const inactiveLabel = inactiveSection.createEl('label', { cls: 'inspector-checkbox-row' });
         const inactiveCheckbox = inactiveLabel.createEl('input', { type: 'checkbox' });
         inactiveCheckbox.checked = !!scene.inactive;
-        inactiveLabel.createSpan({ text: t('Inactive scene') });
+        inactiveLabel.createSpan({ text: t('Inactive content') });
         inactiveSection.createDiv({
             cls: 'inspector-help-text',
-            text: t('Inactive scenes stay in the project but are hidden from Manuscript and exports by default.'),
+            text: t('Inactive content stays in the project but is hidden from normal views and exports by default.'),
         });
         inactiveCheckbox.addEventListener('change', async () => {
             const inactive = inactiveCheckbox.checked;
@@ -536,7 +536,7 @@ export class InspectorComponent {
 
         const wcGroup = wcRow.createDiv();
         const useChars = this.plugin.settings.countUnit === 'chars';
-        wcGroup.createSpan({ cls: 'inspector-label', text: useChars ? 'Characters' : 'Words' });
+        wcGroup.createSpan({ cls: 'inspector-label', text: t(useChars ? 'Characters' : 'Words') });
         const wcDisplay = wcGroup.createDiv();
         wcDisplay.setCssStyles({
             marginTop: '4px',
@@ -563,8 +563,6 @@ export class InspectorComponent {
             marginTop: '4px',
         });
 
-        const tagColors = this.plugin.settings.tagColors || {};
-        const scheme = this.plugin.settings.colorScheme;
         const allTagsSorted = this.sceneManager.queryService.getAllTags().sort();
 
         renderTagPillInput({
@@ -882,7 +880,7 @@ export class InspectorComponent {
             const msInput = inputRow.createEl('input', {
                 cls: 'inspector-universal-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder || 'Type to add…' },
+                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : t('Type to add…') },
             });
             msInput.addEventListener('keydown', async (e: KeyboardEvent) => {
                 if (e.key === 'Enter' && msInput.value.trim()) {
@@ -1593,4 +1591,4 @@ class SnapshotLabelModal extends Modal {
         this.contentEl.empty();
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- end of file-wide suppression block opened at line 1 */

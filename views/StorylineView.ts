@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { ButtonComponent, ItemView, Menu, MenuItem, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { Scene } from '../models/Scene';
@@ -39,9 +39,6 @@ export class StorylineView extends ItemView {
     private hiddenPlotlines: Set<string> = new Set();
     /** Whether subway scene nodes show plotline pills under the title. */
     private showSubwayTagPills = true;
-    /** Cache key for skip-if-unchanged optimization */
-    private _lastCacheVersion = -1;
-    private _lastRenderKey = '';
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -209,8 +206,6 @@ export class StorylineView extends ItemView {
         obsidian.setIcon(refreshIcon, 'refresh-cw');
         attachTooltip(refreshBtn, t('Refresh plotlines'));
         refreshBtn.addEventListener('click', () => {
-            this._lastCacheVersion = -1;
-            this._lastRenderKey = '';
             this.refresh();
         });
 
@@ -943,7 +938,7 @@ export class StorylineView extends ItemView {
         });
         node.createSpan({
             cls: 'storyline-node-title',
-            text: ` ${scene.title || 'Untitled'}`
+            text: ` ${scene.title || t('Untitled')}`
         });
 
         // Show existing tags as small badges
@@ -1267,7 +1262,7 @@ export class StorylineView extends ItemView {
             available.forEach(scene => {
                 const row = sceneList.createDiv('storyline-scene-picker-row');
                 const cb = row.createEl('input', { type: 'checkbox' });
-                row.createSpan({ text: `[${String(scene.act ?? '?').toString().padStart(2, '0')}-${String(scene.sequence ?? '?').toString().padStart(2, '0')}] ${scene.title || 'Untitled'}` });
+                row.createSpan({ text: `[${String(scene.act ?? '?').toString().padStart(2, '0')}-${String(scene.sequence ?? '?').toString().padStart(2, '0')}] ${scene.title || t('Untitled')}` });
                 cb.addEventListener('change', () => {
                     if (cb.checked) selectedPaths.add(scene.filePath);
                     else selectedPaths.delete(scene.filePath);
@@ -1377,10 +1372,9 @@ export class StorylineView extends ItemView {
         this._pendingRefresh = window.requestAnimationFrame(() => {
             this._pendingRefresh = null;
             if (this.rootContainer) {
-                this._lastCacheVersion = this.sceneManager.cacheVersion;
                 this.renderView(this.rootContainer);
             }
         });
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { ItemView, WorkspaceLeaf, TFile, Notice, Modal, Setting, FuzzySuggestModal } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
@@ -34,6 +34,7 @@ export class ResearchView extends ItemView {
     private activeType: ResearchType | null = null;
     private expandedPost: string | null = null; // filePath of currently expanded post
     private autoMode = false; // auto-suggest mode
+    private includeInactive = false;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, manager: ResearchManager) {
         super(leaf);
@@ -106,6 +107,16 @@ export class ResearchView extends ItemView {
         obsidian.setIcon(linkBtn, 'link');
         linkBtn.title = t('Link an existing vault note');
         linkBtn.addEventListener('click', () => this.openLinkNoteModal());
+
+        const inactiveBtn = header.createEl('button', {
+            cls: `clickable-icon sl-research-inactive-btn ${this.includeInactive ? 'is-active' : ''}`,
+        });
+        obsidian.setIcon(inactiveBtn, this.includeInactive ? 'eye' : 'eye-off');
+        inactiveBtn.title = t(this.includeInactive ? 'Hide inactive content' : 'Include inactive content');
+        inactiveBtn.addEventListener('click', () => {
+            this.includeInactive = !this.includeInactive;
+            this.render();
+        });
 
         // ── Search bar ──
         const searchRow = container.createDiv('sl-research-search-row');
@@ -198,7 +209,7 @@ export class ResearchView extends ItemView {
                 });
                 return;
             }
-            posts = this.manager.autoSuggest(keywords);
+            posts = this.manager.autoSuggest(keywords, this.includeInactive);
             // Apply additional filters
             if (this.activeTag) {
                 const tag = this.activeTag.toLowerCase();
@@ -212,6 +223,7 @@ export class ResearchView extends ItemView {
                 this.searchQuery,
                 this.activeTag ?? undefined,
                 this.activeType ?? undefined,
+                this.includeInactive,
             );
         }
 
@@ -219,8 +231,8 @@ export class ResearchView extends ItemView {
             container.createDiv({
                 cls: 'sl-research-empty',
                 text: this.searchQuery || this.activeTag || this.activeType
-                    ? 'No matching posts.'
-                    : 'No research posts yet. Click + to create one.',
+                    ? t('No matching posts.')
+                    : t('No research posts yet. Click + to create one.'),
             });
             return;
         }
@@ -275,6 +287,10 @@ export class ResearchView extends ItemView {
         }
 
         headerRow.createSpan({ cls: 'sl-research-card-title', text: post.title });
+        if (post.inactive) {
+            headerRow.createSpan({ cls: 'sl-research-card-inactive-badge', text: t('Inactive') });
+            card.addClass('is-inactive');
+        }
 
         // Linked note indicator
         if (post.isLinked) {
@@ -393,7 +409,7 @@ export class ResearchView extends ItemView {
             if (post.researchType === 'question') {
                 const resolveBtn = actions.createEl('button', {
                     cls: 'sl-research-action-btn',
-                    text: post.resolved ? 'Reopen' : 'Resolve',
+                    text: t(post.resolved ? 'Reopen' : 'Resolve'),
                 });
                 resolveBtn.addEventListener('click', async (e) => {
                     e.stopPropagation();
@@ -402,7 +418,7 @@ export class ResearchView extends ItemView {
                 });
             }
 
-            // Delete or Unlink
+            // Disable or unlink. Research files remain in the vault.
             if (post.isLinked) {
                 const unlinkBtn = actions.createEl('button', { cls: 'sl-research-action-btn mod-destructive', text: t('Unlink') });
                 unlinkBtn.addEventListener('click', async (e) => {
@@ -412,10 +428,13 @@ export class ResearchView extends ItemView {
                     this.refresh();
                 });
             } else {
-                const delBtn = actions.createEl('button', { cls: 'sl-research-action-btn mod-destructive', text: t('Delete') });
+                const delBtn = actions.createEl('button', {
+                    cls: `sl-research-action-btn ${post.inactive ? '' : 'mod-destructive'}`,
+                    text: t(post.inactive ? 'Enable' : 'Disable'),
+                });
                 delBtn.addEventListener('click', async (e) => {
                     e.stopPropagation();
-                    await this.manager.deletePost(post.filePath);
+                    await this.manager.setPostActive(post.filePath, !!post.inactive);
                     this.expandedPost = null;
                     this.refresh();
                 });
@@ -502,12 +521,12 @@ export class ResearchView extends ItemView {
             new Setting(dynamicContainer)
                 .setName(t('Title'))
                 .addText(text => {
-                    text.setPlaceholder(
+                    text.setPlaceholder(t(
                         researchType === 'question' ? 'Your question…'
                             : researchType === 'webclip' ? 'Page title or description'
                             : researchType === 'image' ? 'Image title or caption'
                             : 'Research topic'
-                    ).setValue(title).onChange(v => { title = v; });
+                    )).setValue(title).onChange(v => { title = v; });
                     if (!title) window.setTimeout(() => text.inputEl.focus(), 50);
                 });
 
@@ -522,6 +541,7 @@ export class ResearchView extends ItemView {
                 new Setting(dynamicContainer)
                     .setName(t('URL'))
                     .addText(text => {
+                        // eslint-disable-next-line obsidianmd/ui/sentence-case -- URL schemes are conventionally lowercase.
                         text.setPlaceholder('https://...')
                             .setValue(sourceUrl).onChange(v => { sourceUrl = v; });
                     });
@@ -531,8 +551,10 @@ export class ResearchView extends ItemView {
                 // Image picker setting
                 const imageSetting = new Setting(dynamicContainer)
                     .setName(t('Image'))
-                    .setDesc(imagePath ? `Selected: ${imagePath.split('/').pop()}` : 'No image selected');
-                
+                    .setDesc(imagePath
+                        ? t('Selected: {name}', { name: imagePath.split('/').pop() ?? imagePath })
+                        : t('No image selected'));
+
                 // Image preview
                 if (imagePath) {
                     const previewEl = imageSetting.controlEl.createDiv('sl-research-image-preview');
@@ -551,7 +573,7 @@ export class ResearchView extends ItemView {
                 }
 
                 imageSetting.addButton(btn => {
-                    btn.setButtonText(imagePath ? 'Change Image' : 'Select Image');
+                    btn.setButtonText(t(imagePath ? 'Change Image' : 'Select Image'));
                     btn.setClass('mod-cta');
                     btn.onClick(async () => {
                         const project = this.plugin.sceneManager?.activeProject;
@@ -588,13 +610,13 @@ export class ResearchView extends ItemView {
 
             if (researchType === 'note' || researchType === 'question') {
                 new Setting(dynamicContainer)
-                    .setName(researchType === 'question' ? 'Details' : 'Notes')
+                    .setName(t(researchType === 'question' ? 'Details' : 'Notes'))
                     .addTextArea(text => {
-                        text.setPlaceholder(
+                        text.setPlaceholder(t(
                             researchType === 'question'
                                 ? 'Context or details about the question…'
                                 : 'Your research notes…'
-                        ).setValue(body).onChange(v => { body = v; });
+                        )).setValue(body).onChange(v => { body = v; });
                         text.inputEl.rows = 6;
                         text.inputEl.setCssStyles({ width: '100%' });
                     });
@@ -689,6 +711,7 @@ export class ResearchView extends ItemView {
             new Setting(modal.contentEl)
                 .setName(t('URL'))
                 .addText(text => {
+                    // eslint-disable-next-line obsidianmd/ui/sentence-case -- URL schemes are conventionally lowercase.
                     text.setPlaceholder('https://...')
                         .setValue(sourceUrl).onChange(v => { sourceUrl = v; });
                 });
@@ -697,7 +720,9 @@ export class ResearchView extends ItemView {
         if (post.researchType === 'image') {
             const imageSetting = new Setting(modal.contentEl)
                 .setName(t('Image'))
-                .setDesc(imagePath ? `Selected: ${imagePath.split('/').pop()}` : 'No image selected');
+                .setDesc(imagePath
+                    ? t('Selected: {name}', { name: imagePath.split('/').pop() ?? imagePath })
+                    : t('No image selected'));
 
             if (imagePath) {
                 const previewEl = imageSetting.controlEl.createDiv('sl-research-image-preview');
@@ -716,7 +741,7 @@ export class ResearchView extends ItemView {
             }
 
             imageSetting.addButton(btn => {
-                btn.setButtonText(imagePath ? 'Change Image' : 'Select Image');
+                btn.setButtonText(t(imagePath ? 'Change Image' : 'Select Image'));
                 btn.setClass('mod-cta');
                 btn.onClick(async () => {
                     const project = this.plugin.sceneManager?.activeProject;
@@ -799,4 +824,4 @@ class VaultNotePickerModal extends FuzzySuggestModal<TFile> {
         this.onSelect(item);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- end of file-wide suppression block opened at line 1 */

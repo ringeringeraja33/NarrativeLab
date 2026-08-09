@@ -1,14 +1,15 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
  * Adopt plain markdown notes dropped into Library category folders:
  * recognise them as the folder's entity type and write minimal frontmatter
  * (`type`, `name`, dates) while preserving the existing body.
  *
  * Mirrors SceneManager.ensureNotesFileIndexed for Notes/, but covers
- * Characters / Locations / Codex category folders.
+ * Characters / Locations / Library category folders.
  */
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { collectMarkdownFiles, invalidateAllEntityCaches, readVaultText } from './EntityFileCache';
+import { coerceString } from '../utils/narrow';
 
 export interface LibraryAdoptTarget {
     /** Vault-relative folder to scan recursively */
@@ -69,13 +70,13 @@ export async function adoptLibraryFolder(
         try {
             const content = await readVaultText(app, file);
             const fm = extractFrontmatter(content);
-            const currentType = fm?.type != null ? String(fm.type).trim() : '';
+            const currentType = coerceString(fm?.type).trim();
 
             // Another entity type living here — leave it alone.
             if (currentType && !allowed.has(currentType)) continue;
 
             const needsType = !currentType;
-            const needsName = !String(fm?.name ?? '').trim();
+            const needsName = !coerceString(fm?.name).trim();
             if (!needsType && !needsName) continue;
 
             const body = extractBody(content);
@@ -116,4 +117,4 @@ export async function adoptLibraryTargets(
     }
     return total;
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-assignment -- end of file-wide suppression block opened at line 1 */

@@ -10,7 +10,10 @@ A project may live anywhere in the vault. NarrativeLab discovers its Markdown ma
 Any folder/
   Project name/
     Project name.md       # type: narrative-lab
-    Project name.ncanvas  # canvas for the same project
+    Canvas/
+      Project name.ncanvas           # Narrative Canvas source
+      Project name.canvas            # project corkboard
+      Project name.narrative.canvas  # optional Obsidian projection of .ncanvas
     Library/              # recursively indexed
       Characters/
       Locations/
@@ -19,11 +22,17 @@ Any folder/
     Notes/
     Research/
     System/
+      Templates/
+        templates.json    # project-scoped scene, structure, and preset templates
 ```
 
 Legacy `type: storyline` manifests and `Codex/` folders remain readable. New projects use `type: narrative-lab` and `Library/`.
 
+New projects create only `Library/Characters` and `Library/Locations`. Any other direct `Library/` subfolder is adopted as a category; renaming or deleting that folder updates the Library tabs and generated project Bases. In a series, project Bases include both shared series assets and book-local Library assets.
+
 Images imported by NarrativeLab are placed through Obsidian's global attachment-folder resolver. NarrativeLab does not impose a separate `Images/` directory.
+
+The Template Center manages scene templates, narrative structures, and project presets. Templates can be global or project-scoped; project templates stay under `System/Templates/` so Library scanning never treats them as content categories. Applying a structure shows a merge/replace preview and never deletes existing scene files.
 
 ## Development
 

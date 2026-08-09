@@ -79,12 +79,13 @@ export async function writePerceptionToward(
     const towardName = toward.name.trim();
 
     await app.fileManager.processFrontMatter(file, (fm) => {
-        const list = parsePerceptions(fm.perceptions);
+        const frontmatter = fm as Record<string, unknown>;
+        const list = parsePerceptions(frontmatter.perceptions);
         const existing = findPerception(list, towardName, towardPath);
         const others = list.filter(p => p !== existing);
         if (!s && !d) {
-            if (others.length) fm.perceptions = others;
-            else delete fm.perceptions;
+            if (others.length) frontmatter.perceptions = others;
+            else delete frontmatter.perceptions;
             return;
         }
         const row: EntityPerception = { target: towardName };
@@ -92,7 +93,7 @@ export async function writePerceptionToward(
         if (s) row.surface = s;
         if (d) row.deep = d;
         others.push(row);
-        fm.perceptions = others;
+        frontmatter.perceptions = others;
     });
 }
 

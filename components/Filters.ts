@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-floating-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { Notice, Menu, MenuItem } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { SceneManager } from '../services/SceneManager';
@@ -7,8 +7,6 @@ import type { SceneFilter, SortConfig, SortField, FilterPreset } from '../models
 import { getStatusOrder } from '../models/Scene';
 import { getActDisplayLabel } from '../utils/actChapter';
 import { t } from '../utils/i18n';
-
-type FocusModeCallback = (active: boolean) => void;
 
 export interface FiltersComponentOptions {
     /** Show sort controls in the overflow menu. Default true; Concept Grid passes false. */
@@ -44,7 +42,6 @@ export class FiltersComponent {
     private currentFilter: SceneFilter = {};
     private currentSort: SortConfig = { field: 'sequence', direction: 'asc' };
     private onChange: (filter: SceneFilter, sort: SortConfig) => void;
-    private onFocusModeChange?: FocusModeCallback;
     private visible = false;
     private showSort: boolean;
     private searchPlaceholder: string;
@@ -61,14 +58,12 @@ export class FiltersComponent {
         sceneManager: SceneManager,
         onChange: (filter: SceneFilter, sort: SortConfig) => void,
         plugin: SceneCardsPlugin,
-        onFocusModeChange?: FocusModeCallback,
         options?: FiltersComponentOptions,
     ) {
         this.container = container;
         this.sceneManager = sceneManager;
         this.onChange = onChange;
         this.plugin = plugin ?? null;
-        this.onFocusModeChange = onFocusModeChange;
         this.showSort = options?.showSort !== false;
         this.searchPlaceholder = options?.searchPlaceholder ?? t('Search scenes...');
         this.filterLabel = options?.filterLabel ?? t('Filter scenes');
@@ -475,7 +470,7 @@ export class FiltersComponent {
 
         const inactiveRow = visSection.createDiv('story-line-filter-row');
         const inactiveLabel = inactiveRow.createEl('label', { cls: 'sl-toggle-wrap story-line-inactive-toggle' });
-        inactiveLabel.createSpan({ cls: 'sl-toggle-label', text: t('Include inactive scenes') });
+        inactiveLabel.createSpan({ cls: 'sl-toggle-label', text: t('Include inactive content') });
         const inactiveCb = inactiveLabel.createEl('input', { type: 'checkbox' });
         inactiveCb.checked = this.currentFilter.activeState === 'all' || this.currentFilter.activeState === 'inactive';
         inactiveLabel.createSpan({ cls: 'sl-toggle-track' });
@@ -676,4 +671,4 @@ export class FiltersComponent {
         return this.currentSort;
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-floating-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

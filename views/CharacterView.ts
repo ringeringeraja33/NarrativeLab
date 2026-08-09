@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import * as obsidian from 'obsidian';
 import { SceneManager } from '../services/SceneManager';
 import { CharacterManager } from '../services/CharacterManager';
@@ -29,21 +29,7 @@ import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { renderLibraryFilterChips } from '../components/LibraryFilterChips';
 import { disposeNativeLibraryBase, renderNativeLibraryBase } from '../components/NativeLibraryBase';
 import {
-    getLibraryFilePropertyOptions,
-    getLibraryFilePropertyValue,
-    getLibraryNotePropertyOptions,
-    getLibraryNotePropertyValue,
-    getLibraryTableSort,
-    getLibraryTableColumns,
-    getLibraryTableFormulas,
-    evaluateLibraryTableFormula,
-    compareLibraryTableValues,
-    pageSlice,
     renderLibraryBrowseToolbar,
-    renderLibraryTableHeader,
-    setLibraryTableColumns,
-    setLibraryTableSort,
-    LIBRARY_BROWSE_PAGE_SIZE,
 } from '../components/LibraryBrowseLayout';
 import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
 import { CHARACTER_CATEGORIES, CHARACTER_ROLES, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractAllCharacterTags, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations } from '../models/Character';
@@ -76,6 +62,11 @@ export class CharacterView extends ItemView {
     private autoSaveTimer: number | null = null;
     /** The draft waiting to be saved (if any) */
     private pendingSaveDraft: Character | null = null;
+    /** Stable working copy reused across internal detail re-renders. */
+    private editingDraft: Character | null = null;
+    private pendingSaveRevision = 0;
+    private saveQueue: Promise<void> = Promise.resolve();
+    private saveInFlight = false;
     /** Snapshot of the character before any edits — used for undo recording */
     private undoSnapshot: Character | null = null;
     /** Timestamp of last self-initiated save; used to suppress external refresh that would steal focus */
@@ -123,8 +114,9 @@ export class CharacterView extends ItemView {
     private _overviewGen = 0;
     private _overviewObserver: IntersectionObserver | null = null;
     private _overviewScrollHandler: (() => void) | null = null;
-    /** Invalidate deferred detail side-panel work when navigating away. */
+    /** Invalidate deferred detail side-panel / lazy column work when navigating away. */
     private _detailSideGen = 0;
+    private _detailBodyObservers: IntersectionObserver[] = [];
     private static readonly OVERVIEW_BATCH = 36;
     private static readonly OVERVIEW_LITE_THRESHOLD = 36;
 
@@ -185,8 +177,10 @@ export class CharacterView extends ItemView {
 
     async onClose(): Promise<void> {
         this._overviewGen++;
+        this._detailSideGen++;
         this._overviewObserver?.disconnect();
         this._overviewObserver = null;
+        this.cancelDetailBodyObservers();
         if (this._overviewScrollHandler && this.rootContainer) {
             const content = this.rootContainer.querySelector('.story-line-character-content');
             if (content) content.removeEventListener('scroll', this._overviewScrollHandler);
@@ -198,6 +192,7 @@ export class CharacterView extends ItemView {
         }
         // Flush any pending auto-save so edits are not lost
         await this.flushPendingSave();
+        this.editingDraft = null;
         // Remove any floating lightbox windows from activeDocument.body
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(el => el.remove());
         this.clearPortaledDropdowns(); // issue #102 — clean up portaled popups
@@ -223,6 +218,14 @@ export class CharacterView extends ItemView {
         }
     }
 
+    /** Disconnect lazy board-column observers when leaving / re-rendering detail. */
+    private cancelDetailBodyObservers(): void {
+        for (const observer of this._detailBodyObservers) {
+            try { observer.disconnect(); } catch { /* noop */ }
+        }
+        this._detailBodyObservers = [];
+    }
+
     /**
      * Swap only the content pane (keep toolbar + category tabs).
      * Used for card open / back so large libraries don't rebuild chrome.
@@ -231,6 +234,7 @@ export class CharacterView extends ItemView {
         disposeNativeLibraryBase(this);
         this.clearPortaledDropdowns();
         this.cancelOverviewWork();
+        this.cancelDetailBodyObservers();
         this._detailSideGen++;
 
         const root = this.getViewRoot();
@@ -261,6 +265,7 @@ export class CharacterView extends ItemView {
         disposeNativeLibraryBase(this);
         this.clearPortaledDropdowns(); // issue #102 — don't leak portaled popups across re-renders
         this.cancelOverviewWork();
+        this.cancelDetailBodyObservers();
         this._detailSideGen++;
         container.empty();
 
@@ -696,133 +701,6 @@ export class CharacterView extends ItemView {
         window.requestAnimationFrame(tryLoadMore);
     }
 
-    /** List / table layouts for Character browse (cards keep the existing grid). */
-    private renderCharacterBrowseAlt(
-        container: HTMLElement,
-        layout: 'list' | 'table',
-        characters: Character[],
-        sceneStats: Map<string, ScenePresenceStats>,
-    ): void {
-        let shown = LIBRARY_BROWSE_PAGE_SIZE;
-        const host = container.createDiv('character-browse-alt');
-
-        const paint = () => {
-            host.empty();
-            const { visible, hasMore } = pageSlice(characters, shown);
-            if (layout === 'list') {
-                const list = host.createDiv('codex-entry-list');
-                for (const char of visible) {
-                    const row = list.createDiv('codex-entry-row');
-                    const icon = row.createSpan({ cls: 'codex-entry-icon' });
-                    obsidian.setIcon(icon, 'user');
-                    row.createSpan({ cls: 'codex-entry-name', text: char.name });
-                    const role = getPrimaryRole(char);
-                    if (role) row.createSpan({ cls: 'codex-entry-type-badge', text: role });
-                    const st = sceneStats.get(char.name.toLowerCase());
-                    if (st) {
-                        row.createSpan({
-                            cls: 'codex-entry-pct',
-                            text: `${st.pov + st.present}`,
-                        });
-                    }
-                    row.addEventListener('click', () => {
-                        void this.openCharacterDetail(char.filePath);
-                    });
-                }
-            } else {
-                const cols = getLibraryTableColumns(this.plugin, 'characters') ?? ['role', 'scenes'];
-                const propertyLabels = new Map<string, string>([
-                    ['role', 'role'],
-                    ['scenes', 'scenes'],
-                    ...getLibraryNotePropertyOptions(
-                        this.plugin,
-                        characters.map(character => character.filePath),
-                    ).map(property => [property.key, property.label] as [string, string]),
-                    ...getLibraryFilePropertyOptions()
-                        .map(property => [property.key, property.label] as [string, string]),
-                ]);
-                const formulas = getLibraryTableFormulas(this.plugin, 'characters');
-                for (const formula of formulas) propertyLabels.set(`formula:${formula.id}`, formula.name);
-                const resolveValue = (char: Character, key: string): unknown => {
-                    if (key.startsWith('file.')) {
-                        return getLibraryFilePropertyValue(this.plugin, char.filePath, key);
-                    }
-                    if (key === 'name') return char.name;
-                    if (key === 'role') return getPrimaryRole(char) || '';
-                    if (key === 'scenes') {
-                        const st = sceneStats.get(char.name.toLowerCase());
-                        return (st?.pov || 0) + (st?.present || 0);
-                    }
-                    const direct = (char as unknown as Record<string, unknown>)[key];
-                    return direct !== undefined
-                        ? direct
-                        : getLibraryNotePropertyValue(this.plugin, char.filePath, key);
-                };
-                const valueForColumn = (char: Character, key: string): unknown => {
-                    const formula = key.startsWith('formula:')
-                        ? formulas.find(item => item.id === key.slice('formula:'.length))
-                        : undefined;
-                    return formula
-                        ? evaluateLibraryTableFormula(formula.expression, property => resolveValue(char, property))
-                        : resolveValue(char, key);
-                };
-                const tableSort = getLibraryTableSort(this.plugin, 'characters');
-                const tableCharacters = [...characters];
-                if (tableSort) {
-                    tableCharacters.sort((left, right) => {
-                        const result = compareLibraryTableValues(
-                            valueForColumn(left, tableSort.key),
-                            valueForColumn(right, tableSort.key),
-                        );
-                        return tableSort.direction === 'asc' ? result : -result;
-                    });
-                }
-                const tableVisible = pageSlice(tableCharacters, shown).visible;
-                const wrap = host.createDiv('library-base-table-wrap');
-                const table = wrap.createEl('table', { cls: 'library-base-table' });
-                const hr = table.createEl('thead').createEl('tr');
-                renderLibraryTableHeader(hr, 'name', 'name', tableSort, sort => {
-                    void setLibraryTableSort(this.plugin, 'characters', sort).then(paint);
-                });
-                for (const key of cols) {
-                    renderLibraryTableHeader(hr, propertyLabels.get(key) || key, key, tableSort, sort => {
-                        void setLibraryTableSort(this.plugin, 'characters', sort).then(paint);
-                    });
-                }
-                const tbody = table.createEl('tbody');
-                for (const char of tableVisible) {
-                    const tr = tbody.createEl('tr');
-                    const nameTd = tr.createEl('td');
-                    const btn = nameTd.createEl('button', {
-                        cls: 'library-base-table-name-btn',
-                        text: char.name,
-                    });
-                    btn.addEventListener('click', () => {
-                        void this.openCharacterDetail(char.filePath);
-                    });
-                    for (const key of cols) {
-                        const value = valueForColumn(char, key);
-                        const text = Array.isArray(value)
-                            ? value.map(item => coerceString(item).trim()).filter(Boolean).join(', ')
-                            : coerceString(value);
-                        tr.createEl('td', { text });
-                    }
-                }
-            }
-            if (hasMore) {
-                const more = host.createEl('button', {
-                    cls: 'mod-cta library-browse-load-more',
-                    text: t('Load more'),
-                });
-                more.addEventListener('click', () => {
-                    shown += LIBRARY_BROWSE_PAGE_SIZE;
-                    paint();
-                });
-            }
-        };
-        paint();
-    }
-
     /**
      * Build POV/presence counts keyed by canonical character name (lowercase).
      * Single pass over scenes instead of scanning every scene per card.
@@ -1041,26 +919,38 @@ export class CharacterView extends ItemView {
     private async openCharacterDetail(filePath: string): Promise<void> {
         const path = normalizePath(filePath || '');
         if (!path) return;
+        if (this.selectedCharacter && normalizePath(this.selectedCharacter) !== path) {
+            await this.flushPendingSave();
+            this.editingDraft = null;
+        }
 
         const basename = path.split('/').pop()?.replace(/\.md$/i, '') ?? '';
         let char =
             this.characterManager.getCharacter(path)
             || (basename ? this.characterManager.findByName(basename) : undefined);
 
-        if (!char) {
-            try {
-                await this.plugin.reloadEntities();
-            } catch { /* project may not be ready */ }
-            char =
-                this.characterManager.getCharacter(path)
-                || (basename ? this.characterManager.findByName(basename) : undefined);
-        }
-
-        if (!char) {
-            new Notice(t('Character not found in the active project.'));
+        // Paint immediately when the card already has a manager entry (common path).
+        // Only fall back to a full reload when the character is missing.
+        if (char) {
+            this.selectedCharacter = char.filePath;
+            this.renderContentOnly();
             return;
         }
 
+        this.selectedCharacter = path;
+        this.renderContentOnly();
+        try {
+            await this.plugin.reloadEntities();
+        } catch { /* project may not be ready */ }
+        char =
+            this.characterManager.getCharacter(path)
+            || (basename ? this.characterManager.findByName(basename) : undefined);
+        if (!char) {
+            this.selectedCharacter = null;
+            new Notice(t('Character not found in the active project.'));
+            this.renderContentOnly();
+            return;
+        }
         this.selectedCharacter = char.filePath;
         this.renderContentOnly();
     }
@@ -1236,14 +1126,18 @@ export class CharacterView extends ItemView {
         const selected = character;
         this.selectedCharacter = selected.filePath;
 
-        // Working copy for editing
-        const draft: Character = { ...selected, custom: { ...(selected.custom || {}) }, universalFields: { ...(selected.universalFields || {}) } };
-        // Snapshot for undo — taken once when the detail view opens
-        this.undoSnapshot = { ...selected, custom: { ...(selected.custom || {}) }, universalFields: { ...(selected.universalFields || {}) } };
-        // Track original name for cascade rename detection
-        this.originalCharacterName = selected.name;
-        // Snapshot relations for reciprocal sync diffing
-        this._lastSavedRelations = normalizeCharacterRelations(selected.relations).map(r => ({ ...r }));
+        const reuseDraft = this.editingDraft
+            && normalizePath(this.editingDraft.filePath) === normalizePath(selected.filePath);
+        const draft: Character = reuseDraft
+            ? this.editingDraft!
+            : { ...selected, custom: { ...(selected.custom || {}) }, universalFields: { ...(selected.universalFields || {}) } };
+        this.editingDraft = draft;
+        if (!reuseDraft) {
+            // Snapshot once per detail editing session, not on every internal re-render.
+            this.undoSnapshot = { ...selected, custom: { ...(selected.custom || {}) }, universalFields: { ...(selected.universalFields || {}) } };
+            this.originalCharacterName = selected.name;
+            this._lastSavedRelations = normalizeCharacterRelations(selected.relations).map(r => ({ ...r }));
+        }
 
         // Board mode shows every section as a column — expand built-ins / custom.
         for (const cat of CHARACTER_CATEGORIES) this.collapsedSections.delete(cat.title);
@@ -1258,7 +1152,9 @@ export class CharacterView extends ItemView {
         const backIcon = backBtn.createSpan();
         obsidian.setIcon(backIcon, 'circle-arrow-left');
         backBtn.createSpan({ text: t(' All Characters') });
-        backBtn.addEventListener('click', () => {
+        backBtn.addEventListener('click', async () => {
+            await this.flushPendingSave();
+            this.editingDraft = null;
             this.selectedCharacter = null;
             this.renderContentOnly();
         });
@@ -1344,6 +1240,13 @@ export class CharacterView extends ItemView {
         const layout = container.createDiv('character-detail-layout character-detail-layout--board');
         const formPanel = layout.createDiv('character-detail-form character-detail-board-track');
         const sidePanel = layout.createDiv('character-detail-side');
+        const commitFocusedField = (event: Event) => {
+            const tagName = (event.target as { tagName?: string } | null)?.tagName?.toLowerCase();
+            if (tagName !== 'input' && tagName !== 'textarea' && tagName !== 'select') return;
+            window.setTimeout(() => { void this.flushPendingSave(); }, 0);
+        };
+        layout.addEventListener('change', commitFocusedField);
+        layout.addEventListener('focusout', commitFocusedField);
 
         // Wheel on the board gutter / headers pans columns; column bodies keep vertical scroll.
         // Shift+wheel always pans horizontally.
@@ -1357,40 +1260,51 @@ export class CharacterView extends ItemView {
         }, { passive: false });
 
         // ── Form sections as board columns (+ interleaved custom sections) ──
+        // Eagerly fill only the first columns; remaining column fields load when
+        // scrolled into view so open-detail stays responsive.
         const customHost = this.buildCustomSectionsHost(draft);
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
         for (let i = 0; i < CHARACTER_CATEGORIES.length; i++) {
-            this.renderCategory(formPanel, CHARACTER_CATEGORIES[i], draft, { board: true });
+            this.renderCategory(formPanel, CHARACTER_CATEGORIES[i], draft, {
+                board: true,
+                eager: i < 2,
+            });
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
         this.renderCustomFields(formPanel, draft, { board: true });
         renderAddCustomSectionButton(formPanel, customHost);
 
-        // ── Side panel: gallery first; defer scene/refs so the board paints immediately ──
+        // ── Side panel: gallery first; defer scene/refs until after first paint ──
         this.renderGallery(sidePanel, draft);
         const deferredHost = sidePanel.createDiv('character-detail-side-deferred');
-        const sideGen = ++this._detailSideGen;
+        const sideGen = this._detailSideGen;
         const selectedPathForSide = selected.filePath;
         const characterName = selected.name;
-        window.requestAnimationFrame(() => {
+        // setTimeout (not rAF): let the browser paint header + first columns first.
+        window.setTimeout(() => {
             if (sideGen !== this._detailSideGen) return;
             if (this.selectedCharacter !== selectedPathForSide) return;
             deferredHost.empty();
             this.renderScenePanel(deferredHost, characterName);
-            this.renderLinkedAliasesPanel(deferredHost, characterName);
-            this.renderReferencesPanel(deferredHost, characterName);
-            this.renderNotesSection(deferredHost, draft);
-        });
+            window.setTimeout(() => {
+                if (sideGen !== this._detailSideGen) return;
+                if (this.selectedCharacter !== selectedPathForSide) return;
+                this.renderLinkedAliasesPanel(deferredHost, characterName);
+                this.renderReferencesPanel(deferredHost, characterName);
+                this.renderNotesSection(deferredHost, draft);
+            }, 0);
+        }, 0);
     }
 
     private renderCategory(
         parent: HTMLElement,
         category: { title: string; icon: string; fields: CharacterFieldDef[] },
         draft: Character,
-        opts?: { board?: boolean },
+        opts?: { board?: boolean; eager?: boolean },
     ): void {
         const board = !!opts?.board;
+        const eager = !!opts?.eager;
         const section = parent.createDiv('character-section');
         if (board) section.addClass('character-board-column');
         const isCollapsed = board ? false : this.collapsedSections.has(category.title);
@@ -1502,9 +1416,8 @@ export class CharacterView extends ItemView {
             }
         };
 
-        if (!isCollapsed) ensureBody();
-
         if (!board) {
+            if (!isCollapsed) ensureBody();
             sectionHeader.addEventListener('click', (e) => {
                 // Ignore clicks on the add-field button
                 if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
@@ -1519,7 +1432,49 @@ export class CharacterView extends ItemView {
                     obsidian.setIcon(chevron, 'chevron-right');
                 }
             });
+            return;
         }
+
+        // Board mode: build field DOM only for eager (visible) columns, or when
+        // the user scrolls a column near the viewport.
+        if (eager) {
+            ensureBody();
+            return;
+        }
+
+        const track = parent.closest('.character-detail-board-track') as HTMLElement | null;
+        if (typeof IntersectionObserver === 'undefined' || !track) {
+            ensureBody();
+            return;
+        }
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                for (const entry of entries) {
+                    if (!entry.isIntersecting) continue;
+                    ensureBody();
+                    observer.disconnect();
+                    const idx = this._detailBodyObservers.indexOf(observer);
+                    if (idx >= 0) this._detailBodyObservers.splice(idx, 1);
+                    break;
+                }
+            },
+            { root: track, rootMargin: '120px', threshold: 0.01 },
+        );
+        this._detailBodyObservers.push(observer);
+        observer.observe(section);
+        // If already in view (e.g. wide screens), build on the next frame.
+        window.requestAnimationFrame(() => {
+            if (bodyBuilt) return;
+            const tr = track.getBoundingClientRect();
+            const sr = section.getBoundingClientRect();
+            if (sr.left < tr.right + 120 && sr.right > tr.left - 120) {
+                ensureBody();
+                observer.disconnect();
+                const idx = this._detailBodyObservers.indexOf(observer);
+                if (idx >= 0) this._detailBodyObservers.splice(idx, 1);
+            }
+        });
     }
 
     private renderField(parent: HTMLElement, field: CharacterFieldDef, draft: Character, sectionTitle?: string, builtInKeys?: string[]): void {
@@ -2686,11 +2641,15 @@ export class CharacterView extends ItemView {
 
     private renderNotesSection(container: HTMLElement, draft: Character): void {
         const section = container.createDiv('codex-side-section entity-notes-section');
-        section.createEl('h4', { text: t('Notes') });
+        const header = section.createDiv('entity-notes-header');
+        const icon = header.createSpan('entity-notes-icon');
+        obsidian.setIcon(icon, 'notebook-pen');
+        header.createEl('h4', { cls: 'entity-notes-title', text: t('Notes') });
+        header.createSpan({ cls: 'entity-notes-format', text: t('Markdown') });
 
         const textarea = section.createEl('textarea', {
             cls: 'codex-notes-textarea',
-            attr: { placeholder: t('Free-form notes (markdown)…'), rows: '12' },
+            attr: { placeholder: t('Write additional notes…'), rows: '12', 'aria-label': t('Notes') },
         });
         textarea.value = draft.notes || '';
         textarea.addEventListener('input', () => {
@@ -2875,7 +2834,7 @@ export class CharacterView extends ItemView {
         const section = container.createDiv('character-linked-aliases-panel');
         section.createEl('h3', { text: t('Linked Aliases') });
 
-        const desc = section.createEl('p', {
+        section.createEl('p', {
             cls: 'setting-item-description',
             text: t('These names are linked to this character. They appear in scenes as this character and no longer show up as separate entries.'),
         });
@@ -2949,33 +2908,69 @@ export class CharacterView extends ItemView {
     private scheduleSave(draft: Character): void {
         if (this.autoSaveTimer) window.clearTimeout(this.autoSaveTimer);
         this.pendingSaveDraft = draft;
-        this.autoSaveTimer = window.setTimeout(async () => {
-            try {
-                // Record undo snapshot
+        const revision = ++this.pendingSaveRevision;
+        this.autoSaveTimer = window.setTimeout(() => {
+            this.autoSaveTimer = null;
+            void this.persistCharacterDraft(draft, revision);
+        }, 600);
+    }
+
+    private async persistCharacterDraft(draft: Character, revision: number): Promise<void> {
+        const operation = this.saveQueue
+            .catch(() => undefined)
+            .then(async () => {
+                this.saveInFlight = true;
                 const undoMgr = this.plugin.sceneManager?.undoManager;
+                let undoToken: Awaited<ReturnType<typeof undoMgr.beginUpdate>> | null = null;
                 if (undoMgr && this.undoSnapshot) {
-                    undoMgr.recordUpdate(
-                        draft.filePath,
-                        this.undoSnapshot as unknown as unknown as Record<string, unknown>,
-                        draft as unknown as unknown as Record<string, unknown>,
-                        `Update character "${draft.name}"`,
-                        'character'
-                    );
-                    // Update snapshot so next edit diffs from the saved state
-                    this.undoSnapshot = { ...draft, custom: { ...(draft.custom || {}) } };
+                    try {
+                        undoToken = await undoMgr.beginUpdate(
+                            draft.filePath,
+                            t('Update "{name}"', { name: draft.name }),
+                            'character',
+                        );
+                    } catch (error) {
+                        // Undo history is optional; it must never block the actual save.
+                        console.warn('NarrativeLab: could not create character undo snapshot', error);
+                    }
                 }
                 this._lastSaveTime = Date.now();
-                await this.characterManager.saveCharacter(draft);
-                this.pendingSaveDraft = null;
-
-                // ── Reciprocal relation sync ──
-                if (!this._skipReciprocalSync) {
-                    await this.syncReciprocalRelations(draft);
+                try {
+                    await this.characterManager.saveCharacter(draft);
+                    if (undoToken && undoMgr) {
+                        try {
+                            await undoMgr.commitUpdate(undoToken);
+                        } catch (error) {
+                            console.warn('NarrativeLab: character saved, but undo history could not be committed', error);
+                        }
+                    }
+                    this.undoSnapshot = {
+                        ...draft,
+                        custom: { ...(draft.custom || {}) },
+                        universalFields: { ...(draft.universalFields || {}) },
+                    };
+                    if (this.pendingSaveDraft === draft && this.pendingSaveRevision === revision) {
+                        this.pendingSaveDraft = null;
+                    }
+                    if (!this._skipReciprocalSync) {
+                        try {
+                            await this.syncReciprocalRelations(draft);
+                        } catch (error) {
+                            console.warn('NarrativeLab: character saved, but reciprocal relations could not be synchronized', error);
+                        }
+                    }
+                } catch (error) {
+                    console.error('NarrativeLab: failed to save character', error);
+                    new Notice(t('Failed to save character: {message}', {
+                        message: error instanceof Error ? error.message : String(error),
+                    }));
+                    throw error;
+                } finally {
+                    this.saveInFlight = false;
                 }
-            } catch (e) {
-                console.error('NarrativeLab: failed to save character', e);
-            }
-        }, 600);
+            });
+        this.saveQueue = operation;
+        await operation;
     }
 
     /**
@@ -3087,13 +3082,13 @@ export class CharacterView extends ItemView {
             this.autoSaveTimer = null;
         }
         if (this.pendingSaveDraft) {
+            const draft = this.pendingSaveDraft;
+            const revision = this.pendingSaveRevision;
             try {
-                this._lastSaveTime = Date.now();
-                await this.characterManager.saveCharacter(this.pendingSaveDraft);
-            } catch (e) {
-                console.error('NarrativeLab: failed to flush character save on close', e);
-            }
-            this.pendingSaveDraft = null;
+                await this.persistCharacterDraft(draft, revision);
+            } catch { /* persistCharacterDraft already reports the error */ }
+        } else {
+            await this.saveQueue.catch(() => undefined);
         }
     }
 
@@ -3408,10 +3403,16 @@ export class CharacterView extends ItemView {
         // refreshOpenViews already reloaded entities — only re-render here.
         if (
             this.selectedCharacter &&
-            Date.now() - this._lastSaveTime < CharacterView.SAVE_REFRESH_GRACE_MS
+            (
+                this.pendingSaveDraft !== null
+                || this.saveInFlight
+                || Date.now() - this._lastSaveTime < CharacterView.SAVE_REFRESH_GRACE_MS
+                || !!this.getViewRoot().querySelector('input:focus, textarea:focus, select:focus')
+            )
         ) {
             return;
         }
+        this.editingDraft = null;
         const categoriesEpoch = this.plugin.libraryCategoriesStructureEpoch;
         const categoriesChanged = categoriesEpoch !== this._libraryCategoriesEpoch;
         this._libraryCategoriesEpoch = categoriesEpoch;
@@ -3809,4 +3810,4 @@ class LinkCharacterModal extends Modal {
         this.contentEl.empty();
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- end of file-wide suppression block opened at line 1 */

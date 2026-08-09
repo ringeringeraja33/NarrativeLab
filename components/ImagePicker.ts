@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-misused-promises -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
  * ImagePicker — shared image selection component.
  *
@@ -79,12 +79,12 @@ export function resolveImagePath(app: App, imagePath: string): string {
     if (!imagePath) return '';
     const normalizedPath = normalizeImagePath(imagePath);
     if (!normalizedPath) return '';
-    
+
     // Handle direct URLs
     if (normalizedPath.startsWith('http://') || normalizedPath.startsWith('https://')) {
         return normalizedPath;
     }
-    
+
     // Try to get the file object — vault.getResourcePath(TFile) is the most reliable
     try {
         const imageFile = app.vault.getAbstractFileByPath(normalizedPath);
@@ -120,7 +120,7 @@ export function resolveImagePath(app: App, imagePath: string): string {
             }
         }
     } catch { /* fall through */ }
-    
+
     // Fallback to adapter resource path
     return app.vault.adapter.getResourcePath(normalizedPath);
 }
@@ -146,7 +146,7 @@ async function uniquePathInFolder(app: App, folder: string, fileName: string): P
         candidate = normalizePath(`${normalizedFolder}/${base}-${index}${ext}`);
         if (!await app.vault.adapter.exists(candidate)) return candidate;
     }
-    throw new Error('Could not find an available attachment path.');
+    throw new Error(t('Could not find an available attachment path.'));
 }
 
 async function resolveAttachmentImportPath(app: App, fileName: string, attachmentSourcePath: string): Promise<string> {
@@ -200,7 +200,7 @@ function importImageFromComputer(app: App, attachmentSourcePath: string): Promis
                 await app.vault.createBinary(targetPath, buffer);
 
                 new Notice(t('Image imported: {name}', { name: targetPath.split('/').pop() ?? '' }));
-                
+
                 complete(targetPath);
             } catch (err) {
                 console.error('[NarrativeLab] Image import failed:', err);
@@ -277,7 +277,7 @@ class ImageChoiceModal extends Modal {
             try {
                 // Use the helper function to resolve the image path
                 const imgSrc = resolveImagePath(this.app, this.currentImage);
-                
+
                 const img = preview.createEl('img', { attr: { src: imgSrc } });
                 img.setCssStyles({
                     maxWidth: '160px',
@@ -286,13 +286,12 @@ class ImageChoiceModal extends Modal {
                     objectFit: 'cover',
                     border: '1px solid var(--background-modifier-border)',
                 });
-                
+
                 // Add error handler to show placeholder if image fails to load
                 img.onerror = () => {
                     img.remove();
                     const placeholder = preview.createDiv('image-choice-preview-placeholder');
                     placeholder.setText(t('Image not found'));
-                    console.log('Failed to load image in picker:', this.currentImage);
                 };
             } catch (error) {
                 console.error('Error loading image in picker:', error);
@@ -403,4 +402,4 @@ class VaultImagePickerModal extends FuzzySuggestModal<TFile> {
         window.setTimeout(() => this.emitOnce(undefined), 0);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-misused-promises -- end of file-wide suppression block opened at line 1 */

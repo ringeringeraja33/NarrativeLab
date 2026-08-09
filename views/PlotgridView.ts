@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, ItemView, WorkspaceLeaf, Menu, Modal, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
 import * as obsidian from 'obsidian';
 import {
@@ -22,7 +22,6 @@ import { CharacterManager } from '../services/CharacterManager';
 import { coerceString } from '../utils/narrow';
 import { InspectorComponent } from '../components/Inspector';
 import { openManageSnapshotsModal } from '../components/ViewSnapshotModal';
-import { QuickAddModal } from '../components/QuickAddModal';
 import { LinkScanner } from '../services/LinkScanner';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
 import { FiltersComponent } from '../components/Filters';
@@ -53,6 +52,7 @@ function makeId(prefix = '') {
 export class PlotgridView extends ItemView {
     plugin: SceneCardsPlugin | undefined;
     /** Full multi-page document persisted to plotgrid.json */
+    // eslint-disable-next-line obsidianmd/prefer-active-doc -- Concept Grid data model, not the browser Document.
     document: ConceptGridDocument = createEmptyConceptGridDocument();
     /** Active page working set (same object reference as the page in `document`). */
     data: PlotGridData = this.document.pages[0];
@@ -419,9 +419,9 @@ export class PlotgridView extends ItemView {
         this.wrapperEl.tabIndex = 0;
         this.wrapperEl.addEventListener('keydown', (e) => this.onKeyDown(e as KeyboardEvent));
         // Drag-select: track pointer across cells (capture may leave the original cell)
-        this.registerDomEvent(document, 'pointermove', (e: PointerEvent) => this.onSelectPointerMove(e));
-        this.registerDomEvent(document, 'pointerup', (e: PointerEvent) => this.onSelectPointerUp(e));
-        this.registerDomEvent(document, 'pointercancel', (e: PointerEvent) => this.onSelectPointerUp(e));
+        this.registerDomEvent(activeDocument, 'pointermove', (e: PointerEvent) => this.onSelectPointerMove(e));
+        this.registerDomEvent(activeDocument, 'pointerup', (e: PointerEvent) => this.onSelectPointerUp(e));
+        this.registerDomEvent(activeDocument, 'pointercancel', (e: PointerEvent) => this.onSelectPointerUp(e));
 
         const toolbar = this.wrapperEl.createDiv('story-line-toolbar plot-grid-toolbar');
         toolbar.setCssStyles({ flex: '0 0 auto' });
@@ -439,7 +439,6 @@ export class PlotgridView extends ItemView {
                     this.renderGrid();
                 },
                 this.plugin,
-                undefined,
                 {
                     showSort: false,
                     // Concept Grid cells are freeform — not necessarily scenes.
@@ -911,7 +910,7 @@ export class PlotgridView extends ItemView {
                         if (holder) holder.setCssStyles({ transform: 'scale(0.96)' });
                     } catch (e) { /* cosmetic, safe to ignore */ }
                 });
-                activeDocument.addEventListener('mouseup', () => {
+                btn.addEventListener('mouseup', () => {
                     try {
                         const holder = btn.querySelector('i[data-lucide]') as HTMLElement | null;
                         if (holder) holder.setCssStyles({ transform: '' });
@@ -1274,7 +1273,7 @@ export class PlotgridView extends ItemView {
                         this.scheduleSave(); this.renderGrid(); modal.close();
                     };
                     inp.addEventListener('keydown', (ke) => { if (ke.key === 'Enter') commitRename(); });
-                    const btn = modal.contentEl.createEl('button', { text: 'OK', cls: 'mod-cta' });
+                    const btn = modal.contentEl.createEl('button', { text: t('OK'), cls: 'mod-cta' });
                     btn.setCssStyles({ marginTop: '8px' });
                     btn.addEventListener('click', () => commitRename());
                     modal.open();
@@ -1445,7 +1444,7 @@ export class PlotgridView extends ItemView {
                         this.scheduleSave(); this.renderGrid(); modal.close();
                     };
                     inp.addEventListener('keydown', (ke) => { if (ke.key === 'Enter') commitRename(); });
-                    const btn = modal.contentEl.createEl('button', { text: 'OK', cls: 'mod-cta' });
+                    const btn = modal.contentEl.createEl('button', { text: t('OK'), cls: 'mod-cta' });
                     btn.setCssStyles({ marginTop: '8px' });
                     btn.addEventListener('click', () => commitRename());
                     modal.open();
@@ -1613,7 +1612,7 @@ export class PlotgridView extends ItemView {
                         const statusIcon = titleRow.createSpan({ cls: 'pg-mini-status-icon' });
                         obsidian.setIcon(statusIcon, statusCfg.icon);
                         statusIcon.title = t(statusCfg.label);
-                        titleRow.createSpan({ cls: 'pg-mini-title', text: scene.title || 'Untitled' });
+                        titleRow.createSpan({ cls: 'pg-mini-title', text: scene.title || t('Untitled') });
 
                         // Meta row: description snippet
                         const metaRow = miniCard.createDiv('pg-mini-meta markdown-rendered');
@@ -1749,7 +1748,7 @@ export class PlotgridView extends ItemView {
                             const povPill = tagsEl.createSpan({
                                 cls: 'pg-codex-tag pg-codex-tag-character pg-codex-tag-pov',
                             });
-                            povPill.textContent = `POV: ${povName}`;
+                            povPill.textContent = t('POV: {name}', { name: povName });
                         }
                         for (const m of sortedMentions) {
                             const pill = tagsEl.createSpan({ cls: `pg-codex-tag pg-codex-tag-${m.type}` });
@@ -1780,7 +1779,7 @@ export class PlotgridView extends ItemView {
 
                 // Left-drag = rectangular range select (not HTML5 drag)
                 cellEl.addEventListener('pointerdown', (ev) => {
-                    this.onCellPointerDown(ev as PointerEvent, ri, ci, cell);
+                    this.onCellPointerDown(ev as PointerEvent, ri, ci);
                 });
 
                 // context menu for cell (batch-aware when a rectangle is selected)
@@ -2284,7 +2283,7 @@ export class PlotgridView extends ItemView {
     }
 
     private cellCoordsFromPoint(clientX: number, clientY: number): { r: number; c: number } | null {
-        const el = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+        const el = activeDocument.elementFromPoint(clientX, clientY) as HTMLElement | null;
         const cell = el?.closest?.('.plot-grid-cell') as HTMLElement | null;
         if (!cell || !this.canvasEl?.contains(cell)) return null;
         const r = Number(cell.getAttribute('data-row'));
@@ -2298,7 +2297,7 @@ export class PlotgridView extends ItemView {
         return !!target.closest('.plot-grid-mini-card, .pg-cell-note-label, .pg-cell-note-body, .pg-cell-note-icon');
     }
 
-    private onCellPointerDown(ev: PointerEvent, ri: number, ci: number, cell: CellData): void {
+    private onCellPointerDown(ev: PointerEvent, ri: number, ci: number): void {
         if (ev.button !== 0) return;
         if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
 
@@ -2727,23 +2726,6 @@ export class PlotgridView extends ItemView {
         });
     }
 
-    private getSelectedCellKey(): string | null {
-        if (this.selectedRow === null || this.selectedCol === null) return null;
-        const r = this.data.rows[this.selectedRow];
-        const c = this.data.columns[this.selectedCol];
-        if (!r || !c) return null;
-        return `${r.id}-${c.id}`;
-    }
-
-    private getSelectedCellData(): { key: string; cell: CellData; el: HTMLElement } | null {
-        const key = this.getSelectedCellKey();
-        if (!key) return null;
-        const cell = this.data.cells[key];
-        const el = this.getCellElement(this.selectedRow!, this.selectedCol!);
-        if (!cell || !el) return null;
-        return { key, cell, el };
-    }
-
     private selectRowHeader(index: number, extend = false, opts?: { focusWrapper?: boolean }) {
         if (index < 0 || index >= this.data.rows.length || this.data.columns.length === 0) return;
         const lastC = this.data.columns.length - 1;
@@ -3109,7 +3091,7 @@ export class PlotgridView extends ItemView {
                     paddingRight: '6px',
                 });
 
-                const ok = btns.createEl('button', { text: 'OK' });
+                const ok = btns.createEl('button', { text: t('OK') });
                 ok.addEventListener('click', () => { this.onChoose(selectedColor === '' ? '' : selectedColor); this.close(); });
                 const cancel = btns.createEl('button', { text: t('Cancel') });
                 cancel.addEventListener('click', () => { if (this.onPreview) this.onPreview(null); this.onChoose(null); this.close(); });
@@ -3296,28 +3278,6 @@ export class PlotgridView extends ItemView {
             return;
         }
         this.showMultiCellInspector(items);
-    }
-
-    /** Open QuickAdd modal and link the new scene to the given cell key */
-    private openQuickAddForCell(cellKey: string): void {
-        const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
-        if (!scMgr || !this.plugin) return;
-        const modal = new QuickAddModal(
-            this.app,
-            this.plugin,
-            scMgr,
-            async (sceneData, openAfter) => {
-                const file = await scMgr.createScene(sceneData);
-                const c = this.data.cells[cellKey];
-                if (c) c.linkedSceneId = file.path;
-                this.scheduleSave();
-                this.renderGrid();
-                if (openAfter) {
-                    await this.app.workspace.getLeaf('tab').openFile(file, { state: { mode: 'source', source: false } });
-                }
-            }
-        );
-        modal.open();
     }
 
     private enterEditMode(cellEl: HTMLElement, cell: CellData, _contentEl: HTMLElement, seedChar?: string) {
@@ -4078,10 +4038,6 @@ export class PlotgridView extends ItemView {
         this.renderGrid();
     }
 
-    private deleteRow(index: number) {
-        this.deleteRows([index]);
-    }
-
     private insertColumnAt(index: number, left: boolean) {
         const id = makeId('c-');
         const label = t('Col {n}', { n: this.data.columns.length + 1 });
@@ -4090,10 +4046,6 @@ export class PlotgridView extends ItemView {
         this.data.columns.splice(pos, 0, newCol);
         this.scheduleSave();
         this.renderGrid();
-    }
-
-    private deleteColumn(index: number) {
-        this.deleteColumns([index]);
     }
 
     /** Unique row indices covered by the current selection rectangle. */
@@ -4840,4 +4792,4 @@ export class PlotgridView extends ItemView {
 }
 
 export default PlotgridView;
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars -- end of file-wide suppression block opened at line 1 */

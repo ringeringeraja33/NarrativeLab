@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, no-useless-escape -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
  * NarrativeLab DOCX Converter
  * 
@@ -93,7 +93,6 @@ interface SLDocumentElement {
 export class SLMarkdownToDocxConverter {
     private settings: SLDocxSettings;
     private obsidianFonts: SLObsidianFontSettings | null = null;
-    private filename: string = '';
     private resourceLoader?: (link: string) => Promise<ArrayBuffer | null>;
     private footnoteDefinitions: Map<string, string> = new Map();
     private footnotes: { [key: string]: string } = {};
@@ -166,7 +165,6 @@ export class SLMarkdownToDocxConverter {
         resourceLoader?: (link: string) => Promise<ArrayBuffer | null>,
     ): Promise<Blob> {
         this.obsidianFonts = obsidianFonts || null;
-        this.filename = title;
         this.resourceLoader = resourceLoader;
 
         const { content: cleanedMarkdown, definitions } = this.extractFootnotes(markdown);
@@ -362,7 +360,6 @@ export class SLMarkdownToDocxConverter {
         resourceLoader?: (link: string) => Promise<ArrayBuffer | null>,
     ): Promise<Blob> {
         this.obsidianFonts = obsidianFonts || null;
-        this.filename = title;
         this.resourceLoader = resourceLoader;
 
         const { content: cleanedMarkdown, definitions } = this.extractFootnotes(markdown);
@@ -1733,4 +1730,4 @@ ${imageRels}</Relationships>`;
         return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars, no-unused-vars, no-useless-escape, no-control-regex, no-empty -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, no-useless-escape -- end of file-wide suppression block opened at line 1 */
