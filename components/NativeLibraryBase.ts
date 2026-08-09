@@ -173,13 +173,19 @@ function getLegacyNativeBasePaths(plugin: SceneCardsPlugin, categoryId: string):
 async function trashBasePath(plugin: SceneCardsPlugin, path: string | null): Promise<void> {
     if (!path) return;
     const normalized = normalizePath(path);
-    const file = plugin.app.vault.getAbstractFileByPath(normalized);
-    if (file instanceof TFile) {
-        await plugin.app.fileManager.trashFile(file);
-        return;
-    }
-    if (await pathExists(plugin, normalized)) {
+    try {
+        // OneDrive / race: vault index can still list a file after the disk path is gone.
+        if (!(await pathExists(plugin, normalized))) return;
+        const file = plugin.app.vault.getAbstractFileByPath(normalized);
+        if (file instanceof TFile) {
+            await plugin.app.fileManager.trashFile(file);
+            return;
+        }
         await plugin.app.vault.adapter.remove(normalized).catch(() => undefined);
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/ENOENT|no such file|does not exist/i.test(message)) return;
+        console.warn('[NarrativeLab] Could not trash Library Base file:', normalized, error);
     }
 }
 
@@ -762,9 +768,14 @@ export async function syncAllNativeLibraryBases(
 export async function migrateNativeLibraryBasesForActiveProject(
     plugin: SceneCardsPlugin,
 ): Promise<void> {
-    await migrateLegacyNativeBases(plugin);
-    await pruneOrphanNativeLibraryBases(plugin);
-    await syncAllNativeLibraryBases(plugin);
+    try {
+        await migrateLegacyNativeBases(plugin);
+        await pruneOrphanNativeLibraryBases(plugin);
+        await syncAllNativeLibraryBases(plugin);
+    } catch (error) {
+        // Never block project open on Base migration / OneDrive rename races.
+        console.warn('[NarrativeLab] Library Base migration skipped:', error);
+    }
 }
 
 export async function migrateNativeLibraryBasesForAllProjects(

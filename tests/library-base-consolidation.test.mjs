@@ -30,3 +30,9 @@ test('new projects no longer create an empty Bases folder', () => {
         /ensureFolder\(normalizePath\(folders\.basesFolder\)\)/,
     );
 });
+
+test('legacy Base trash never blocks project open on missing files', () => {
+    assert.match(nativeLibraryBase, /Never block project open on Base migration/);
+    assert.match(nativeLibraryBase, /ENOENT\|no such file\|does not exist/);
+    assert.match(nativeLibraryBase, /if \(!\(await pathExists\(plugin, normalized\)\)\) return;/);
+});

@@ -517,7 +517,11 @@ export async function reconcileLibraryCategoriesForActiveProject(
         ? false
         : await pruneLibraryCategoriesMissingFolders(plugin);
     const foldersChanged = await syncLibraryFoldersWithCategories(plugin);
-    await migrateNativeLibraryBasesForActiveProject(plugin);
+    try {
+        await migrateNativeLibraryBasesForActiveProject(plugin);
+    } catch (error) {
+        console.warn('[NarrativeLab] Library Base reconcile migration skipped:', error);
+    }
     return adopted || removed || foldersChanged;
 }
 
