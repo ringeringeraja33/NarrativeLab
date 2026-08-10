@@ -47,3 +47,14 @@ test('System/library.base is migrated into Library/ then trashed', () => {
         /await trashBasePath\(plugin, getLegacySystemLibraryBasePath\(plugin\)\);/,
     );
 });
+
+test('Browse Properties/Sort changes are persisted into library.base', () => {
+    assert.match(nativeLibraryBase, /hookLiveBasesView/);
+    assert.match(nativeLibraryBase, /persistLayoutSnapshot/);
+    assert.match(nativeLibraryBase, /applyLiveLayoutsToConfig/);
+    assert.match(nativeLibraryBase, /schedulePersistLiveLayout/);
+    assert.match(nativeLibraryBase, /flushEmbedLayout/);
+    assert.match(nativeLibraryBase, /key === 'order' \|\| key === 'sort' \|\| key === 'columnSize'/);
+    assert.match(nativeLibraryBase, /view\.sort = snapshot\.sort\.map/);
+    assert.match(nativeLibraryBase, /view\.order = snapshot\.order\.slice\(\)/);
+});

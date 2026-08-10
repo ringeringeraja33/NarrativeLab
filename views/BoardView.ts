@@ -901,6 +901,9 @@ export class BoardView extends ItemView {
     /**
      * On the project corkboard, Canvas "Remove"/Delete should park NL notes
      * (active: false) instead of deleting vault files or fighting membership sync.
+     * Native groups / text / media must still be deletable — only exclusively
+     * managed file-cards are parked; mixed selections park cards then run
+     * native delete for the remaining non-managed nodes (e.g. Untitled group).
      */
     private installCorkboardCanvasParkHook(leaf: WorkspaceLeaf | null): void {
         if (this.corkboardCanvasDeleteCleanup) {
@@ -922,6 +925,7 @@ export class BoardView extends ItemView {
         const origDelete = canvas.deleteSelection.bind(canvas);
         let parking = false;
         let removeSelectionCaptured = false;
+        let lastCapturedHadNonManaged = false;
 
         const parkThenSync = async (paths: string[]): Promise<void> => {
             if (parking || paths.length === 0) return;
@@ -943,24 +947,68 @@ export class BoardView extends ItemView {
             }
         };
 
-        canvas.deleteSelection = (...args: unknown[]) => {
-            const paths = this.getSelectedCorkboardManagedPaths(canvas);
-            if (paths.length > 0) {
-                void parkThenSync(paths);
+        const deselectManagedCards = (managedPaths: string[]): void => {
+            const managed = new Set(managedPaths.map(p => normalizePath(p)));
+            const selection = canvas.selection;
+            if (!(selection instanceof Set) && !Array.isArray(selection)) return;
+            const resolveNode = (value: unknown): unknown => {
+                if (typeof value !== 'string') return value;
+                if (canvas.nodes instanceof Map) return canvas.nodes.get(value) ?? value;
+                if (canvas.nodes && typeof canvas.nodes === 'object') return canvas.nodes[value] ?? value;
+                return value;
+            };
+            const keep: unknown[] = [];
+            const selected = selection instanceof Set ? [...selection] : selection;
+            for (const selectedValue of selected) {
+                const node = resolveNode(selectedValue);
+                const path = this.getCanvasNodeFilePath(node);
+                if (path && managed.has(normalizePath(path))) continue;
+                keep.push(selectedValue);
+            }
+            if (selection instanceof Set) {
+                selection.clear();
+                for (const item of keep) selection.add(item);
+            } else {
+                selection.length = 0;
+                selection.push(...keep);
+            }
+        };
+
+        const runDeleteOrPark = (...args: unknown[]): unknown => {
+            const info = this.classifyCorkboardSelection(canvas);
+            if (info.managedPaths.length > 0 && !info.hasNonManaged) {
+                // Exclusively managed file cards → park, never vault-delete.
+                void parkThenSync(info.managedPaths);
                 return undefined;
             }
+            if (info.managedPaths.length > 0 && info.hasNonManaged) {
+                // Mixed: keep groups/text in selection, park managed cards.
+                deselectManagedCards(info.managedPaths);
+                const result = origDelete(...args);
+                void parkThenSync(info.managedPaths);
+                return result;
+            }
+            // Pure groups / text / media / unmanaged → native delete.
             return origDelete(...args);
         };
 
+        canvas.deleteSelection = (...args: unknown[]) => runDeleteOrPark(...args);
+
         // Capture menu trash ("移除") in case it bypasses deleteSelection.
         const root = this.corkboardCanvasHostEl ?? view?.containerEl ?? null;
-        const selectedPaths = (allowCapturedSnapshot = false): string[] => {
-            const current = this.getSelectedCorkboardManagedPaths(canvas);
-            if (current.length > 0) return current;
+        const selectedInfo = (allowCapturedSnapshot = false): {
+            managedPaths: string[];
+            hasNonManaged: boolean;
+        } => {
+            const current = this.classifyCorkboardSelection(canvas);
+            if (current.managedPaths.length > 0 || current.hasNonManaged) return current;
             if (allowCapturedSnapshot && removeSelectionCaptured) {
-                return this.corkboardLastManagedSelectionPaths;
+                return {
+                    managedPaths: this.corkboardLastManagedSelectionPaths,
+                    hasNonManaged: lastCapturedHadNonManaged,
+                };
             }
-            return [];
+            return { managedPaths: [], hasNonManaged: false };
         };
         const isRemoveControl = (element: HTMLElement | null): boolean => {
             const btn = element?.closest?.('button, .clickable-icon, .menu-item') as HTMLElement | null;
@@ -977,19 +1025,22 @@ export class BoardView extends ItemView {
             // Capture the current selection synchronously only for the remove
             // control that is about to consume it. Other pointer actions must
             // clear stale snapshots when Canvas ends with no selection.
-            const before = this.getSelectedCorkboardManagedPaths(canvas);
+            const before = this.classifyCorkboardSelection(canvas);
             const removeControl = isRemoveControl(event.target as HTMLElement | null);
             if (removeControl) {
-                this.corkboardLastManagedSelectionPaths = before;
-                removeSelectionCaptured = before.length > 0;
+                this.corkboardLastManagedSelectionPaths = before.managedPaths;
+                lastCapturedHadNonManaged = before.hasNonManaged;
+                removeSelectionCaptured = before.managedPaths.length > 0 || before.hasNonManaged;
                 return;
             }
             window.setTimeout(() => {
-                const current = this.getSelectedCorkboardManagedPaths(canvas);
-                if (current.length > 0) {
-                    this.corkboardLastManagedSelectionPaths = current;
+                const current = this.classifyCorkboardSelection(canvas);
+                if (current.managedPaths.length > 0 || current.hasNonManaged) {
+                    this.corkboardLastManagedSelectionPaths = current.managedPaths;
+                    lastCapturedHadNonManaged = current.hasNonManaged;
                 } else {
                     this.corkboardLastManagedSelectionPaths = [];
+                    lastCapturedHadNonManaged = false;
                 }
                 removeSelectionCaptured = false;
             }, 0);
@@ -997,22 +1048,26 @@ export class BoardView extends ItemView {
         const onClickCapture = (event: Event) => {
             const target = event.target as HTMLElement | null;
             if (!isRemoveControl(target)) return;
-            const paths = selectedPaths(true);
+            const info = selectedInfo(true);
             removeSelectionCaptured = false;
-            if (paths.length === 0) return;
+            // Only hijack the click when the selection is exclusively managed
+            // cards. Groups / mixed selections must reach native Canvas delete.
+            if (info.managedPaths.length === 0 || info.hasNonManaged) return;
             event.preventDefault();
             event.stopPropagation();
-            void parkThenSync(paths);
+            void parkThenSync(info.managedPaths);
         };
         const onKeyDownCapture = (event: KeyboardEvent) => {
             if (event.key !== 'Delete' && event.key !== 'Backspace') return;
             const target = event.target as HTMLElement | null;
             if (target?.closest('input, textarea, [contenteditable="true"]')) return;
-            const paths = selectedPaths(false);
-            if (paths.length === 0) return;
+            const info = selectedInfo(false);
+            // Exclusively managed → park here so native delete never vault-deletes.
+            // Groups / mixed → let the event reach canvas.deleteSelection (patched).
+            if (info.managedPaths.length === 0 || info.hasNonManaged) return;
             event.preventDefault();
             event.stopPropagation();
-            void parkThenSync(paths);
+            void parkThenSync(info.managedPaths);
         };
         root?.addEventListener('pointerdown', onPointerDownCapture, true);
         root?.addEventListener('click', onClickCapture, true);
@@ -1028,14 +1083,15 @@ export class BoardView extends ItemView {
         };
     }
 
-    private getSelectedCorkboardManagedPaths(canvas: {
+    private classifyCorkboardSelection(canvas: {
         selection?: Set<unknown> | unknown[];
         nodes?: Map<string, unknown> | Record<string, unknown>;
-    }): string[] {
+    }): { managedPaths: string[]; hasNonManaged: boolean } {
         const selected = canvas.selection instanceof Set
             ? [...canvas.selection]
             : Array.isArray(canvas.selection) ? canvas.selection : [];
-        const paths: string[] = [];
+        const managedPaths: string[] = [];
+        let hasNonManaged = false;
         const resolveNode = (value: unknown): unknown => {
             if (typeof value !== 'string') return value;
             if (canvas.nodes instanceof Map) return canvas.nodes.get(value) ?? value;
@@ -1044,15 +1100,25 @@ export class BoardView extends ItemView {
         };
         for (const selectedValue of selected) {
             const node = resolveNode(selectedValue);
+            if (!node || typeof node !== 'object') {
+                // Unknown selection entry — treat as non-managed so native delete can run.
+                hasNonManaged = true;
+                continue;
+            }
             const path = this.getCanvasNodeFilePath(node);
             if (path && this.corkboardCanvasService.isNlManagedPath(path)) {
-                paths.push(path);
+                managedPaths.push(path);
+                continue;
             }
+            // Groups, text, media, links, and unmanaged files.
+            hasNonManaged = true;
         }
 
-        // Some Canvas builds expose selected node ids separately while keeping
-        // the visual state on nodeEl. Use that state as a compatibility fallback.
-        if (paths.length === 0 && canvas.nodes) {
+        // Compatibility fallback: some Canvas builds leave selection empty while
+        // marking nodeEl as selected. Only use this when there is no explicit
+        // selection — otherwise an empty "Untitled group" selection would be
+        // mistaken for nearby focused cards and suppress native group delete.
+        if (selected.length === 0 && canvas.nodes) {
             const nodes = canvas.nodes instanceof Map
                 ? [...canvas.nodes.values()]
                 : Object.values(canvas.nodes);
@@ -1062,10 +1128,17 @@ export class BoardView extends ItemView {
                     ?? (node as { containerEl?: HTMLElement }).containerEl;
                 if (!nodeEl?.matches?.('.is-selected, .is-focused, .mod-active')) continue;
                 const path = this.getCanvasNodeFilePath(node);
-                if (path && this.corkboardCanvasService.isNlManagedPath(path)) paths.push(path);
+                if (path && this.corkboardCanvasService.isNlManagedPath(path)) {
+                    managedPaths.push(path);
+                } else {
+                    hasNonManaged = true;
+                }
             }
         }
-        return [...new Set(paths)];
+        return {
+            managedPaths: [...new Set(managedPaths)],
+            hasNonManaged,
+        };
     }
 
     private getCanvasNodeFilePath(node: unknown): string | null {

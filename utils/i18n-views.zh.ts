@@ -328,6 +328,7 @@ export const VIEWS_ZH: Record<string, string> = {
     'Link Note…': '链接笔记…',
     'Link Note': '链接笔记',
     'Convert to Notes': '转为笔记',
+    'Convert to Note': '转为笔记',
     'Convert to Research': '转为研究',
     'Link any markdown file in the vault to this cell': '链接库内任意 Markdown 文件到此单元格',
     'Create a Notes/ file from this cell and link it': '用此单元格内容在 Notes/ 创建文件并链接',

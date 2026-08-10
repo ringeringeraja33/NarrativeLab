@@ -30,9 +30,18 @@ test('unreadable corkboard Canvas files abort without being rewritten', () => {
 
 test('corkboard parking cannot reuse an old selection', () => {
     assert.match(boardView, /allowCapturedSnapshot && removeSelectionCaptured/);
-    assert.match(boardView, /removeSelectionCaptured = before\.length > 0/);
-    assert.match(boardView, /removeSelectionCaptured = false;\s*if \(paths\.length === 0\) return/);
-    assert.match(boardView, /const paths = selectedPaths\(false\)/);
+    assert.match(boardView, /removeSelectionCaptured = before\.managedPaths\.length > 0 \|\| before\.hasNonManaged/);
+    assert.match(boardView, /classifyCorkboardSelection/);
+    assert.match(boardView, /hasNonManaged/);
+    // Pure groups must reach native delete; only exclusively managed cards are parked.
+    assert.match(boardView, /info\.managedPaths\.length === 0 \|\| info\.hasNonManaged/);
+    assert.match(boardView, /selected\.length === 0 && canvas\.nodes/);
+});
+
+test('corkboard group deletion is not blocked by managed-card parking', () => {
+    assert.match(boardView, /deselectManagedCards/);
+    assert.match(boardView, /info\.managedPaths\.length > 0 && info\.hasNonManaged/);
+    assert.match(boardView, /deselectManagedCards\(info\.managedPaths\)/);
 });
 
 test('series migrations journal transfers and roll back every move path', () => {

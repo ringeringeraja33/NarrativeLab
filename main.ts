@@ -891,7 +891,8 @@ export default class SceneCardsPlugin extends Plugin {
                     }
                     const lightRefresh = file.extension.toLowerCase() === 'md'
                         && this.isActiveManagedPath(filePath);
-                    this.sceneManager.handleFileChange(file).then(() => {
+                    this.sceneManager.handleFileChange(file).then(async () => {
+                        await this.researchManager?.handleFileChange(file);
                         if (lightRefresh) debouncedViewsOnly();
                         else debouncedRefresh();
                     });
@@ -919,7 +920,10 @@ export default class SceneCardsPlugin extends Plugin {
                     if (file.extension.toLowerCase() === 'base') return;
                     if (file.extension.toLowerCase() === 'md' && this.isActiveManagedPath(file.path)) {
                         void this.ensureActiveField(file).then(() =>
-                            this.sceneManager.handleFileCreate(file).then(() => debouncedRefresh()));
+                            this.sceneManager.handleFileCreate(file).then(async () => {
+                                await this.researchManager?.handleFileCreate(file);
+                                debouncedRefresh();
+                            }));
                         return;
                     }
                     const filePath = normalizePath(file.path);
@@ -957,6 +961,7 @@ export default class SceneCardsPlugin extends Plugin {
                         return;
                     }
                     this.sceneManager.handleFileDelete(file.path);
+                    this.researchManager?.handleFileDelete(file.path);
                     debouncedRefresh();
                 }
             })
@@ -1000,6 +1005,7 @@ export default class SceneCardsPlugin extends Plugin {
                         return;
                     }
                     this.sceneManager.handleFileRename(file, oldPath).then(async () => {
+                        await this.researchManager?.handleFileRename(file, oldPath);
                         // Update any PlotGrid cells that reference the old path
                         await this.updatePlotGridLinkedSceneIds(oldPath, file.path);
                         debouncedRefresh();

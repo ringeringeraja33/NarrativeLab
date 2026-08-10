@@ -408,6 +408,139 @@ export class ResearchManager {
     }
 
     // ────────────────────────────────────
+    //  Binder adoption / conversion helpers
+    // ────────────────────────────────────
+
+    isPathUnderResearch(filePath: string): boolean {
+        const folder = this.getResearchFolder();
+        if (!folder) return false;
+        const root = normalizePath(folder);
+        const path = normalizePath(filePath);
+        return path === root || path.startsWith(`${root}/`);
+    }
+
+    /** Drop a path from the in-memory Research index (file may still exist). */
+    forgetPath(filePath: string): void {
+        this.posts.delete(normalizePath(filePath));
+        this.posts.delete(filePath);
+    }
+
+    /**
+     * Adopt a Markdown file under Research/ as `type: research`.
+     * Plain notes and scene/note binder files are rewritten; other entity
+     * types (character/location/codex) are left alone.
+     */
+    async ensureResearchFileIndexed(file: TFile): Promise<ResearchPost | null> {
+        if (file.extension !== 'md') return null;
+        if (!this.isPathUnderResearch(file.path)) return null;
+        if (file.name === '.links.json') return null;
+
+        const path = normalizePath(file.path);
+        const content = await this.app.vault.read(file);
+        const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        let fm: Record<string, unknown> = {};
+        let body = content;
+        if (fmMatch) {
+            try {
+                fm = (parseYaml(fmMatch[1]) || {}) as Record<string, unknown>;
+            } catch {
+                return null;
+            }
+            body = content.substring(fmMatch[0].length).trim();
+        }
+
+        const type = typeof fm.type === 'string' ? fm.type : '';
+        if (type && type !== 'research' && type !== 'scene') {
+            // Characters / locations / codex entries must not be hijacked.
+            return null;
+        }
+
+        if (type !== 'research') {
+            const now = new Date().toISOString();
+            const nextFm: Record<string, unknown> = {
+                type: 'research',
+                title: resolveLibraryEntityName(fm.title, file.path, fm.name) || file.basename,
+                researchType: 'note',
+                tags: Array.isArray(fm.tags) ? fm.tags : [],
+                active: fm.active !== false,
+                created: fm.created || now,
+                modified: now,
+            };
+            // Preserve useful research-ish fields if present.
+            if (typeof fm.sourceUrl === 'string' && fm.sourceUrl.trim()) {
+                nextFm.sourceUrl = fm.sourceUrl;
+                nextFm.researchType = 'webclip';
+            }
+            if (typeof fm.researchType === 'string') nextFm.researchType = fm.researchType;
+            if (fm.resolved !== undefined) nextFm.resolved = fm.resolved;
+
+            const newContent = `---\n${stringifyYaml(nextFm)}---\n${body}\n`;
+            await this.app.vault.modify(file, newContent);
+        }
+
+        const post = await this.parseFile(file);
+        if (post) this.posts.set(path, post);
+        return post;
+    }
+
+    /** Re-index after a vault create/rename into (or out of) Research/. */
+    async adoptMovedResearchFile(file: TFile, oldPath?: string): Promise<void> {
+        if (file.extension !== 'md') return;
+        const path = normalizePath(file.path);
+        const prev = oldPath ? normalizePath(oldPath) : undefined;
+        if (prev && prev !== path) this.forgetPath(prev);
+
+        if (!this.isPathUnderResearch(path)) {
+            this.forgetPath(path);
+            return;
+        }
+        await this.ensureResearchFileIndexed(file);
+    }
+
+    async handleFileChange(file: TFile): Promise<void> {
+        if (!this.isPathUnderResearch(file.path)) return;
+        await this.ensureResearchFileIndexed(file);
+    }
+
+    async handleFileCreate(file: TFile): Promise<void> {
+        await this.handleFileChange(file);
+    }
+
+    handleFileDelete(filePath: string): void {
+        this.forgetPath(filePath);
+        // Keep linked-manifest entries unless explicitly unlinked.
+    }
+
+    async handleFileRename(file: TFile, oldPath: string): Promise<void> {
+        await this.adoptMovedResearchFile(file, oldPath);
+        // Rebase linked paths when a linked file moves.
+        const oldN = normalizePath(oldPath);
+        const newN = normalizePath(file.path);
+        if (this.linkedPaths.has(oldN) || this.linkedPaths.has(oldPath)) {
+            if (!this.linksLoaded) await this.loadLinks();
+            this.linkedPaths.delete(oldN);
+            this.linkedPaths.delete(oldPath);
+            this.linkedPaths.add(newN);
+            await this.saveLinks();
+        }
+    }
+
+    getUniquePathInFolder(folder: string, fileName: string, currentPath?: string): string {
+        const current = currentPath ? normalizePath(currentPath) : '';
+        const dot = fileName.lastIndexOf('.');
+        const base = dot >= 0 ? fileName.slice(0, dot) : fileName;
+        const ext = dot >= 0 ? fileName.slice(dot) : '';
+        let candidate = normalizePath(`${folder}/${fileName}`);
+        let dedupe = 1;
+        while (this.app.vault.getAbstractFileByPath(candidate)
+            && normalizePath(candidate) !== current) {
+            candidate = normalizePath(`${folder}/${base} (${dedupe})${ext}`);
+            dedupe++;
+        }
+        return candidate;
+    }
+
+    // ────────────────────────────────────
     //  Helpers
     // ────────────────────────────────────
 

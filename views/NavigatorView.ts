@@ -417,8 +417,71 @@ export class NavigatorView extends ItemView {
                 this.collapsedNodes.delete('plotlines');
                 this.renderList();
             });
+            row.addEventListener('contextmenu', (e) => {
+                this.showPlotlineContextMenu(e, tag, color, countForPlotline(tag));
+            });
             this.makePlotlineDropTarget(row, tag);
         }
+    }
+
+    private showPlotlineContextMenu(
+        e: MouseEvent,
+        plotline: string,
+        currentColor: string,
+        sceneCount: number,
+    ): void {
+        e.preventDefault();
+        e.stopPropagation();
+        const menu = new Menu();
+
+        menu.addItem(item => {
+            item.setTitle(t('Change color'));
+            item.setIcon('palette');
+            item.onClick(() => this.pickPlotlineColor(plotline, currentColor));
+        });
+        if (this.plugin.settings.tagColors?.[plotline]) {
+            menu.addItem(item => {
+                item.setTitle(t('Reset color'));
+                item.setIcon('rotate-ccw');
+                item.onClick(async () => {
+                    delete this.plugin.settings.tagColors[plotline];
+                    await this.plugin.saveSettings();
+                    this.plugin.refreshOpenViews();
+                });
+            });
+        }
+        menu.addItem(item => {
+            item.setTitle(t('Rename plotline'));
+            item.setIcon('pencil');
+            item.onClick(() => this.promptRenamePlotline(plotline));
+        });
+        menu.addSeparator();
+        menu.addItem(item => {
+            item.setTitle(t('Delete plotline'));
+            item.setIcon('trash');
+            item.onClick(() => this.confirmDeletePlotline(plotline, sceneCount));
+        });
+        menu.showAtMouseEvent(e);
+    }
+
+    private pickPlotlineColor(plotline: string, currentColor: string): void {
+        const colorInput = document.createElement('input');
+        colorInput.type = 'color';
+        colorInput.value = currentColor || '#888888';
+        colorInput.style.cssText = 'position:fixed;left:-9999px;width:0;height:0;opacity:0;pointer-events:none;';
+        document.body.appendChild(colorInput);
+        colorInput.addEventListener('input', async (ev) => {
+            const newColor = (ev.target as HTMLInputElement).value;
+            if (!this.plugin.settings.tagColors) this.plugin.settings.tagColors = {};
+            this.plugin.settings.tagColors[plotline] = newColor;
+            await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews();
+            colorInput.remove();
+        });
+        colorInput.addEventListener('change', () => {
+            window.setTimeout(() => colorInput.remove(), 0);
+        });
+        colorInput.click();
     }
 
     private renderActiveProjectContents(parent: HTMLElement): void {
@@ -511,6 +574,7 @@ export class NavigatorView extends ItemView {
                 });
             },
         });
+        this.makeBinderFolderDropTarget(scenesNode.header, 'scenes');
         if (!scenesNode.expanded || !scenesNode.body) return;
 
         // Plotline filter stays nested under Scenes (secondary)
@@ -529,6 +593,7 @@ export class NavigatorView extends ItemView {
                 });
                 addLink.addEventListener('click', () => this.openNewScene());
             }
+            this.makeBinderFolderDropTarget(empty, 'scenes');
             return;
         }
 
@@ -610,11 +675,13 @@ export class NavigatorView extends ItemView {
                 });
             },
         });
+        this.makeBinderFolderDropTarget(notesNode.header, 'notes');
         if (!notesNode.expanded || !notesNode.body) return;
 
         if (notes.length === 0) {
             const empty = notesNode.body.createDiv('sl-nav-empty');
             empty.createSpan({ text: this.filterText ? t('No matching notes') : t('No notes yet') });
+            this.makeBinderFolderDropTarget(empty, 'notes');
             return;
         }
 
@@ -627,6 +694,8 @@ export class NavigatorView extends ItemView {
         const row = parent.createDiv({
             cls: `sl-nav-row sl-nav-note-row${this.selectedScenePath === note.filePath ? ' is-selected' : ''}`,
         });
+        row.dataset.scenePath = note.filePath;
+        row.draggable = true;
         this.setNavDepth(row, depth);
         this.appendNavToggle(row, ' ');
         const icon = this.appendNavIconSlot(row);
@@ -634,6 +703,21 @@ export class NavigatorView extends ItemView {
         setIcon(icon, 'sticky-note');
         this.appendNavSeqSlot(row);
         row.createSpan({ text: note.title || t('Untitled note'), cls: 'sl-nav-title' });
+
+        row.addEventListener('dragstart', (event) => {
+            if (!event.dataTransfer) return;
+            this.draggingScenePath = note.filePath;
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData(SCENE_DRAG_MIME, note.filePath);
+            event.dataTransfer.setData('text/plain', note.filePath);
+            row.addClass('is-dragging');
+        });
+        row.addEventListener('dragend', () => {
+            this.draggingScenePath = null;
+            row.removeClass('is-dragging');
+            this.listEl?.querySelectorAll('.is-drag-over')
+                .forEach(element => element.removeClass('is-drag-over'));
+        });
 
         row.addEventListener('click', () => {
             void this.openSceneFromNav(note);
@@ -651,6 +735,22 @@ export class NavigatorView extends ItemView {
                             state: { mode: 'source', source: false },
                         });
                     }
+                });
+            });
+            menu.addItem(item => {
+                item.setTitle(t('Convert to scene'));
+                item.setIcon('file-text');
+                item.onClick(async () => {
+                    await this.sceneManager.convertNoteToScene(note.filePath);
+                    this.plugin.refreshOpenViews();
+                });
+            });
+            menu.addItem(item => {
+                item.setTitle(t('Convert to Research'));
+                item.setIcon('library-big');
+                item.onClick(async () => {
+                    await this.sceneManager.convertFileToResearch(note.filePath);
+                    this.plugin.refreshOpenViews();
                 });
             });
             menu.addItem(item => {
@@ -698,6 +798,7 @@ export class NavigatorView extends ItemView {
                 });
             },
         });
+        this.makeBinderFolderDropTarget(researchNode.header, 'research');
         if (!researchNode.expanded || !researchNode.body) return;
 
         if (posts.length === 0) {
@@ -705,6 +806,7 @@ export class NavigatorView extends ItemView {
             empty.createSpan({
                 text: this.filterText ? t('No matching research') : t('No research posts yet'),
             });
+            this.makeBinderFolderDropTarget(empty, 'research');
             return;
         }
 
@@ -715,6 +817,8 @@ export class NavigatorView extends ItemView {
 
     private renderResearchRow(parent: HTMLElement, post: ResearchPost, depth = 2): void {
         const row = parent.createDiv('sl-nav-row sl-nav-research-row');
+        row.dataset.scenePath = post.filePath;
+        row.draggable = !post.isLinked;
         this.setNavDepth(row, depth);
         this.appendNavToggle(row, ' ');
         const icon = this.appendNavIconSlot(row);
@@ -724,6 +828,23 @@ export class NavigatorView extends ItemView {
         row.createSpan({ text: post.title || t('Untitled'), cls: 'sl-nav-title' });
         if (post.subfolder) {
             row.createSpan({ text: post.subfolder, cls: 'sl-nav-folder-count' });
+        }
+
+        if (!post.isLinked) {
+            row.addEventListener('dragstart', (event) => {
+                if (!event.dataTransfer) return;
+                this.draggingScenePath = post.filePath;
+                event.dataTransfer.effectAllowed = 'move';
+                event.dataTransfer.setData(SCENE_DRAG_MIME, post.filePath);
+                event.dataTransfer.setData('text/plain', post.filePath);
+                row.addClass('is-dragging');
+            });
+            row.addEventListener('dragend', () => {
+                this.draggingScenePath = null;
+                row.removeClass('is-dragging');
+                this.listEl?.querySelectorAll('.is-drag-over')
+                    .forEach(element => element.removeClass('is-drag-over'));
+            });
         }
 
         row.addEventListener('click', () => {
@@ -744,6 +865,24 @@ export class NavigatorView extends ItemView {
                     }
                 });
             });
+            if (!post.isLinked) {
+                menu.addItem(item => {
+                    item.setTitle(t('Convert to scene'));
+                    item.setIcon('file-text');
+                    item.onClick(async () => {
+                        await this.sceneManager.convertNoteToScene(post.filePath);
+                        this.plugin.refreshOpenViews();
+                    });
+                });
+                menu.addItem(item => {
+                    item.setTitle(t('Convert to Note'));
+                    item.setIcon('sticky-note');
+                    item.onClick(async () => {
+                        await this.sceneManager.convertSceneToNote(post.filePath);
+                        this.plugin.refreshOpenViews();
+                    });
+                });
+            }
             menu.addItem(item => {
                 item.setTitle(t('Open Research panel'));
                 item.setIcon('library-big');
@@ -853,13 +992,7 @@ export class NavigatorView extends ItemView {
 
     private promptNewPlotline(): void {
         new DraftNameModal(this.app, t('New Plotline'), '', async (name) => {
-            const normalized = name
-                .trim()
-                .toLowerCase()
-                .replace(/\s+/g, '-')
-                .replace(/[#[\]|\\^?!,;:<>{}'"*`~@&%]+/g, '')
-                .replace(/-+/g, '-')
-                .replace(/^-|-$/g, '');
+            const normalized = this.toPlotlineSlug(name);
             if (!normalized) {
                 new Notice(t('Plotline name has no valid characters. Avoid ? # [ ] and similar symbols.'));
                 return;
@@ -875,6 +1008,57 @@ export class NavigatorView extends ItemView {
             // Storyline / Board views also read project.plotlines — refresh them.
             this.plugin.refreshOpenViews();
         }).open();
+    }
+
+    private toPlotlineSlug(raw: string): string {
+        return raw
+            .trim()
+            .toLowerCase()
+            .replace(/\s+/g, '-')
+            .replace(/[#[\]|\\^?!,;:<>{}'"*`~@&%]+/g, '')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '');
+    }
+
+    private promptRenamePlotline(plotline: string): void {
+        new DraftNameModal(this.app, t('Rename Plotline'), plotline, async (name) => {
+            const slug = this.toPlotlineSlug(name);
+            if (!slug || slug === plotline) return;
+            if (this.sceneManager.getPlotlines().includes(slug)) {
+                new Notice(t('A plotline with this name already exists.'));
+                return;
+            }
+            const count = await this.sceneManager.renamePlotline(plotline, slug);
+            if (this.plotlineFilter === plotline) this.plotlineFilter = slug;
+            new Notice(t('Renamed plotline in {count} scene(s)', { count }));
+            this.plugin.refreshOpenViews();
+        }).open();
+    }
+
+    private confirmDeletePlotline(plotline: string, sceneCount: number): void {
+        const modal = new Modal(this.app);
+        modal.titleEl.setText(t('Delete Plotline'));
+        modal.contentEl.createEl('p', {
+            text: t(
+                'Remove the tag "{tag}" from {count} scene(s)? The scenes themselves will not be deleted.',
+                { tag: plotline, count: sceneCount },
+            ),
+        });
+
+        new Setting(modal.contentEl)
+            .addButton(btn => {
+                btn.setButtonText(t('Cancel')).onClick(() => modal.close());
+            })
+            .addButton(btn => {
+                btn.setButtonText(t('Delete')).setClass('mod-warning').onClick(async () => {
+                    const count = await this.sceneManager.deletePlotline(plotline);
+                    if (this.plotlineFilter === plotline) this.plotlineFilter = null;
+                    new Notice(t('Removed plotline from {count} scene(s)', { count }));
+                    this.plugin.refreshOpenViews();
+                    modal.close();
+                });
+            });
+        modal.open();
     }
 
     private promptRenameDraft(draft: ProjectDraft): void {
@@ -921,25 +1105,112 @@ export class NavigatorView extends ItemView {
             event.preventDefault();
             event.stopPropagation();
             row.removeClass('is-drag-over');
-            void (async () => {
-                const scene = this.sceneManager.getScene(scenePath);
-                if (!scene) return;
-                try {
-                    if (plotline) {
-                        await this.sceneManager.assignSceneToPlotline(scenePath, plotline);
-                        this.plotlineFilter = plotline;
-                    } else {
-                        await this.sceneManager.updateSceneTags(scenePath, []);
-                    }
-                    this.renderList();
-                } catch (error) {
-                    console.error('[NarrativeLab] Failed to assign scene to plotline', scenePath, error);
-                    new Notice(t('Failed to create plotline: {err}', {
-                        err: error instanceof Error ? error.message : String(error),
-                    }));
-                }
-            })();
+            void this.assignDraggedPathToPlotline(scenePath, plotline);
         });
+    }
+
+    /** Drop a binder item onto Notes / Scenes / Research to convert its role. */
+    private makeBinderFolderDropTarget(
+        el: HTMLElement,
+        target: 'notes' | 'scenes' | 'research',
+    ): void {
+        el.addEventListener('dragover', (event) => {
+            if (!this.isSceneDrag(event)) return;
+            const path = this.draggingScenePath || this.getDraggedScenePath(event);
+            if (!path) return;
+            const role = this.getBinderRole(path);
+            if (role === target) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+            el.addClass('is-drag-over');
+        });
+        el.addEventListener('dragleave', (event) => {
+            const related = event.relatedTarget as Node | null;
+            if (related && el.contains(related)) return;
+            el.removeClass('is-drag-over');
+        });
+        el.addEventListener('drop', (event) => {
+            const path = this.getDraggedScenePath(event);
+            if (!path) return;
+            event.preventDefault();
+            event.stopPropagation();
+            el.removeClass('is-drag-over');
+            void this.convertDraggedBinderItem(path, target);
+        });
+    }
+
+    private getBinderRole(path: string): 'notes' | 'scenes' | 'research' | null {
+        const scene = this.sceneManager.getScene(path);
+        if (scene?.corkboardNote) return 'notes';
+        if (scene && !scene.corkboardNote) return 'scenes';
+        if (this.plugin.researchManager?.getPost(path)) return 'research';
+        const project = this.sceneManager.activeProject;
+        if (!project) return null;
+        const normalized = path.replace(/\\/g, '/');
+        if (normalized.startsWith(`${project.notesFolder}/`) || normalized === project.notesFolder) {
+            return 'notes';
+        }
+        if (normalized.startsWith(`${project.sceneFolder}/`) || normalized === project.sceneFolder) {
+            return 'scenes';
+        }
+        if (project.researchFolder
+            && (normalized.startsWith(`${project.researchFolder}/`) || normalized === project.researchFolder)) {
+            return 'research';
+        }
+        return null;
+    }
+
+    private async convertDraggedBinderItem(
+        path: string,
+        target: 'notes' | 'scenes' | 'research',
+    ): Promise<void> {
+        try {
+            if (target === 'scenes') {
+                await this.sceneManager.convertNoteToScene(path);
+            } else if (target === 'notes') {
+                await this.sceneManager.convertSceneToNote(path);
+            } else {
+                await this.sceneManager.convertFileToResearch(path);
+            }
+            await this.plugin.researchManager?.scan();
+            this.plugin.refreshOpenViews();
+        } catch (error) {
+            console.error('[NarrativeLab] Binder conversion failed', path, target, error);
+            new Notice(t('Failed to convert binder item: {err}', {
+                err: error instanceof Error ? error.message : String(error),
+            }));
+        }
+    }
+
+    private async assignDraggedPathToPlotline(
+        path: string,
+        plotline: string | null,
+    ): Promise<void> {
+        let scenePath = path;
+        const item = this.sceneManager.getScene(path);
+        const isResearch = !!this.plugin.researchManager?.getPost(path);
+        if (!item || item.corkboardNote || isResearch) {
+            const converted = await this.sceneManager.convertNoteToScene(path, { quiet: true });
+            if (!converted) return;
+            scenePath = converted;
+        }
+        try {
+            if (plotline) {
+                await this.sceneManager.assignSceneToPlotline(scenePath, plotline);
+                this.plotlineFilter = plotline;
+            } else {
+                await this.sceneManager.updateSceneTags(scenePath, []);
+                this.plotlineFilter = UNASSIGNED_PLOTLINE_FILTER;
+            }
+            this.collapsedNodes.delete('plotlines');
+            this.plugin.refreshOpenViews();
+        } catch (error) {
+            console.error('[NarrativeLab] Failed to assign scene to plotline', scenePath, error);
+            new Notice(t('Failed to create plotline: {err}', {
+                err: error instanceof Error ? error.message : String(error),
+            }));
+        }
     }
 
     private async reorderSceneFromDrop(
@@ -949,34 +1220,45 @@ export class NavigatorView extends ItemView {
     ): Promise<void> {
         if (!draggedPath || draggedPath === targetPath) return;
 
+        let path = draggedPath;
+        const draggedItem = this.sceneManager.getScene(draggedPath);
+        const isResearch = !!this.plugin.researchManager?.getPost(draggedPath);
+        if (draggedItem?.corkboardNote || isResearch || !draggedItem) {
+            if (draggedItem?.corkboardNote || isResearch) {
+                const converted = await this.sceneManager.convertNoteToScene(draggedPath, { quiet: true });
+                if (!converted) return;
+                path = converted;
+            }
+        }
+
         if (this.plotlineFilter && this.plotlineFilter !== UNASSIGNED_PLOTLINE_FILTER) {
             const plotlineId = this.plotlineFilter;
             const ordered = this.sceneManager.getScenesOrderedForPlotline(plotlineId);
-            const dragged = ordered.find(scene => scene.filePath === draggedPath);
+            const dragged = ordered.find(scene => scene.filePath === path);
             const target = ordered.find(scene => scene.filePath === targetPath);
             if (!dragged || !target) return;
-            const withoutDragged = ordered.filter(scene => scene.filePath !== draggedPath);
+            const withoutDragged = ordered.filter(scene => scene.filePath !== path);
             const targetIndex = withoutDragged.findIndex(scene => scene.filePath === targetPath);
             withoutDragged.splice(targetIndex + (placeAfter ? 1 : 0), 0, dragged);
             await this.sceneManager.setPlotlineSceneOrder(
                 plotlineId,
                 withoutDragged.map(scene => scene.filePath),
             );
-            this.renderList();
+            this.plugin.refreshOpenViews();
             return;
         }
 
         const ordered = this.sceneManager.getScenesForDraft()
             .slice()
             .sort((a, b) => (a.sequence ?? Number.MAX_SAFE_INTEGER) - (b.sequence ?? Number.MAX_SAFE_INTEGER));
-        const dragged = ordered.find(scene => scene.filePath === draggedPath);
+        const dragged = ordered.find(scene => scene.filePath === path);
         const target = ordered.find(scene => scene.filePath === targetPath);
         if (!dragged || !target) return;
-        const withoutDragged = ordered.filter(scene => scene.filePath !== draggedPath);
+        const withoutDragged = ordered.filter(scene => scene.filePath !== path);
         const targetIndex = withoutDragged.findIndex(scene => scene.filePath === targetPath);
         withoutDragged.splice(targetIndex + (placeAfter ? 1 : 0), 0, dragged);
         await this.sceneManager.resequenceScenes(withoutDragged.map(scene => scene.filePath));
-        this.renderList();
+        this.plugin.refreshOpenViews();
     }
 
     private renderGroupedByAct(scenes: Scene[], parent: HTMLElement, depth = 0): void {
@@ -1189,6 +1471,24 @@ export class NavigatorView extends ItemView {
                     if (file instanceof TFile) {
                         await this.app.workspace.getLeaf('tab').openFile(file, { state: { mode: 'source', source: false } });
                     }
+                });
+            });
+
+            menu.addItem((item) => {
+                item.setTitle(t('Convert to Note'));
+                item.setIcon('sticky-note');
+                item.onClick(async () => {
+                    await this.sceneManager.convertSceneToNote(scene.filePath);
+                    this.plugin.refreshOpenViews();
+                });
+            });
+
+            menu.addItem((item) => {
+                item.setTitle(t('Convert to Research'));
+                item.setIcon('library-big');
+                item.onClick(async () => {
+                    await this.sceneManager.convertFileToResearch(scene.filePath);
+                    this.plugin.refreshOpenViews();
                 });
             });
 

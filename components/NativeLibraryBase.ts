@@ -31,10 +31,34 @@ const VIEW_CATEGORY_KEY = 'narrativeLabCategoryId';
 interface NativeBaseEmbedState {
     child: MarkdownRenderChild | null;
     generation: number;
+    plugin?: SceneCardsPlugin;
+    categoryId?: string;
+    basePath?: string;
+    liveView?: BasesViewLike | null;
+    unhook?: (() => void) | null;
+    persistTimer?: number | null;
+}
+
+interface ViewLayoutSnapshot {
+    order: string[];
+    sort: Array<{ property: string; direction: 'ASC' | 'DESC' }>;
+    columnSize: Record<string, number> | null;
+}
+
+interface BasesViewLike {
+    config: {
+        getOrder?: () => unknown;
+        getSort?: () => unknown;
+        get?: (key: string) => unknown;
+        set?: (key: string, value: unknown) => void;
+    };
 }
 
 const activeEmbeds = new WeakMap<Component, NativeBaseEmbedState>();
+/** Live embeds keyed by base path — used to flush layout before NarrativeLab rewrites YAML. */
+const liveEmbedsByBase = new Map<string, Set<NativeBaseEmbedState>>();
 const ensureLocks = new Map<string, Promise<{ basePath: string; folderPath: string } | null>>();
+const persistLocks = new Map<string, Promise<void>>();
 const migrationLocks = new Map<string, Promise<void>>();
 /** Projects whose Library Base migration already completed this session. */
 const migratedLibraryBasePaths = new Set<string>();
@@ -47,6 +71,8 @@ type BaseViewConfig = Record<string, unknown> & {
     name?: string;
     filters?: unknown;
     order?: unknown;
+    sort?: unknown;
+    columnSize?: unknown;
     narrativeLabCategoryId?: string;
 };
 
@@ -499,6 +525,9 @@ async function writeBaseConfig(
     basePath: string,
     config: Record<string, unknown>,
 ): Promise<void> {
+    // Prefer any live embed layout over a stale in-memory config so ensure*
+    // rewrites cannot clobber Properties/Sort changes the user just made.
+    applyLiveLayoutsToConfig(basePath, config);
     await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
     const yaml = stringifyYaml(config);
     const existing = plugin.app.vault.getAbstractFileByPath(basePath);
@@ -511,6 +540,280 @@ async function writeBaseConfig(
         return;
     }
     await plugin.app.vault.create(basePath, yaml);
+}
+
+function stringArrayEqual(left: unknown, right: string[]): boolean {
+    if (!Array.isArray(left) || left.length !== right.length) return false;
+    return left.every((item, index) => String(item) === right[index]);
+}
+
+function sortConfigsEqual(left: unknown, right: ViewLayoutSnapshot['sort']): boolean {
+    if (!Array.isArray(left)) return right.length === 0;
+    if (left.length !== right.length) return false;
+    return left.every((item, index) => {
+        if (!item || typeof item !== 'object') return false;
+        const row = item as { property?: unknown; direction?: unknown };
+        const expected = right[index];
+        return String(row.property) === expected.property
+            && String(row.direction || 'ASC').toUpperCase() === expected.direction;
+    });
+}
+
+function columnSizeEqual(left: unknown, right: Record<string, number> | null): boolean {
+    if (!right) return left == null;
+    if (!left || typeof left !== 'object' || Array.isArray(left)) return false;
+    const leftRecord = left as Record<string, unknown>;
+    const leftKeys = Object.keys(leftRecord);
+    const rightKeys = Object.keys(right);
+    if (leftKeys.length !== rightKeys.length) return false;
+    return rightKeys.every(key => Number(leftRecord[key]) === right[key]);
+}
+
+function cloneColumnSize(value: unknown): Record<string, number> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const out: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+        const num = Number(raw);
+        if (Number.isFinite(num) && num > 0) out[key] = num;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+}
+
+function snapshotBasesViewLayout(view: BasesViewLike): ViewLayoutSnapshot {
+    const orderRaw = view.config.getOrder?.();
+    const sortRaw = view.config.getSort?.();
+    const order = Array.isArray(orderRaw)
+        ? orderRaw.map(item => String(item)).filter(Boolean)
+        : [];
+    const sort: ViewLayoutSnapshot['sort'] = [];
+    if (Array.isArray(sortRaw)) {
+        for (const item of sortRaw) {
+            if (!item || typeof item !== 'object') continue;
+            const row = item as { property?: unknown; direction?: unknown };
+            const property = String(row.property || '').trim();
+            if (!property) continue;
+            const direction = String(row.direction || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+            sort.push({ property, direction });
+        }
+    }
+    return {
+        order,
+        sort,
+        columnSize: cloneColumnSize(view.config.get?.('columnSize')),
+    };
+}
+
+function applyLayoutSnapshotToView(view: BaseViewConfig, snapshot: ViewLayoutSnapshot): boolean {
+    let dirty = false;
+    if (snapshot.order.length > 0 && !stringArrayEqual(view.order, snapshot.order)) {
+        view.order = snapshot.order.slice();
+        dirty = true;
+    }
+    if (!sortConfigsEqual(view.sort, snapshot.sort)) {
+        if (snapshot.sort.length === 0) {
+            if (view.sort !== undefined) {
+                delete view.sort;
+                dirty = true;
+            }
+        } else {
+            view.sort = snapshot.sort.map(entry => ({
+                property: entry.property,
+                direction: entry.direction,
+            }));
+            dirty = true;
+        }
+    }
+    if (!columnSizeEqual(view.columnSize, snapshot.columnSize)) {
+        if (!snapshot.columnSize) {
+            if (view.columnSize !== undefined) {
+                delete view.columnSize;
+                dirty = true;
+            }
+        } else {
+            view.columnSize = { ...snapshot.columnSize };
+            dirty = true;
+        }
+    }
+    return dirty;
+}
+
+function applyLiveLayoutsToConfig(basePath: string, config: Record<string, unknown>): boolean {
+    const hooks = liveEmbedsByBase.get(basePath);
+    if (!hooks || hooks.size === 0) return false;
+    const views = getViews(config);
+    let dirty = false;
+    for (const state of hooks) {
+        if (!state.categoryId || !state.liveView) continue;
+        const view = findViewForCategory(views, state.categoryId);
+        if (!view) continue;
+        if (applyLayoutSnapshotToView(view, snapshotBasesViewLayout(state.liveView))) {
+            dirty = true;
+        }
+    }
+    if (dirty) config.views = views;
+    return dirty;
+}
+
+function trackLiveEmbed(state: NativeBaseEmbedState): void {
+    if (!state.basePath) return;
+    let set = liveEmbedsByBase.get(state.basePath);
+    if (!set) {
+        set = new Set();
+        liveEmbedsByBase.set(state.basePath, set);
+    }
+    set.add(state);
+}
+
+function untrackLiveEmbed(state: NativeBaseEmbedState): void {
+    if (!state.basePath) return;
+    const set = liveEmbedsByBase.get(state.basePath);
+    if (!set) return;
+    set.delete(state);
+    if (set.size === 0) liveEmbedsByBase.delete(state.basePath);
+}
+
+function findBasesViewInComponent(component: Component, depth = 0): BasesViewLike | null {
+    if (depth > 14) return null;
+    const anyComp = component as unknown as {
+        config?: BasesViewLike['config'];
+        _children?: Component[];
+        children?: Component[];
+    };
+    if (
+        anyComp.config
+        && typeof anyComp.config.getOrder === 'function'
+        && typeof anyComp.config.getSort === 'function'
+    ) {
+        return anyComp as unknown as BasesViewLike;
+    }
+    const kids = anyComp._children ?? anyComp.children;
+    if (!Array.isArray(kids)) return null;
+    for (const kid of kids) {
+        const found = findBasesViewInComponent(kid, depth + 1);
+        if (found) return found;
+    }
+    return null;
+}
+
+async function waitForBasesView(
+    child: Component,
+    generation: number,
+    getGeneration: () => number,
+): Promise<BasesViewLike | null> {
+    for (let attempt = 0; attempt < 24; attempt++) {
+        if (getGeneration() !== generation) return null;
+        const found = findBasesViewInComponent(child);
+        if (found) return found;
+        await new Promise<void>(resolve => window.setTimeout(resolve, 50));
+    }
+    return findBasesViewInComponent(child);
+}
+
+async function withPersistLock(basePath: string, fn: () => Promise<void>): Promise<void> {
+    while (persistLocks.has(basePath)) {
+        try { await persistLocks.get(basePath); } catch { /* continue */ }
+    }
+    while (ensureLocks.has(basePath)) {
+        try { await ensureLocks.get(basePath); } catch { /* continue */ }
+    }
+    const pending = fn().finally(() => {
+        if (persistLocks.get(basePath) === pending) persistLocks.delete(basePath);
+    });
+    persistLocks.set(basePath, pending);
+    await pending;
+}
+
+async function persistLayoutSnapshot(
+    plugin: SceneCardsPlugin,
+    basePath: string,
+    categoryId: string,
+    snapshot: ViewLayoutSnapshot,
+): Promise<void> {
+    if (snapshot.order.length === 0 && snapshot.sort.length === 0 && !snapshot.columnSize) {
+        return;
+    }
+    await withPersistLock(basePath, async () => {
+        const config = await readBaseConfig(plugin, basePath);
+        if (!config) return;
+        const views = getViews(config);
+        const view = findViewForCategory(views, categoryId);
+        if (!view) return;
+        if (!applyLayoutSnapshotToView(view, snapshot)) return;
+        config.views = views;
+        // Bypass writeBaseConfig's live merge — this snapshot is already authoritative.
+        await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
+        const yaml = stringifyYaml(config);
+        const existing = plugin.app.vault.getAbstractFileByPath(basePath);
+        if (existing instanceof TFile) {
+            await plugin.app.vault.modify(existing, yaml);
+            return;
+        }
+        if (await pathExists(plugin, basePath)) {
+            await plugin.app.vault.adapter.write(basePath, yaml);
+            return;
+        }
+        await plugin.app.vault.create(basePath, yaml);
+    });
+}
+
+function schedulePersistLiveLayout(state: NativeBaseEmbedState): void {
+    if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
+    if (state.persistTimer != null) window.clearTimeout(state.persistTimer);
+    state.persistTimer = window.setTimeout(() => {
+        state.persistTimer = null;
+        if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
+        const snapshot = snapshotBasesViewLayout(state.liveView);
+        void persistLayoutSnapshot(state.plugin, state.basePath, state.categoryId, snapshot);
+    }, 250);
+}
+
+function hookLiveBasesView(state: NativeBaseEmbedState, view: BasesViewLike): void {
+    state.liveView = view;
+    trackLiveEmbed(state);
+    const config = view.config;
+    const originalSet = typeof config.set === 'function' ? config.set.bind(config) : null;
+    if (originalSet) {
+        config.set = (key: string, value: unknown) => {
+            originalSet(key, value);
+            if (key === 'order' || key === 'sort' || key === 'columnSize' || key === 'groupBy') {
+                schedulePersistLiveLayout(state);
+            }
+        };
+    }
+
+    // Toolbar menus may update config without going through a patched set in
+    // some Obsidian builds — also snapshot after Properties/Sort interactions.
+    const host = state.child?.containerEl;
+    const onPointerUp = (event: Event) => {
+        const target = event.target as HTMLElement | null;
+        if (!target?.closest?.('.bases-toolbar, .menu, .suggestion-container, .bases-view')) return;
+        schedulePersistLiveLayout(state);
+    };
+    host?.addEventListener('pointerup', onPointerUp, true);
+    host?.addEventListener('change', onPointerUp, true);
+
+    state.unhook = () => {
+        if (originalSet) config.set = originalSet;
+        host?.removeEventListener('pointerup', onPointerUp, true);
+        host?.removeEventListener('change', onPointerUp, true);
+        if (state.persistTimer != null) {
+            window.clearTimeout(state.persistTimer);
+            state.persistTimer = null;
+        }
+        untrackLiveEmbed(state);
+        state.liveView = null;
+        state.unhook = null;
+    };
+}
+
+async function flushEmbedLayout(state: NativeBaseEmbedState): Promise<void> {
+    if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
+    if (state.persistTimer != null) {
+        window.clearTimeout(state.persistTimer);
+        state.persistTimer = null;
+    }
+    const snapshot = snapshotBasesViewLayout(state.liveView);
+    await persistLayoutSnapshot(state.plugin, state.basePath, state.categoryId, snapshot);
 }
 
 async function readLegacyCategoryConfig(
@@ -702,7 +1005,8 @@ async function trashLegacyLibraryBaseFiles(plugin: SceneCardsPlugin): Promise<vo
 async function migrateLegacyNativeBasesUnlocked(plugin: SceneCardsPlugin): Promise<void> {
     const ensured = await ensureConsolidatedLibraryBase(plugin);
     if (!ensured) return;
-    if (ensured.dirty) {
+    const liveDirty = applyLiveLayoutsToConfig(ensured.basePath, ensured.config);
+    if (ensured.dirty || liveDirty) {
         await writeBaseConfig(plugin, ensured.basePath, ensured.config);
     }
     await trashLegacyLibraryBaseFiles(plugin);
@@ -746,7 +1050,11 @@ async function ensureNativeBaseUnlocked(
     if (!folderPath) return null;
     const ensured = await ensureConsolidatedLibraryBase(plugin);
     if (!ensured) return null;
-    if (ensured.dirty) {
+    if (persistLocks.has(ensured.basePath)) {
+        try { await persistLocks.get(ensured.basePath); } catch { /* ignore */ }
+    }
+    const liveDirty = applyLiveLayoutsToConfig(ensured.basePath, ensured.config);
+    if (ensured.dirty || liveDirty) {
         await writeBaseConfig(plugin, ensured.basePath, ensured.config);
     }
     return { basePath: ensured.basePath, folderPath };
@@ -789,8 +1097,11 @@ export async function syncAllNativeLibraryBases(
     if (syncedFilterStyleKeys.has(styleKey)) return;
     try {
         const ensured = await ensureConsolidatedLibraryBase(plugin);
-        if (ensured?.dirty) {
-            await writeBaseConfig(plugin, ensured.basePath, ensured.config);
+        if (ensured) {
+            const liveDirty = applyLiveLayoutsToConfig(ensured.basePath, ensured.config);
+            if (ensured.dirty || liveDirty) {
+                await writeBaseConfig(plugin, ensured.basePath, ensured.config);
+            }
         }
     } catch (error) {
         console.error('[NarrativeLab] Failed to sync Library Base:', error);
@@ -886,11 +1197,21 @@ export function disposeNativeLibraryBase(owner: Component): void {
         activeEmbeds.set(owner, { child: null, generation: 1 });
         return;
     }
+    // Snapshot+write layout while the Bases view is still alive, then detach.
+    const flush = flushEmbedLayout(state);
+    state.unhook?.();
+    state.unhook = null;
     state.generation += 1;
     if (state.child) {
         owner.removeChild(state.child);
         state.child = null;
     }
+    state.plugin = undefined;
+    state.categoryId = undefined;
+    state.basePath = undefined;
+    void flush.catch(error => {
+        console.warn('[NarrativeLab] Failed to persist Library Base layout:', error);
+    });
 }
 
 function escapeWikilinkPath(path: string): string {
@@ -917,6 +1238,11 @@ export async function renderNativeLibraryBase(
     let resolved: { basePath: string; folderPath: string } | null;
     try {
         await migrateLegacyNativeBases(plugin);
+        // Wait for any in-flight layout flush from the previous embed.
+        const basePath = getLibraryBasePath(plugin);
+        if (basePath && persistLocks.has(basePath)) {
+            try { await persistLocks.get(basePath); } catch { /* ignore */ }
+        }
         resolved = await ensureNativeBase(plugin, categoryId);
     } catch (error) {
         console.error('[NarrativeLab] Failed to prepare native Library Base:', error);
@@ -935,6 +1261,9 @@ export async function renderNativeLibraryBase(
     loading.remove();
     const child = owner.addChild(new MarkdownRenderChild(host));
     state.child = child;
+    state.plugin = plugin;
+    state.categoryId = categoryId;
+    state.basePath = resolved.basePath;
     const linkPath = escapeWikilinkPath(resolved.basePath);
     const linkView = escapeWikilinkPath(viewName);
     await MarkdownRenderer.render(
@@ -947,5 +1276,13 @@ export async function renderNativeLibraryBase(
     if (state.generation !== generation || !host.isConnected) {
         if (state.child === child) state.child = null;
         owner.removeChild(child);
+        return;
     }
+
+    // Hook the live Bases view so Properties / Sort toolbar changes are written
+    // back into Library/library.base (embedded Bases often keep these in memory).
+    void waitForBasesView(child, generation, () => state.generation).then(view => {
+        if (!view || state.generation !== generation || !host.isConnected) return;
+        hookLiveBasesView(state, view);
+    });
 }

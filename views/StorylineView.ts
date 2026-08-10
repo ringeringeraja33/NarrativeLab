@@ -531,8 +531,12 @@ export class StorylineView extends ItemView {
                 color: color,
                 whiteSpace: 'nowrap',
                 fontFamily: 'var(--font-interface)',
+                cursor: 'context-menu',
             });
             lblDiv.textContent = this.formatPlotlineName(pk);
+            lblDiv.addEventListener('contextmenu', (e) => {
+                this.showPlotlineContextMenu(e, pk, (plotlines.get(pk) || []).length, scenes);
+            });
 
             if (cols.length === 0) continue;
 
@@ -783,9 +787,10 @@ export class StorylineView extends ItemView {
         });
         colorInput.addEventListener('input', async (e) => {
             const newColor = (e.target as HTMLInputElement).value;
+            if (!this.plugin.settings.tagColors) this.plugin.settings.tagColors = {};
             this.plugin.settings.tagColors[plotline] = newColor;
             await this.plugin.saveSettings();
-            this.refresh();
+            this.plugin.refreshOpenViews();
         });
 
         // Rename button
@@ -826,42 +831,7 @@ export class StorylineView extends ItemView {
 
         // Right-click context menu
         header.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const menu = new Menu();
-            menu.addItem((item: MenuItem) => {
-                item.setTitle(t('Change color'))
-                    .setIcon('palette')
-                    .onClick(() => colorInput.click());
-            });
-            if (this.plugin.settings.tagColors[plotline]) {
-                menu.addItem((item: MenuItem) => {
-                    item.setTitle(t('Reset color'))
-                        .setIcon('rotate-ccw')
-                        .onClick(async () => {
-                            delete this.plugin.settings.tagColors[plotline];
-                            await this.plugin.saveSettings();
-                            this.refresh();
-                        });
-                });
-            }
-            menu.addItem((item: MenuItem) => {
-                item.setTitle(t('Rename plotline'))
-                    .setIcon('pencil')
-                    .onClick(() => this.openRenamePlotlineModal(plotline));
-            });
-            menu.addItem((item: MenuItem) => {
-                item.setTitle(t('Add scenes'))
-                    .setIcon('plus')
-                    .onClick(() => this.openAddSceneToPlotlineModal(plotline, scenes, allScenes));
-            });
-            menu.addSeparator();
-            menu.addItem((item: MenuItem) => {
-                item.setTitle(t('Delete plotline'))
-                    .setIcon('trash-2')
-                    .onClick(() => this.confirmDeletePlotline(plotline, scenes.length));
-            });
-            menu.showAtPosition({ x: e.clientX, y: e.clientY });
+            this.showPlotlineContextMenu(e, plotline, scenes.length, allScenes);
         });
 
         const body = section.createDiv('storyline-body');
@@ -1029,7 +999,7 @@ export class StorylineView extends ItemView {
                     }
                     const count = await this.sceneManager.renamePlotline(plotline, slug);
                     new Notice(t('Renamed plotline in {count} scene(s)', { count }));
-                    this.refresh();
+                    this.plugin.refreshOpenViews();
                     modal.close();
                 });
             });
@@ -1037,6 +1007,84 @@ export class StorylineView extends ItemView {
     }
 
     // ── Delete ─────────────────────────────────────────────
+
+    private showPlotlineContextMenu(
+        e: MouseEvent,
+        plotline: string,
+        sceneCount: number,
+        allScenes?: Scene[],
+    ): void {
+        e.preventDefault();
+        e.stopPropagation();
+        const menu = new Menu();
+        const currentColor = this.plugin.settings.tagColors?.[plotline]
+            || resolveTagColor(
+                plotline,
+                Math.max(0, this.sceneManager.getPlotlines().indexOf(plotline)),
+                this.plugin.settings.colorScheme,
+                this.plugin.settings.tagColors || {},
+                getPlotlineHSL(this.plugin.settings),
+            );
+
+        const colorInput = activeDocument.body.createEl('input', { type: 'color' }) as HTMLInputElement;
+        colorInput.value = currentColor || '#888888';
+        colorInput.setCssStyles({
+            position: 'fixed',
+            left: '-9999px',
+            width: '0',
+            height: '0',
+            opacity: '0',
+            pointerEvents: 'none',
+        });
+        colorInput.addEventListener('input', async (ev) => {
+            const newColor = (ev.target as HTMLInputElement).value;
+            if (!this.plugin.settings.tagColors) this.plugin.settings.tagColors = {};
+            this.plugin.settings.tagColors[plotline] = newColor;
+            await this.plugin.saveSettings();
+            this.plugin.refreshOpenViews();
+            colorInput.remove();
+        });
+        colorInput.addEventListener('change', () => {
+            window.setTimeout(() => colorInput.remove(), 0);
+        });
+
+        menu.addItem((item: MenuItem) => {
+            item.setTitle(t('Change color'))
+                .setIcon('palette')
+                .onClick(() => colorInput.click());
+        });
+        if (this.plugin.settings.tagColors?.[plotline]) {
+            menu.addItem((item: MenuItem) => {
+                item.setTitle(t('Reset color'))
+                    .setIcon('rotate-ccw')
+                    .onClick(async () => {
+                        delete this.plugin.settings.tagColors[plotline];
+                        await this.plugin.saveSettings();
+                        this.plugin.refreshOpenViews();
+                    });
+            });
+        }
+        menu.addItem((item: MenuItem) => {
+            item.setTitle(t('Rename plotline'))
+                .setIcon('pencil')
+                .onClick(() => this.openRenamePlotlineModal(plotline));
+        });
+        if (allScenes) {
+            const plotScenes = allScenes.filter(s => s.tags?.includes(plotline));
+            menu.addItem((item: MenuItem) => {
+                item.setTitle(t('Add scenes'))
+                    .setIcon('plus')
+                    .onClick(() => this.openAddSceneToPlotlineModal(plotline, plotScenes, allScenes));
+            });
+        }
+        menu.addSeparator();
+        menu.addItem((item: MenuItem) => {
+            item.setTitle(t('Delete plotline'))
+                .setIcon('trash-2')
+                .onClick(() => this.confirmDeletePlotline(plotline, sceneCount));
+        });
+        menu.showAtMouseEvent(e);
+    }
 
     private confirmDeletePlotline(plotline: string, sceneCount: number): void {
         const modal = new Modal(this.app);
@@ -1052,8 +1100,9 @@ export class StorylineView extends ItemView {
             .addButton((btn: ButtonComponent) => {
                 btn.setButtonText(t('Delete')).setClass('mod-warning').onClick(async () => {
                     const count = await this.sceneManager.deletePlotline(plotline);
+                    this.hiddenPlotlines.delete(plotline);
                     new Notice(t('Removed plotline from {count} scene(s)', { count }));
-                    this.refresh();
+                    this.plugin.refreshOpenViews();
                     modal.close();
                 });
             });

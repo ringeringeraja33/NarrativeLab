@@ -94,6 +94,8 @@ export class SceneManager implements ISceneStore {
     private _projectFrontmatterWrite: Promise<void> = Promise.resolve();
     /** Paths currently being adopted as Notes/ corkboard files (re-entrancy guard). */
     private adoptingNotes = new Set<string>();
+    /** Paths currently being converted by NarrativeLab — skip watcher re-adoption. */
+    private binderConvertInFlight = new Set<string>();
     public undoManager: UndoManager;
     /** Read-only query service for filtering, sorting, aggregation */
     public readonly queryService: SceneQueryService;
@@ -1216,7 +1218,7 @@ export class SceneManager implements ISceneStore {
      * Get a scene by file path
      */
     getScene(filePath: string): Scene | undefined {
-        return this.scenes.get(filePath);
+        return this.scenes.get(filePath) ?? this.scenes.get(normalizePath(filePath));
     }
 
     /**
@@ -1548,52 +1550,476 @@ export class SceneManager implements ISceneStore {
      * flipping corkboardNote to false.  Returns the new file path.
      */
     async moveNoteToSceneFolder(filePath: string): Promise<string> {
+        const converted = await this.convertNoteToScene(filePath, { quiet: true });
+        return converted ?? filePath;
+    }
+
+    /**
+     * Convert a corkboard note, research post, or plain markdown into a real
+     * scene under the active draft.
+     */
+    async convertNoteToScene(
+        filePath: string,
+        options?: { quiet?: boolean },
+    ): Promise<string | null> {
+        if (!this._activeProject) {
+            new Notice(t('No active NarrativeLab project. Open one first.'));
+            return null;
+        }
         const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (!file || !(file instanceof TFile)) {
+        if (!file || !(file instanceof TFile) || file.extension !== 'md') {
             new Notice(t('Note file not found'));
-            return filePath;
+            return null;
         }
 
-        const scene = this.scenes.get(filePath);
-
-        // Update frontmatter first (still at old path)
-        await this.updateScene(filePath, {
-            corkboardNote: false,
-            plotgridOrigin: undefined,
-        });
-
-        // Target the active draft's Scenes root (not always project-wide Scenes/)
-        const draftRoot = this.getDraftSceneRoot(this.getActiveDraft());
-        await this.ensureFolder(draftRoot);
-
-        let targetFolder = draftRoot;
-        if (scene?.act !== undefined) {
-            const actSeg = sanitizeActChapterForPath(String(scene.act));
-            if (actSeg) {
-                targetFolder = normalizePath(`${draftRoot}/Act ${actSeg}`);
-            await this.ensureFolder(targetFolder);
-            }
+        const oldPath = normalizePath(filePath);
+        const existing = this.scenes.get(oldPath) ?? await MetadataParser.parseFile(this.app, file);
+        if (existing && existing.type === 'scene' && !existing.corkboardNote
+            && this.isPathUnderFolder(oldPath, this.getSceneFolder())) {
+            if (!options?.quiet) new Notice(t('This file is already a scene.'));
+            return oldPath;
         }
 
-        const newPath = normalizePath(`${targetFolder}/${file.name}`);
+        let newPath = oldPath;
+        this.binderConvertInFlight.add(oldPath);
+        try {
+            const sequence = existing?.sequence === undefined && this.plugin.settings.autoGenerateSequence
+                ? this.getNextSequence()
+                : existing?.sequence;
+            await this.writeBinderRoleFrontmatter(file, 'scene', {
+                title: existing?.title || file.basename,
+                status: existing?.status || 'idea',
+                sequence,
+            });
+            this.plugin.researchManager?.forgetPath(oldPath);
 
-        // Only move if the file is actually in a different folder
-        if (normalizePath(filePath) !== newPath) {
-            // Remove old index entry
-            this.scenes.delete(filePath);
-            // Use fileManager.renameFile so vault links update
-            await this.app.fileManager.renameFile(file, newPath);
-            // Re-index at the new path
-            const movedFile = this.app.vault.getAbstractFileByPath(newPath);
-            if (movedFile && movedFile instanceof TFile) {
-                const updated = await MetadataParser.parseFile(this.app, movedFile);
-                if (updated) this.scenes.set(newPath, updated);
+            const draftRoot = this.getDraftSceneRoot(this.getActiveDraft());
+            await this.ensureFolder(draftRoot);
+            let targetFolder = draftRoot;
+            const act = existing?.act;
+            if (act !== undefined) {
+                const actSeg = sanitizeActChapterForPath(String(act));
+                if (actSeg) {
+                    targetFolder = normalizePath(`${draftRoot}/Act ${actSeg}`);
+                    await this.ensureFolder(targetFolder);
+                }
             }
+
+            if (!this.isPathUnderFolder(oldPath, this.getSceneFolder())
+                || normalizePath(file.parent?.path || '') !== targetFolder) {
+                newPath = this.getUniquePathInFolder(targetFolder, file.name, oldPath);
+                this.scenes.delete(oldPath);
+                this.binderConvertInFlight.add(newPath);
+                await this.app.fileManager.renameFile(file, newPath);
+            }
+
+            this.plugin.researchManager?.forgetPath(newPath);
+            const moved = this.app.vault.getAbstractFileByPath(newPath);
+            if (moved instanceof TFile) {
+                const updated = await MetadataParser.parseFile(this.app, moved);
+                if (updated) this.scenes.set(newPath, { ...updated, corkboardNote: false });
+            }
+
+            await this.syncDraftScenePaths(oldPath, newPath);
+            await this.ensurePathInActiveDraft(newPath);
+            await this.plugin.plotlineManager?.syncScenePath(oldPath, newPath);
+            await this.rekeyCorkboardPath(oldPath, newPath);
             this.bumpVersion(newPath);
+            if (!options?.quiet) {
+                const name = (this.app.vault.getAbstractFileByPath(newPath) as TFile | null)?.basename
+                    ?? file.basename;
+                new Notice(t('Converted "{name}" to a scene.', { name }));
+            }
             return newPath;
+        } finally {
+            this.binderConvertInFlight.delete(oldPath);
+            this.binderConvertInFlight.delete(newPath);
+        }
+    }
+
+    /**
+     * Convert a scene or research post into a corkboard note under Notes/.
+     */
+    async convertSceneToNote(
+        filePath: string,
+        options?: { quiet?: boolean },
+    ): Promise<string | null> {
+        if (!this._activeProject) {
+            new Notice(t('No active NarrativeLab project. Open one first.'));
+            return null;
+        }
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (!file || !(file instanceof TFile) || file.extension !== 'md') {
+            new Notice(t('Selected file is not a Markdown note.'));
+            return null;
         }
 
-        return filePath;
+        const oldPath = normalizePath(filePath);
+        const existing = this.scenes.get(oldPath) ?? await MetadataParser.parseFile(this.app, file);
+        if (existing?.corkboardNote && this.isPathUnderFolder(oldPath, this.getNotesFolder())) {
+            if (!options?.quiet) new Notice(t('This file is already a note.'));
+            return oldPath;
+        }
+
+        let newPath = oldPath;
+        this.binderConvertInFlight.add(oldPath);
+        try {
+            await this.writeBinderRoleFrontmatter(file, 'note', {
+                title: existing?.title || file.basename,
+                status: existing?.status || 'idea',
+            });
+            this.plugin.researchManager?.forgetPath(oldPath);
+
+            const notesFolder = this.getNotesFolder();
+            await this.ensureFolder(notesFolder);
+            if (!this.isPathUnderFolder(oldPath, notesFolder)) {
+                newPath = this.getUniquePathInFolder(notesFolder, file.name, oldPath);
+                this.scenes.delete(oldPath);
+                this.binderConvertInFlight.add(newPath);
+                await this.app.fileManager.renameFile(file, newPath);
+            }
+
+            this.plugin.researchManager?.forgetPath(newPath);
+            const moved = this.app.vault.getAbstractFileByPath(newPath);
+            if (moved instanceof TFile) {
+                await this.ensureNotesFileIndexed(moved);
+            }
+
+            await this.syncDraftScenePaths(oldPath, null);
+            await this.syncDraftScenePaths(newPath, null);
+            await this.plugin.plotlineManager?.syncScenePath(oldPath, newPath);
+            await this.rekeyCorkboardPath(oldPath, newPath);
+            this.bumpVersion(newPath);
+            if (!options?.quiet) {
+                const name = (this.app.vault.getAbstractFileByPath(newPath) as TFile | null)?.basename
+                    ?? file.basename;
+                new Notice(t('Converted "{name}" to a note.', { name }));
+            }
+            return newPath;
+        } finally {
+            this.binderConvertInFlight.delete(oldPath);
+            this.binderConvertInFlight.delete(newPath);
+        }
+    }
+
+    /**
+     * Convert a scene or corkboard note into a Research post under Research/.
+     */
+    async convertFileToResearch(
+        filePath: string,
+        options?: { quiet?: boolean; researchType?: 'note' | 'webclip' | 'image' | 'question' },
+    ): Promise<string | null> {
+        if (!this._activeProject) {
+            new Notice(t('No active NarrativeLab project. Open one first.'));
+            return null;
+        }
+        const researchFolder = this._activeProject.researchFolder;
+        if (!researchFolder) {
+            new Notice(t('No active NarrativeLab project. Open one first.'));
+            return null;
+        }
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (!file || !(file instanceof TFile) || file.extension !== 'md') {
+            new Notice(t('Selected file is not a Markdown note.'));
+            return null;
+        }
+
+        const oldPath = normalizePath(filePath);
+        const researchMgr = this.plugin.researchManager;
+        const existingResearch = researchMgr?.getPost(oldPath);
+        if (existingResearch && this.isPathUnderFolder(oldPath, researchFolder)) {
+            if (!options?.quiet) new Notice(t('This file is already a research post.'));
+            return oldPath;
+        }
+
+        let newPath = oldPath;
+        this.binderConvertInFlight.add(oldPath);
+        try {
+            const existingScene = this.scenes.get(oldPath) ?? await MetadataParser.parseFile(this.app, file);
+            await this.writeBinderRoleFrontmatter(file, 'research', {
+                title: existingScene?.title || existingResearch?.title || file.basename,
+                researchType: options?.researchType
+                    || existingResearch?.researchType
+                    || 'note',
+                tags: existingScene?.tags || existingResearch?.tags || [],
+                sourceUrl: existingResearch?.sourceUrl,
+            });
+
+            await this.ensureFolder(researchFolder);
+            if (!this.isPathUnderFolder(oldPath, researchFolder)) {
+                newPath = this.getUniquePathInFolder(researchFolder, file.name, oldPath);
+                this.scenes.delete(oldPath);
+                this.binderConvertInFlight.add(newPath);
+                await this.app.fileManager.renameFile(file, newPath);
+            }
+
+            this.scenes.delete(oldPath);
+            this.scenes.delete(newPath);
+            await this.syncDraftScenePaths(oldPath, null);
+            await this.syncDraftScenePaths(newPath, null);
+            await this.plugin.plotlineManager?.syncScenePath(oldPath, newPath);
+            await this.rekeyCorkboardPath(oldPath, newPath);
+
+            const moved = this.app.vault.getAbstractFileByPath(newPath);
+            if (moved instanceof TFile) {
+                await researchMgr?.ensureResearchFileIndexed(moved);
+            }
+
+            this.bumpVersion(newPath);
+            if (!options?.quiet) {
+                const name = (this.app.vault.getAbstractFileByPath(newPath) as TFile | null)?.basename
+                    ?? file.basename;
+                new Notice(t('Converted "{name}" to research.', { name }));
+            }
+            return newPath;
+        } finally {
+            this.binderConvertInFlight.delete(oldPath);
+            this.binderConvertInFlight.delete(newPath);
+        }
+    }
+
+    /**
+     * Rewrite YAML to the target binder role and strip cross-role keys so
+     * Notes / Scenes / Research recognition stays unambiguous.
+     */
+    private async writeBinderRoleFrontmatter(
+        file: TFile,
+        role: 'scene' | 'note' | 'research',
+        extras?: {
+            title?: string;
+            status?: Scene['status'];
+            sequence?: number;
+            researchType?: string;
+            tags?: string[];
+            sourceUrl?: string;
+        },
+    ): Promise<void> {
+        await this.app.fileManager.processFrontMatter(file, (fm) => {
+            const title = extras?.title
+                || (typeof fm.title === 'string' && fm.title.trim() ? fm.title : file.basename);
+            const tags = extras?.tags
+                || (Array.isArray(fm.tags) ? fm.tags : []);
+            const now = new Date().toISOString();
+
+            delete fm.corkboardNote;
+            delete fm.corkboard_note;
+            delete fm.plotgridOrigin;
+            delete fm.researchType;
+            delete fm.sourceUrl;
+            delete fm.resolved;
+
+            if (role === 'research') {
+                fm.type = 'research';
+                fm.title = title;
+                fm.researchType = extras?.researchType || 'note';
+                fm.tags = tags;
+                fm.active = fm.active !== false;
+                fm.modified = now;
+                if (!fm.created) fm.created = now;
+                if (extras?.sourceUrl) fm.sourceUrl = extras.sourceUrl;
+                if (fm.researchType === 'question' && fm.resolved === undefined) fm.resolved = false;
+                delete fm.sequence;
+                delete fm.chronologicalOrder;
+                delete fm.chronological_order;
+                delete fm.status;
+                delete fm.act;
+                delete fm.chapter;
+                delete fm.wordcount;
+                delete fm.charcount;
+                return;
+            }
+
+            fm.type = 'scene';
+            fm.title = title;
+            fm.status = extras?.status || (typeof fm.status === 'string' ? fm.status : 'idea');
+            if (!fm.created) fm.created = now.split('T')[0];
+            fm.modified = now.split('T')[0];
+            if (Array.isArray(tags) && tags.length > 0) fm.tags = tags;
+
+            if (role === 'note') {
+                fm.corkboardNote = true;
+                delete fm.sequence;
+                delete fm.chronologicalOrder;
+                delete fm.chronological_order;
+            } else {
+                delete fm.corkboardNote;
+                if (extras?.sequence !== undefined) fm.sequence = extras.sequence;
+            }
+        });
+    }
+
+    /**
+     * After a vault create/rename into Notes/, Scenes/, or Research/, adopt
+     * frontmatter and registries so Navigator recognizes the binder role
+     * immediately — even when the user moved the file in Obsidian's explorer.
+     */
+    async adoptMovedBinderFile(file: TFile, oldPath?: string): Promise<void> {
+        if (file.extension !== 'md') return;
+        if (file.path.includes('/_snapshots/')) return;
+
+        const path = normalizePath(file.path);
+        const prev = oldPath ? normalizePath(oldPath) : undefined;
+        if (this.binderConvertInFlight.has(path) || (prev && this.binderConvertInFlight.has(prev))) {
+            return;
+        }
+
+        const researchFolder = this._activeProject?.researchFolder;
+        const inNotes = this.isPathUnderFolder(path, this.getNotesFolder());
+        const inScenes = this.isPathUnderFolder(path, this.getSceneFolder());
+        const inResearch = !!(researchFolder && this.isPathUnderFolder(path, researchFolder));
+
+        if (!inNotes && !inScenes && !inResearch) {
+            if (prev) {
+                this.scenes.delete(prev);
+                await this.syncDraftScenePaths(prev, null);
+                await this.plugin.plotlineManager?.syncScenePath(prev, null);
+                await this.rekeyCorkboardPath(prev, null);
+                this.plugin.researchManager?.forgetPath(prev);
+                this.bumpVersion(prev);
+            }
+            return;
+        }
+
+        if (inResearch) {
+            if (prev) {
+                this.scenes.delete(prev);
+                await this.syncDraftScenePaths(prev, null);
+                await this.syncDraftScenePaths(path, null);
+                await this.plugin.plotlineManager?.syncScenePath(prev, path);
+                await this.rekeyCorkboardPath(prev, path);
+            }
+            this.scenes.delete(path);
+            await this.plugin.researchManager?.ensureResearchFileIndexed(file);
+            this.bumpVersion(path);
+            return;
+        }
+
+        const content = await this.app.vault.read(file);
+        const fm = MetadataParser.extractFrontmatter(content);
+        // Convert research → scene/note when the file lands in Notes/Scenes.
+        if (fm?.type && fm.type !== 'scene' && fm.type !== 'research') return;
+
+        this.plugin.researchManager?.forgetPath(path);
+        if (prev) this.plugin.researchManager?.forgetPath(prev);
+
+        if (inNotes) {
+            if (fm?.type === 'research') {
+                await this.writeBinderRoleFrontmatter(file, 'note', {
+                    title: coerceString(fm.title, file.basename),
+                });
+            }
+            await this.ensureNotesFileIndexed(file);
+            if (prev && prev !== path) {
+                await this.syncDraftScenePaths(prev, null);
+                await this.syncDraftScenePaths(path, null);
+                await this.plugin.plotlineManager?.syncScenePath(prev, path);
+                await this.rekeyCorkboardPath(prev, path);
+            } else {
+                await this.syncDraftScenePaths(path, null);
+            }
+            this.bumpVersion(path);
+            return;
+        }
+
+        if (fm?.type === 'research') {
+            await this.writeBinderRoleFrontmatter(file, 'scene', {
+                title: coerceString(fm.title, file.basename),
+                status: 'idea',
+                sequence: this.plugin.settings.autoGenerateSequence ? this.getNextSequence() : undefined,
+            });
+        }
+        await this.ensureSceneFileAdopted(file);
+        if (prev && prev !== path) {
+            await this.syncDraftScenePaths(prev, path);
+            await this.plugin.plotlineManager?.syncScenePath(prev, path);
+            await this.rekeyCorkboardPath(prev, path);
+        }
+        await this.ensurePathInActiveDraft(path);
+        this.bumpVersion(path);
+    }
+
+    /** Ensure a Scenes/ markdown file is indexed as a real (non-corkboard) scene. */
+    async ensureSceneFileAdopted(file: TFile): Promise<Scene | null> {
+        if (file.extension !== 'md') return null;
+        if (!this.isPathUnderFolder(file.path, this.getSceneFolder())) return null;
+        if (file.path.includes('/_snapshots/')) return null;
+
+        const path = normalizePath(file.path);
+        if (this.binderConvertInFlight.has(path) || this.adoptingNotes.has(path)) {
+            return this.scenes.get(path) ?? null;
+        }
+
+        const content = await this.app.vault.read(file);
+        const fm = MetadataParser.extractFrontmatter(content);
+        if (fm?.type && fm.type !== 'scene') return null;
+
+        let scene = MetadataParser.parseContent(content, file.path);
+        const today = new Date().toISOString().split('T')[0];
+        const updates: Partial<Scene> = {};
+        if (!scene) {
+            updates.type = 'scene';
+            updates.title = coerceString(fm?.title, file.basename);
+            updates.status = ((fm?.status as Scene['status']) || 'idea');
+            updates.created = coerceString(fm?.created, today);
+        }
+        if (scene?.corkboardNote || fm?.corkboardNote) {
+            updates.corkboardNote = false;
+            updates.plotgridOrigin = undefined;
+        }
+        if ((scene?.sequence === undefined) && (fm?.sequence === undefined)
+            && this.plugin.settings.autoGenerateSequence) {
+            updates.sequence = this.getNextSequence();
+        }
+
+        if (Object.keys(updates).length > 0) {
+            this.binderConvertInFlight.add(path);
+            try {
+                await MetadataParser.updateFrontmatter(this.app, file, updates);
+            } finally {
+                this.binderConvertInFlight.delete(path);
+            }
+            scene = await MetadataParser.parseFile(this.app, file);
+        }
+
+        if (scene) {
+            // Force non-note role in memory even if YAML write was a no-op.
+            if (scene.corkboardNote) scene = { ...scene, corkboardNote: false };
+            this.scenes.set(path, scene);
+            this.bumpVersion(path);
+        }
+        return scene;
+    }
+
+    private async ensurePathInActiveDraft(filePath: string): Promise<void> {
+        const project = this._activeProject;
+        const draft = this.getActiveDraft();
+        if (!project || !draft?.scenePaths) return;
+        const path = normalizePath(filePath);
+        if (draft.scenePaths.some(p => normalizePath(p) === path)) return;
+        draft.scenePaths = [...draft.scenePaths, path];
+        await this.saveProjectFrontmatter(project);
+    }
+
+    /** Re-key a single corkboard position entry in System/board.json. */
+    async rekeyCorkboardPath(oldPath: string, newPath: string | null): Promise<void> {
+        if (!this._activeProject) return;
+        const positions = { ...(this._activeProject.corkboardPositions || {}) };
+        const oldN = normalizePath(oldPath);
+        const pos = positions[oldN] ?? positions[oldPath];
+        if (!pos) {
+            // Also try case-sensitive exact keys
+            const key = Object.keys(positions).find(k => normalizePath(k) === oldN);
+            if (!key) return;
+            const value = positions[key];
+            delete positions[key];
+            if (newPath) positions[normalizePath(newPath)] = value;
+            await this.setCorkboardPositions(positions);
+            return;
+        }
+        delete positions[oldN];
+        delete positions[oldPath];
+        if (newPath) positions[normalizePath(newPath)] = pos;
+        await this.setCorkboardPositions(positions);
     }
 
     /**
@@ -1607,53 +2033,7 @@ export class SceneManager implements ISceneStore {
      * needed) or `null` on failure.
      */
     async convertFileToScene(filePath: string): Promise<string | null> {
-        if (!this._activeProject) {
-            new Notice(t('No active NarrativeLab project. Open one first.'));
-            return null;
-        }
-        const file = this.app.vault.getAbstractFileByPath(filePath);
-        if (!file || !(file instanceof TFile) || file.extension !== 'md') {
-            new Notice(t('Selected file is not a Markdown note.'));
-            return null;
-        }
-
-        // Refuse if it's already indexed as a real (non-corkboard) scene.
-        const existing = this.scenes.get(filePath);
-        if (existing && existing.type === 'scene' && !existing.corkboardNote) {
-            new Notice(t('This file is already a scene.'));
-            return filePath;
-        }
-
-        const today = new Date().toISOString().split('T')[0];
-        const content = await this.app.vault.read(file);
-        const fm = (MetadataParser.extractFrontmatter(content) || {}) as Partial<Scene> & Record<string, unknown>;
-
-        const updates: Partial<Scene> = {
-            type: 'scene',
-            title: String(fm.title || file.basename),
-            status: (fm.status || 'idea') as Scene['status'],
-            created: String(fm.created || today),
-            corkboardNote: false,
-            plotgridOrigin: undefined,
-        };
-        if (fm.sequence === undefined) {
-            updates.sequence = this.getNextSequence();
-        }
-
-        // Write frontmatter (also recomputes wordcount + modified date)
-        await MetadataParser.updateFrontmatter(this.app, file, updates);
-
-        // Index the file so moveNoteToSceneFolder can reference it
-        const parsed = await MetadataParser.parseFile(this.app, file);
-        if (parsed) {
-            this.scenes.set(filePath, parsed);
-            this.bumpVersion(filePath);
-        }
-
-        // Now move it into Scenes/<Act N> if needed (reuses existing logic).
-        const newPath = await this.moveNoteToSceneFolder(filePath);
-        new Notice(t('Converted "{name}" to a scene.', { name: file.basename }));
-        return newPath;
+        return this.convertNoteToScene(filePath);
     }
 
     async archiveScene(filePath: string): Promise<string> {
@@ -1862,27 +2242,14 @@ export class SceneManager implements ISceneStore {
         const inNotes = this.isPathUnderFolder(file.path, this.getNotesFolder());
         if (!inScenes && !inNotes) return;
 
-        // Native Obsidian notes under Notes/ need corkboard frontmatter before
-        // the board/corkboard can show them (even with the Notes toggle on).
-        if (inNotes) {
-            await this.ensureNotesFileIndexed(file);
-            return;
-        }
-
-        const scene = await MetadataParser.parseFile(this.app, file);
-        if (scene) {
-            this.scenes.set(file.path, scene);
-        } else {
-            this.scenes.delete(file.path);
-        }
-        this.bumpVersion(file.path);
+        await this.adoptMovedBinderFile(file);
     }
 
     /**
      * Handle newly created files (Obsidian "New note" fires create, not always modify).
      */
     async handleFileCreate(file: TFile): Promise<void> {
-        await this.handleFileChange(file);
+        await this.adoptMovedBinderFile(file);
     }
 
     /**
@@ -1892,6 +2259,7 @@ export class SceneManager implements ISceneStore {
         this.scenes.delete(filePath);
         void this.syncDraftScenePaths(filePath, null);
         void this.plugin.plotlineManager?.syncScenePath(filePath, null);
+        void this.rekeyCorkboardPath(filePath, null);
         this.bumpVersion(filePath);
     }
 
@@ -1900,29 +2268,18 @@ export class SceneManager implements ISceneStore {
      */
     async handleFileRename(file: TFile, oldPath: string): Promise<void> {
         this.scenes.delete(oldPath);
-        const inScenes = this.isPathUnderFolder(file.path, this.getSceneFolder());
-        const inNotes = this.isPathUnderFolder(file.path, this.getNotesFolder());
-        if (file.extension === 'md' && (inScenes || inNotes)) {
-            if (inNotes) {
-                await this.ensureNotesFileIndexed(file);
-            } else {
-            const scene = await MetadataParser.parseFile(this.app, file);
-            if (scene) {
-                this.scenes.set(file.path, scene);
-                    if (!scene.corkboardNote) {
-                    const titleFromFile = this.getTitleFromSceneFileName(file);
-                    if (titleFromFile && titleFromFile !== scene.title) {
-                        const oldTitle = scene.title;
-                            await this.updateScene(file.path, { title: titleFromFile });
-                        if (oldTitle) await this.updateSceneTitleReferences(oldTitle, titleFromFile);
-                    }
-                }
+        await this.adoptMovedBinderFile(file, oldPath);
+
+        // Keep scene titles aligned with renamed scene filenames (non-notes only).
+        const scene = this.scenes.get(normalizePath(file.path));
+        if (scene && !scene.corkboardNote && this.isPathUnderFolder(file.path, this.getSceneFolder())) {
+            const titleFromFile = this.getTitleFromSceneFileName(file);
+            if (titleFromFile && titleFromFile !== scene.title) {
+                const oldTitle = scene.title;
+                await this.updateScene(file.path, { title: titleFromFile });
+                if (oldTitle) await this.updateSceneTitleReferences(oldTitle, titleFromFile);
             }
         }
-        }
-        await this.syncDraftScenePaths(oldPath, file.path);
-        await this.plugin.plotlineManager?.syncScenePath(oldPath, file.path);
-        this.bumpVersion(file.path);
     }
 
     /**
