@@ -1547,11 +1547,24 @@ export class SceneManager implements ISceneStore {
 
     /**
      * Move a corkboard note from the Notes/ folder to the Scenes/ folder,
-     * flipping corkboardNote to false.  Returns the new file path.
+     * flipping corkboardNote to false.  Returns the new file path, or null on failure.
      */
-    async moveNoteToSceneFolder(filePath: string): Promise<string> {
-        const converted = await this.convertNoteToScene(filePath, { quiet: true });
-        return converted ?? filePath;
+    async moveNoteToSceneFolder(filePath: string): Promise<string | null> {
+        return this.convertNoteToScene(filePath, { quiet: true });
+    }
+
+    /** Resolve a binder file's display title before role conversion. */
+    private async resolveBinderSourceTitle(file: TFile, path: string): Promise<string> {
+        const existing = this.scenes.get(path);
+        if (existing?.title?.trim()) return existing.title.trim();
+        const research = this.plugin.researchManager?.getPost(path);
+        if (research?.title?.trim()) return research.title.trim();
+        try {
+            const content = await this.app.vault.read(file);
+            const fm = MetadataParser.extractFrontmatter(content);
+            if (typeof fm?.title === 'string' && fm.title.trim()) return fm.title.trim();
+        } catch { /* fall through */ }
+        return file.basename;
     }
 
     /**
@@ -1583,11 +1596,12 @@ export class SceneManager implements ISceneStore {
         let newPath = oldPath;
         this.binderConvertInFlight.add(oldPath);
         try {
+            const title = await this.resolveBinderSourceTitle(file, oldPath);
             const sequence = existing?.sequence === undefined && this.plugin.settings.autoGenerateSequence
                 ? this.getNextSequence()
                 : existing?.sequence;
             await this.writeBinderRoleFrontmatter(file, 'scene', {
-                title: existing?.title || file.basename,
+                title,
                 status: existing?.status || 'idea',
                 sequence,
             });
@@ -1664,8 +1678,9 @@ export class SceneManager implements ISceneStore {
         let newPath = oldPath;
         this.binderConvertInFlight.add(oldPath);
         try {
+            const title = await this.resolveBinderSourceTitle(file, oldPath);
             await this.writeBinderRoleFrontmatter(file, 'note', {
-                title: existing?.title || file.basename,
+                title,
                 status: existing?.status || 'idea',
             });
             this.plugin.researchManager?.forgetPath(oldPath);
@@ -1736,8 +1751,9 @@ export class SceneManager implements ISceneStore {
         this.binderConvertInFlight.add(oldPath);
         try {
             const existingScene = this.scenes.get(oldPath) ?? await MetadataParser.parseFile(this.app, file);
+            const title = await this.resolveBinderSourceTitle(file, oldPath);
             await this.writeBinderRoleFrontmatter(file, 'research', {
-                title: existingScene?.title || existingResearch?.title || file.basename,
+                title,
                 researchType: options?.researchType
                     || existingResearch?.researchType
                     || 'note',
@@ -2609,6 +2625,15 @@ export class SceneManager implements ISceneStore {
         if (this._activeProject?.plotlines?.includes(tag)) {
             this._activeProject.plotlines = this._activeProject.plotlines.filter(value => value !== tag);
             await this.saveProjectFrontmatter(this._activeProject);
+        }
+        return count;
+    }
+
+    /** Count indexed scenes/notes that currently carry this plotline tag. */
+    countScenesWithPlotline(tag: string): number {
+        let count = 0;
+        for (const scene of this.scenes.values()) {
+            if (scene.tags?.includes(tag)) count++;
         }
         return count;
     }

@@ -278,7 +278,7 @@ export class FiltersComponent {
         if (f.activeState === 'all' || f.activeState === 'inactive') {
             chips.push({
                 label: t('Including inactive'),
-                clear: () => { this.currentFilter.activeState = undefined; },
+                clear: () => { this.currentFilter.activeState = 'active'; },
             });
         }
 
@@ -409,7 +409,9 @@ export class FiltersComponent {
 
     private clearFiltersKeepSearch(): void {
         const search = this.currentFilter.searchText;
-        this.currentFilter = search ? { searchText: search } : {};
+        this.currentFilter = search
+            ? { searchText: search, activeState: 'active' }
+            : { activeState: 'active' };
     }
 
     private countActiveFilters(): number {
@@ -475,7 +477,7 @@ export class FiltersComponent {
         inactiveCb.checked = this.currentFilter.activeState === 'all' || this.currentFilter.activeState === 'inactive';
         inactiveLabel.createSpan({ cls: 'sl-toggle-track' });
         inactiveCb.addEventListener('change', () => {
-            this.currentFilter.activeState = inactiveCb.checked ? 'all' : undefined;
+            this.currentFilter.activeState = inactiveCb.checked ? 'all' : 'active';
             this.afterFilterChange();
         });
 

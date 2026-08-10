@@ -1001,7 +1001,14 @@ export default class SceneCardsPlugin extends Plugin {
                     if (file.extension.toLowerCase() === 'md'
                         && (this.isActiveLibraryPath(filePath)
                             || this.isActiveLibraryPath(previousPath))) {
-                        debouncedLibraryEntityReload();
+                        // Library↔binder moves must still run Scene/Research adoption.
+                        // Reloading Library entities alone leaves Notes/Scenes/Research stale.
+                        void this.sceneManager.handleFileRename(file, oldPath).then(async () => {
+                            await this.researchManager?.handleFileRename(file, oldPath);
+                            await this.updatePlotGridLinkedSceneIds(oldPath, file.path);
+                            debouncedLibraryEntityReload();
+                            debouncedRefresh();
+                        });
                         return;
                     }
                     this.sceneManager.handleFileRename(file, oldPath).then(async () => {

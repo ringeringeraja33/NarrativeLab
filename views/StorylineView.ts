@@ -1087,10 +1087,11 @@ export class StorylineView extends ItemView {
     }
 
     private confirmDeletePlotline(plotline: string, sceneCount: number): void {
+        const affected = Math.max(sceneCount, this.sceneManager.countScenesWithPlotline(plotline));
         const modal = new Modal(this.app);
         modal.titleEl.setText(t('Delete Plotline'));
         modal.contentEl.createEl('p', {
-            text: t('Remove the tag "{tag}" from {count} scene(s)? The scenes themselves will not be deleted.', { tag: plotline, count: sceneCount })
+            text: t('Remove the tag "{tag}" from {count} scene(s)? The scenes themselves will not be deleted.', { tag: plotline, count: affected })
         });
 
         new Setting(modal.contentEl)

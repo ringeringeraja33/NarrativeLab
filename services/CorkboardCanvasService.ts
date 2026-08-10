@@ -138,16 +138,24 @@ export class CorkboardCanvasService {
     isNlManagedPath(path: string): boolean {
         const project = this.plugin.sceneManager?.activeProject;
         if (!project?.filePath) return false;
-        const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const p = normalizePath(path);
+        const derived = deriveProjectFoldersFromFilePath(project.filePath);
         const prefixes = [
-            folders.sceneFolder,
-            folders.notesFolder,
-            folders.researchFolder,
-            folders.archiveFolder,
-            folders.sceneNotesFolder,
-        ];
-        return prefixes.some(prefix => p === prefix || p.startsWith(prefix + '/'));
+            project.sceneFolder,
+            project.notesFolder,
+            project.researchFolder,
+            project.archiveFolder,
+            project.sceneNotesFolder,
+            derived.sceneFolder,
+            derived.notesFolder,
+            derived.researchFolder,
+            derived.archiveFolder,
+            derived.sceneNotesFolder,
+        ].filter((prefix): prefix is string => typeof prefix === 'string' && prefix.length > 0);
+        return prefixes.some(prefix => {
+            const root = normalizePath(prefix);
+            return p === root || p.startsWith(`${root}/`);
+        });
     }
 
     async ensureFolderFor(path: string): Promise<void> {

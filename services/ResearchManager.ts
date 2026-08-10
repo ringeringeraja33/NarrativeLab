@@ -514,10 +514,11 @@ export class ResearchManager {
     async handleFileRename(file: TFile, oldPath: string): Promise<void> {
         await this.adoptMovedResearchFile(file, oldPath);
         // Rebase linked paths when a linked file moves.
+        // Always load the manifest first — linkedPaths may be empty before Research opens.
+        if (!this.linksLoaded) await this.loadLinks();
         const oldN = normalizePath(oldPath);
         const newN = normalizePath(file.path);
         if (this.linkedPaths.has(oldN) || this.linkedPaths.has(oldPath)) {
-            if (!this.linksLoaded) await this.loadLinks();
             this.linkedPaths.delete(oldN);
             this.linkedPaths.delete(oldPath);
             this.linkedPaths.add(newN);

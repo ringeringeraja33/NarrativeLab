@@ -1890,7 +1890,8 @@ export class PlotgridView extends ItemView {
                         menu.addSeparator();
                         menu.addItem((it) => it.setTitle(t('Convert to Scene')).setIcon('clapperboard').onClick(async () => {
                             const oldPath = linkedScene.filePath;
-                            const newPath = await scMgr?.moveNoteToSceneFolder(oldPath) ?? oldPath;
+                            const newPath = await scMgr?.moveNoteToSceneFolder(oldPath);
+                            if (!newPath) return;
                             linkedScene.corkboardNote = false;
                             linkedScene.plotgridOrigin = undefined;
                             linkedScene.filePath = newPath;
@@ -3559,7 +3560,8 @@ export class PlotgridView extends ItemView {
         }
         if (existing?.corkboardNote) {
             const oldPath = existing.filePath;
-            const newPath = await scMgr.moveNoteToSceneFolder(oldPath) ?? oldPath;
+            const newPath = await scMgr.moveNoteToSceneFolder(oldPath);
+            if (!newPath) return false;
             existing.corkboardNote = false;
             existing.plotgridOrigin = undefined;
             existing.filePath = newPath;

@@ -44,6 +44,19 @@ test('corkboard group deletion is not blocked by managed-card parking', () => {
     assert.match(boardView, /deselectManagedCards\(info\.managedPaths\)/);
 });
 
+test('corkboard membership changes force remount instead of stale live Canvas', () => {
+    assert.match(boardView, /membershipChanged/);
+    assert.match(boardView, /forceReload: synced\.membershipChanged/);
+    assert.match(boardView, /pruneLiveCorkboardToVisible/);
+    assert.match(boardView, /corkboardHostSyncChain/);
+    assert.match(boardView, /isCorkboardPathInactive/);
+    assert.match(boardView, /captureLiveCorkboardPositions/);
+    assert.match(boardView, /teardownNativeCorkboardCanvas\(\)/);
+    assert.match(boardView, /showScenesInCorkboard \? 'scenes:1' : 'scenes:0'/);
+    // Do not assume vault.modify reloads an already-hosted Canvas view.
+    assert.doesNotMatch(boardView, /Obsidian reloads file nodes/);
+});
+
 test('series migrations journal transfers and roll back every move path', () => {
     assert.match(seriesManager, /interface LibraryTransferJournal/);
     assert.match(seriesManager, /rollbackMovedLibraryFiles/);

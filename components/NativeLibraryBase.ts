@@ -37,12 +37,15 @@ interface NativeBaseEmbedState {
     liveView?: BasesViewLike | null;
     unhook?: (() => void) | null;
     persistTimer?: number | null;
+    /** Last time this embed produced a layout snapshot (ms). Newer wins on merge. */
+    lastLayoutAt?: number;
 }
 
 interface ViewLayoutSnapshot {
     order: string[];
     sort: Array<{ property: string; direction: 'ASC' | 'DESC' }>;
     columnSize: Record<string, number> | null;
+    groupBy: unknown;
 }
 
 interface BasesViewLike {
@@ -73,6 +76,7 @@ type BaseViewConfig = Record<string, unknown> & {
     order?: unknown;
     sort?: unknown;
     columnSize?: unknown;
+    groupBy?: unknown;
     narrativeLabCategoryId?: string;
 };
 
@@ -579,6 +583,27 @@ function cloneColumnSize(value: unknown): Record<string, number> | null {
     return Object.keys(out).length > 0 ? out : null;
 }
 
+function cloneGroupBy(value: unknown): unknown {
+    if (value == null) return null;
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        return value;
+    }
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch {
+        return null;
+    }
+}
+
+function groupByEqual(left: unknown, right: unknown): boolean {
+    if (left == null && right == null) return true;
+    try {
+        return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+    } catch {
+        return left === right;
+    }
+}
+
 function snapshotBasesViewLayout(view: BasesViewLike): ViewLayoutSnapshot {
     const orderRaw = view.config.getOrder?.();
     const sortRaw = view.config.getSort?.();
@@ -600,6 +625,7 @@ function snapshotBasesViewLayout(view: BasesViewLike): ViewLayoutSnapshot {
         order,
         sort,
         columnSize: cloneColumnSize(view.config.get?.('columnSize')),
+        groupBy: cloneGroupBy(view.config.get?.('groupBy')),
     };
 }
 
@@ -634,6 +660,17 @@ function applyLayoutSnapshotToView(view: BaseViewConfig, snapshot: ViewLayoutSna
             dirty = true;
         }
     }
+    if (!groupByEqual(view.groupBy, snapshot.groupBy)) {
+        if (snapshot.groupBy == null) {
+            if (view.groupBy !== undefined) {
+                delete view.groupBy;
+                dirty = true;
+            }
+        } else {
+            view.groupBy = cloneGroupBy(snapshot.groupBy);
+            dirty = true;
+        }
+    }
     return dirty;
 }
 
@@ -642,7 +679,18 @@ function applyLiveLayoutsToConfig(basePath: string, config: Record<string, unkno
     if (!hooks || hooks.size === 0) return false;
     const views = getViews(config);
     let dirty = false;
+    // Prefer the newest dirty embed per category so a stale second leaf cannot
+    // overwrite a layout the user just changed.
+    const newestByCategory = new Map<string, { state: NativeBaseEmbedState; at: number }>();
     for (const state of hooks) {
+        if (!state.categoryId || !state.liveView) continue;
+        const at = state.lastLayoutAt ?? 0;
+        const prev = newestByCategory.get(state.categoryId);
+        if (!prev || at >= prev.at) {
+            newestByCategory.set(state.categoryId, { state, at });
+        }
+    }
+    for (const { state } of newestByCategory.values()) {
         if (!state.categoryId || !state.liveView) continue;
         const view = findViewForCategory(views, state.categoryId);
         if (!view) continue;
@@ -729,7 +777,12 @@ async function persistLayoutSnapshot(
     categoryId: string,
     snapshot: ViewLayoutSnapshot,
 ): Promise<void> {
-    if (snapshot.order.length === 0 && snapshot.sort.length === 0 && !snapshot.columnSize) {
+    if (
+        snapshot.order.length === 0
+        && snapshot.sort.length === 0
+        && !snapshot.columnSize
+        && snapshot.groupBy == null
+    ) {
         return;
     }
     await withPersistLock(basePath, async () => {
@@ -758,6 +811,7 @@ async function persistLayoutSnapshot(
 
 function schedulePersistLiveLayout(state: NativeBaseEmbedState): void {
     if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
+    state.lastLayoutAt = Date.now();
     if (state.persistTimer != null) window.clearTimeout(state.persistTimer);
     state.persistTimer = window.setTimeout(() => {
         state.persistTimer = null;

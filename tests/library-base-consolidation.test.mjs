@@ -54,7 +54,10 @@ test('Browse Properties/Sort changes are persisted into library.base', () => {
     assert.match(nativeLibraryBase, /applyLiveLayoutsToConfig/);
     assert.match(nativeLibraryBase, /schedulePersistLiveLayout/);
     assert.match(nativeLibraryBase, /flushEmbedLayout/);
-    assert.match(nativeLibraryBase, /key === 'order' \|\| key === 'sort' \|\| key === 'columnSize'/);
+    assert.match(nativeLibraryBase, /key === 'order' \|\| key === 'sort' \|\| key === 'columnSize' \|\| key === 'groupBy'/);
     assert.match(nativeLibraryBase, /view\.sort = snapshot\.sort\.map/);
     assert.match(nativeLibraryBase, /view\.order = snapshot\.order\.slice\(\)/);
+    assert.match(nativeLibraryBase, /view\.groupBy = cloneGroupBy/);
+    assert.match(nativeLibraryBase, /lastLayoutAt/);
+    assert.match(nativeLibraryBase, /newestByCategory/);
 });

@@ -15,9 +15,12 @@ test('SceneManager converts notes, scenes, and research in all directions', () =
     assert.match(sceneManager, /async convertSceneToNote\(/);
     assert.match(sceneManager, /async convertFileToResearch\(/);
     assert.match(sceneManager, /writeBinderRoleFrontmatter/);
+    assert.match(sceneManager, /resolveBinderSourceTitle/);
     assert.match(sceneManager, /role: 'scene' \| 'note' \| 'research'/);
     assert.match(sceneManager, /inResearch/);
     assert.match(sceneManager, /ensureResearchFileIndexed/);
+    assert.match(sceneManager, /countScenesWithPlotline/);
+    assert.match(sceneManager, /moveNoteToSceneFolder\(filePath: string\): Promise<string \| null>/);
 });
 
 test('ResearchManager adopts files moved into Research/', () => {
@@ -26,6 +29,7 @@ test('ResearchManager adopts files moved into Research/', () => {
     assert.match(researchManager, /async handleFileRename\(/);
     assert.match(researchManager, /forgetPath\(/);
     assert.match(researchManager, /type !== 'research' && type !== 'scene'/);
+    assert.match(researchManager, /if \(!this\.linksLoaded\) await this\.loadLinks\(\);/);
 });
 
 test('Navigator supports three-way binder drag conversion', () => {
@@ -36,6 +40,7 @@ test('Navigator supports three-way binder drag conversion', () => {
     assert.match(navigatorView, /convertFileToResearch/);
     assert.match(navigatorView, /Convert to Research/);
     assert.match(navigatorView, /sl-nav-research-row[\s\S]*?row\.draggable = !post\.isLinked/);
+    assert.match(navigatorView, /countScenesWithPlotline/);
 });
 
 test('vault rename/create/delete refresh ResearchManager', () => {
@@ -43,6 +48,8 @@ test('vault rename/create/delete refresh ResearchManager', () => {
     assert.match(mainTs, /researchManager\?\.handleFileCreate/);
     assert.match(mainTs, /researchManager\?\.handleFileDelete/);
     assert.match(mainTs, /researchManager\?\.handleFileRename/);
+    // Library↔binder renames must still adopt Notes/Scenes/Research roles.
+    assert.match(mainTs, /Library↔binder moves must still run Scene\/Research adoption/);
 });
 
 test('binder conversion i18n covers research', () => {
