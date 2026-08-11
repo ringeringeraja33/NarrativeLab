@@ -21,6 +21,7 @@ import type { StoryGraph } from '../components/StoryGraph';
 import { pickImage as pickImageModal, resolveImagePath } from '../components/ImagePicker';
 import { AddFieldModal } from '../components/AddFieldModal';
 import { attachTooltip } from '../components/Tooltip';
+import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { openConfirmModal } from '../components/ConfirmModal';
 import {
     collectDelimitedTags,
@@ -1055,6 +1056,16 @@ export class CodexView extends ItemView {
         });
 
         const headerRight = header.createDiv('codex-detail-header-right');
+
+        mountLibraryEntityBoardAction(headerRight, {
+            plugin: this.plugin,
+            notePath: entry.filePath,
+            name: draft.name || entry.name,
+            image: draft.image,
+            onCreated: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+        });
 
         // Open in editor
         const openBtn = headerRight.createEl('button', {

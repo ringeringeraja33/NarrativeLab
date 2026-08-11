@@ -30,6 +30,7 @@ import { RenameConfirmModal } from '../components/RenameConfirmModal';
 
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
+import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { renderNativeLibraryBase, disposeNativeLibraryBase } from '../components/NativeLibraryBase';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import {
@@ -701,6 +702,16 @@ export class LocationView extends ItemView {
         });
 
         const headerRight = header.createDiv('location-detail-header-right');
+
+        mountLibraryEntityBoardAction(headerRight, {
+            plugin: this.plugin,
+            notePath: item.filePath,
+            name: draft.name || item.name,
+            image: draft.image,
+            onCreated: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+        });
 
         // Open file button
         const openBtn = headerRight.createEl('button', {

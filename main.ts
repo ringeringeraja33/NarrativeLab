@@ -120,6 +120,10 @@ import { CascadeRenameService } from './services/CascadeRenameService';
 import { FieldTemplateService } from './services/FieldTemplateService';
 import { TemplateCenterService } from './services/TemplateCenterService';
 import { SeriesManager } from './services/SeriesManager';
+import {
+    LibraryEntityBoardService,
+    type CreateLibraryEntityBoardEntry,
+} from './services/LibraryEntityBoardService';
 import { buildFormattingToolbar } from './components/FormattingToolbar';
 import { setupMobileKeyboardHandling } from './components/MobileAdapter';
 
@@ -131,6 +135,8 @@ type EmbeddedCanvasModule = Plugin & {
     openOrCreateProjectAtPath?: (path: string, title: string) => Promise<string>;
     writeAndOpenProjectAtPath?: (path: string, savedStateJson: string) => Promise<string>;
     createSampleProjectAtPath?: (path: string, language?: string) => Promise<string>;
+    /** Overridden by NarrativeLab to share Library ↔ Canvas/<Name>.canvas creation. */
+    createCodexCanvas?: (entry: CreateLibraryEntityBoardEntry) => Promise<string>;
     loadData: () => Promise<Record<string, unknown>>;
     saveData: (data: Record<string, unknown>) => Promise<void>;
     addSettingTab: (...args: unknown[]) => void;
@@ -240,6 +246,8 @@ export default class SceneCardsPlugin extends Plugin {
     templateCenter!: TemplateCenterService;
     seriesManager!: SeriesManager;
     researchManager!: ResearchManager;
+    /** Shared Library note ↔ Canvas/<Name>.canvas boards (CharacterView + Narrative Canvas). */
+    libraryEntityBoard!: LibraryEntityBoardService;
     private canvasModule: EmbeddedCanvasModule | null = null;
     private _canvasModuleLoading: Promise<void> | null = null;
     /** Paths whose vault writes should not trigger open-view refresh (corkboard.canvas, etc.). */
@@ -326,6 +334,7 @@ export default class SceneCardsPlugin extends Plugin {
         this.plotlineManager = new PlotlineManager(this, this.sceneManager);
         this.locationManager = new LocationManager(this.app);
         this.characterManager = new CharacterManager(this.app);
+        this.libraryEntityBoard = new LibraryEntityBoardService(this.app);
         // One-shot seed for player-editable Story Graph relation labels (Obsidian zh/en).
         void ensureSeededCharacterRelationTypes(this);
         this.codexManager = new CodexManager(this.app);
@@ -3383,12 +3392,34 @@ export default class SceneCardsPlugin extends Plugin {
                 throw error;
             }
             this.canvasModule = canvas;
+            // Fuse Narrative Canvas "Create board" with NarrativeLab's shared service
+            // so both entry points write Canvas/<Name>.canvas + canvas FM + embed.
+            canvas.createCodexCanvas = (entry: CreateLibraryEntityBoardEntry) =>
+                this.createLibraryEntityBoard(entry);
         })();
         try {
             await this._canvasModuleLoading;
         } finally {
             this._canvasModuleLoading = null;
         }
+    }
+
+    /** Create a native .canvas board for a Library note (Character / Codex entry). */
+    async createLibraryEntityBoard(entry: CreateLibraryEntityBoardEntry): Promise<string> {
+        return this.libraryEntityBoard.createBoard(entry, {
+            fallbackProjectRoot: this.getProjectBaseFolder(),
+        });
+    }
+
+    findLibraryEntityBoard(notePath: string, displayName?: string): string | null {
+        return this.libraryEntityBoard.findLinkedBoard(notePath, displayName);
+    }
+
+    async openLibraryEntityBoard(notePath: string, displayName?: string): Promise<string | null> {
+        const path = this.findLibraryEntityBoard(notePath, displayName);
+        if (!path) return null;
+        await this.libraryEntityBoard.openBoard(path);
+        return path;
     }
 
     /** Resolve .ncanvas paths for a NarrativeLab project (project-root Canvas/). */

@@ -25,6 +25,7 @@ import { formatActChapterPrefix } from '../utils/actChapter';
 import type SceneCardsPlugin from '../main';
 
 import { attachTooltip } from '../components/Tooltip';
+import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { renderLibraryFilterChips } from '../components/LibraryFilterChips';
 import { disposeNativeLibraryBase, renderNativeLibraryBase } from '../components/NativeLibraryBase';
@@ -1163,6 +1164,14 @@ export class CharacterView extends ItemView {
         });
 
         const headerRight = header.createDiv('character-detail-header-right');
+
+        mountLibraryEntityBoardAction(headerRight, {
+            plugin: this.plugin,
+            notePath: selected.filePath,
+            name: draft.name || selected.name,
+            image: draft.image,
+            onCreated: () => this.rerenderCharacterDetail(),
+        });
 
         const openBtn = headerRight.createEl('button', {
             cls: 'codex-detail-action-btn',
