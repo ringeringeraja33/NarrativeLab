@@ -75,6 +75,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(sheet.rowData[1].h, 40);
         assert.equal(sheet.columnData[1].w, 120);
         assert.equal(sheet.cellData[1][1].f, '="meets mentor"');
+        assert.equal(sheet.cellData[1][1].v, 'meets mentor', 'link badge must not alter workbook cell text');
         assert.equal(sheet.cellData[1][1].s.bg.rgb, '#112233');
         assert.equal(sheet.cellData[1][1].s.ht, 3);
 
@@ -175,6 +176,9 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /CellPointerDown/);
     assert.match(host, /p\.column \?\? p\.col/);
     assert.match(host, /UniverSheetsFilterPreset\(\)/);
+    assert.match(host, /onCellRender/);
+    assert.match(host, /refreshLinkMarkers/);
+    assert.match(host, /🔗/);
     assert.match(host, /mergeLocales\(sheetsCoreZhCN, sheetsFilterZhCN\)/);
     assert.equal((host.match(/ribbonType:\s*'simple'/g) || []).length, 2);
     assert.equal((host.match(/contextMenu:\s*false/g) || []).length, 2);
@@ -182,4 +186,6 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /`\$\{InsertFunctionOperation\.id\}\.financial`/);
     assert.match(host, /FINANCIAL_FORMULA_MENU_ORDER\s*=\s*99/);
     assert.match(host, /\[TEXT_TO_NUMBER_TOOLBAR_MENU_ID\]:\s*\{\s*hidden:\s*true\s*\}/);
+    const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
+    assert.match(view, /resolveLinkedLabel/);
 });

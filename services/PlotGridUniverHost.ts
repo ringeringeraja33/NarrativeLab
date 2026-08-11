@@ -26,7 +26,7 @@ function injectUniverCss(activeDocument: Document): void {
     activeDocument.head.appendChild(style);
 }
 
-import type { ConceptGridDocument } from '../models/PlotGridData';
+import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
 import {
     conceptGridContentFingerprint,
     documentToUniverWorkbookData,
@@ -42,6 +42,8 @@ export interface PlotGridUniverHostOptions {
      * Pull merges Univer cell values into this snapshot so metadata is not erased.
      */
     getAuthoritativeDocument?: () => ConceptGridDocument;
+    /** Resolve a linked vault path to the title shown in the cell badge. */
+    resolveLinkedLabel?: (path: string) => string;
     onDocumentChange: (doc: ConceptGridDocument) => void;
     onSelectionChange?: (info: { sheetId: string; row: number; col: number }) => void;
 }
@@ -52,6 +54,8 @@ export interface PlotGridUniverHost {
     setDocument: (doc: ConceptGridDocument) => void;
     /** Update host's metadata snapshot without recreating the workbook. */
     syncMeta: (doc: ConceptGridDocument) => void;
+    /** Redraw link badges without replacing workbook content or selection. */
+    refreshLinkMarkers: () => void;
     setActiveSheet: (sheetId: string) => void;
     /** Apply NarrativeLab's legacy view controls to the embedded worksheet. */
     setZoom: (sheetId: string, ratio: number) => void;
@@ -63,11 +67,21 @@ export interface PlotGridUniverHost {
     focus: () => void;
 }
 
+type PlotGridCellRender = {
+    zIndex?: number;
+    drawWith: (ctx: CanvasRenderingContext2D, info: {
+        subUnitId: string;
+        row: number;
+        col: number;
+        primaryWithCoord: { startX: number; startY: number; endX: number; endY: number };
+    }) => void;
+};
+
 type UniverAPI = {
     createWorkbook: (data: Record<string, unknown>) => unknown;
     getActiveWorkbook: () => {
         getId: () => string;
-        getActiveSheet: () => { getSheetId: () => string } | null;
+        getActiveSheet: () => { getSheetId: () => string; refreshCanvas?: () => unknown } | null;
         getActiveCell?: () => {
             getSheetId?: () => string;
             getRow?: () => number;
@@ -80,6 +94,7 @@ type UniverAPI = {
             zoom?: (ratio: number) => unknown;
             setFreeze?: (freeze: { startRow: number; startColumn: number; xSplit: number; ySplit: number }) => unknown;
             cancelFreeze?: () => unknown;
+            refreshCanvas?: () => unknown;
             getRange: (r: number, c: number) => {
                 getValue: () => unknown;
                 getCellData: () => { v?: unknown } | null;
@@ -91,6 +106,9 @@ type UniverAPI = {
         save: () => Record<string, unknown>;
     } | null;
     addEvent: (event: string | number, cb: (params: unknown) => void) => { dispose?: () => void } | number;
+    getSheetHooks?: () => {
+        onCellRender?: (renders: PlotGridCellRender[]) => { dispose?: () => void };
+    };
     removeEvent?: (id: unknown) => void;
     disposeUnit?: (unitId: string) => void;
     dispose?: () => void;
@@ -98,6 +116,54 @@ type UniverAPI = {
 
 const FINANCIAL_FORMULA_MENU_ORDER = 99;
 const TEXT_TO_NUMBER_TOOLBAR_MENU_ID = 'sheet.toolbar.text-to-number';
+
+function linkedCellAt(doc: ConceptGridDocument, sheetId: string, row: number, col: number): CellData | null {
+    if (row < 1 || col < 1) return null;
+    const page = doc.pages.find(item => item.id === sheetId);
+    const rowMeta = page?.rows[row - 1];
+    const colMeta = page?.columns[col - 1];
+    if (!page || !rowMeta || !colMeta) return null;
+    return page.cells[`${rowMeta.id}-${colMeta.id}`] || null;
+}
+
+function linkedPathLabel(path: string): string {
+    const name = path.split('/').pop() || path;
+    return name.replace(/\.[^.]+$/, '') || name;
+}
+
+function fitCanvasLabel(ctx: CanvasRenderingContext2D, label: string, maxWidth: number): string {
+    const prefix = '🔗 ';
+    const full = `${prefix}${label}`;
+    if (ctx.measureText(full).width <= maxWidth) return full;
+    if (ctx.measureText('🔗').width > maxWidth) return '';
+    let shortened = label;
+    while (shortened.length > 1 && ctx.measureText(`${prefix}${shortened}…`).width > maxWidth) {
+        shortened = shortened.slice(0, -1);
+    }
+    return shortened.length > 1 ? `${prefix}${shortened}…` : '🔗';
+}
+
+function roundedRect(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    radius: number,
+): void {
+    const r = Math.min(radius, width / 2, height / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
 
 function moveFinancialFormulaMenuLast(univer: Univer): void {
     try {
@@ -229,6 +295,62 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let suppressUntil = 0;
     let lastSelection: { sheetId: string; row: number; col: number } | null = null;
     const disposers: Array<() => void> = [];
+
+    const refreshLinkMarkers = () => {
+        try {
+            univerAPI.getActiveWorkbook?.()?.getActiveSheet?.()?.refreshCanvas?.();
+        } catch { /* drawing is cosmetic */ }
+    };
+
+    try {
+        const linkBadgeRender: PlotGridCellRender = {
+            zIndex: 100,
+            drawWith: (ctx, info) => {
+                const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
+                const cell = linkedCellAt(source, info.subUnitId, info.row, info.col);
+                const path = cell?.linkedSceneId;
+                if (!path) return;
+
+                const { startX, startY, endX, endY } = info.primaryWithCoord;
+                const cellWidth = endX - startX;
+                const cellHeight = endY - startY;
+                if (cellWidth < 18 || cellHeight < 14) return;
+
+                let label = linkedPathLabel(path);
+                try { label = opts.resolveLinkedLabel?.(path) || label; } catch { /* keep filename */ }
+
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(startX + 1, startY + 1, cellWidth - 2, cellHeight - 2);
+                ctx.clip();
+                ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+                ctx.textBaseline = 'middle';
+                const maxBadgeWidth = Math.min(180, cellWidth - 6);
+                const text = fitCanvasLabel(ctx, label, maxBadgeWidth - 10);
+                if (!text) {
+                    ctx.restore();
+                    return;
+                }
+                const badgeHeight = Math.min(18, cellHeight - 6);
+                const badgeWidth = Math.min(maxBadgeWidth, Math.ceil(ctx.measureText(text).width) + 10);
+                const x = endX - badgeWidth - 3;
+                const y = startY + 3;
+                roundedRect(ctx, x, y, badgeWidth, badgeHeight, 5);
+                ctx.fillStyle = 'rgba(47, 101, 220, 0.94)';
+                ctx.fill();
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText(text, x + 5, y + badgeHeight / 2);
+                ctx.restore();
+            },
+        };
+        const renderHook = univerAPI.getSheetHooks?.().onCellRender?.([linkBadgeRender]);
+        if (renderHook && typeof renderHook.dispose === 'function') {
+            disposers.push(() => renderHook.dispose?.());
+        }
+        refreshLinkMarkers();
+    } catch (e) {
+        console.warn('[NarrativeLab] Univer link badge renderer unavailable:', e);
+    }
 
     const isSuppressed = () => disposed || Date.now() < suppressUntil;
 
@@ -410,7 +532,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             // Keep host snapshot aligned with NL meta without remounting Univer.
             liveDoc = structuredClone(doc);
             contentFp = conceptGridContentFingerprint(liveDoc);
+            refreshLinkMarkers();
         },
+        refreshLinkMarkers,
         setActiveSheet: (sheetId: string) => {
             tryActivateSheet(univerAPI, sheetId);
         },

@@ -936,6 +936,7 @@ export class PlotgridView extends ItemView {
                         this.univerHost.setActiveSheet(this.document.activePageId);
                     } catch { /* ignore */ }
                     this.applyUniverViewState();
+                    this.univerHost.refreshLinkMarkers();
                 }
             });
             return;
@@ -1014,6 +1015,13 @@ export class PlotgridView extends ItemView {
                     initialDocument: this.document,
                     locale,
                     getAuthoritativeDocument: () => this.document,
+                    resolveLinkedLabel: (path) => {
+                        const scene = this.plugin?.sceneManager?.getScene(path);
+                        if (scene?.title) return scene.title;
+                        return this.resolveLinkedVaultFile(path)?.basename
+                            || path.split('/').pop()?.replace(/\.[^.]+$/, '')
+                            || path;
+                    },
                     onDocumentChange: (doc) => {
                         if (mountGen !== this.univerMountGeneration) return;
                         this.document = normalizeConceptGridDocument(doc);
