@@ -2,9 +2,13 @@
  * Load the separately bundled Univer Plot Grid host from the plugin folder.
  */
 import type { Plugin } from 'obsidian';
-import type { PlotGridUniverHost, PlotGridUniverHostOptions } from '../services/PlotGridUniverHost';
+import type {
+    PlotGridUniverContextAction,
+    PlotGridUniverHost,
+    PlotGridUniverHostOptions,
+} from '../services/PlotGridUniverHost';
 
-export type { PlotGridUniverHost, PlotGridUniverHostOptions };
+export type { PlotGridUniverContextAction, PlotGridUniverHost, PlotGridUniverHostOptions };
 
 type UniverModule = {
     createPlotGridUniverHost: (opts: PlotGridUniverHostOptions) => PlotGridUniverHost;

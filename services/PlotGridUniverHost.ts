@@ -44,9 +44,19 @@ export interface PlotGridUniverHostOptions {
     getAuthoritativeDocument?: () => ConceptGridDocument;
     /** Resolve a linked vault path to the title shown in the cell badge. */
     resolveLinkedLabel?: (path: string) => string;
+    /** Run a NarrativeLab action from Univer's native cell context menu. */
+    onContextMenuAction?: (action: PlotGridUniverContextAction) => void;
     onDocumentChange: (doc: ConceptGridDocument) => void;
     onSelectionChange?: (info: { sheetId: string; row: number; col: number }) => void;
 }
+
+export type PlotGridUniverContextAction =
+    | 'link-note'
+    | 'open-linked-note'
+    | 'unlink-note'
+    | 'convert-to-notes'
+    | 'convert-to-scene'
+    | 'convert-to-research';
 
 export interface PlotGridUniverHost {
     dispose: () => void;
@@ -109,13 +119,78 @@ type UniverAPI = {
     getSheetHooks?: () => {
         onCellRender?: (renders: PlotGridCellRender[]) => { dispose?: () => void };
     };
+    createMenu: (item: {
+        id: string;
+        title: string;
+        action: () => void;
+        order?: number;
+    }) => UniverMenuBuilder;
+    createSubmenu: (item: {
+        id: string;
+        title: string;
+        order?: number;
+    }) => UniverSubmenuBuilder;
     removeEvent?: (id: unknown) => void;
     disposeUnit?: (unitId: string) => void;
     dispose?: () => void;
 };
 
+type UniverMenuBuilder = {
+    appendTo: (path: string | string[]) => void;
+};
+
+type UniverSubmenuBuilder = UniverMenuBuilder & {
+    addSubmenu: (menu: UniverMenuBuilder) => UniverSubmenuBuilder;
+    addSeparator: () => UniverSubmenuBuilder;
+};
+
 const FINANCIAL_FORMULA_MENU_ORDER = 99;
 const TEXT_TO_NUMBER_TOOLBAR_MENU_ID = 'sheet.toolbar.text-to-number';
+
+function registerNarrativeLabContextMenu(
+    univerAPI: UniverAPI,
+    locale: 'en' | 'zh',
+    onAction?: (action: PlotGridUniverContextAction) => void,
+): void {
+    if (!onAction) return;
+    const labels = locale === 'zh'
+        ? {
+            root: 'NarrativeLab',
+            link: '链接笔记…',
+            open: '打开链接笔记',
+            unlink: '取消笔记链接',
+            notes: '转为笔记',
+            scene: '转为场景',
+            research: '转为研究资料',
+        }
+        : {
+            root: 'NarrativeLab',
+            link: 'Link Note…',
+            open: 'Open Linked Note',
+            unlink: 'Unlink Note',
+            notes: 'Convert to Notes',
+            scene: 'Convert to Scene',
+            research: 'Convert to Research',
+        };
+    const item = (id: string, title: string, action: PlotGridUniverContextAction) => univerAPI.createMenu({
+        id: `narrativelab.plot-grid.${id}`,
+        title,
+        action: () => onAction(action),
+    });
+    univerAPI.createSubmenu({
+        id: 'narrativelab.plot-grid.context-menu',
+        title: labels.root,
+        order: 1000,
+    })
+        .addSubmenu(item('link-note', labels.link, 'link-note'))
+        .addSubmenu(item('open-linked-note', labels.open, 'open-linked-note'))
+        .addSubmenu(item('unlink-note', labels.unlink, 'unlink-note'))
+        .addSeparator()
+        .addSubmenu(item('convert-to-notes', labels.notes, 'convert-to-notes'))
+        .addSubmenu(item('convert-to-scene', labels.scene, 'convert-to-scene'))
+        .addSubmenu(item('convert-to-research', labels.research, 'convert-to-research'))
+        .appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+}
 
 function linkedCellAt(doc: ConceptGridDocument, sheetId: string, row: number, col: number): CellData | null {
     if (row < 1 || col < 1) return null;
@@ -258,9 +333,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     container: opts.container,
                     footer: false,
                     ribbonType: 'simple',
-                    // NarrativeLab owns the cell context menu so note links,
-                    // conversions and row/column actions stay in one menu.
-                    contextMenu: false,
+                    contextMenu: true,
                     menu: {
                         [TEXT_TO_NUMBER_TOOLBAR_MENU_ID]: { hidden: true },
                     },
@@ -276,7 +349,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 UniverSheetsCorePreset({
                     container: opts.container,
                     ribbonType: 'simple',
-                    contextMenu: false,
+                    contextMenu: true,
                     menu: {
                         [TEXT_TO_NUMBER_TOOLBAR_MENU_ID]: { hidden: true },
                     },
@@ -288,6 +361,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     const workbookData = documentToUniverWorkbookData(liveDoc);
     univerAPI.createWorkbook(workbookData);
+    registerNarrativeLabContextMenu(univerAPI, opts.locale, opts.onContextMenuAction);
     moveFinancialFormulaMenuLast(univerInstance);
     tryActivateSheet(univerAPI, liveDoc.activePageId);
 

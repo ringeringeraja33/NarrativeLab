@@ -15,7 +15,11 @@ import {
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
 import { getActiveUiLanguage, t } from '../utils/i18n';
-import { loadPlotGridUniverModule, type PlotGridUniverHost } from '../utils/loadPlotGridUniver';
+import {
+    loadPlotGridUniverModule,
+    type PlotGridUniverContextAction,
+    type PlotGridUniverHost,
+} from '../utils/loadPlotGridUniver';
 import { conceptGridContentFingerprint } from '../services/PlotGridXlsxCodec';
 import { LocationManager } from '../services/LocationManager';
 import type { SortConfig } from '../models/Scene';
@@ -83,7 +87,6 @@ export class PlotgridView extends ItemView {
     private univerHost: PlotGridUniverHost | null = null;
     private univerMountPromise: Promise<void> | null = null;
     private univerLoadFailed = false;
-    private univerContextMenuBound = false;
     private lastUniverSel: { sheetId: string; row: number; col: number } | null = null;
     private univerViewStateSig = '';
     /** System/ folder the in-memory document was loaded from — used to block cross-project saves. */
@@ -1022,6 +1025,10 @@ export class PlotgridView extends ItemView {
                             || path.split('/').pop()?.replace(/\.[^.]+$/, '')
                             || path;
                     },
+                    onContextMenuAction: (action) => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        void this.handleUniverContextMenuAction(action);
+                    },
                     onDocumentChange: (doc) => {
                         if (mountGen !== this.univerMountGeneration) return;
                         this.document = normalizeConceptGridDocument(doc);
@@ -1052,7 +1059,6 @@ export class PlotgridView extends ItemView {
                 }
                 this.univerHost = host;
                 this.univerStructureSig = this.getUniverStructureSig();
-                this.bindUniverContextMenu();
                 this.applyUniverViewState();
                 // Let layout settle, then nudge Univer to measure the filled host.
                 window.requestAnimationFrame(() => {
@@ -1092,67 +1098,37 @@ export class PlotgridView extends ItemView {
         host.setFreeze(page.id, page.stickyHeaders !== false);
     }
 
-    private bindUniverContextMenu(): void {
-        if (this.univerContextMenuBound || !this.canvasEl) return;
-        this.univerContextMenuBound = true;
-        this.registerDomEvent(this.canvasEl, 'contextmenu', (evt: MouseEvent) => {
-            if (!this.univerHost) return;
-            const cell = this.getActiveDataCellFromUniver();
-            if (!cell) return;
-            evt.preventDefault();
-            evt.stopPropagation();
-            const menu = new Menu();
-            const selection = this.lastUniverSel || this.univerHost.getActiveCell();
-            const rowIndex = selection ? selection.row - 1 : -1;
-            const colIndex = selection ? selection.col - 1 : -1;
-            const sceneManager = this.plugin?.sceneManager as SceneManager | undefined;
-            const linkedScene = cell.linkedSceneId ? sceneManager?.getScene(cell.linkedSceneId) : undefined;
-
-            if (linkedScene) {
-                menu.addItem(item => item.setTitle(t('Open Scene')).setIcon('file-text').onClick(() => {
-                    this.openScene(linkedScene);
-                }));
+    private async handleUniverContextMenuAction(action: PlotGridUniverContextAction): Promise<void> {
+        const cell = this.getActiveDataCellFromUniver();
+        if (!cell) {
+            new Notice(t('Select a cell first'));
+            return;
+        }
+        if (action === 'link-note') {
+            this.openNoteLinkModal((path) => this.linkFileToCell(cell, path));
+            return;
+        }
+        if (action === 'open-linked-note') {
+            if (!cell.linkedSceneId) {
+                new Notice(t('No linked note'));
+                return;
             }
-            menu.addItem(item => item.setTitle(t('Link Note…')).setIcon('link').onClick(() => {
-                this.openNoteLinkModal((path) => this.linkFileToCell(cell, path));
-            }));
-            if (cell.linkedSceneId) {
-                const path = cell.linkedSceneId;
-                menu.addItem(item => item.setTitle(t('Open Note')).setIcon('file-text').onClick(() => {
-                    this.openVaultFile(path);
-                }));
-                menu.addItem(item => item.setTitle(t('Unlink Note')).setIcon('unlink').onClick(() => {
-                    this.unlinkCell(cell.id);
-                }));
+            const linkedScene = this.plugin?.sceneManager?.getScene(cell.linkedSceneId);
+            if (linkedScene) this.openScene(linkedScene);
+            else this.openVaultFile(cell.linkedSceneId);
+            return;
+        }
+        if (action === 'unlink-note') {
+            if (!cell.linkedSceneId) {
+                new Notice(t('No linked note'));
+                return;
             }
-            if (sceneManager) {
-                menu.addSeparator();
-                menu.addItem(item => item.setTitle(t('Convert to Notes')).setIcon('sticky-note').onClick(async () => {
-                    await this.convertCellToNotes(cell);
-                }));
-                menu.addItem(item => item.setTitle(t('Convert to Scene')).setIcon('file-text').onClick(async () => {
-                    await this.convertCellToScene(cell);
-                }));
-                menu.addItem(item => item.setTitle(t('Convert to Research')).setIcon('book-open').onClick(async () => {
-                    await this.convertCellToResearch(cell);
-                }));
-            }
-            if (rowIndex >= 0 && colIndex >= 0) {
-                menu.addSeparator();
-                menu.addItem(item => item.setTitle(t('Insert Row Above')).onClick(() => this.insertRowAt(rowIndex, true)));
-                menu.addItem(item => item.setTitle(t('Insert Row Below')).onClick(() => this.insertRowAt(rowIndex, false)));
-                menu.addItem(item => item.setTitle(t('Insert Column Left')).onClick(() => this.insertColumnAt(colIndex, true)));
-                menu.addItem(item => item.setTitle(t('Insert Column Right')).onClick(() => this.insertColumnAt(colIndex, false)));
-                menu.addSeparator();
-                menu.addItem(item => item.setTitle(t('Delete Row')).setIcon('trash').onClick(() => {
-                    this.confirmDeleteRows([rowIndex]);
-                }));
-                menu.addItem(item => item.setTitle(t('Delete Column')).setIcon('trash').onClick(() => {
-                    this.confirmDeleteColumns([colIndex]);
-                }));
-            }
-            menu.showAtMouseEvent(evt);
-        });
+            this.unlinkCell(cell.id);
+            return;
+        }
+        if (action === 'convert-to-notes') await this.convertCellToNotes(cell);
+        else if (action === 'convert-to-scene') await this.convertCellToScene(cell);
+        else await this.convertCellToResearch(cell);
     }
 
     /** Map Univer sheet coords (including header row/col at 0) → data CellData. */

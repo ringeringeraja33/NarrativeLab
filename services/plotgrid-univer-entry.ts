@@ -6,4 +6,5 @@ export {
     createPlotGridUniverHost,
     type PlotGridUniverHost,
     type PlotGridUniverHostOptions,
+    type PlotGridUniverContextAction,
 } from './PlotGridUniverHost';

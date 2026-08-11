@@ -143,6 +143,8 @@ test('PlotgridView lazy-loads Univer host and keeps note link actions', async ()
     assert.match(view, /Link Note…/);
     assert.match(view, /Unlink Note/);
     assert.match(view, /getActiveDataCellFromUniver/);
+    assert.match(view, /handleUniverContextMenuAction/);
+    assert.doesNotMatch(view, /bindUniverContextMenu/);
     assert.match(view, /applyUniverViewState/);
     assert.match(view, /renderGrid\(\{ forcePush: true \}\)/);
     assert.match(view, /Query Univer first/);
@@ -173,6 +175,10 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /getActiveCell\?\./);
     assert.match(host, /getRow\?\.\(\)/);
     assert.match(host, /getColumn\?\.\(\)/);
+    assert.equal((host.match(/contextMenu:\s*true/g) || []).length, 2);
+    assert.match(host, /registerNarrativeLabContextMenu/);
+    assert.match(host, /contextMenu\.mainArea/);
+    assert.match(host, /contextMenu\.others/);
     assert.match(host, /CellPointerDown/);
     assert.match(host, /p\.column \?\? p\.col/);
     assert.match(host, /UniverSheetsFilterPreset\(\)/);
@@ -181,7 +187,7 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /🔗/);
     assert.match(host, /mergeLocales\(sheetsCoreZhCN, sheetsFilterZhCN\)/);
     assert.equal((host.match(/ribbonType:\s*'simple'/g) || []).length, 2);
-    assert.equal((host.match(/contextMenu:\s*false/g) || []).length, 2);
+    assert.doesNotMatch(host, /contextMenu:\s*false/);
     assert.match(host, /moveFinancialFormulaMenuLast/);
     assert.match(host, /`\$\{InsertFunctionOperation\.id\}\.financial`/);
     assert.match(host, /FINANCIAL_FORMULA_MENU_ORDER\s*=\s*99/);
