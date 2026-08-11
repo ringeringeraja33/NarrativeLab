@@ -6,6 +6,7 @@ import {
     TFolder,
     normalizePath,
     parseYaml,
+    setIcon,
     stringifyYaml,
 } from 'obsidian';
 import { BUILTIN_CODEX_CATEGORIES } from '../models/Codex';
@@ -66,7 +67,7 @@ const migrationLocks = new Map<string, Promise<void>>();
 /** Projects whose Library Base migration already completed this session. */
 const migratedLibraryBasePaths = new Set<string>();
 /** Projects whose Base filters were synced this session. */
-const FILTER_STYLE_VERSION = 'single-library-base-v2';
+const FILTER_STYLE_VERSION = 'single-library-base-v3-infolder';
 const syncedFilterStyleKeys = new Set<string>();
 
 type BaseViewConfig = Record<string, unknown> & {
@@ -385,7 +386,7 @@ function buildRequiredFilters(
             excluded.add(normalizePath(catFolder));
         }
         for (const sub of [...excluded].sort((a, b) => a.localeCompare(b))) {
-            filters.push(`!file.path.contains(${JSON.stringify(`${sub}/`)})`);
+            filters.push(`!file.inFolder(${JSON.stringify(sub)})`);
         }
         return filters;
     }
@@ -1276,18 +1277,43 @@ function escapeWikilinkPath(path: string): string {
  * Render an Obsidian Bases embed for one Library category view inside
  * Library/library.base.
  */
+export interface NativeLibraryBaseOptions {
+    /** Prefer NarrativeLab create (correct folder + frontmatter) over Bases New. */
+    onNew?: () => void;
+    newLabel?: string;
+}
+
 export async function renderNativeLibraryBase(
     container: HTMLElement,
     plugin: SceneCardsPlugin,
     categoryId: string,
     owner: Component,
+    options: NativeLibraryBaseOptions = {},
 ): Promise<void> {
     disposeNativeLibraryBase(owner);
     const state = activeEmbeds.get(owner)!;
     const generation = state.generation;
 
     container.empty();
+    if (options.onNew) {
+        const actions = container.createDiv('library-native-base-actions');
+        const newBtn = actions.createEl('button', {
+            cls: 'library-browse-action-btn',
+            attr: {
+                type: 'button',
+                'aria-label': options.newLabel || t('New'),
+            },
+        });
+        const icon = newBtn.createSpan({ cls: 'library-browse-action-icon' });
+        setIcon(icon, 'plus');
+        newBtn.createSpan({ cls: 'library-browse-action-label', text: options.newLabel || t('New') });
+        newBtn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            options.onNew?.();
+        });
+    }
     const host = container.createDiv('library-native-base-embed markdown-rendered');
+    host.toggleClass('has-nl-new', !!options.onNew);
     const loading = host.createDiv({ cls: 'library-native-base-loading', text: t('Loading Base…') });
     let resolved: { basePath: string; folderPath: string } | null;
     try {
@@ -1338,5 +1364,28 @@ export async function renderNativeLibraryBase(
     void waitForBasesView(child, generation, () => state.generation).then(view => {
         if (!view || state.generation !== generation || !host.isConnected) return;
         hookLiveBasesView(state, view);
+        if (host.hasClass('has-nl-new')) {
+            hideBasesNativeNewButtons(host);
+        }
     });
+}
+
+/** Hide Obsidian Bases' New control when NarrativeLab supplies create. */
+function hideBasesNativeNewButtons(host: HTMLElement): void {
+    const hide = () => {
+        for (const btn of Array.from(host.querySelectorAll('button'))) {
+            const label = (
+                btn.getAttribute('aria-label')
+                || btn.getAttribute('title')
+                || btn.textContent
+                || ''
+            ).replace(/\s+/g, ' ').trim();
+            if (/^(New|新建|New file|新建文件|\+ New|\+ 新建)$/i.test(label)) {
+                (btn as HTMLElement).style.setProperty('display', 'none', 'important');
+            }
+        }
+    };
+    hide();
+    window.setTimeout(hide, 200);
+    window.setTimeout(hide, 800);
 }

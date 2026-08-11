@@ -412,6 +412,21 @@ export class CodexView extends ItemView {
                 this.plugin,
                 this.activeCategory || ALL_LIBRARY_CATEGORY_ID,
                 this,
+                (() => {
+                    if (!this.activeCategory || this.activeCategory === ALL_LIBRARY_CATEGORY_ID) {
+                        return {};
+                    }
+                    if (this.activeCategory === UNCATEGORIZED_CATEGORY_ID) {
+                        return {
+                            onNew: () => this.promptNewUncategorizedEntry(),
+                            newLabel: t('New'),
+                        };
+                    }
+                    return {
+                        onNew: () => this.promptNewEntry(),
+                        newLabel: t('New'),
+                    };
+                })(),
             );
             return;
         }

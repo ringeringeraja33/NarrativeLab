@@ -1,6 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
-import { copyFileSync, existsSync, mkdirSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
@@ -18,11 +18,17 @@ const DEPLOY_DIRS = [
 ].filter((dir) => existsSync(dirname(dir)) || existsSync(join(dirname(dir), "..")));
 
 function deployPluginFiles() {
-  // Narrative Canvas is bundled into main.js — do not copy canvas-runtime/ to vaults.
-  const files = ["main.js", "manifest.json", "styles.css"];
+  const files = ["main.js", "manifest.json", "styles.css", "plotgrid-univer.js"];
+  // Univer may emit CSS beside the chunk when using plugins; copy any plotgrid-univer*.css
+  let extras = [];
+  try {
+    extras = readdirSync(projectRoot).filter(
+      (name) => name.startsWith("plotgrid-univer") && name.endsWith(".css"),
+    );
+  } catch { /* ignore */ }
   for (const dir of DEPLOY_DIRS) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    for (const file of files) {
+    for (const file of [...files, ...extras]) {
       const src = join(projectRoot, file);
       if (!existsSync(src)) continue;
       copyFileSync(src, join(dir, file));
@@ -31,13 +37,15 @@ function deployPluginFiles() {
   }
 }
 
-const context = await esbuild.context({
+const shared = {
   absWorkingDir: projectRoot,
-  entryPoints: [join(projectRoot, "main.ts")],
   bundle: true,
   external: [
     "obsidian",
     "electron",
+    "path",
+    "fs",
+    "os",
     "@codemirror/autocomplete",
     "@codemirror/collab",
     "@codemirror/commands",
@@ -55,11 +63,21 @@ const context = await esbuild.context({
   logLevel: "info",
   sourcemap: prod ? false : "inline",
   treeShaking: true,
-  outfile: join(projectRoot, "main.js"),
   minify: prod,
   loader: {
     ".md": "text",
+    ".css": "text",
+    ".svg": "dataurl",
+    ".png": "dataurl",
+    ".woff": "dataurl",
+    ".woff2": "dataurl",
   },
+};
+
+const mainContext = await esbuild.context({
+  ...shared,
+  entryPoints: [join(projectRoot, "main.ts")],
+  outfile: join(projectRoot, "main.js"),
   plugins: [
     {
       name: "deploy-to-vault",
@@ -78,9 +96,21 @@ const context = await esbuild.context({
   ],
 });
 
+const univerContext = await esbuild.context({
+  ...shared,
+  entryPoints: [join(projectRoot, "services/plotgrid-univer-entry.ts")],
+  outfile: join(projectRoot, "plotgrid-univer.js"),
+  // CSS imported as text then injected at runtime by host if needed — also
+  // keep a side-effect import path: inject via banner.
+  banner: {
+    js: "try{if(typeof document!=='undefined'){window.__NL_UNIVER_CSS__=window.__NL_UNIVER_CSS__||[];}}catch(e){}",
+  },
+});
+
 if (prod) {
-  await context.rebuild();
+  await Promise.all([mainContext.rebuild(), univerContext.rebuild()]);
+  deployPluginFiles();
   process.exit(0);
 } else {
-  await context.watch();
+  await Promise.all([mainContext.watch(), univerContext.watch()]);
 }

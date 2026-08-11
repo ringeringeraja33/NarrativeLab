@@ -14,7 +14,8 @@ import {
     getActiveConceptGridPage,
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
-import { t } from '../utils/i18n';
+import { getActiveUiLanguage, t } from '../utils/i18n';
+import { loadPlotGridUniverModule, type PlotGridUniverHost } from '../utils/loadPlotGridUniver';
 import { LocationManager } from '../services/LocationManager';
 import type { SceneFilter, SortConfig } from '../models/Scene';
 import { SceneManager } from '../services/SceneManager';
@@ -80,6 +81,14 @@ export class PlotgridView extends ItemView {
     private undoStack: PlotGridData[] = [];
     private static readonly MAX_UNDO = 20;
 
+    /** Prefer embedded Univer Sheets; fall back to legacy DOM grid on load failure. */
+    private preferUniver = true;
+    private univerHost: PlotGridUniverHost | null = null;
+    private univerMountPromise: Promise<void> | null = null;
+    private univerLoadFailed = false;
+    private univerContextMenuBound = false;
+    private lastUniverSel: { sheetId: string; row: number; col: number } | null = null;
+
     constructor(leaf: WorkspaceLeaf, plugin?: SceneCardsPlugin) {
         super(leaf);
         this.plugin = plugin;
@@ -117,11 +126,6 @@ export class PlotgridView extends ItemView {
         this.renderToolbar();
         // keep main scroll area untouched (no forced scrolling)
         this.renderGrid();
-
-        // Ensure System/PlotGrid/*.csv mirrors exist for every page (first open / migration).
-        if (this.plugin?.plotGridCsvSync) {
-            void this.plugin.plotGridCsvSync.syncDocument(this.document).catch(() => { /* non-fatal */ });
-        }
 
         // Watch for file renames to update linkedSceneId paths AND row sourceIds
         this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
@@ -169,77 +173,14 @@ export class PlotgridView extends ItemView {
                 this.refreshOpenCellInspector();
             }
         }));
-
-        // CSV edited outside (Tablite / CSV Editor / Excel) → pull into the matching page.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        this.registerEvent((this.app.workspace as any).on('narrativelab:plotgrid-csv-changed', (csvPath: string) => {
-            void this.onExternalCsvChanged(csvPath);
-        }));
-    }
-
-    /** Open the active page's System/PlotGrid/*.csv in a new leaf (CSV plugins take over). */
-    private async openActivePageCsv(): Promise<void> {
-        const sync = this.plugin?.plotGridCsvSync;
-        if (!sync) {
-            new Notice(t('CSV sync is not available.'));
-            return;
-        }
-        // Flush pending grid edits first so the CSV is current.
-        if (this.saveDebounce) {
-            window.clearTimeout(this.saveDebounce);
-            this.saveDebounce = null;
-            if (this.plugin) await this.plugin.savePlotGrid(this.document);
-        } else {
-            await sync.writePageCsv(this.data as ConceptGridPage);
-        }
-        const file = await sync.ensurePageCsvFile(this.data as ConceptGridPage);
-        if (!file) {
-            new Notice(t('Could not create page CSV.'));
-            return;
-        }
-        await this.app.workspace.getLeaf('tab').openFile(file);
-        new Notice(t('Opened {path}. Edit with a CSV plugin, then return here — changes sync automatically.', {
-            path: file.path,
-        }));
-    }
-
-    /** Pull CSV text into the active page (and persist). */
-    private async reloadActivePageFromCsv(notify: boolean): Promise<void> {
-        const sync = this.plugin?.plotGridCsvSync;
-        if (!sync) return;
-        const page = this.document.pages.find(p => p.id === this.document.activePageId);
-        if (!page) return;
-        const ok = await sync.importPageFromDisk(page);
-        if (!ok) {
-            if (notify) new Notice(t('No CSV file found for this page yet. Save the grid once to create it.'));
-            return;
-        }
-        this.bindActivePage();
-        this.renderGrid();
-        this.scheduleSave();
-        if (notify) new Notice(t('Reloaded page from CSV.'));
-    }
-
-    private async onExternalCsvChanged(csvPath: string): Promise<void> {
-        const sync = this.plugin?.plotGridCsvSync;
-        if (!sync) return;
-        const pageId = await sync.findPageIdForCsvPath(csvPath);
-        if (!pageId) return;
-        const page = this.document.pages.find(p => p.id === pageId);
-        if (!page) return;
-        const ok = await sync.importPageFromDisk(page);
-        if (!ok) return;
-        if (page.id === this.document.activePageId) {
-            this.bindActivePage();
-            this.renderGrid();
-        }
-        // Persist JSON without immediately fighting the CSV (sync will rewrite same content).
-        this.scheduleSave();
-        new Notice(t('Updated table page from CSV: {name}', { name: page.title }));
     }
 
     async onClose(): Promise<void> {
-        // nothing yet
+        try {
+            this.univerHost?.dispose();
+        } catch { /* ignore */ }
+        this.univerHost = null;
+        this.univerMountPromise = null;
     }
 
     private async loadData() {
@@ -532,21 +473,6 @@ export class PlotgridView extends ItemView {
                 menu.addItem(item => item.setTitle(t('Rename page')).onClick(() => this.renamePage(page.id)));
                 menu.addItem(item => item.setTitle(t('Duplicate page')).onClick(() => this.duplicatePage(page.id)));
                 menu.addSeparator();
-                menu.addItem(item => item
-                    .setTitle(t('Open page CSV'))
-                    .setIcon('table')
-                    .onClick(() => {
-                        if (page.id !== this.document.activePageId) this.switchPage(page.id);
-                        void this.openActivePageCsv();
-                    }));
-                menu.addItem(item => item
-                    .setTitle(t('Reload page from CSV'))
-                    .setIcon('folder-input')
-                    .onClick(() => {
-                        if (page.id !== this.document.activePageId) this.switchPage(page.id);
-                        void this.reloadActivePageFromCsv(true);
-                    }));
-                menu.addSeparator();
                 menu.addItem(item => {
                     item.setTitle(t('Delete page'));
                     item.setDisabled(this.document.pages.length <= 1);
@@ -706,6 +632,22 @@ export class PlotgridView extends ItemView {
         attachTooltip(syncBtn, t('Sync from Scenes'));
         syncBtn.addEventListener('click', () => { this.openSyncModal(); });
 
+        // Cell → Markdown note actions (Univer selection / legacy active cell)
+        const linkNoteBtn = left.createEl('button', { cls: 'clickable-icon' });
+        obsidian.setIcon(linkNoteBtn, 'link');
+        attachTooltip(linkNoteBtn, t('Link Note…'));
+        linkNoteBtn.addEventListener('click', () => { this.linkNoteForActiveCell(); });
+
+        const openNoteBtn = left.createEl('button', { cls: 'clickable-icon' });
+        obsidian.setIcon(openNoteBtn, 'file-text');
+        attachTooltip(openNoteBtn, t('Open Note'));
+        openNoteBtn.addEventListener('click', () => { this.openNoteForActiveCell(); });
+
+        const unlinkNoteBtn = left.createEl('button', { cls: 'clickable-icon' });
+        obsidian.setIcon(unlinkNoteBtn, 'unlink');
+        attachTooltip(unlinkNoteBtn, t('Unlink Note'));
+        unlinkNoteBtn.addEventListener('click', () => { this.unlinkNoteForActiveCell(); });
+
         // Separator between Sync and Add Row/Column
         const syncSep = left.createDiv();
         syncSep.setCssStyles({
@@ -820,23 +762,10 @@ export class PlotgridView extends ItemView {
             if (this.plugin) openManageSnapshotsModal(this.plugin.app, this.plugin.viewSnapshotService);
         });
 
-        // ── CSV mirror (System/PlotGrid) — open with Tablite / CSV Editor / Excel ──
-        const openCsvBtn = actions.createDiv({ cls: 'clickable-icon' });
-        obsidian.setIcon(openCsvBtn, 'table');
-        attachTooltip(openCsvBtn, t('Open page CSV'));
-        openCsvBtn.addEventListener('click', () => { void this.openActivePageCsv(); });
-
-        const reloadCsvBtn = actions.createDiv({ cls: 'clickable-icon' });
-        obsidian.setIcon(reloadCsvBtn, 'folder-input');
-        attachTooltip(reloadCsvBtn, t('Reload page from CSV'));
-        reloadCsvBtn.addEventListener('click', () => { void this.reloadActivePageFromCsv(true); });
-
         actions.appendChild(zoomOut);
         actions.appendChild(zoomLabel);
         actions.appendChild(zoomIn);
         actions.appendChild(resetZoomBtn);
-        actions.appendChild(openCsvBtn);
-        actions.appendChild(reloadCsvBtn);
         actions.appendChild(snapManage);
 
         // Icons are rendered exclusively via `obsidian.setIcon()` above —
@@ -1005,7 +934,214 @@ export class PlotgridView extends ItemView {
         return requiredHeight;
     }
 
+    private univerStructureSig = '';
+
+    /** Structure-only fingerprint — content edits must not remount Univer. */
+    private getUniverStructureSig(): string {
+        return this.document.pages.map(p =>
+            `${p.id}|${p.title || ''}|${(p.rows || []).map(r => r.id).join(',')}|${(p.columns || []).map(c => c.id).join(',')}`,
+        ).join('||') + `#${this.document.activePageId}`;
+    }
+
     private renderGrid() {
+        if (!this.canvasEl || !this.scrollAreaEl) return;
+
+        this.ensureDefaults();
+
+        // Univer Sheets path (canonical UI). Only remount/push when page structure changes.
+        if (this.preferUniver && !this.univerLoadFailed) {
+            const sig = this.getUniverStructureSig();
+            const push = !!this.univerHost && sig !== this.univerStructureSig;
+            void this.ensureUniverHost({ pushDocument: push }).then(() => {
+                if (this.univerHost) this.univerStructureSig = this.getUniverStructureSig();
+            });
+            return;
+        }
+
+        this.renderLegacyDomGrid();
+    }
+
+    private async ensureUniverHost(options: { pushDocument?: boolean } = {}): Promise<void> {
+        if (!this.canvasEl || !this.plugin) return;
+        if (this.univerLoadFailed) {
+            this.renderLegacyDomGrid();
+            return;
+        }
+
+        if (this.univerHost) {
+            if (options.pushDocument) {
+                try {
+                    // Do not flush before push — flush+setDocument fought each other.
+                    this.univerHost.setDocument(this.document);
+                } catch (e) {
+                    console.warn('[NarrativeLab] Univer setDocument failed:', e);
+                }
+            }
+            return;
+        }
+
+        if (this.univerMountPromise) {
+            await this.univerMountPromise;
+            // Class-field narrowing treats univerHost as null after the early return above;
+            // re-read via a local cast after the async mount completes.
+            const host = this.univerHost as PlotGridUniverHost | null;
+            if (host && options.pushDocument) {
+                host.setDocument(this.document);
+            }
+            return;
+        }
+
+        this.univerMountPromise = (async () => {
+            try {
+                this.canvasEl!.empty();
+                this.canvasEl!.addClass('plot-grid-univer-canvas');
+                this.canvasEl!.setCssStyles({
+                    width: '100%',
+                    height: '100%',
+                    minHeight: '480px',
+                    position: 'relative',
+                });
+                this.scrollAreaEl?.setCssStyles({
+                    overflow: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                });
+
+                const mod = await loadPlotGridUniverModule(this.plugin!);
+                const locale = getActiveUiLanguage() === 'zh' ? 'zh' : 'en';
+                this.univerHost = mod.createPlotGridUniverHost({
+                    container: this.canvasEl!,
+                    document: this.document,
+                    locale,
+                    onDocumentChange: (doc) => {
+                        this.document = normalizeConceptGridDocument(doc);
+                        this.bindActivePage();
+                        this.scheduleSave();
+                    },
+                    onSelectionChange: (info) => {
+                        this.lastUniverSel = info;
+                        if (info.sheetId && info.sheetId !== this.document.activePageId) {
+                            const page = this.document.pages.find(p => p.id === info.sheetId);
+                            if (page) {
+                                this.document.activePageId = page.id;
+                                this.bindActivePage();
+                                this.renderPageSidebar();
+                            }
+                        }
+                        this.selectedRow = info.row > 0 ? info.row - 1 : null;
+                        this.selectedCol = info.col > 0 ? info.col - 1 : null;
+                        this.selFocus = (this.selectedRow != null && this.selectedCol != null)
+                            ? { r: this.selectedRow, c: this.selectedCol }
+                            : null;
+                    },
+                });
+                this.univerStructureSig = this.getUniverStructureSig();
+                this.bindUniverContextMenu();
+            } catch (e) {
+                console.error('[NarrativeLab] Univer Plot Grid failed; falling back to DOM grid', e);
+                this.univerLoadFailed = true;
+                this.univerHost = null;
+                this.renderLegacyDomGrid();
+            } finally {
+                this.univerMountPromise = null;
+            }
+        })();
+
+        await this.univerMountPromise;
+    }
+
+    private bindUniverContextMenu(): void {
+        if (this.univerContextMenuBound || !this.canvasEl) return;
+        this.univerContextMenuBound = true;
+        this.registerDomEvent(this.canvasEl, 'contextmenu', (evt: MouseEvent) => {
+            if (!this.univerHost) return;
+            const cell = this.getActiveDataCellFromUniver();
+            if (!cell) return;
+            evt.preventDefault();
+            evt.stopPropagation();
+            const menu = new Menu();
+            menu.addItem(item => item.setTitle(t('Link Note…')).setIcon('link').onClick(() => {
+                this.openNoteLinkModal((path) => this.linkFileToCell(cell, path));
+            }));
+            if (cell.linkedSceneId) {
+                const path = cell.linkedSceneId;
+                menu.addItem(item => item.setTitle(t('Open Note')).setIcon('file-text').onClick(() => {
+                    this.openVaultFile(path);
+                }));
+                menu.addItem(item => item.setTitle(t('Unlink Note')).setIcon('unlink').onClick(() => {
+                    this.unlinkCell(cell.id);
+                }));
+            }
+            menu.showAtMouseEvent(evt);
+        });
+    }
+
+    /** Map Univer sheet coords (including header row/col at 0) → data CellData. */
+    private getActiveDataCellFromUniver(): CellData | null {
+        const sel = this.lastUniverSel || this.univerHost?.getActiveCell() || null;
+        if (!sel) return null;
+        if (sel.row <= 0 || sel.col <= 0) return null;
+        const page = this.document.pages.find(p => p.id === sel.sheetId) || this.getActivePage();
+        const row = page.rows[sel.row - 1];
+        const col = page.columns[sel.col - 1];
+        if (!row || !col) return null;
+        const key = `${row.id}-${col.id}`;
+        if (!page.cells[key]) {
+            page.cells[key] = {
+                id: key,
+                content: '',
+                bgColor: '',
+                textColor: '',
+                bold: false,
+                italic: false,
+                align: 'left',
+            };
+        }
+        // Keep working set bound when selection is on active page
+        if (page.id === this.document.activePageId) this.data = page;
+        return page.cells[key];
+    }
+
+    private linkNoteForActiveCell(): void {
+        const cell = this.univerHost
+            ? this.getActiveDataCellFromUniver()
+            : (this.selectedRow != null && this.selectedCol != null
+                ? this.data.cells[`${this.data.rows[this.selectedRow]?.id}-${this.data.columns[this.selectedCol]?.id}`]
+                : null);
+        if (!cell) {
+            new Notice(t('Select a cell first'));
+            return;
+        }
+        this.openNoteLinkModal((path) => this.linkFileToCell(cell, path));
+    }
+
+    private openNoteForActiveCell(): void {
+        const cell = this.univerHost
+            ? this.getActiveDataCellFromUniver()
+            : (this.selectedRow != null && this.selectedCol != null
+                ? this.data.cells[`${this.data.rows[this.selectedRow]?.id}-${this.data.columns[this.selectedCol]?.id}`]
+                : null);
+        if (!cell?.linkedSceneId) {
+            new Notice(t('No linked note'));
+            return;
+        }
+        this.openVaultFile(cell.linkedSceneId);
+    }
+
+    private unlinkNoteForActiveCell(): void {
+        const cell = this.univerHost
+            ? this.getActiveDataCellFromUniver()
+            : (this.selectedRow != null && this.selectedCol != null
+                ? this.data.cells[`${this.data.rows[this.selectedRow]?.id}-${this.data.columns[this.selectedCol]?.id}`]
+                : null);
+        if (!cell?.linkedSceneId) {
+            new Notice(t('No linked note'));
+            return;
+        }
+        this.unlinkCell(cell.id);
+    }
+
+    private renderLegacyDomGrid() {
         if (!this.canvasEl || !this.scrollAreaEl) return;
 
         // Preserve scroll position across re-renders so the view doesn't jump
@@ -3466,15 +3602,29 @@ export class PlotgridView extends ItemView {
         const liveCell = this.ensureCellInData(cell);
         liveCell.linkedSceneId = filePath;
         this.scheduleSave();
-        this.renderGrid();
+        // Meta-only change — avoid remounting Univer (would drop caret/selection).
+        if (!this.univerHost) this.renderGrid();
         this.refreshOpenCellInspector();
     }
 
     private unlinkCell(cellKey: string): void {
-        const c = this.data.cells[cellKey];
-        if (c) c.linkedSceneId = undefined;
+        // Prefer active page; also clear on the page that owns the key when using Univer selection.
+        let cleared = false;
+        if (this.data.cells[cellKey]) {
+            this.data.cells[cellKey].linkedSceneId = undefined;
+            cleared = true;
+        }
+        if (!cleared) {
+            for (const page of this.document.pages) {
+                if (page.cells[cellKey]) {
+                    page.cells[cellKey].linkedSceneId = undefined;
+                    cleared = true;
+                    break;
+                }
+            }
+        }
         this.scheduleSave();
-        this.renderGrid();
+        if (!this.univerHost) this.renderGrid();
         this.refreshOpenCellInspector();
     }
 

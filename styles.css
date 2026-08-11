@@ -7801,6 +7801,15 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     background: transparent;
 }
 
+.plot-grid-univer-canvas,
+.plot-grid-univer-host {
+    flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    position: relative;
+}
+
 /* Corner cell (top-left) */
 .plot-grid-corner {
     grid-column: 1 / 2;
@@ -11890,10 +11899,20 @@ body /* Clamp title on mobile too, in case it's very long */
     display: block;
 }
 .story-line-codex-content:has(> .library-native-base-embed),
+.story-line-codex-content:has(> .library-native-base-actions),
 .story-line-character-content:has(> .library-native-base-embed),
-.story-line-location-content:has(> .library-native-base-embed) {
+.story-line-character-content:has(> .library-native-base-actions),
+.story-line-location-content:has(> .library-native-base-embed),
+.story-line-location-content:has(> .library-native-base-actions) {
     display: block;
     overflow-y: auto;
+}
+
+.library-native-base-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
+    margin: 0 0 8px;
 }
 
 .codex-list-container {
@@ -11905,11 +11924,19 @@ body /* Clamp title on mobile too, in case it's very long */
     overflow-y: auto;
 }
 
-
 /* Bases-style library browse toolbar */
 .library-native-base-embed {
     width: 100%;
     min-width: 0;
+}
+/* Hide Bases' New when NarrativeLab provides a create that writes into the
+ * category folder with correct frontmatter (Bases cannot satisfy in-folder
+ * filters when it used to use path.contains — toast + empty list). */
+.library-native-base-embed.has-nl-new .bases-toolbar button[aria-label="New"],
+.library-native-base-embed.has-nl-new .bases-toolbar button[aria-label="新建"],
+.library-native-base-embed.has-nl-new .bases-toolbar button[aria-label="New file"],
+.library-native-base-embed.has-nl-new .bases-toolbar button[aria-label="新建文件"] {
+    display: none !important;
 }
 .library-native-base-embed > .internal-embed,
 .library-native-base-embed .markdown-embed {

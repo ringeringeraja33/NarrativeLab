@@ -13,10 +13,13 @@ export function areCaseEquivalentVaultPaths(left: string, right: string): boolea
     return a.length > 0 && b.length > 0 && a.toLocaleLowerCase() === b.toLocaleLowerCase();
 }
 
-/** Exact folder scope for an Obsidian Base, including every requested root. */
+/** Exact folder scope for an Obsidian Base, including every requested root.
+ * Prefer `file.inFolder` so Bases New can place notes in the category folder
+ * (path.contains filters cannot be applied to a new note → toast + disappear).
+ */
 export function buildLibraryPathScopeFilter(folderPaths: readonly string[]): LibraryBaseFilter {
     const unique = [...new Set(folderPaths.map(path => path.trim().replace(/\/+$/, '')).filter(Boolean))];
-    const filters = unique.map(path => `file.path.contains(${JSON.stringify(`${path}/`)})`);
+    const filters = unique.map(path => `file.inFolder(${JSON.stringify(path)})`);
     if (filters.length === 0) return 'false';
     return filters.length === 1 ? filters[0] : { or: filters };
 }

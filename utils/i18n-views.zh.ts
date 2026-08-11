@@ -310,6 +310,7 @@ export const VIEWS_ZH: Record<string, string> = {
     'Deleted {n} rows': '已删除 {n} 行',
     'Keep at least one row': '请至少保留一行',
     'Linked file not found': '未找到链接文件',
+    'No linked note': '没有链接的笔记',
     'Edit Cell Text': '编辑单元格文字',
     'Unlink Note': '取消链接',
     'Open Note': '打开笔记',

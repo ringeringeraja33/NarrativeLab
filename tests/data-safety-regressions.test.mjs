@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, locationView] = await Promise.all([
+const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, locationView, mainTs] = await Promise.all([
     readFile(new URL('../services/CorkboardCanvasService.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/BoardView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/SeriesManager.ts', import.meta.url), 'utf8'),
@@ -19,6 +19,7 @@ const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudi
     readFile(new URL('../views/CodexView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/LocationView.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../main.ts', import.meta.url), 'utf8'),
 ]);
 
 test('unreadable corkboard Canvas files abort without being rewritten', () => {
@@ -158,6 +159,19 @@ test('add-relation modal can create character or wikilink kinds', () => {
     assert.match(libraryModeBar, /addOption\('character', t\('Character relation'\)\)/);
     assert.match(libraryModeBar, /onLegendAdd: \(\) => openAddStoryGraphRelationModal/);
     assert.match(libraryModeBar, /RELATION_BASE_TYPE_BY_CATEGORY/);
+});
+
+test('plotgrid saves are queued, retried, and do not toast on every failure', () => {
+    const save = mainTs.slice(
+        mainTs.indexOf('async savePlotGrid('),
+        mainTs.indexOf('async loadPlotGrid('),
+    );
+    assert.match(save, /_systemJsonWriteQueues/);
+    assert.match(save, /writeVaultBinaryResilient/);
+    assert.match(save, /encodePlotGridXlsx/);
+    assert.match(save, /ensureVaultFolder/);
+    assert.doesNotMatch(save, /new Notice\(/);
+    assert.match(mainTs, /getBasePath\?\./);
 });
 
 test('editable Base field and Library category names stay language-neutral', () => {

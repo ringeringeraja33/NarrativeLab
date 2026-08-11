@@ -61,3 +61,10 @@ test('Browse Properties/Sort changes are persisted into library.base', () => {
     assert.match(nativeLibraryBase, /lastLayoutAt/);
     assert.match(nativeLibraryBase, /newestByCategory/);
 });
+
+test('Library Base folder filters use file.inFolder so New can create visible notes', () => {
+    assert.match(nativeLibraryBase, /single-library-base-v3-infolder/);
+    assert.match(nativeLibraryBase, /!file\.inFolder\(/);
+    assert.match(nativeLibraryBase, /onNew\?: \(\) => void/);
+    assert.match(nativeLibraryBase, /has-nl-new/);
+});

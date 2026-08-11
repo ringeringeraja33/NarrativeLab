@@ -248,7 +248,10 @@ export class LocationView extends ItemView {
     private renderOverview(container: HTMLElement): void {
         container.empty();
         if (this.locationOverviewMode === 'base') {
-            void renderNativeLibraryBase(container, this.plugin, 'locations', this);
+            void renderNativeLibraryBase(container, this.plugin, 'locations', this, {
+                onNew: () => this.promptNewLocation(),
+                newLabel: t('New'),
+            });
             return;
         }
 
