@@ -480,10 +480,22 @@ export function mergeUniverCellDataIntoDocument(
         cols.forEach((col, ci) => {
             const key = cellKey(row.id, col.id);
             const raw = cellData[ri + 1]?.[ci + 1];
-            // Missing key in snapshot → leave existing content alone
-            if (!raw || !('v' in raw)) return;
-            const nextContent = raw.v == null ? '' : String(raw.v);
             const existing = page.cells[key] || defaultCell({ id: key });
+            // Univer omits emptied cells from sparse snapshots — treat missing as clear
+            // when we already had content (full workbook.save() covers all non-empty cells).
+            if (!raw || !('v' in raw)) {
+                const rowBucket = cellData[ri + 1];
+                // Prefer clearing when the row is present but the cell is gone. If the whole
+                // row vanished after clearing its last cell, also clear when headers exist
+                // (signals a real sheet snapshot rather than an empty stub).
+                const headerPresent = cellData[0] != null;
+                if (existing.content && (rowBucket != null || headerPresent)) {
+                    page.cells[key] = { ...existing, id: existing.id || key, content: '' };
+                    changed = true;
+                }
+                return;
+            }
+            const nextContent = raw.v == null ? '' : String(raw.v);
             if (existing.content === nextContent && page.cells[key]) return;
             page.cells[key] = {
                 ...existing,

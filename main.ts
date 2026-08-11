@@ -275,6 +275,9 @@ export default class SceneCardsPlugin extends Plugin {
     private _systemJsonWriteQueues = new Map<string, Promise<void>>();
     private _invalidSystemJsonPaths = new Set<string>();
     private _reportedInvalidSystemJsonPaths = new Set<string>();
+    /** Unreadable System/plotgrid.xlsx paths — block empty overwrite until explicit reset. */
+    private _invalidPlotGridXlsxPaths = new Set<string>();
+    private _reportedInvalidPlotGridXlsxPaths = new Set<string>();
 
     /** Suppress vault modify→refresh echo while the plugin writes a path. */
     withSuppressedVaultEcho<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
@@ -886,6 +889,12 @@ export default class SceneCardsPlugin extends Plugin {
                     const systemFolder = normalizePath(this.getProjectSystemFolder() || '');
                     if (systemFolder
                         && (filePath === systemFolder || filePath.startsWith(`${systemFolder}/`))) {
+                        // External edits to the canonical plotgrid workbook should refresh Plot Grid.
+                        // Other System/* writes stay suppressed (they often echo from our own saves).
+                        const plotXlsx = normalizePath(plotGridXlsxPath(systemFolder));
+                        if (filePath === plotXlsx) {
+                            void this.refreshPlotGridViews();
+                        }
                         return;
                     }
                     invalidateAllEntityCaches(file.path);
@@ -2636,23 +2645,62 @@ export default class SceneCardsPlugin extends Plugin {
     ): Promise<void> {
         const adapter = this.app.vault.adapter;
         const document = normalizeConceptGridDocument(data);
+        const path = normalizePath(filePath);
+        const existed = await adapter.exists(path);
 
         // Guard: never overwrite a file that has content with empty data
-        if (!options.allowEmptyOverwrite && isConceptGridDocumentEmpty(document) && await adapter.exists(filePath)) {
+        if (!options.allowEmptyOverwrite && isConceptGridDocumentEmpty(document) && existed) {
             try {
-                const existing = await adapter.readBinary(filePath);
+                const existing = await adapter.readBinary(path);
                 const parsed = await decodePlotGridXlsx(existing);
                 if (!isConceptGridDocumentEmpty(parsed)) {
                     return;
                 }
-            } catch { /* unreadable — allow overwrite */ }
+            } catch {
+                // Unreadable xlsx — never silently replace with empty; keep the corrupt file.
+                await this.backupCorruptPlotGridXlsx(path);
+                this._invalidPlotGridXlsxPaths.add(path);
+                if (!this._reportedInvalidPlotGridXlsxPaths.has(path)) {
+                    this._reportedInvalidPlotGridXlsxPaths.add(path);
+                    new Notice(t('Could not read plotgrid.xlsx — empty save blocked. Reset Grid or fix the file to continue.'));
+                }
+                return;
+            }
+        }
+
+        // Explicit empty overwrite (Reset Grid) still backs up a corrupt original first.
+        if (options.allowEmptyOverwrite && existed && this._invalidPlotGridXlsxPaths.has(path)) {
+            await this.backupCorruptPlotGridXlsx(path);
+        } else if (existed && this._invalidPlotGridXlsxPaths.has(path) && !options.allowEmptyOverwrite) {
+            // Non-empty recovery write after corrupt load: keep a corrupt bak once.
+            await this.backupCorruptPlotGridXlsx(path);
         }
 
         const binary = await encodePlotGridXlsx(document);
         await this.ensureVaultFolder(systemFolder);
-        await this.writeVaultBinaryResilient(filePath, binary);
+        const endSuppress = this.beginSuppressVaultRefresh(path);
+        try {
+            await this.writeVaultBinaryResilient(path, binary);
+        } finally {
+            endSuppress();
+        }
+        this._invalidPlotGridXlsxPaths.delete(path);
+        this._reportedInvalidPlotGridXlsxPaths.delete(path);
         this.invalidatePlotGridScanCache();
         void this.cleanupLegacyPlotGridArtifacts(systemFolder).catch(() => undefined);
+    }
+
+    private async backupCorruptPlotGridXlsx(filePath: string): Promise<void> {
+        const adapter = this.app.vault.adapter;
+        const path = normalizePath(filePath);
+        try {
+            if (!await adapter.exists(path)) return;
+            const bin = await adapter.readBinary(path);
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            await adapter.writeBinary(`${path}.corrupt-${stamp}.bak`, bin);
+        } catch (e) {
+            console.warn('[NarrativeLab] Failed to backup corrupt plotgrid.xlsx:', e);
+        }
     }
 
     /** Remove legacy System/PlotGrid/ folder (CSV mirrors + brief xlsx-in-subfolder layout). */
@@ -2671,16 +2719,18 @@ export default class SceneCardsPlugin extends Plugin {
         try {
             const listing = await adapter.list(gridFolder);
             for (const filePath of listing.files || []) {
-                const name = (filePath.split('/').pop() || '').toLowerCase();
-                if (
-                    name === PLOTGRID_XLSX_FILENAME.toLowerCase()
-                    || name === '_index.json'
-                    || name.endsWith('.csv')
-                    || name.endsWith('.csv.tmp')
-                    || name.endsWith('.tmp')
-                ) {
-                    try { await adapter.remove(filePath); } catch { /* ignore */ }
-                }
+                const name = (filePath.split('/').pop() || '');
+                const lower = name.toLowerCase();
+                // Only known NarrativeLab artifacts — never wipe arbitrary user CSVs.
+                const isKnown =
+                    lower === PLOTGRID_XLSX_FILENAME.toLowerCase()
+                    || lower === '_index.json'
+                    || lower === `${PLOTGRID_XLSX_FILENAME}.tmp`
+                    || lower === '_index.json.tmp'
+                    || /__.+\.csv$/i.test(name)
+                    || /__.+\.csv\.tmp$/i.test(name);
+                if (!isKnown) continue;
+                try { await adapter.remove(filePath); } catch { /* ignore */ }
             }
             // Remove empty PlotGrid folder when possible
             const after = await adapter.list(gridFolder);
@@ -2781,9 +2831,25 @@ export default class SceneCardsPlugin extends Plugin {
             }
 
             if (await adapter.exists(xlsxPath)) {
-                const bin = await adapter.readBinary(xlsxPath);
-                void this.cleanupLegacyPlotGridArtifacts(systemFolder).catch(() => undefined);
-                return await decodePlotGridXlsx(bin);
+                try {
+                    const bin = await adapter.readBinary(xlsxPath);
+                    const doc = await decodePlotGridXlsx(bin);
+                    this._invalidPlotGridXlsxPaths.delete(xlsxPath);
+                    this._reportedInvalidPlotGridXlsxPaths.delete(xlsxPath);
+                    void this.cleanupLegacyPlotGridArtifacts(systemFolder).catch(() => undefined);
+                    return doc;
+                } catch (e) {
+                    console.warn('[NarrativeLab] plotgrid.xlsx unreadable:', e);
+                    await this.backupCorruptPlotGridXlsx(xlsxPath);
+                    this._invalidPlotGridXlsxPaths.add(xlsxPath);
+                    if (!this._reportedInvalidPlotGridXlsxPaths.has(xlsxPath)) {
+                        this._reportedInvalidPlotGridXlsxPaths.add(xlsxPath);
+                        new Notice(t('Could not read plotgrid.xlsx — opened empty grid; empty autosave is blocked until Reset Grid.'));
+                    }
+                    // Return null so the view shows empty UI, but savePlotGridSafely
+                    // will refuse to overwrite the corrupt file with empty data.
+                    return null;
+                }
             }
 
             // Migrate System/PlotGrid/plotgrid.xlsx → System/plotgrid.xlsx
@@ -3899,6 +3965,9 @@ export default class SceneCardsPlugin extends Plugin {
 
             // Update codex digests (baseline new entries, prune deleted ones)
             void this.refreshCodexDigests();
+
+            // Drop plotgrid mention cache — System/ path is per-project.
+            this.invalidatePlotGridScanCache();
         }
 
         // Flush writing tracker so daily stats update in real-time
@@ -3925,9 +3994,11 @@ export default class SceneCardsPlugin extends Plugin {
         for (const viewType of viewTypes) {
             const leaves = this.app.workspace.getLeavesOfType(viewType);
             for (const leaf of leaves) {
-                const view = leaf.view as unknown as { refresh?: () => void };
+                const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
                 if (view && typeof view.refresh === 'function') {
-                    view.refresh();
+                    try {
+                        await Promise.resolve(view.refresh());
+                    } catch { /* non-fatal per view */ }
                 }
                 // Keep in-view toolbar title in sync even when a view's refresh()
                 // only rebuilds content (e.g. Board corkboard) and skips the toolbar.
@@ -3936,6 +4007,19 @@ export default class SceneCardsPlugin extends Plugin {
                     .forEach(el => { el.textContent = projectLabel; });
                 // Update the tab title so it reflects the new project name immediately
                 (leaf as unknown as { updateHeader?: () => void }).updateHeader?.();
+            }
+        }
+    }
+
+    /** Refresh only open Plot Grid leaves (external plotgrid.xlsx edits). */
+    private async refreshPlotGridViews(): Promise<void> {
+        const leaves = this.app.workspace.getLeavesOfType(PLOTGRID_VIEW_TYPE);
+        for (const leaf of leaves) {
+            const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
+            if (view && typeof view.refresh === 'function') {
+                try {
+                    await Promise.resolve(view.refresh());
+                } catch { /* non-fatal */ }
             }
         }
     }

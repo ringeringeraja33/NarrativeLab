@@ -16,6 +16,7 @@ import {
 } from '../models/PlotGridData';
 import { getActiveUiLanguage, t } from '../utils/i18n';
 import { loadPlotGridUniverModule, type PlotGridUniverHost } from '../utils/loadPlotGridUniver';
+import { conceptGridContentFingerprint } from '../services/PlotGridXlsxCodec';
 import { LocationManager } from '../services/LocationManager';
 import type { SceneFilter, SortConfig } from '../models/Scene';
 import { SceneManager } from '../services/SceneManager';
@@ -88,6 +89,9 @@ export class PlotgridView extends ItemView {
     private univerLoadFailed = false;
     private univerContextMenuBound = false;
     private lastUniverSel: { sheetId: string; row: number; col: number } | null = null;
+    /** System/ folder the in-memory document was loaded from — used to block cross-project saves. */
+    private loadedSystemFolder: string | null = null;
+    private dragToPanCleanup: (() => void) | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin?: SceneCardsPlugin) {
         super(leaf);
@@ -119,6 +123,7 @@ export class PlotgridView extends ItemView {
 
         this.containerEl.addClass('plot-grid-root');
 
+        this.univerLoadFailed = false;
         await this.loadData();
 
         this.buildLayout(container);
@@ -175,16 +180,108 @@ export class PlotgridView extends ItemView {
         }));
     }
 
-    async onClose(): Promise<void> {
+    /** Tear down Univer so the next render remounts the correct project workbook. */
+    private disposeUniverHost(): void {
+        this.lastUniverSel = null;
+        try {
+            this.univerHost?.flush();
+        } catch { /* ignore */ }
+        // Invalidate in-flight mounts only after flush so onDocumentChange still applies.
+        this.univerMountGeneration += 1;
         try {
             this.univerHost?.dispose();
         } catch { /* ignore */ }
         this.univerHost = null;
         this.univerMountPromise = null;
+        this.univerStructureSig = '';
+        this.resetCanvasLayoutForLegacy();
+    }
+
+    async onClose(): Promise<void> {
+        try {
+            this.dragToPanCleanup?.();
+        } catch { /* ignore */ }
+        this.dragToPanCleanup = null;
+
+        // Commit Univer edits, then persist to the folder this view was bound to.
+        const folder = this.loadedSystemFolder;
+        try {
+            this.univerHost?.flush();
+        } catch { /* ignore */ }
+        this.cancelPendingSave();
+        if (folder && this.plugin && typeof this.plugin.savePlotGrid === 'function') {
+            const current = this.getActiveSystemFolder();
+            if (!current || current === folder) {
+                try {
+                    await this.plugin.savePlotGrid(this.document);
+                } catch { /* ignore */ }
+            }
+        }
+        this.disposeUniverHost();
+        this.loadedSystemFolder = null;
+    }
+
+    private getActiveSystemFolder(): string {
+        try {
+            return this.plugin?.getProjectSystemFolder?.() ?? '';
+        } catch {
+            return '';
+        }
+    }
+
+    /** Undo Univer absolute/fill styles so the legacy DOM grid can lay out again. */
+    private resetCanvasLayoutForLegacy(): void {
+        this.wrapperEl?.removeClass('is-univer-mode');
+        this.scrollAreaEl?.removeClass('is-univer-host');
+        this.scrollAreaEl?.setCssStyles({
+            overflow: 'auto',
+            position: 'relative',
+            flex: '1 1 0',
+            minHeight: '0',
+            minWidth: '0',
+            cursor: 'grab',
+            display: 'block',
+        });
+        if (this.canvasEl) {
+            this.canvasEl.removeClass('plot-grid-univer-canvas');
+            this.canvasEl.removeClass('plot-grid-univer-host');
+            this.canvasEl.setCssStyles({
+                position: 'relative',
+                top: '',
+                right: '',
+                bottom: '',
+                left: '',
+                inset: '',
+                width: '100%',
+                height: '',
+                minHeight: '',
+                overflow: '',
+            });
+        }
+    }
+
+    private cancelPendingSave(): void {
+        if (this.saveDebounce) {
+            window.clearTimeout(this.saveDebounce);
+            this.saveDebounce = null;
+        }
     }
 
     private async loadData() {
         try {
+            const folder = this.getActiveSystemFolder();
+            const projectChanged = this.loadedSystemFolder != null
+                && folder.length > 0
+                && this.loadedSystemFolder !== folder;
+            if (projectChanged) {
+                // Never flush the previous project's pending autosave into the new System/ folder.
+                this.cancelPendingSave();
+                this.univerLoadFailed = false;
+                this.disposeUniverHost();
+                this.hideCellInspector();
+                this.undoStack = [];
+            }
+
             let loaded: ConceptGridDocument | null = null;
             if (this.plugin && typeof this.plugin.loadPlotGrid === 'function') {
                 loaded = await this.plugin.loadPlotGrid();
@@ -195,6 +292,7 @@ export class PlotgridView extends ItemView {
                 ? normalizeConceptGridDocument(loaded)
                 : createEmptyConceptGridDocument();
             this.bindActivePage();
+            this.loadedSystemFolder = folder || this.loadedSystemFolder;
             // Auto-repair broken linkedSceneId paths (e.g. after project migration)
             this.repairLinkedScenePaths();
             // Strip legacy auto-sync markers ("✓", "★ POV", "POV: …") that
@@ -283,10 +381,17 @@ export class PlotgridView extends ItemView {
     private scheduleSave() {
         const plugin = this.plugin;
         if (!plugin) return;
+        // Capture the System/ folder this in-memory document belongs to.
+        const folderAtSchedule = this.loadedSystemFolder || this.getActiveSystemFolder();
         if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
         // debounce and call plugin-level save API if available
         const timerId = window.setTimeout(async () => {
             try {
+                const currentFolder = this.getActiveSystemFolder();
+                if (folderAtSchedule && currentFolder && folderAtSchedule !== currentFolder) {
+                    // Active project changed — do not write the previous workbook into the new folder.
+                    return;
+                }
                 if (typeof plugin.savePlotGrid === 'function') await plugin.savePlotGrid(this.document);
                 plugin.viewSnapshotService.scheduleAutoSave();
             } catch (e) {
@@ -396,12 +501,16 @@ export class PlotgridView extends ItemView {
 
         this.scrollAreaEl = workArea.createDiv('plot-grid-scroll-area');
         this.scrollAreaEl.setCssStyles({
-            flex: '1 1 auto',
+            flex: '1 1 0',
             overflow: 'auto',
             position: 'relative',
             minWidth: '0',
+            minHeight: '0',
         });
-        enableDragToPan(this.scrollAreaEl);
+        // Drag-to-pan is for the legacy DOM grid only — Univer owns its own scroll/selection.
+        if (!this.preferUniver) {
+            this.dragToPanCleanup = enableDragToPan(this.scrollAreaEl);
+        }
 
         this.canvasEl = this.scrollAreaEl.createDiv('plot-grid-canvas');
         this.canvasEl.setCssStyles({ position: 'relative' });
@@ -935,12 +1044,14 @@ export class PlotgridView extends ItemView {
     }
 
     private univerStructureSig = '';
+    private univerMountGeneration = 0;
 
-    /** Structure-only fingerprint — content edits must not remount Univer. */
+    /** Structure fingerprint — exclude activePageId so tab switches don't remount. */
     private getUniverStructureSig(): string {
-        return this.document.pages.map(p =>
+        const folder = this.loadedSystemFolder || this.getActiveSystemFolder();
+        return `${folder}::` + this.document.pages.map(p =>
             `${p.id}|${p.title || ''}|${(p.rows || []).map(r => r.id).join(',')}|${(p.columns || []).map(c => c.id).join(',')}`,
-        ).join('||') + `#${this.document.activePageId}`;
+        ).join('||');
     }
 
     private renderGrid() {
@@ -953,7 +1064,13 @@ export class PlotgridView extends ItemView {
             const sig = this.getUniverStructureSig();
             const push = !!this.univerHost && sig !== this.univerStructureSig;
             void this.ensureUniverHost({ pushDocument: push }).then(() => {
-                if (this.univerHost) this.univerStructureSig = this.getUniverStructureSig();
+                if (this.univerHost) {
+                    this.univerStructureSig = this.getUniverStructureSig();
+                    // Page tab switch: activate sheet without remount.
+                    try {
+                        this.univerHost.setActiveSheet(this.document.activePageId);
+                    } catch { /* ignore */ }
+                }
             });
             return;
         }
@@ -991,34 +1108,54 @@ export class PlotgridView extends ItemView {
             return;
         }
 
+        const mountGen = ++this.univerMountGeneration;
         this.univerMountPromise = (async () => {
             try {
+                this.dragToPanCleanup?.();
+                this.dragToPanCleanup = null;
+
+                this.wrapperEl?.addClass('is-univer-mode');
+                this.scrollAreaEl?.addClass('is-univer-host');
                 this.canvasEl!.empty();
                 this.canvasEl!.addClass('plot-grid-univer-canvas');
+                // Flex-fill (not absolute) — absolute + 0-height parent collapses the sheet.
                 this.canvasEl!.setCssStyles({
+                    position: 'relative',
+                    flex: '1 1 auto',
                     width: '100%',
                     height: '100%',
-                    minHeight: '480px',
-                    position: 'relative',
+                    minHeight: '0',
+                    inset: '',
                 });
                 this.scrollAreaEl?.setCssStyles({
                     overflow: 'hidden',
+                    position: 'relative',
                     display: 'flex',
                     flexDirection: 'column',
+                    flex: '1 1 0',
+                    minHeight: '0',
+                    minWidth: '0',
+                    cursor: 'default',
                 });
 
                 const mod = await loadPlotGridUniverModule(this.plugin!);
+                if (mountGen !== this.univerMountGeneration || !this.canvasEl) {
+                    return;
+                }
                 const locale = getActiveUiLanguage() === 'zh' ? 'zh' : 'en';
-                this.univerHost = mod.createPlotGridUniverHost({
-                    container: this.canvasEl!,
+                const host = mod.createPlotGridUniverHost({
+                    container: this.canvasEl,
                     document: this.document,
                     locale,
+                    getAuthoritativeDocument: () => this.document,
                     onDocumentChange: (doc) => {
+                        if (mountGen !== this.univerMountGeneration) return;
                         this.document = normalizeConceptGridDocument(doc);
                         this.bindActivePage();
                         this.scheduleSave();
                     },
                     onSelectionChange: (info) => {
+                        if (mountGen !== this.univerMountGeneration) return;
                         this.lastUniverSel = info;
                         if (info.sheetId && info.sheetId !== this.document.activePageId) {
                             const page = this.document.pages.find(p => p.id === info.sheetId);
@@ -1035,15 +1172,28 @@ export class PlotgridView extends ItemView {
                             : null;
                     },
                 });
+                if (mountGen !== this.univerMountGeneration) {
+                    try { host.dispose(); } catch { /* ignore */ }
+                    return;
+                }
+                this.univerHost = host;
                 this.univerStructureSig = this.getUniverStructureSig();
                 this.bindUniverContextMenu();
+                // Let layout settle, then nudge Univer to measure the filled host.
+                window.requestAnimationFrame(() => {
+                    window.dispatchEvent(new Event('resize'));
+                });
             } catch (e) {
+                if (mountGen !== this.univerMountGeneration) return;
                 console.error('[NarrativeLab] Univer Plot Grid failed; falling back to DOM grid', e);
                 this.univerLoadFailed = true;
                 this.univerHost = null;
+                this.resetCanvasLayoutForLegacy();
                 this.renderLegacyDomGrid();
             } finally {
-                this.univerMountPromise = null;
+                if (mountGen === this.univerMountGeneration) {
+                    this.univerMountPromise = null;
+                }
             }
         })();
 
@@ -1081,7 +1231,10 @@ export class PlotgridView extends ItemView {
         const sel = this.lastUniverSel || this.univerHost?.getActiveCell() || null;
         if (!sel) return null;
         if (sel.row <= 0 || sel.col <= 0) return null;
-        const page = this.document.pages.find(p => p.id === sel.sheetId) || this.getActivePage();
+        // Never fall back to the active page — unknown sheetId after project switch
+        // would mutate the wrong grid at the same coordinates.
+        const page = this.document.pages.find(p => p.id === sel.sheetId);
+        if (!page) return null;
         const row = page.rows[sel.row - 1];
         const col = page.columns[sel.col - 1];
         if (!row || !col) return null;
@@ -1311,8 +1464,16 @@ export class PlotgridView extends ItemView {
                         window.clearTimeout(this.saveDebounce);
                         this.saveDebounce = null;
                     }
-                    this.data = { rows: [], columns: [], cells: {}, zoom: 1 };
-                    this.scheduleSave();
+                    // Mutate the active page inside `document` — that is what save serializes.
+                    const page = this.getActivePage();
+                    page.rows = [];
+                    page.columns = [];
+                    page.cells = {};
+                    page.zoom = 1;
+                    this.data = page;
+                    this.univerStructureSig = '';
+                    try { this.univerHost?.syncMeta(this.document); } catch { /* ignore */ }
+                    void this.plugin?.savePlotGrid?.(this.document, { allowEmptyOverwrite: true });
                     this.renderGrid();
                 });
                 modal.open();
@@ -2268,17 +2429,42 @@ export class PlotgridView extends ItemView {
     }
     async refresh(): Promise<void> {
         try {
-            // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
-            if (this.saveDebounce) return;
-            // If a cell is being edited, skip refresh to avoid destroying the textarea
-            if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
-            // If any input/textarea in the grid or inspector is focused, skip refresh to avoid losing edits
-            if (this.wrapperEl?.querySelector('input:focus, textarea:focus')) return;
+            const folder = this.getActiveSystemFolder();
+            const projectChanged = this.loadedSystemFolder != null
+                && folder.length > 0
+                && this.loadedSystemFolder !== folder;
+
+            if (projectChanged) {
+                // Always reload on project switch — never skip for pending saves / focus.
+                this.cancelPendingSave();
+                this.disposeUniverHost();
+            } else {
+                // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
+                if (this.saveDebounce) return;
+                // If a cell is being edited, skip refresh to avoid destroying the textarea
+                if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
+                // If any input/textarea in the grid or inspector is focused, skip refresh to avoid losing edits
+                if (this.wrapperEl?.querySelector('input:focus, textarea:focus')) return;
+            }
+
+            const beforeFp = this.univerHost
+                ? conceptGridContentFingerprint(this.document)
+                : '';
             await this.loadData();
             // If the view hasn't been opened yet, `wrapperEl` will be null — skip rendering
             if (!this.wrapperEl) return;
             this.renderPageSidebar();
             this.renderToolbar();
+            // Content-only disk changes must push into Univer (structure sig alone skips remount).
+            if (this.univerHost && !projectChanged) {
+                const afterFp = conceptGridContentFingerprint(this.document);
+                if (afterFp !== beforeFp) {
+                    try {
+                        this.univerHost.setDocument(this.document);
+                        this.univerStructureSig = this.getUniverStructureSig();
+                    } catch { /* ignore */ }
+                }
+            }
             this.renderGrid();
         } catch (e) {
             // non-fatal
@@ -3601,6 +3787,8 @@ export class PlotgridView extends ItemView {
     private linkFileToCell(cell: CellData, filePath: string): void {
         const liveCell = this.ensureCellInData(cell);
         liveCell.linkedSceneId = filePath;
+        // Keep host meta aligned so the next Univer pull does not erase the link.
+        try { this.univerHost?.syncMeta(this.document); } catch { /* ignore */ }
         this.scheduleSave();
         // Meta-only change — avoid remounting Univer (would drop caret/selection).
         if (!this.univerHost) this.renderGrid();
@@ -3623,6 +3811,7 @@ export class PlotgridView extends ItemView {
                 }
             }
         }
+        try { this.univerHost?.syncMeta(this.document); } catch { /* ignore */ }
         this.scheduleSave();
         if (!this.univerHost) this.renderGrid();
         this.refreshOpenCellInspector();

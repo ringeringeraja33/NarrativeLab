@@ -283,6 +283,10 @@ export const VIEWS_ZH: Record<string, string> = {
     'Plot Grid row heights already fit their content': '表格行高已适应内容',
     'Plot Grid row heights resized to fit content': '表格行高已调整以适应内容',
     'Reset Grid': '重置网格',
+    'Could not read plotgrid.xlsx — empty save blocked. Reset Grid or fix the file to continue.':
+        '无法读取 plotgrid.xlsx — 已阻止空表覆盖。请重置网格或修复文件后继续。',
+    'Could not read plotgrid.xlsx — opened empty grid; empty autosave is blocked until Reset Grid.':
+        '无法读取 plotgrid.xlsx — 已打开空表；在重置网格前不会用空数据自动覆盖。',
     'Are you sure you want to reset the Grid? Resetting will delete everything.': '确定要重置网格吗？重置将删除全部内容。',
     'Rename Column': '重命名列',
     'OK': '确定',

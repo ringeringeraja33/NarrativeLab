@@ -105,6 +105,22 @@ const univerContext = await esbuild.context({
   banner: {
     js: "try{if(typeof document!=='undefined'){window.__NL_UNIVER_CSS__=window.__NL_UNIVER_CSS__||[];}}catch(e){}",
   },
+  plugins: [
+    {
+      name: "deploy-univer-chunk",
+      setup(build) {
+        build.onEnd((result) => {
+          if (result.errors.length === 0) {
+            try {
+              deployPluginFiles();
+            } catch (err) {
+              console.warn("[deploy] skipped:", err instanceof Error ? err.message : err);
+            }
+          }
+        });
+      },
+    },
+  ],
 });
 
 if (prod) {

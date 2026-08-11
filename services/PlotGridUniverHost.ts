@@ -30,6 +30,11 @@ export interface PlotGridUniverHostOptions {
     container: HTMLElement;
     document: ConceptGridDocument;
     locale: 'en' | 'zh';
+    /**
+     * Latest NarrativeLab document (may include link/meta edits that live outside Univer).
+     * Pull merges Univer cell values into this snapshot so metadata is not erased.
+     */
+    getAuthoritativeDocument?: () => ConceptGridDocument;
     onDocumentChange: (doc: ConceptGridDocument) => void;
     onSelectionChange?: (info: { sheetId: string; row: number; col: number }) => void;
 }
@@ -38,6 +43,9 @@ export interface PlotGridUniverHost {
     dispose: () => void;
     getDocument: () => ConceptGridDocument;
     setDocument: (doc: ConceptGridDocument) => void;
+    /** Update host's metadata snapshot without recreating the workbook. */
+    syncMeta: (doc: ConceptGridDocument) => void;
+    setActiveSheet: (sheetId: string) => void;
     getActiveCell: () => { sheetId: string; row: number; col: number } | null;
     /** Force a sync pull from Univer cell matrix into the live document. */
     flush: () => void;
@@ -51,9 +59,11 @@ type UniverAPI = {
         getActiveSheet: () => { getSheetId: () => string } | null;
         getSheetBySheetId: (id: string) => {
             getSheetId: () => string;
+            activate?: () => void;
             getRange: (r: number, c: number) => { getValue: () => unknown; getCellData: () => { v?: unknown } | null };
             getCellMatrix?: () => { getMatrix: () => unknown };
         } | null;
+        setActiveSheet?: (id: string) => void;
         save: () => Record<string, unknown>;
     } | null;
     addEvent: (event: string | number, cb: (params: unknown) => void) => { dispose?: () => void } | number;
@@ -61,6 +71,29 @@ type UniverAPI = {
     disposeUnit?: (unitId: string) => void;
     dispose?: () => void;
 };
+
+function extractSelection(params: unknown, fallbackSheetId?: string | null): { sheetId: string; row: number; col: number } | null {
+    const p = params as {
+        sheetId?: string;
+        worksheet?: { getSheetId?: () => string };
+        selections?: Array<
+            | { range?: { startRow?: number; startColumn?: number }; startRow?: number; startColumn?: number }
+            | { startRow?: number; startColumn?: number }
+        >;
+    };
+    const first = p.selections?.[0];
+    const range = first && 'range' in first && first.range
+        ? first.range
+        : first;
+    const row = range && typeof range === 'object' ? (range as { startRow?: number }).startRow : undefined;
+    const col = range && typeof range === 'object' ? (range as { startColumn?: number }).startColumn : undefined;
+    const sheetId = p.sheetId
+        || p.worksheet?.getSheetId?.()
+        || fallbackSheetId
+        || null;
+    if (sheetId == null || row == null || col == null) return null;
+    return { sheetId, row, col };
+}
 
 /**
  * Mount Univer Sheets into `container` and keep a ConceptGridDocument in sync.
@@ -80,22 +113,40 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     opts.container.setCssStyles({
         width: '100%',
         height: '100%',
-        minHeight: '420px',
+        minHeight: '0',
+        flex: '1 1 auto',
         position: 'relative',
+        overflow: 'hidden',
     });
 
-    const { univerAPI } = createUniver({
-        locale,
-        locales,
-        presets: [
-            UniverSheetsCorePreset({
-                container: opts.container,
-            }),
-        ],
-    }) as { univerAPI: UniverAPI };
+    // Prefer hiding Univer's sheet bar (NL has its own page tabs). Fall back if unsupported.
+    let univerAPI: UniverAPI;
+    try {
+        ({ univerAPI } = createUniver({
+            locale,
+            locales,
+            presets: [
+                UniverSheetsCorePreset({
+                    container: opts.container,
+                    footer: false,
+                } as Record<string, unknown>),
+            ],
+        }) as { univerAPI: UniverAPI });
+    } catch {
+        ({ univerAPI } = createUniver({
+            locale,
+            locales,
+            presets: [
+                UniverSheetsCorePreset({
+                    container: opts.container,
+                }),
+            ],
+        }) as { univerAPI: UniverAPI });
+    }
 
     const workbookData = documentToUniverWorkbookData(liveDoc);
     univerAPI.createWorkbook(workbookData);
+    tryActivateSheet(univerAPI, liveDoc.activePageId);
 
     let disposed = false;
     let suppressUntil = 0;
@@ -114,10 +165,12 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             }
         } catch { /* ignore */ }
         univerAPI.createWorkbook(documentToUniverWorkbookData(doc));
+        tryActivateSheet(univerAPI, doc.activePageId);
     };
 
-    const pullFromUniver = () => {
-        if (isSuppressed()) return;
+    const pullFromUniver = (force = false) => {
+        if (disposed) return;
+        if (!force && isSuppressed()) return;
         try {
             const wb = univerAPI.getActiveWorkbook?.();
             if (!wb) return;
@@ -128,14 +181,25 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 }>;
             } | undefined;
             if (!saved?.sheets) return;
-            let next = liveDoc;
+
+            // Always merge into the latest NL document so link/meta edits survive.
+            const base = structuredClone(
+                (opts.getAuthoritativeDocument?.() ?? liveDoc),
+            ) as ConceptGridDocument;
+
+            let next = base;
             for (const sheet of Object.values(saved.sheets)) {
                 const id = sheet.id;
                 if (!id || !sheet.cellData) continue;
                 next = mergeUniverCellDataIntoDocument(next, id, sheet.cellData);
             }
             const nextFp = conceptGridContentFingerprint(next);
-            if (nextFp === contentFp) return;
+            // Also detect meta drift (links) even when display text is unchanged.
+            const metaChanged = JSON.stringify(pickMeta(next)) !== JSON.stringify(pickMeta(liveDoc));
+            if (nextFp === contentFp && !metaChanged && !force) {
+                liveDoc = next;
+                return;
+            }
             liveDoc = next;
             contentFp = nextFp;
             opts.onDocumentChange(liveDoc);
@@ -146,8 +210,13 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     // Debounced command listener — Univer fires many mutations while editing.
     let timer = 0;
+    let pendingAfterSuppress = false;
     const schedulePull = () => {
-        if (isSuppressed()) return;
+        if (disposed) return;
+        if (isSuppressed()) {
+            pendingAfterSuppress = true;
+            return;
+        }
         if (timer) window.clearTimeout(timer);
         timer = window.setTimeout(() => {
             timer = 0;
@@ -155,8 +224,17 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }, 600);
     };
 
+    // Drain pulls that were deferred during workbook bootstrap/replace.
+    const suppressWatcher = window.setInterval(() => {
+        if (disposed) return;
+        if (pendingAfterSuppress && !isSuppressed()) {
+            pendingAfterSuppress = false;
+            schedulePull();
+        }
+    }, 200);
+    disposers.push(() => window.clearInterval(suppressWatcher));
+
     try {
-        // Facade event name varies by version; try common hooks.
         const api = univerAPI as UniverAPI & {
             Event?: { CommandExecuted?: string; SelectionChanged?: string };
             onCommandExecuted?: (cb: (c: unknown) => void) => void;
@@ -169,29 +247,19 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         } else if (typeof api.onCommandExecuted === 'function') {
             api.onCommandExecuted(() => schedulePull());
         } else {
-            // Gentle backup only when command hooks are missing — fingerprint skip prevents save spam.
             const id = window.setInterval(() => {
                 if (!disposed && opts.container.isConnected && !isSuppressed()) schedulePull();
             }, 3000);
             disposers.push(() => window.clearInterval(id));
         }
+
         const handleSelection = (params: unknown) => {
             try {
-                const p = params as {
-                    sheetId?: string;
-                    selections?: Array<{ range?: { startRow?: number; startColumn?: number } }>;
-                };
-                const range = p.selections?.[0]?.range;
-                const sheetId = p.sheetId
-                    || univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId?.();
-                if (sheetId != null && range?.startRow != null && range?.startColumn != null) {
-                    lastSelection = {
-                        sheetId,
-                        row: range.startRow,
-                        col: range.startColumn,
-                    };
-                    opts.onSelectionChange?.(lastSelection);
-                }
+                const fallback = univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId?.() ?? null;
+                const sel = extractSelection(params, fallback);
+                if (!sel) return;
+                lastSelection = sel;
+                opts.onSelectionChange?.(sel);
             } catch { /* ignore */ }
         };
 
@@ -210,8 +278,14 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     return {
         dispose: () => {
+            if (disposed) return;
+            // Commit any pending edits before tearing down.
+            if (timer) {
+                window.clearTimeout(timer);
+                timer = 0;
+            }
+            try { pullFromUniver(true); } catch { /* ignore */ }
             disposed = true;
-            if (timer) window.clearTimeout(timer);
             for (const d of disposers) {
                 try { d(); } catch { /* ignore */ }
             }
@@ -226,22 +300,64 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             contentFp = conceptGridContentFingerprint(liveDoc);
             replaceWorkbook(liveDoc);
         },
+        syncMeta: (doc: ConceptGridDocument) => {
+            // Keep host snapshot aligned with NL meta without remounting Univer.
+            liveDoc = structuredClone(doc) as ConceptGridDocument;
+            contentFp = conceptGridContentFingerprint(liveDoc);
+        },
+        setActiveSheet: (sheetId: string) => {
+            tryActivateSheet(univerAPI, sheetId);
+        },
         getActiveCell: () => {
             if (lastSelection) return lastSelection;
             try {
                 const sheet = univerAPI.getActiveWorkbook()?.getActiveSheet?.();
                 const sheetId = sheet?.getSheetId?.();
                 if (!sheetId) return null;
-                return { sheetId, row: 0, col: 0 };
+                return null; // no reliable selection without events — don't fake 0,0
             } catch {
                 return null;
             }
         },
-        flush: () => pullFromUniver(),
+        flush: () => {
+            if (timer) {
+                window.clearTimeout(timer);
+                timer = 0;
+            }
+            pullFromUniver(true);
+        },
         focus: () => {
             opts.container.querySelector<HTMLElement>('[contenteditable], canvas, .univer-workbook')?.focus?.();
         },
     };
+}
+
+function tryActivateSheet(univerAPI: UniverAPI, sheetId?: string): void {
+    if (!sheetId) return;
+    try {
+        const wb = univerAPI.getActiveWorkbook?.();
+        if (!wb) return;
+        if (typeof wb.setActiveSheet === 'function') {
+            wb.setActiveSheet(sheetId);
+            return;
+        }
+        const sheet = wb.getSheetBySheetId?.(sheetId);
+        sheet?.activate?.();
+    } catch { /* ignore */ }
+}
+
+function pickMeta(doc: ConceptGridDocument): unknown {
+    return doc.pages.map(p => ({
+        id: p.id,
+        cells: Object.fromEntries(
+            Object.entries(p.cells || {}).map(([k, c]) => [k, {
+                linkedSceneId: c?.linkedSceneId,
+                manualContent: c?.manualContent,
+            }]),
+        ),
+        rows: (p.rows || []).map(r => ({ id: r.id, sourceId: r.sourceId, sourceType: r.sourceType })),
+        columns: (p.columns || []).map(c => ({ id: c.id, sourceId: c.sourceId, sourceType: c.sourceType })),
+    }));
 }
 
 export type { ConceptGridDocument };

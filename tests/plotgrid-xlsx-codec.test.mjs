@@ -75,6 +75,14 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(merged.pages[0].cells['r1-c1'].content, 'updated text');
         assert.equal(merged.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
 
+        // Cleared cells omitted from sparse Univer snapshots must wipe content (keep links).
+        const cleared = codec.mergeUniverCellDataIntoDocument(merged, 'page-1', {
+            0: { 0: { v: '' }, 1: { v: 'Hero' } },
+            1: { 0: { v: 'Scene 1' } },
+        });
+        assert.equal(cleared.pages[0].cells['r1-c1'].content, '');
+        assert.equal(cleared.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+
         // Empty reserved matrix must not expand row/col extents
         const same = codec.mergeUniverCellDataIntoDocument(decoded, 'page-1', {
             0: { 0: { v: '' }, 1: { v: 'Hero' } },
@@ -96,6 +104,8 @@ test('main prefers System/plotgrid.xlsx and migrates legacy PlotGrid folder', as
     assert.match(mainTs, /decodePlotGridXlsx/);
     assert.match(mainTs, /\.bak`|jsonPath.*bak|rename\(jsonPath/);
     assert.match(mainTs, /writeVaultBinaryResilient/);
+    assert.match(mainTs, /backupCorruptPlotGridXlsx|_invalidPlotGridXlsxPaths/);
+    assert.match(mainTs, /__.+\\.csv\$/);
     assert.doesNotMatch(mainTs, /PlotGridCsvSync/);
 });
 
@@ -103,9 +113,17 @@ test('PlotgridView lazy-loads Univer host and keeps note link actions', async ()
     const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
     assert.match(view, /loadPlotGridUniverModule/);
     assert.match(view, /createPlotGridUniverHost/);
+    assert.match(view, /getAuthoritativeDocument/);
+    assert.match(view, /syncMeta/);
+    assert.match(view, /univerMountGeneration/);
     assert.match(view, /Link Note…/);
     assert.match(view, /Unlink Note/);
     assert.match(view, /getActiveDataCellFromUniver/);
-    assert.match(view, /univerHost\?\.dispose/);
+    assert.match(view, /univerHost\?\.dispose|disposeUniverHost/);
+    assert.match(view, /allowEmptyOverwrite:\s*true/);
     assert.doesNotMatch(view, /openActivePageCsv|plotGridCsvSync|Open page CSV/);
+    // Cross-project isolation: track System folder and abort mismatched autosaves
+    assert.match(view, /loadedSystemFolder/);
+    assert.match(view, /folderAtSchedule/);
+    assert.match(view, /projectChanged/);
 });
