@@ -192,6 +192,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     container: opts.container,
                     footer: false,
                     ribbonType: 'simple',
+                    // NarrativeLab owns the cell context menu so note links,
+                    // conversions and row/column actions stay in one menu.
+                    contextMenu: false,
                     menu: {
                         [TEXT_TO_NUMBER_TOOLBAR_MENU_ID]: { hidden: true },
                     },
@@ -207,6 +210,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 UniverSheetsCorePreset({
                     container: opts.container,
                     ribbonType: 'simple',
+                    contextMenu: false,
                     menu: {
                         [TEXT_TO_NUMBER_TOOLBAR_MENU_ID]: { hidden: true },
                     },

@@ -177,6 +177,7 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /UniverSheetsFilterPreset\(\)/);
     assert.match(host, /mergeLocales\(sheetsCoreZhCN, sheetsFilterZhCN\)/);
     assert.equal((host.match(/ribbonType:\s*'simple'/g) || []).length, 2);
+    assert.equal((host.match(/contextMenu:\s*false/g) || []).length, 2);
     assert.match(host, /moveFinancialFormulaMenuLast/);
     assert.match(host, /`\$\{InsertFunctionOperation\.id\}\.financial`/);
     assert.match(host, /FINANCIAL_FORMULA_MENU_ORDER\s*=\s*99/);
