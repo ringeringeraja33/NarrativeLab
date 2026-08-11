@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, locationView, mainTs] = await Promise.all([
+const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, locationView, mainTs, styles] = await Promise.all([
     readFile(new URL('../services/CorkboardCanvasService.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/BoardView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/SeriesManager.ts', import.meta.url), 'utf8'),
@@ -20,7 +20,15 @@ const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudi
     readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/LocationView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
 ]);
+
+test('column link badge stays in flow and cannot cover the scene title', () => {
+    const rule = styles.match(/\.story-line-column-body\.story-line-column-body \.scene-card-detected-badge\s*\{[^}]+\}/)?.[0] || '';
+    assert.match(rule, /position:\s*static/);
+    assert.match(rule, /width:\s*fit-content/);
+    assert.doesNotMatch(rule, /(?:^|\n)\s*(?:position:\s*absolute|left:\s*100px|top:\s*6px)/);
+});
 
 test('unreadable corkboard Canvas files abort without being rewritten', () => {
     assert.match(corkboard, /The original file was not changed/);

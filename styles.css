@@ -15166,13 +15166,14 @@ body.narrative-lab-theme-dark .codex-stale-header {
 
 /* -- Detected badge -- */
 .story-line-column-body.story-line-column-body .scene-card-detected-badge {
-    position: absolute;
-    top: 6px;
-    left: 100px;
-    display: flex;
+    position: static;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 2px;
+    width: fit-content;
+    max-width: 100%;
+    margin-top: 6px;
     border: none;
     overflow: hidden;
     opacity: 0.75;
