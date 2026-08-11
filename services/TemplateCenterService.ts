@@ -1,6 +1,7 @@
 import { App, normalizePath } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import type { BeatSheetTemplate, ProjectPresetTemplate, SceneTemplate, TemplateScope } from '../models/Scene';
+import { t } from '../utils/i18n';
 
 export const PROJECT_TEMPLATES_FOLDER = 'Templates';
 export const PROJECT_TEMPLATES_FILE = 'templates.json';
@@ -125,7 +126,7 @@ export class TemplateCenterService {
     }
 
     private async saveProject(): Promise<void> {
-        if (!this.plugin.sceneManager?.activeProject) throw new Error('Open a project before saving project templates.');
+        if (!this.plugin.sceneManager?.activeProject) throw new Error(t('Open a project before saving project templates.'));
         if (!await this.app.vault.adapter.exists(this.folderPath)) {
             await this.app.vault.createFolder(this.folderPath);
         }
@@ -259,7 +260,7 @@ export class TemplateCenterService {
     }
 
     async exportBundle(): Promise<string> {
-        if (!this.plugin.sceneManager?.activeProject) throw new Error('Open a project before exporting templates.');
+        if (!this.plugin.sceneManager?.activeProject) throw new Error(t('Open a project before exporting templates.'));
         if (!await this.app.vault.adapter.exists(this.folderPath)) await this.app.vault.createFolder(this.folderPath);
         const stamp = new Date().toISOString().replace(/[:.]/g, '-');
         const path = normalizePath(`${this.folderPath}/template-export-${stamp}.json`);
@@ -277,7 +278,7 @@ export class TemplateCenterService {
 
     async importBundle(path: string, scope: TemplateScope): Promise<{ scenes: number; structures: number; presets: number }> {
         const raw = JSON.parse(await this.app.vault.adapter.read(normalizePath(path))) as Partial<TemplateExportBundle>;
-        if (raw.kind !== 'narrative-lab-template-bundle') throw new Error('This is not a NarrativeLab template bundle.');
+        if (raw.kind !== 'narrative-lab-template-bundle') throw new Error(t('This is not a NarrativeLab template bundle.'));
         const scenes = Array.isArray(raw.sceneTemplates) ? raw.sceneTemplates : [];
         const structures = Array.isArray(raw.structureTemplates) ? raw.structureTemplates : [];
         const presets = Array.isArray(raw.projectPresets) ? raw.projectPresets : [];

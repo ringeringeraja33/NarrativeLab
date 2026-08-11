@@ -738,7 +738,7 @@ export class InspectorComponent {
                 title: isNote ? t('Delete Note') : t('Delete Scene'),
                 message: isNote
                     ? t('Delete note "{title}"?', { title: scene.title || t('Note') })
-                    : `Delete scene "${scene.title || 'Untitled'}"?`,
+                    : t('Delete scene "{title}"?', { title: scene.title || t('Untitled') }),
                 confirmLabel: t('Delete'),
                 onConfirm: () => {
                     this.onDelete(scene);
@@ -1454,7 +1454,7 @@ export class InspectorComponent {
                         const leaf = this.plugin.app.workspace.getLeaf('tab');
                         await leaf.openFile(file);
                     } else {
-                        new obsidian.Notice('Snapshot file not found.');
+                        new obsidian.Notice(t('Snapshot file not found.'));
                     }
                 });
 
@@ -1466,8 +1466,10 @@ export class InspectorComponent {
                 restoreBtn.addEventListener('click', () => {
                     openConfirmModal(this.plugin.app, {
                         title: t('Restore Snapshot'),
-                        message: `Replace scene with snapshot "${snap.label}"? Save a snapshot first to avoid losing current content.`,
-                        confirmLabel: 'Restore',
+                        message: t('Replace scene with snapshot "{name}"? Save a snapshot first to avoid losing current content.', {
+                            name: snap.label,
+                        }),
+                        confirmLabel: t('Restore'),
                         onConfirm: async () => {
                             await mgr.restoreSnapshot(snap.filePath, scene.filePath);
                             // Refresh scene from disk

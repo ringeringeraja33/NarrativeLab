@@ -2122,8 +2122,8 @@ export class PlotgridView extends ItemView {
                         menu.addItem((it) => it.setTitle(t('Delete Note')).setIcon('trash').onClick(async () => {
                             openConfirmModal(this.app, {
                                 title: t('Delete Note'),
-                                message: `Delete note "${linkedScene.title || 'Note'}"?`,
-                                confirmLabel: 'Delete',
+                                message: t('Delete note "{title}"?', { title: linkedScene.title || t('Note') }),
+                                confirmLabel: t('Delete'),
                                 onConfirm: async () => {
                                     await this.deleteScene(linkedScene);
                                 },
@@ -2184,8 +2184,8 @@ export class PlotgridView extends ItemView {
                         menu.addItem((it) => it.setTitle(t('Delete Scene')).setIcon('trash').onClick(async () => {
                             openConfirmModal(this.app, {
                                 title: t('Delete Scene'),
-                                message: `Delete scene "${linkedScene.title || 'Untitled'}"?`,
-                                confirmLabel: 'Delete',
+                                message: t('Delete scene "{title}"?', { title: linkedScene.title || t('Untitled') }),
+                                confirmLabel: t('Delete'),
                                 onConfirm: async () => {
                                     await this.deleteScene(linkedScene);
                                 },
@@ -2326,8 +2326,8 @@ export class PlotgridView extends ItemView {
                             if (targetHasContent) {
                                 openConfirmModal(this.app, {
                                     title: t('Overwrite Cell'),
-                                    message: 'The target cell already has content. Overwrite it?',
-                                    confirmLabel: 'Overwrite',
+                                    message: t('The target cell already has content. Overwrite it?'),
+                                    confirmLabel: t('Overwrite'),
                                     onConfirm: doMove,
                                 });
                             } else {

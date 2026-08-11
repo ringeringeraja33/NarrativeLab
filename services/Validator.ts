@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { Scene, TimelineMode } from '../models/Scene';
+import { t } from '../utils/i18n';
 
 /**
  * Severity levels for plot hole warnings
@@ -85,7 +86,10 @@ export class Validator {
                 warnings.push({
                     severity: 'warning',
                     category: 'Timeline',
-                    message: `Duplicate sequence #${seq}: ${list.map(s => `"${s.title}"`).join(', ')}`,
+                    message: t('Duplicate sequence #{sequence}: {scenes}', {
+                        sequence: seq,
+                        scenes: list.map(s => `"${s.title}"`).join(', '),
+                    }),
                     scenePaths: list.map(s => s.filePath),
                 });
             }
@@ -103,7 +107,11 @@ export class Validator {
                 warnings.push({
                     severity: 'info',
                     category: 'Timeline',
-                    message: `Large sequence gap: #${prevSeq} → #${currSeq} (gap of ${currSeq - prevSeq - 1})`,
+                    message: t('Large sequence gap: #{previous} → #{current} (gap of {gap})', {
+                        previous: prevSeq,
+                        current: currSeq,
+                        gap: currSeq - prevSeq - 1,
+                    }),
                     scenePaths: [prev.filePath, curr.filePath],
                 });
             }
@@ -116,7 +124,7 @@ export class Validator {
             const mode = s.timeline_mode || 'linear';
             return mode === 'linear' || mode === 'timeskip' || mode === 'simultaneous';
         });
-        this.checkDateOrderForGroup(mainTimeline, 'main timeline', warnings);
+        this.checkDateOrderForGroup(mainTimeline, t('main timeline'), warnings);
 
         // Per-strand date order checks for parallel and frame scenes
         const strandScenes = new Map<string, Scene[]>();
@@ -129,7 +137,7 @@ export class Validator {
             }
         }
         for (const [strand, list] of strandScenes) {
-            this.checkDateOrderForGroup(list, `strand "${strand}"`, warnings);
+            this.checkDateOrderForGroup(list, t('strand "{name}"', { name: strand }), warnings);
         }
     }
 
@@ -150,7 +158,13 @@ export class Validator {
                 warnings.push({
                     severity: 'warning',
                     category: 'Timeline',
-                    message: `Date out of order in ${groupLabel}: "${curr.title}" (${currDate}) comes after "${prev.title}" (${prevDate}) but has an earlier date`,
+                    message: t('Date out of order in {group}: "{current}" ({currentDate}) comes after "{previous}" ({previousDate}) but has an earlier date', {
+                        group: groupLabel,
+                        current: curr.title,
+                        currentDate: currDate,
+                        previous: prev.title,
+                        previousDate: prevDate,
+                    }),
                     scenePaths: [prev.filePath, curr.filePath],
                 });
             }
@@ -166,7 +180,7 @@ export class Validator {
             warnings.push({
                 severity: 'info',
                 category: 'Characters',
-                message: `${noPov.length} scene(s) have no POV character assigned`,
+                message: t('{count} scenes have no POV character assigned', { count: noPov.length }),
                 scenePaths: noPov.map(s => s.filePath),
             });
         }
@@ -192,7 +206,12 @@ export class Validator {
                     warnings.push({
                         severity: 'info',
                         category: 'Characters',
-                        message: `Character "${apps[0].pov?.toLowerCase() === char ? apps[0].pov : (apps[0].characters?.find(c => c.toLowerCase() === char) || char)}" appears in only 1 scene ("${apps[0].title}")`,
+                        message: t('Character "{character}" appears in only 1 scene ("{scene}")', {
+                            character: apps[0].pov?.toLowerCase() === char
+                                ? apps[0].pov
+                                : (apps[0].characters?.find(c => c.toLowerCase() === char) || char),
+                            scene: apps[0].title,
+                        }),
                         scenePaths: [apps[0].filePath],
                     });
                 }
@@ -218,7 +237,12 @@ export class Validator {
                     warnings.push({
                         severity: 'warning',
                         category: 'Characters',
-                        message: `"${displayName}" disappears for ${between} scenes (between "${apps[i - 1].title}" and "${apps[i].title}")`,
+                        message: t('"{character}" disappears for {count} scenes (between "{previous}" and "{current}")', {
+                            character: displayName,
+                            count: between,
+                            previous: apps[i - 1].title,
+                            current: apps[i].title,
+                        }),
                         scenePaths: [apps[i - 1].filePath, apps[i].filePath],
                     });
                 }
@@ -264,7 +288,12 @@ export class Validator {
                         warnings.push({
                             severity: 'warning',
                             category: 'Plotlines',
-                            message: `Plotline "${tag}" has no scenes in Act ${act} (present in Acts ${firstAct}–${lastAct})`,
+                            message: t('Plotline "{plotline}" has no scenes in Act {act} (present in Acts {first}–{last})', {
+                                plotline: tag,
+                                act,
+                                first: firstAct,
+                                last: lastAct,
+                            }),
                         });
                     }
                 }
@@ -274,7 +303,11 @@ export class Validator {
                     warnings.push({
                         severity: 'info',
                         category: 'Plotlines',
-                        message: `Plotline "${tag}" was last seen in Act ${lastAct} but story continues to Act ${sortedActs[sortedActs.length - 1]}`,
+                        message: t('Plotline "{plotline}" was last seen in Act {act} but story continues to Act {finalAct}', {
+                            plotline: tag,
+                            act: lastAct,
+                            finalAct: sortedActs[sortedActs.length - 1],
+                        }),
                     });
                 }
             }
@@ -286,7 +319,7 @@ export class Validator {
             warnings.push({
                 severity: 'info',
                 category: 'Plotlines',
-                message: `${untagged.length} scene(s) have no plotline tags`,
+                message: t('{count} scenes have no plotline tags', { count: untagged.length }),
                 scenePaths: untagged.map(s => s.filePath),
             });
         }
@@ -306,7 +339,10 @@ export class Validator {
                         warnings.push({
                             severity: 'error',
                             category: 'Setup/Payoff',
-                            message: `"${scene.title}" sets up "${target}" but that scene doesn't exist`,
+                            message: t('"{scene}" sets up "{target}" but that scene does not exist', {
+                                scene: scene.title,
+                                target,
+                            }),
                             scenePaths: [scene.filePath],
                         });
                     }
@@ -320,7 +356,10 @@ export class Validator {
                         warnings.push({
                             severity: 'error',
                             category: 'Setup/Payoff',
-                            message: `"${scene.title}" references setup scene "${source}" but that scene doesn't exist`,
+                            message: t('"{scene}" references setup scene "{source}" but that scene does not exist', {
+                                scene: scene.title,
+                                source,
+                            }),
                             scenePaths: [scene.filePath],
                         });
                     }
@@ -335,7 +374,10 @@ export class Validator {
                         warnings.push({
                             severity: 'warning',
                             category: 'Setup/Payoff',
-                            message: `"${scene.title}" → "${target}": reverse link missing (target doesn't list this scene as setup)`,
+                            message: t('"{scene}" → "{target}": reverse link missing (target does not list this scene as setup)', {
+                                scene: scene.title,
+                                target,
+                            }),
                             scenePaths: [scene.filePath, targetScene.filePath],
                         });
                     }
@@ -353,7 +395,12 @@ export class Validator {
                             warnings.push({
                                 severity: 'warning',
                                 category: 'Setup/Payoff',
-                                message: `Setup "${scene.title}" (${scene.act ?? '?'}-${scene.chapter ?? '?'}-${scene.sequence ?? '?'}) comes AFTER its payoff "${target}" (${targetScene.act ?? '?'}-${targetScene.chapter ?? '?'}-${targetScene.sequence ?? '?'})`,
+                                message: t('Setup "{scene}" ({sceneOrder}) comes after its payoff "{target}" ({targetOrder})', {
+                                    scene: scene.title,
+                                    sceneOrder: `${scene.act ?? '?'}-${scene.chapter ?? '?'}-${scene.sequence ?? '?'}`,
+                                    target,
+                                    targetOrder: `${targetScene.act ?? '?'}-${targetScene.chapter ?? '?'}-${targetScene.sequence ?? '?'}`,
+                                }),
                                 scenePaths: [scene.filePath, targetScene.filePath],
                             });
                         }
@@ -372,7 +419,7 @@ export class Validator {
             warnings.push({
                 severity: 'info',
                 category: 'Structure',
-                message: `${untitled.length} scene(s) have no title`,
+                message: t('{count} scenes have no title', { count: untitled.length }),
                 scenePaths: untitled.map(s => s.filePath),
             });
         }
@@ -383,7 +430,7 @@ export class Validator {
             warnings.push({
                 severity: 'warning',
                 category: 'Structure',
-                message: `${noAct.length} scene(s) have no act assigned`,
+                message: t('{count} scenes have no act assigned', { count: noAct.length }),
                 scenePaths: noAct.map(s => s.filePath),
             });
         }
@@ -406,7 +453,13 @@ export class Validator {
                 warnings.push({
                     severity: 'info',
                     category: 'Structure',
-                    message: `Act imbalance: Act ${maxAct} has ${maxCount} scenes vs Act ${minAct} with ${minCount} scenes (${(maxCount / minCount).toFixed(1)}× ratio)`,
+                    message: t('Act imbalance: Act {largestAct} has {largestCount} scenes vs Act {smallestAct} with {smallestCount} scenes ({ratio}× ratio)', {
+                        largestAct: maxAct,
+                        largestCount: maxCount,
+                        smallestAct: minAct,
+                        smallestCount: minCount,
+                        ratio: (maxCount / minCount).toFixed(1),
+                    }),
                 });
             }
         }
@@ -419,7 +472,10 @@ export class Validator {
                 warnings.push({
                     severity: 'info',
                     category: 'Structure',
-                    message: `${noConflict.length} scene(s) (${pct}%) have no conflict defined`,
+                    message: t('{count} scenes ({percent}%) have no conflict defined', {
+                        count: noConflict.length,
+                        percent: pct,
+                    }),
                     scenePaths: noConflict.map(s => s.filePath),
                 });
             }
@@ -443,7 +499,13 @@ export class Validator {
                     warnings.push({
                         severity: 'info',
                         category: 'Pacing',
-                        message: `Sharp intensity drop: "${prev.title}" (${prev.intensity}) → "${curr.title}" (${curr.intensity}), a drop of ${drop} points`,
+                        message: t('Sharp intensity drop: "{previous}" ({previousIntensity}) → "{current}" ({currentIntensity}), a drop of {drop} points', {
+                            previous: prev.title,
+                            previousIntensity: prev.intensity,
+                            current: curr.title,
+                            currentIntensity: curr.intensity,
+                            drop,
+                        }),
                         scenePaths: [prev.filePath, curr.filePath],
                     });
                 }
@@ -467,7 +529,10 @@ export class Validator {
                     warnings.push({
                         severity: 'info',
                         category: 'Pacing',
-                        message: `5+ consecutive scenes with emotion "${emotion}" starting at "${sorted[streakStart].title}" — consider varying the tone`,
+                        message: t('5+ consecutive scenes with emotion "{emotion}" starting at "{scene}" — consider varying the tone', {
+                            emotion,
+                            scene: sorted[streakStart].title,
+                        }),
                         scenePaths: sorted.slice(streakStart, i + 1).map(s => s.filePath),
                     });
                 }
@@ -511,7 +576,13 @@ export class Validator {
                 warnings.push({
                     severity: 'info',
                     category: 'Timeline',
-                    message: `${dayGap}-day gap between "${prev.title}" (${prev.storyDate}) and "${curr.title}" (${curr.storyDate}) without a timeskip marker`,
+                    message: t('{days}-day gap between "{previous}" ({previousDate}) and "{current}" ({currentDate}) without a timeskip marker', {
+                        days: dayGap,
+                        previous: prev.title,
+                        previousDate: prev.storyDate!,
+                        current: curr.title,
+                        currentDate: curr.storyDate!,
+                    }),
                     scenePaths: [prev.filePath, curr.filePath],
                 });
             }
@@ -521,7 +592,13 @@ export class Validator {
                 warnings.push({
                     severity: 'warning',
                     category: 'Timeline',
-                    message: `Time goes backward: "${prev.title}" (${prev.storyDate}) → "${curr.title}" (${curr.storyDate}) — ${Math.abs(dayGap)} days earlier, but no flashback/flash_forward mode set`,
+                    message: t('Time goes backward: "{previous}" ({previousDate}) → "{current}" ({currentDate}) — {days} days earlier, but no flashback/flash_forward mode set', {
+                        previous: prev.title,
+                        previousDate: prev.storyDate!,
+                        current: curr.title,
+                        currentDate: curr.storyDate!,
+                        days: Math.abs(dayGap),
+                    }),
                     scenePaths: [prev.filePath, curr.filePath],
                 });
             }
@@ -533,7 +610,9 @@ export class Validator {
             warnings.push({
                 severity: 'info',
                 category: 'Timeline',
-                message: `${timeOnly.length} scene(s) have storyTime but no storyDate — timeline gap detection can't cover them`,
+                message: t('{count} scenes have storyTime but no storyDate — timeline gap detection cannot cover them', {
+                    count: timeOnly.length,
+                }),
                 scenePaths: timeOnly.map(s => s.filePath),
             });
         }

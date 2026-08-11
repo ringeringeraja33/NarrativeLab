@@ -1327,6 +1327,13 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     left: 6px;
     color: var(--text-on-accent, #ffffff);
 }
+html[data-narrative-lab-language='zh'] .sl-toggle-track::before {
+    content: '关';
+    font-size: 9px;
+}
+html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggle-track::before {
+    content: '开';
+}
 .sl-toggle-wrap input:checked + .sl-toggle-track::after {
     transform: translateX(22px);
 }
@@ -6816,7 +6823,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     margin-top: 4px;
 }
 
-/* ?? Collapsible sections ?? */
+/* Collapsible statistics sections */
 .stats-collapsible {
     margin-bottom: 16px;
     border: 1px solid var(--sc-card-border);
@@ -6840,7 +6847,7 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
 .stats-collapsible-summary::-webkit-details-marker { display: none; }
 
 .stats-collapsible-summary::before {
-    content: '??;
+    content: '▶';
     display: inline-block;
     transition: transform 0.15s;
     font-size: 0.8em;
@@ -8739,12 +8746,12 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     color: var(--sl-sg-prop, #E91E63);
 }
 
-/* Manual tag-type override indicator ??subtle underline dot */
+/* Manual tag-type override indicator — subtle underline dot */
 .tag-overridden {
     position: relative;
 }
 .tag-overridden::after {
-    content: '??;
+    content: '●';
     position: absolute;
     bottom: -2px;
     right: 2px;
@@ -10137,7 +10144,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
 }
 
 /* ============================================
-   Settings ??Collapsible Color Section
+   Settings — Collapsible Color Section
    ============================================ */
 .story-line-color-section {
     margin: 12px 0;
@@ -10160,7 +10167,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     display: none;
 }
 .story-line-color-section > summary::before {
-    content: '??;
+    content: '▶';
     font-size: 10px;
     transition: transform 0.15s ease;
 }
@@ -10171,7 +10178,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     padding: 4px 14px 14px;
 }
 
-/* ?? DOCX Export Settings (collapsible, framed) ?? */
+/* DOCX export settings (collapsible, framed) */
 .story-line-docx-settings {
     margin: 12px 0;
     border: 1px solid var(--background-modifier-border);
@@ -10193,7 +10200,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     display: none;
 }
 .story-line-docx-settings > summary::before {
-    content: '??;
+    content: '▶';
     font-size: 10px;
     transition: transform 0.15s ease;
 }
@@ -10204,7 +10211,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     padding: 4px 14px 14px;
 }
 
-/* ?? PDF Export Settings (collapsible, framed) ?? */
+/* PDF/import settings (collapsible, framed) */
 .story-line-pdf-settings,
 .story-line-import-settings {
     margin: 12px 0;
@@ -10230,7 +10237,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
 }
 .story-line-pdf-settings > summary::before,
 .story-line-import-settings > summary::before {
-    content: '??;
+    content: '▶';
     font-size: 10px;
     transition: transform 0.15s ease;
 }

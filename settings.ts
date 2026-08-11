@@ -1432,7 +1432,9 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     if (!id) return;
                     const existing = getStatusOrder();
                     if (existing.includes(id)) {
-                        new (obsidian as unknown as { Notice: new (msg: string) => void }).Notice(`Status "${id}" already exists.`);
+                        new (obsidian as unknown as { Notice: new (msg: string) => void }).Notice(
+                            t('Status "{id}" already exists.', { id })
+                        );
                         return;
                     }
                     if (!this.plugin.settings.customStatuses) this.plugin.settings.customStatuses = [];
@@ -2371,7 +2373,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     cursor: 'pointer',
                 });
                 chip.textContent = tag;
-                chip.setAttribute('title', `${tag}: ${color} — click to remove`);
+                chip.setAttribute('title', t('{tag}: {color} — click to remove', { tag, color }));
                 chip.addEventListener('click', async () => {
                     delete this.plugin.settings.tagColors[tag];
                     await this.plugin.saveSettings();

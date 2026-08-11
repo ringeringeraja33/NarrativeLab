@@ -936,7 +936,10 @@ export class StorylineView extends ItemView {
             this.showTagAssignMenu(scene, node);
         });
 
-        node.setAttribute('title', `${scene.title || 'Untitled'}\nTags: ${scene.tags?.join(', ') || 'none'}\nClick to assign/remove plotline`);
+        node.setAttribute('title', t('{title}\nTags: {tags}\nClick to assign/remove plotline', {
+            title: scene.title || t('Untitled'),
+            tags: scene.tags?.join(', ') || t('None'),
+        }));
     }
 
     /**

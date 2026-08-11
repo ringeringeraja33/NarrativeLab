@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, locationView, mainTs, styles] = await Promise.all([
+const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, locationView, mainTs, styles, validator, statsView] = await Promise.all([
     readFile(new URL('../services/CorkboardCanvasService.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/BoardView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/SeriesManager.ts', import.meta.url), 'utf8'),
@@ -21,7 +21,16 @@ const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudi
     readFile(new URL('../views/LocationView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+    readFile(new URL('../services/Validator.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../views/StatsView.ts', import.meta.url), 'utf8'),
 ]);
+
+test('CSS disclosure indicators are valid and cannot render corrupted text', () => {
+    assert.doesNotMatch(styles, /content:\s*['"]\?\?;/);
+    assert.equal((styles.match(/content:\s*'▶';/g) || []).length, 4);
+    assert.match(styles, /data-narrative-lab-language='zh'[^}]+content:\s*'关'/s);
+    assert.match(styles, /data-narrative-lab-language='zh'[^}]+content:\s*'开'/s);
+});
 
 test('column link badge stays in flow and cannot cover the scene title', () => {
     const rule = styles.match(/\.story-line-column-body\.story-line-column-body \.scene-card-detected-badge\s*\{[^}]+\}/)?.[0] || '';
@@ -91,7 +100,18 @@ test('series category deletion warns that every project is affected', () => {
 
 test('translation audit checks UI sinks that bypass t()', () => {
     assert.match(i18nAudit, /uiSinkMethods/);
+    assert.match(i18nAudit, /setAttribute/);
+    assert.match(i18nAudit, /uiPropertyNames/);
+    assert.match(i18nAudit, /confirmModalPropertyNames/);
+    assert.match(i18nAudit, /openConfirmModal/);
+    assert.match(i18nAudit, /PropertyAccessExpression/);
     assert.match(i18nAudit, /UI literal bypasses t\(\)/);
+});
+
+test('plot diagnostics and their categories use the active UI language', () => {
+    assert.match(validator, /import \{ t \} from '\.\.\/utils\/i18n'/);
+    assert.doesNotMatch(validator, /message:\s*`/);
+    assert.match(statsView, /createEl\('h5', \{ text: t\(cat\) \}\)/);
 });
 
 test('template replacement never deletes scenes and requires an explicit handling mode', () => {

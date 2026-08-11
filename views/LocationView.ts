@@ -938,8 +938,8 @@ export class LocationView extends ItemView {
                 showing = !showing;
                 hiddenContainer.setCssStyles({ display: showing ? '' : 'none' });
                 toggleEl.querySelector('a')!.textContent = showing
-                    ? `Hide ${hiddenFieldsInCat.length} hidden field${hiddenFieldsInCat.length > 1 ? 's' : ''}`
-                    : `Show ${hiddenFieldsInCat.length} hidden field${hiddenFieldsInCat.length > 1 ? 's' : ''}`;
+                    ? t('Hide {n} hidden field(s)', { n: hiddenFieldsInCat.length })
+                    : t('Show {n} hidden field(s)', { n: hiddenFieldsInCat.length });
             });
         }
     }

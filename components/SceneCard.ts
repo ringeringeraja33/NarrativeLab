@@ -201,7 +201,7 @@ export class SceneCardComponent {
                     const badgeIcon = badge.createSpan();
                     obsidian.setIcon(badgeIcon, 'scan-search');
                     badge.createSpan({ text: String(novelCount) });
-                    badge.setAttribute('title', `${novelCount} link${novelCount > 1 ? 's' : ''} detected in text`);
+                    badge.setAttribute('title', t('{count} links detected in text', { count: novelCount }));
                 }
             }
 

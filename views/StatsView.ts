@@ -1770,7 +1770,7 @@ export class StatsView extends ItemView {
 
                 for (const [cat, cw] of byCategory) {
                     const catSec = parent.createDiv('stats-warning-category');
-                    catSec.createEl('h5', { text: cat });
+                    catSec.createEl('h5', { text: t(cat) });
                     const list = catSec.createEl('ul', { cls: 'stats-list stats-warning-list' });
                     for (const w of cw) {
                         const li = list.createEl('li', { cls: `stats-severity-${w.severity}` });

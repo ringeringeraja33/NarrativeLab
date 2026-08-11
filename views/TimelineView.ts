@@ -670,7 +670,7 @@ export class TimelineView extends ItemView {
             // Show chronological order badge when it differs from reading order
             if (chronoSeq !== null && scene.chronologicalOrder !== scene.sequence) {
                 const chronoBadge = seqCell.createSpan({ cls: 'timeline-chrono-badge', text: `C${chronoSeq}` });
-                chronoBadge.setAttribute('title', `Chronological order: ${chronoSeq}`);
+                chronoBadge.setAttribute('title', t('Chronological order: {order}', { order: chronoSeq }));
             }
             if (scene.storyDate) {
                 seqCell.createSpan({ cls: 'timeline-date-badge', text: scene.storyDate });
@@ -678,7 +678,7 @@ export class TimelineView extends ItemView {
             if (scene.storyTime) {
                 seqCell.createSpan({ cls: 'timeline-time-badge', text: scene.storyTime });
             }
-            seqCell.setAttribute('title', 'Click to edit date/time');
+            seqCell.setAttribute('title', t('Click to edit date/time'));
             seqCell.addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.openTimeEditModal(scene);
@@ -893,7 +893,7 @@ export class TimelineView extends ItemView {
         // Show chronological order badge when it differs from reading order
         if (chronoSeq !== null && scene.chronologicalOrder !== scene.sequence) {
             const chronoBadge = seqCol.createSpan({ cls: 'timeline-chrono-badge', text: `C${chronoSeq}` });
-            chronoBadge.setAttribute('title', `Chronological order: ${chronoSeq}`);
+            chronoBadge.setAttribute('title', t('Chronological order: {order}', { order: chronoSeq }));
         }
 
         const dateBadge = scene.storyDate ? seqCol.createSpan({ cls: 'timeline-date-badge', text: scene.storyDate }) : null;
@@ -903,7 +903,7 @@ export class TimelineView extends ItemView {
             obsidian.setIcon(addHint, 'clock');
         }
 
-        seqCol.setAttribute('title', 'Click to edit date/time');
+        seqCol.setAttribute('title', t('Click to edit date/time'));
         seqCol.addEventListener('click', (e) => {
             e.stopPropagation();
             this.openTimeEditModal(scene);
@@ -1161,8 +1161,8 @@ export class TimelineView extends ItemView {
                 .onClick(async () => {
                     openConfirmModal(this.app, {
                         title: t('Delete Scene'),
-                        message: `Delete scene "${scene.title || 'Untitled'}"?`,
-                        confirmLabel: 'Delete',
+                        message: t('Delete scene "{title}"?', { title: scene.title || t('Untitled') }),
+                        confirmLabel: t('Delete'),
                         onConfirm: () => this.deleteScene(scene),
                     });
                 });

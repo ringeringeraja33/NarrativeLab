@@ -1781,9 +1781,11 @@ export class CodexView extends ItemView {
                     // Confirm whether to remove from template (all entries) or just this entry
                     openConfirmModal(this.app, {
                         title: t('Remove Template Field'),
-                        message: `"${fieldName}" is a template field for this category. Remove it from all entries in this category, or cancel to remove it from this entry only?`,
-                        confirmLabel: 'Remove from all entries',
-                        cancelLabel: 'This entry only',
+                        message: t('"{field}" is a template field for this category. Remove it from all entries in this category, or cancel to remove it from this entry only?', {
+                            field: fieldName,
+                        }),
+                        confirmLabel: t('Remove from all entries'),
+                        cancelLabel: t('This entry only'),
                         onConfirm: () => doRemove(true),
                         onCancel: () => doRemove(false),
                     });

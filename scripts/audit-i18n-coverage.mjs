@@ -64,8 +64,11 @@ for (const absolute of sourceFiles) {
 // clean bill of health. TypeScript's parser keeps this check precise enough to
 // avoid treating authored content, CSS classes, URLs, and numeric examples as UI.
 const uiSinkMethods = new Set([
-    'setName', 'setDesc', 'setButtonText', 'setPlaceholder', 'setText', 'setTitle',
+    'setName', 'setDesc', 'setButtonText', 'setPlaceholder', 'setText', 'setTitle', 'setTooltip',
 ]);
+const uiAttributeNames = new Set(['title', 'aria-label', 'placeholder']);
+const uiPropertyNames = new Set(['textContent', 'innerText', 'placeholder', 'ariaLabel']);
+const confirmModalPropertyNames = new Set(['title', 'message', 'confirmLabel', 'cancelLabel']);
 const uiLiteralAllowlist = new Set(['Aa', 'Hn', 'Calibri']);
 const isHumanUiLiteral = value => {
     const text = value.trim();
@@ -90,6 +93,10 @@ const unsafeUiLiteral = expression => {
     }
     return null;
 };
+const propertyName = property => {
+    if (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) return property.name.text;
+    return '';
+};
 
 for (const absolute of sourceFiles) {
     const source = fs.readFileSync(absolute, 'utf8');
@@ -99,10 +106,32 @@ for (const absolute of sourceFiles) {
         missing.set(`${path.relative(root, absolute)}:${position.line + 1}`, `UI literal bypasses t(): ${JSON.stringify(value)}`);
     };
     const visit = node => {
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+            && ts.isPropertyAccessExpression(node.left) && uiPropertyNames.has(node.left.name.text)) {
+            const unsafe = unsafeUiLiteral(node.right);
+            if (unsafe) report(unsafe, unsafe.getText(sourceFile));
+        }
+        if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+            && node.expression.text === 'openConfirmModal') {
+            const options = node.arguments[1];
+            if (options && ts.isObjectLiteralExpression(options)) {
+                for (const property of options.properties) {
+                    if (!ts.isPropertyAssignment(property)
+                        || !confirmModalPropertyNames.has(propertyName(property))) continue;
+                    const unsafe = unsafeUiLiteral(property.initializer);
+                    if (unsafe) report(unsafe, unsafe.getText(sourceFile));
+                }
+            }
+        }
         if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
             const method = node.expression.name.text;
             if (uiSinkMethods.has(method)) {
                 const unsafe = unsafeUiLiteral(node.arguments[0]);
+                if (unsafe) report(unsafe, unsafe.getText(sourceFile));
+            }
+            if (method === 'setAttribute' && ts.isStringLiteralLike(node.arguments[0])
+                && uiAttributeNames.has(node.arguments[0].text)) {
+                const unsafe = unsafeUiLiteral(node.arguments[1]);
                 if (unsafe) report(unsafe, unsafe.getText(sourceFile));
             }
             if (['createEl', 'createDiv', 'createSpan'].includes(method)) {
@@ -110,18 +139,30 @@ for (const absolute of sourceFiles) {
                     if (!ts.isObjectLiteralExpression(argument)) continue;
                     const textProperty = argument.properties.find(property =>
                         ts.isPropertyAssignment(property)
-                        && ((ts.isIdentifier(property.name) && property.name.text === 'text')
-                            || (ts.isStringLiteral(property.name) && property.name.text === 'text'))
+                        && propertyName(property) === 'text'
                     );
                     if (textProperty && ts.isPropertyAssignment(textProperty)) {
                         const unsafe = unsafeUiLiteral(textProperty.initializer);
                         if (unsafe) report(unsafe, unsafe.getText(sourceFile));
                     }
+                    const attrProperty = argument.properties.find(property =>
+                        ts.isPropertyAssignment(property) && propertyName(property) === 'attr'
+                    );
+                    if (attrProperty && ts.isPropertyAssignment(attrProperty)
+                        && ts.isObjectLiteralExpression(attrProperty.initializer)) {
+                        for (const attribute of attrProperty.initializer.properties) {
+                            if (!ts.isPropertyAssignment(attribute)
+                                || !uiAttributeNames.has(propertyName(attribute))) continue;
+                            const unsafe = unsafeUiLiteral(attribute.initializer);
+                            if (unsafe) report(unsafe, unsafe.getText(sourceFile));
+                        }
+                    }
                 }
             }
         }
-        if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)
-            && node.expression.text === 'Notice') {
+        if (ts.isNewExpression(node)
+            && ((ts.isIdentifier(node.expression) && node.expression.text === 'Notice')
+                || (ts.isPropertyAccessExpression(node.expression) && node.expression.name.text === 'Notice'))) {
             const unsafe = unsafeUiLiteral(node.arguments?.[0]);
             if (unsafe) report(unsafe, unsafe.getText(sourceFile));
         }

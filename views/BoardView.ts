@@ -3382,8 +3382,8 @@ export class BoardView extends ItemView {
         deleteBtn.addEventListener('click', async () => {
             openConfirmModal(this.app, {
                 title: t('Delete Scenes'),
-                message: `Delete ${count} scene(s)? This cannot be undone.`,
-                confirmLabel: 'Delete',
+                message: t('Delete {count} scenes? This cannot be undone.', { count }),
+                confirmLabel: t('Delete'),
                 onConfirm: async () => {
                     for (const fp of this.selectedScenes) {
                         await this.sceneManager.deleteScene(fp);
@@ -3650,8 +3650,8 @@ export class BoardView extends ItemView {
                     .onClick(async () => {
                         openConfirmModal(this.app, {
                             title: t('Delete Scene'),
-                            message: `Delete scene "${scene.title || 'Untitled'}"?`,
-                            confirmLabel: 'Delete',
+                            message: t('Delete scene "{title}"?', { title: scene.title || t('Untitled') }),
+                            confirmLabel: t('Delete'),
                             onConfirm: () => this.deleteScene(scene),
                         });
                     });
@@ -3785,7 +3785,10 @@ export class BoardView extends ItemView {
                         if (scenes.length > 0) {
                             openConfirmModal(this.app, {
                                 title: t('Delete Act'),
-                                message: `${actDisplay} contains ${scenes.length} scene(s). Deleting the act removes the column but keeps the scenes (they'll become unassigned). Continue?`,
+                                message: t('{act} contains {count} scenes. Deleting the act removes the column but keeps the scenes (they will become unassigned). Continue?', {
+                                    act: actDisplay,
+                                    count: scenes.length,
+                                }),
                                 onConfirm: async () => {
                                     // Unassign scenes from this act
                                     for (const s of scenes) {
@@ -3877,7 +3880,10 @@ export class BoardView extends ItemView {
                         if (scenes.length > 0) {
                             openConfirmModal(this.app, {
                                 title: t('Delete Chapter'),
-                                message: `Chapter ${chNum} contains ${scenes.length} scene(s). Deleting the chapter removes the column but keeps the scenes (they'll become unassigned). Continue?`,
+                                message: t('Chapter {chapter} contains {count} scenes. Deleting the chapter removes the column but keeps the scenes (they will become unassigned). Continue?', {
+                                    chapter: chNum,
+                                    count: scenes.length,
+                                }),
                                 onConfirm: async () => {
                                     for (const s of scenes) {
                                         await this.sceneManager.updateScene(s.filePath, { chapter: undefined });

@@ -223,7 +223,6 @@ export const MAIN_ZH: Record<string, string> = {
     "Show in details view": "在详情视图中显示",
     "Show in NarrativeLab": "在 NarrativeLab 中显示",
     "Show/hide filters": "显示/隐藏筛选",
-    "Snapshot file not found.": "未找到快照文件。",
     "Snapshot label…": "快照标签…",
     "Sort & more": "排序与更多",
     "Split": "拆分",

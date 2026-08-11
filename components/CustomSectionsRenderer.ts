@@ -458,8 +458,8 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
             stop(e);
             openConfirmModal(app, {
                 title: t('Remove Section'),
-                message: `Remove "${sec.title}" from all entries that share this section list?`,
-                confirmLabel: 'Remove section',
+                message: t('Remove "{section}" from all entries that share this section list?', { section: sec.title }),
+                confirmLabel: t('Remove section'),
                 onConfirm: () => {
                     if (draft.custom) {
                         for (const entry of sec.fields) {
@@ -798,8 +798,11 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
             removeBtn.addEventListener('click', () => {
                 openConfirmModal(app, {
                     title: t('Remove Field'),
-                    message: `Remove "${fname}" from section "${sec.title}" for all entries that share this section list?`,
-                    confirmLabel: 'Remove field',
+                    message: t('Remove "{field}" from section "{section}" for all entries that share this section list?', {
+                        field: fname,
+                        section: sec.title,
+                    }),
+                    confirmLabel: t('Remove field'),
                     onConfirm: () => {
                         sec.fields = sec.fields.filter(f => fieldName(f) !== fname);
                         if (draft.custom) delete draft.custom[key];
