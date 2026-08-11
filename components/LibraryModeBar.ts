@@ -7,6 +7,7 @@ import * as obsidian from 'obsidian';
 import { Menu, Modal, Notice, Setting, TFile, normalizePath } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import {
+    RELATION_BASE_TYPE_BY_CATEGORY,
     RELATION_CATEGORIES,
     type CharacterRelation,
     type CharacterRelationCategory,
@@ -637,7 +638,7 @@ export function renderLibraryStoryGraph(
             onLegendEditCharRelation: () => openStoryGraphRelationCategoriesModal(plugin, onRefresh),
             onLegendEditLinkCategory: () => openStoryGraphRelationCategoriesModal(plugin, onRefresh),
             // Left-click + → add a general graph relation; right-click → full add menu.
-            onLegendAdd: () => openNewStoryGraphRelationCategoryModal(plugin, async () => onRefresh()),
+            onLegendAdd: () => openAddStoryGraphRelationModal(plugin, async () => onRefresh()),
             onLegendAddMenu: (evt) => showStoryGraphLegendAddMenu(plugin, onRefresh, evt),
         },
     );
@@ -653,16 +654,14 @@ function showStoryGraphLegendAddMenu(
 ): void {
     const menu = new Menu();
     menu.addItem(item => {
-        item.setTitle(t('Add relation'));
+        item.setTitle(t('Add wikilink category'));
         item.setIcon('link');
-        item.onClick(() => openNewStoryGraphRelationCategoryModal(plugin, async () => {
-            onDone();
-        }));
+        item.onClick(() => openAddStoryGraphRelationModal(plugin, onDone, { kind: 'wikilink', lockKind: true }));
     });
     menu.addItem(item => {
         item.setTitle(t('Add character relation'));
         item.setIcon('heart-handshake');
-        item.onClick(() => openQuickAddCharacterRelationModal(plugin, onDone));
+        item.onClick(() => openAddStoryGraphRelationModal(plugin, onDone, { kind: 'character', lockKind: true }));
     });
     menu.addSeparator();
     menu.addItem(item => {
@@ -688,82 +687,201 @@ function showStoryGraphLegendAddMenu(
     menu.showAtPosition({ x: Math.round(window.innerWidth / 2 - 80), y: 120 });
 }
 
+type AddStoryGraphRelationKind = 'wikilink' | 'character';
+
+interface AddStoryGraphRelationOptions {
+    /** Initial kind in the modal. */
+    kind?: AddStoryGraphRelationKind;
+    /** Hide the kind dropdown (edge menus that already chose one). */
+    lockKind?: boolean;
+    /** After creating a character relation type, also write it onto this pair. */
+    applyToCharacters?: { from: string; to: string };
+    /** After creating a wikilink category, e.g. assign it to the current edge. */
+    onWikilinkCreated?: (category: StoryGraphRelationCategory) => void | Promise<void>;
+}
+
+/**
+ * One create dialog for both legend kinds: character relations (profile notes)
+ * and wikilink categories (Obsidian link annotations).
+ */
+function openAddStoryGraphRelationModal(
+    plugin: SceneCardsPlugin,
+    onDone: () => void | Promise<void>,
+    options: AddStoryGraphRelationOptions = {},
+): void {
+    const modal = new Modal(plugin.app);
+    modal.titleEl.setText(t('Add relation'));
+    const seedLang = seedUiLanguage(plugin.app);
+    let kind: AddStoryGraphRelationKind = options.kind === 'character' ? 'character' : 'wikilink';
+    let label = localizeForLanguage(seedLang, 'New relation');
+    let color = '#6C7AE0';
+    let arrow: StoryGraphRelationArrow = kind === 'character' ? 'double' : 'single';
+    let charCategory: CharacterRelationCategory = 'custom';
+
+    const body = modal.contentEl.createDiv('story-graph-add-relation-body');
+    const renderFields = () => {
+        body.empty();
+
+        if (!options.lockKind) {
+            new Setting(body)
+                .setName(t('Relation kind'))
+                .setDesc(t('Character relations sync to character notes; wikilink categories label Obsidian links.'))
+                .addDropdown(drop => drop
+                    .addOption('wikilink', t('Wikilink category'))
+                    .addOption('character', t('Character relation'))
+                    .setValue(kind)
+                    .onChange(value => {
+                        const next = value === 'character' ? 'character' : 'wikilink';
+                        if (next === kind) return;
+                        kind = next;
+                        // Sensible arrow default per kind when switching.
+                        arrow = kind === 'character' ? 'double' : 'single';
+                        renderFields();
+                    }));
+        } else {
+            new Setting(body)
+                .setName(t('Relation kind'))
+                .setDesc(
+                    kind === 'character'
+                        ? `${t('Character relation')} — ${t('Character relations sync to character notes; wikilink categories label Obsidian links.')}`
+                        : `${t('Wikilink category')} — ${t('Assign these to Obsidian wikilink edges via right-click on the graph.')}`,
+                );
+        }
+
+        new Setting(body)
+            .setName(t('Name'))
+            .addText(text => {
+                text.setValue(label);
+                text.onChange(value => { label = value; });
+                window.setTimeout(() => {
+                    text.inputEl.focus();
+                    text.inputEl.select();
+                }, 40);
+            });
+
+        if (kind === 'character') {
+            new Setting(body)
+                .setName(t('Relation category'))
+                .addDropdown(drop => {
+                    for (const cat of RELATION_CATEGORIES) {
+                        drop.addOption(cat.value, t(cat.label));
+                    }
+                    drop.setValue(charCategory);
+                    drop.onChange(value => {
+                        charCategory = (RELATION_CATEGORIES.some(c => c.value === value)
+                            ? value
+                            : 'custom') as CharacterRelationCategory;
+                    });
+                });
+        }
+
+        new Setting(body)
+            .setName(t('Color'))
+            .addColorPicker(picker => picker.setValue(color).onChange(value => { color = value; }));
+
+        new Setting(body)
+            .setName(t('Arrow style'))
+            .setDesc(
+                kind === 'wikilink'
+                    ? t('Single arrow follows the wikilink direction; double arrow is mutual.')
+                    : t('Double arrow is mutual; single arrow is directed.'),
+            )
+            .addDropdown(drop => drop
+                .addOption('single', t('Single arrow'))
+                .addOption('double', t('Double arrow'))
+                .setValue(arrow)
+                .onChange(value => {
+                    arrow = value === 'double' ? 'double' : 'single';
+                }));
+
+        new Setting(body)
+            .addButton(button => button
+                .setButtonText(t('Create'))
+                .setCta()
+                .onClick(async () => {
+                    const name = label.trim();
+                    if (!name) {
+                        new Notice(t('Please enter a name'));
+                        return;
+                    }
+                    if (kind === 'character') {
+                        const id = makeCharacterRelationTypeId(name);
+                        const next = normalizeCharacterRelationType({
+                            id,
+                            label: name,
+                            color,
+                            arrow,
+                            baseType: RELATION_BASE_TYPE_BY_CATEGORY[charCategory] || 'other',
+                            category: charCategory,
+                            builtin: false,
+                        });
+                        if (!next) return;
+                        const merged = mergeCharacterRelationTypes(
+                            plugin.settings.storyGraphCharacterRelationTypes,
+                            plugin.characterManager.getAllCharacters(),
+                            seedLang,
+                        );
+                        plugin.settings.storyGraphCharacterRelationTypes = [
+                            ...merged.filter(s => s.id !== next.id),
+                            next,
+                        ];
+                        await plugin.saveSettings();
+                        if (options.applyToCharacters) {
+                            await updateCharacterRelation(
+                                plugin,
+                                options.applyToCharacters.from,
+                                options.applyToCharacters.to,
+                                next.baseType,
+                                { id: next.id, category: next.category },
+                            );
+                        }
+                    } else {
+                        const categories = plugin.settings.storyGraphRelationCategories || [];
+                        let id = makeRelationCategoryId(name);
+                        if (categories.some(category => category.id === id)) {
+                            id = `${id}-${Date.now().toString(36)}`;
+                        }
+                        const category = normalizeStoryGraphRelationCategory({
+                            id,
+                            label: name,
+                            color,
+                            arrow,
+                        });
+                        if (!category) return;
+                        plugin.settings.storyGraphRelationCategories = [...categories, category];
+                        await plugin.saveSettings();
+                        await options.onWikilinkCreated?.(category);
+                    }
+                    modal.close();
+                    await onDone();
+                }));
+    };
+
+    renderFields();
+    modal.open();
+}
+
 function openQuickAddCharacterRelationModal(
     plugin: SceneCardsPlugin,
     onDone: () => void,
     applyTo?: { from: string; to: string },
 ): void {
-    const modal = new Modal(plugin.app);
-    modal.titleEl.setText(t('Add character relation'));
-    const seedLang = seedUiLanguage(plugin.app);
-    let label = localizeForLanguage(seedLang, 'New relation');
-    let color = '#6C7AE0';
-    let arrow: 'single' | 'double' = 'double';
+    openAddStoryGraphRelationModal(plugin, onDone, {
+        kind: 'character',
+        lockKind: true,
+        applyToCharacters: applyTo,
+    });
+}
 
-    new Setting(modal.contentEl)
-        .setName(t('Name'))
-        .addText(text => {
-            text.setValue(label);
-            text.onChange(v => { label = v; });
-            window.setTimeout(() => {
-                text.inputEl.focus();
-                text.inputEl.select();
-            }, 40);
-        });
-    new Setting(modal.contentEl)
-        .setName(t('Color'))
-        .addColorPicker(picker => picker.setValue(color).onChange(v => { color = v; }));
-    new Setting(modal.contentEl)
-        .setName(t('Arrow style'))
-        .addDropdown(drop => drop
-            .addOption('single', t('Single arrow'))
-            .addOption('double', t('Double arrow'))
-            .setValue(arrow)
-            .onChange(v => { arrow = v === 'double' ? 'double' : 'single'; }));
-    new Setting(modal.contentEl)
-        .addButton(btn => btn
-            .setButtonText(t('Add'))
-            .setCta()
-            .onClick(async () => {
-                const name = label.trim();
-                if (!name) {
-                    new Notice(t('Please enter a name'));
-                    return;
-                }
-                const id = makeCharacterRelationTypeId(name);
-                const next = normalizeCharacterRelationType({
-                    id,
-                    label: name,
-                    color,
-                    arrow,
-                    baseType: 'other',
-                    category: 'custom',
-                    builtin: false,
-                });
-                if (!next) return;
-                const merged = mergeCharacterRelationTypes(
-                    plugin.settings.storyGraphCharacterRelationTypes,
-                    plugin.characterManager.getAllCharacters(),
-                    seedLang,
-                );
-                plugin.settings.storyGraphCharacterRelationTypes = [
-                    ...merged.filter(s => s.id !== next.id),
-                    next,
-                ];
-                await plugin.saveSettings();
-                if (applyTo) {
-                    await updateCharacterRelation(
-                        plugin,
-                        applyTo.from,
-                        applyTo.to,
-                        next.baseType,
-                        { id: next.id, category: next.category },
-                    );
-                }
-                modal.close();
-                onDone();
-            }));
-    modal.open();
+function openNewStoryGraphRelationCategoryModal(
+    plugin: SceneCardsPlugin,
+    onCreated: (category: StoryGraphRelationCategory) => void | Promise<void>,
+): void {
+    openAddStoryGraphRelationModal(plugin, async () => { /* assigned in onWikilinkCreated */ }, {
+        kind: 'wikilink',
+        lockKind: true,
+        onWikilinkCreated: onCreated,
+    });
 }
 
 /** Right-click a relationship edge → change type or delete. */
@@ -986,67 +1104,6 @@ function makeRelationCategoryId(label: string): string {
         .replace(/\s+/g, '-')
         .replace(/[^a-z0-9\u4e00-\u9fff-]/g, '');
     return slug || `relation-${Date.now().toString(36)}`;
-}
-
-function openNewStoryGraphRelationCategoryModal(
-    plugin: SceneCardsPlugin,
-    onCreated: (category: StoryGraphRelationCategory) => void | Promise<void>,
-): void {
-    const modal = new Modal(plugin.app);
-    modal.titleEl.setText(t('Add relation'));
-    const seedLang = seedUiLanguage(plugin.app);
-    let label = localizeForLanguage(seedLang, 'New relation');
-    let color = '#6C7AE0';
-    let arrow: StoryGraphRelationArrow = 'single';
-
-    new Setting(modal.contentEl)
-        .setName(t('Name'))
-        .addText(text => {
-            text.setValue(label);
-            text.onChange(value => { label = value; });
-            window.setTimeout(() => {
-                text.inputEl.focus();
-                text.inputEl.select();
-            }, 40);
-        });
-    new Setting(modal.contentEl)
-        .setName(t('Color'))
-        .addColorPicker(picker => picker
-            .setValue(color)
-            .onChange(value => { color = value; }));
-    new Setting(modal.contentEl)
-        .setName(t('Arrow style'))
-        .setDesc(t('Single arrow follows the wikilink direction; double arrow is mutual.'))
-        .addDropdown(drop => drop
-            .addOption('single', t('Single arrow'))
-            .addOption('double', t('Double arrow'))
-            .setValue(arrow)
-            .onChange(value => {
-                arrow = value === 'double' ? 'double' : 'single';
-            }));
-    new Setting(modal.contentEl)
-        .addButton(button => button
-            .setButtonText(t('Create'))
-            .setCta()
-            .onClick(async () => {
-                const name = label.trim();
-                if (!name) {
-                    new Notice(t('Please enter a name'));
-                    return;
-                }
-                const categories = plugin.settings.storyGraphRelationCategories || [];
-                let id = makeRelationCategoryId(name);
-                if (categories.some(category => category.id === id)) {
-                    id = `${id}-${Date.now().toString(36)}`;
-                }
-                const category = normalizeStoryGraphRelationCategory({ id, label: name, color, arrow });
-                if (!category) return;
-                plugin.settings.storyGraphRelationCategories = [...categories, category];
-                await plugin.saveSettings();
-                modal.close();
-                await onCreated(category);
-            }));
-    modal.open();
 }
 
 /** Configure character relation styles + wikilink categories for the Story Graph. */

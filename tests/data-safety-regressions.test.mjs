@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar] = await Promise.all([
+const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, locationView] = await Promise.all([
     readFile(new URL('../services/CorkboardCanvasService.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/BoardView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/SeriesManager.ts', import.meta.url), 'utf8'),
@@ -18,6 +18,7 @@ const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudi
     readFile(new URL('../services/LibraryCategorySync.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/CodexView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../views/LocationView.ts', import.meta.url), 'utf8'),
 ]);
 
 test('unreadable corkboard Canvas files abort without being rewritten', () => {
@@ -138,6 +139,25 @@ test('story graph legend rows filter independently without remounting the canvas
     assert.match(edgeToggle, /applyLegendFilters/);
     assert.match(storyGraph, /Include unlinked documents/);
     assert.match(storyGraph, /visibleEdgeSet/);
+    // Wheel zoom must not bubble to Obsidian leaf scroll (causes viewport jump-back).
+    assert.match(storyGraph, /e\.stopPropagation\(\)/);
+});
+
+test('library story-graph refresh keeps the canvas mounted', () => {
+    assert.match(characterView, /characterOverviewMode === 'story-graph'/);
+    assert.match(characterView, /querySelector\('\.story-graph-page'\)/);
+    assert.match(codexView, /getLibraryContentMode\(this\.plugin\) === 'story-graph'/);
+    assert.match(codexView, /querySelector\('\.story-graph-page'\)/);
+    assert.match(locationView, /locationOverviewMode === 'story-graph'/);
+    assert.match(locationView, /querySelector\('\.story-graph-page'\)/);
+});
+
+test('add-relation modal can create character or wikilink kinds', () => {
+    assert.match(libraryModeBar, /function openAddStoryGraphRelationModal/);
+    assert.match(libraryModeBar, /addOption\('wikilink', t\('Wikilink category'\)\)/);
+    assert.match(libraryModeBar, /addOption\('character', t\('Character relation'\)\)/);
+    assert.match(libraryModeBar, /onLegendAdd: \(\) => openAddStoryGraphRelationModal/);
+    assert.match(libraryModeBar, /RELATION_BASE_TYPE_BY_CATEGORY/);
 });
 
 test('editable Base field and Library category names stay language-neutral', () => {

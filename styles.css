@@ -9008,6 +9008,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     border-radius: 8px;
     overflow: hidden;
     background: var(--background-primary);
+    overscroll-behavior: none;
 }
 
 .story-graph-filter-empty {
@@ -9023,6 +9024,8 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
 
 .story-graph-svg {
     display: block;
+    touch-action: none;
+    overscroll-behavior: none;
 }
 .story-graph-edge-label {
     paint-order: stroke;

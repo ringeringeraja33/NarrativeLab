@@ -299,6 +299,19 @@ export class CodexView extends ItemView {
                 .forEach(el => { el.textContent = title; });
             return;
         }
+        // Keep Story Graph mounted so wheel zoom / pan are not reset by vault refresh.
+        if (
+            !categoriesChanged
+            && !this.selectedEntry
+            && getLibraryContentMode(this.plugin) === 'story-graph'
+            && this.storyGraph
+            && this.rootContainer?.querySelector('.story-graph-page')
+        ) {
+            const title = this.plugin.getActiveProjectDisplayName();
+            this.rootContainer.querySelectorAll('.story-line-view-title')
+                .forEach(el => { el.textContent = title; });
+            return;
+        }
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 

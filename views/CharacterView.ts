@@ -3429,6 +3429,20 @@ export class CharacterView extends ItemView {
                 .forEach(el => { el.textContent = title; });
             return;
         }
+        // Keep Story Graph mounted — remounting resets pan/zoom mid-gesture
+        // ("画面跳回") whenever vault refresh fires during wheel zoom.
+        if (
+            !categoriesChanged
+            && !this.selectedCharacter
+            && this.characterOverviewMode === 'story-graph'
+            && this.storyGraph
+            && this.containerEl.querySelector('.story-graph-page')
+        ) {
+            const title = this.plugin.getActiveProjectDisplayName();
+            this.containerEl.querySelectorAll('.story-line-view-title')
+                .forEach(el => { el.textContent = title; });
+            return;
+        }
         this.renderView(this.getViewRoot());
     }
 

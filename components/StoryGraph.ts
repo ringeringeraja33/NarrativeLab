@@ -884,7 +884,7 @@ export class StoryGraph {
             flush();
             return;
         }
-        this.layoutSaveTimer = window.setTimeout(flush, 450);
+        this.layoutSaveTimer = window.setTimeout(flush, 800);
     }
 
     async saveLayoutNow(): Promise<void> {
@@ -1120,16 +1120,22 @@ export class StoryGraph {
         window.addEventListener('mousemove', this.onPanMove);
         window.addEventListener('mouseup', this.onPanUp);
 
-        // Zoom support (mouse wheel)
+        // Zoom support (mouse wheel / trackpad). StopPropagation so Obsidian
+        // leaf scrolling cannot fight the SVG transform and "jump back".
         this.svg.addEventListener('wheel', (e) => {
             e.preventDefault();
+            e.stopPropagation();
             const factor = e.deltaY < 0 ? 1.1 : 0.9;
-            const newZoom = Math.min(5, Math.max(0.2, this.zoom * factor));
+            const prevZoom = this.zoom || 1;
+            const newZoom = Math.min(5, Math.max(0.2, prevZoom * factor));
+            if (newZoom === prevZoom) return;
             const vb = this.clientToViewBox(e.clientX, e.clientY);
             if (!vb) return;
-            this.panX = vb.x - (vb.x - this.panX) * (newZoom / this.zoom);
-            this.panY = vb.y - (vb.y - this.panY) * (newZoom / this.zoom);
+            // Zoom toward cursor in viewBox space (same units as panX/panY).
+            this.panX = vb.x - (vb.x - this.panX) * (newZoom / prevZoom);
+            this.panY = vb.y - (vb.y - this.panY) * (newZoom / prevZoom);
             this.zoom = newZoom;
+            this.hasHydratedViewport = true;
             this.updateTransform();
             this.scheduleLayoutSave();
         }, { passive: false });
