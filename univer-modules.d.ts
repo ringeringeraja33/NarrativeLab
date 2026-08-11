@@ -19,6 +19,20 @@ declare module '@univerjs/preset-sheets-core/locales/zh-CN' {
     export default locale;
 }
 
+declare module '@univerjs/preset-sheets-filter' {
+    export function UniverSheetsFilterPreset(options?: Record<string, unknown>): unknown;
+}
+
+declare module '@univerjs/preset-sheets-filter/locales/en-US' {
+    const locale: unknown;
+    export default locale;
+}
+
+declare module '@univerjs/preset-sheets-filter/locales/zh-CN' {
+    const locale: unknown;
+    export default locale;
+}
+
 declare module '@univerjs/preset-sheets-core/lib/index.css' {
     const css: string;
     export default css;

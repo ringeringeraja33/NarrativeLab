@@ -12,9 +12,31 @@ type UniverModule = {
 
 let cached: UniverModule | null = null;
 
+interface RuntimeRequire {
+    (id: string): unknown;
+    resolve: (id: string) => string;
+    cache?: Record<string, unknown>;
+}
+
+interface PathRuntime {
+    join: (...parts: string[]) => string;
+    isAbsolute: (path: string) => boolean;
+}
+
+interface FileSystemRuntime {
+    existsSync: (path: string) => boolean;
+}
+
+function getRuntimeRequire(): RuntimeRequire {
+    const runtimeWindow = window as Window & { require?: RuntimeRequire };
+    if (typeof runtimeWindow.require !== 'function') {
+        throw new Error('Electron require is unavailable — cannot load plotgrid-univer.js');
+    }
+    return runtimeWindow.require;
+}
+
 function candidatePaths(plugin: Plugin): string[] {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-    const pathMod = require('path') as typeof import('path');
+    const pathMod = getRuntimeRequire()('path') as PathRuntime;
     const paths: string[] = [];
     const manifestDir = (plugin.manifest as { dir?: string }).dir;
 
@@ -49,10 +71,8 @@ export async function loadPlotGridUniverModule(plugin: Plugin): Promise<UniverMo
         throw new Error('Plugin directory unknown — cannot load plotgrid-univer.js');
     }
 
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-    const req = require as NodeRequire & { cache?: Record<string, unknown> };
-    // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-    const fs = require('fs') as typeof import('fs');
+    const req = getRuntimeRequire();
+    const fs = req('fs') as FileSystemRuntime;
 
     let lastError: unknown;
     for (const fullPath of candidates) {
@@ -61,12 +81,10 @@ export async function loadPlotGridUniverModule(plugin: Plugin): Promise<UniverMo
             if (req.cache) {
                 delete req.cache[fullPath];
                 try {
-                    // eslint-disable-next-line @typescript-eslint/no-require-imports
-                    delete req.cache[require.resolve(fullPath)];
+                    delete req.cache[req.resolve(fullPath)];
                 } catch { /* resolve may throw if not yet loaded */ }
             }
-            // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-            const mod = require(fullPath) as UniverModule;
+            const mod = req(fullPath) as UniverModule;
             if (!mod?.createPlotGridUniverHost) {
                 throw new Error('plotgrid-univer.js missing createPlotGridUniverHost export');
             }

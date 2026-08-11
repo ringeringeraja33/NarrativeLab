@@ -2,10 +2,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [nativeLibraryBase, storyLineProject, sceneManager] = await Promise.all([
+const [nativeLibraryBase, storyLineProject, sceneManager, entityFileCache, codexManager, characterManager, locationManager] = await Promise.all([
     readFile(new URL('../components/NativeLibraryBase.ts', import.meta.url), 'utf8'),
     readFile(new URL('../models/StoryLineProject.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/SceneManager.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../services/EntityFileCache.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../services/CodexManager.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../services/CharacterManager.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../services/LocationManager.ts', import.meta.url), 'utf8'),
 ]);
 
 test('canonical Library Base lives under Library/library.base', () => {
@@ -63,8 +67,22 @@ test('Browse Properties/Sort changes are persisted into library.base', () => {
 });
 
 test('Library Base folder filters use file.inFolder so New can create visible notes', () => {
-    assert.match(nativeLibraryBase, /single-library-base-v3-infolder/);
+    assert.match(nativeLibraryBase, /single-library-base-v4-ignore-excalidraw/);
     assert.match(nativeLibraryBase, /!file\.inFolder\(/);
     assert.match(nativeLibraryBase, /onNew\?: \(\) => void/);
     assert.match(nativeLibraryBase, /has-nl-new/);
+});
+
+test('Library Base excludes Excalidraw markdown drawings', () => {
+    assert.match(nativeLibraryBase, /file\.basename\.lower\(\)\.endsWith\(\"\.excalidraw\"\) == false/);
+    assert.match(nativeLibraryBase, /isExcalidrawFilePath\(file\.path\)/);
+});
+
+test('every Library entity loader ignores Excalidraw files', () => {
+    assert.match(entityFileCache, /name\.endsWith\('\.excalidraw'\) \|\| name\.endsWith\('\.excalidraw\.md'\)/);
+    assert.match(entityFileCache, /isLibraryEntityMarkdownFile\(child\)/);
+    assert.match(entityFileCache, /!isExcalidrawFilePath\(f\)/);
+    for (const manager of [codexManager, characterManager, locationManager]) {
+        assert.match(manager, /if \(isExcalidrawFilePath\(filePath\)\) return false;/);
+    }
 });

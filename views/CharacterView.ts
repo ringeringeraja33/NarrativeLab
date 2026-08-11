@@ -20,6 +20,7 @@ import {
     type CustomSectionsHost,
 } from '../components/CustomSectionsRenderer';
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
+import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
 
 import type SceneCardsPlugin from '../main';
@@ -1759,7 +1760,7 @@ export class CharacterView extends ItemView {
                 const folder = this.app.vault.getAbstractFileByPath(tpl.folderSource);
                 if (folder && 'children' in folder) {
                     for (const child of (folder as obsidian.TFolder).children) {
-                        if (child instanceof obsidian.TFile && child.extension === 'md') {
+                        if (child instanceof obsidian.TFile && isLibraryEntityMarkdownFile(child)) {
                             if (!allOptions.includes(child.basename)) allOptions.push(child.basename);
                         }
                     }
@@ -1858,7 +1859,7 @@ export class CharacterView extends ItemView {
                 const folder = this.app.vault.getAbstractFileByPath(tpl.folderSource);
                 if (folder && 'children' in folder) {
                     for (const child of (folder as obsidian.TFolder).children) {
-                        if (child instanceof obsidian.TFile && child.extension === 'md') {
+                        if (child instanceof obsidian.TFile && isLibraryEntityMarkdownFile(child)) {
                             if (!dropdownOptions.includes(child.basename)) dropdownOptions.push(child.basename);
                         }
                     }

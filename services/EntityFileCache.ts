@@ -78,6 +78,17 @@ export function clearEntityCache(ns: string): void {
     getCache(ns).clear();
 }
 
+/** Excalidraw drawings may be stored as `.excalidraw` or `.excalidraw.md`. */
+export function isExcalidrawFilePath(path: string): boolean {
+    const name = normalizePath(path).split('/').pop()?.toLowerCase() || '';
+    return name.endsWith('.excalidraw') || name.endsWith('.excalidraw.md');
+}
+
+/** Markdown files that NarrativeLab may treat as Library entities. */
+export function isLibraryEntityMarkdownFile(file: TFile): boolean {
+    return file.extension.toLowerCase() === 'md' && !isExcalidrawFilePath(file.path);
+}
+
 /** Collect markdown TFiles under a folder via vault tree (preferred) or adapter. */
 export async function collectMarkdownFiles(app: App, folderPath: string): Promise<TFile[]> {
     const normalized = normalizePath(folderPath);
@@ -87,7 +98,7 @@ export async function collectMarkdownFiles(app: App, folderPath: string): Promis
         const walk = (folder: TFolder) => {
             for (const child of folder.children) {
                 if (child instanceof TFolder) walk(child);
-                else if (child instanceof TFile && child.extension === 'md') out.push(child);
+                else if (child instanceof TFile && isLibraryEntityMarkdownFile(child)) out.push(child);
             }
         };
         walk(abstract);
@@ -100,7 +111,7 @@ export async function collectMarkdownFiles(app: App, folderPath: string): Promis
         if (!await adapter.exists(folder)) return;
         const listing = await adapter.list(folder);
         for (const f of listing.files) {
-            if (f.endsWith('.md')) {
+            if (f.toLowerCase().endsWith('.md') && !isExcalidrawFilePath(f)) {
                 const tf = app.vault.getAbstractFileByPath(normalizePath(f));
                 if (tf instanceof TFile) out.push(tf);
             }

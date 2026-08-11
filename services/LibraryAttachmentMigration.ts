@@ -11,6 +11,7 @@ import {
     type StoryLineProject,
 } from '../models/StoryLineProject';
 import { invalidateImagePathCache } from '../components/ImagePicker';
+import { isExcalidrawFilePath } from './EntityFileCache';
 
 const MARKER_NAME = 'library-attachments-v1.json';
 const DEDUPE_MARKER_NAME = 'library-attachments-dedupe-v1.json';
@@ -161,7 +162,7 @@ async function uniqueDestPath(plugin: SceneCardsPlugin, folder: string, fileName
 function collectMarkdownFiles(folder: TFolder, out: TFile[]): void {
     for (const child of folder.children) {
         if (child instanceof TFolder) collectMarkdownFiles(child, out);
-        else if (child instanceof TFile && child.extension.toLowerCase() === 'md') out.push(child);
+        else if (child instanceof TFile && child.extension.toLowerCase() === 'md' && !isExcalidrawFilePath(child.path)) out.push(child);
     }
 }
 

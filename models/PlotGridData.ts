@@ -10,6 +10,8 @@ export interface CellData {
     italic: boolean;
     align: 'left' | 'center' | 'right';
     linkedSceneId?: string;
+    /** Univer/Excel formula, including the leading '='. */
+    formula?: string;
     /** When true, sync will not overwrite this cell's content */
     manualContent?: boolean;
 }

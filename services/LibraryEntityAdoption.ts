@@ -8,7 +8,7 @@
  * Characters / Locations / Library category folders.
  */
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
-import { collectMarkdownFiles, invalidateAllEntityCaches, readVaultText } from './EntityFileCache';
+import { collectMarkdownFiles, invalidateAllEntityCaches, isLibraryEntityMarkdownFile, readVaultText } from './EntityFileCache';
 import { coerceString } from '../utils/narrow';
 
 export interface LibraryAdoptTarget {
@@ -66,7 +66,7 @@ export async function adoptLibraryFolder(
     let patched = 0;
 
     for (const file of files) {
-        if (!(file instanceof TFile) || file.extension !== 'md') continue;
+        if (!(file instanceof TFile) || !isLibraryEntityMarkdownFile(file)) continue;
         try {
             const content = await readVaultText(app, file);
             const fm = extractFrontmatter(content);

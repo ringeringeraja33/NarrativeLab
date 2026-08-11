@@ -4,7 +4,7 @@ import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } f
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceString } from '../utils/narrow';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
-import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
+import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
 
 /**
  * Manages character .md files — loading, saving, creating, and deleting
@@ -51,6 +51,7 @@ export class CharacterManager {
      * Returns true if the file was recognised as a character.
      */
     addFile(content: string, filePath: string): boolean {
+        if (isExcalidrawFilePath(filePath)) return false;
         const normalized = normalizePath(filePath);
         if (this.characters.has(normalized)) return false;
         const character = this.parseCharacterContent(content, normalized);

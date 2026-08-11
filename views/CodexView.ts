@@ -21,6 +21,7 @@ import type { StoryGraph } from '../components/StoryGraph';
 import { pickImage as pickImageModal, resolveImagePath } from '../components/ImagePicker';
 import { AddFieldModal } from '../components/AddFieldModal';
 import { attachTooltip } from '../components/Tooltip';
+import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { openConfirmModal } from '../components/ConfirmModal';
 import {
@@ -1530,7 +1531,7 @@ export class CodexView extends ItemView {
                 const folder = this.app.vault.getAbstractFileByPath(tpl.folderSource);
                 if (folder && 'children' in folder) {
                     for (const child of (folder as obsidian.TFolder).children) {
-                        if (child instanceof obsidian.TFile && child.extension === 'md') {
+                        if (child instanceof obsidian.TFile && isLibraryEntityMarkdownFile(child)) {
                             if (!allOptions.includes(child.basename)) allOptions.push(child.basename);
                         }
                     }
@@ -1631,7 +1632,7 @@ export class CodexView extends ItemView {
                 const folder = this.app.vault.getAbstractFileByPath(tpl.folderSource);
                 if (folder && 'children' in folder) {
                     for (const child of (folder as obsidian.TFolder).children) {
-                        if (child instanceof obsidian.TFile && child.extension === 'md') {
+                        if (child instanceof obsidian.TFile && isLibraryEntityMarkdownFile(child)) {
                             if (!dropdownOptions.includes(child.basename)) dropdownOptions.push(child.basename);
                         }
                     }

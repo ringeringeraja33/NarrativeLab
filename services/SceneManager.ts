@@ -1811,8 +1811,9 @@ export class SceneManager implements ISceneStore {
         },
     ): Promise<void> {
         await this.app.fileManager.processFrontMatter(file, (fm) => {
-            const title = extras?.title
-                || (typeof fm.title === 'string' && fm.title.trim() ? fm.title : file.basename);
+            const frontmatter = fm as Record<string, unknown>;
+            const fmTitle = typeof frontmatter.title === 'string' ? frontmatter.title.trim() : '';
+            const title = extras?.title || fmTitle || file.basename;
             const tags = extras?.tags
                 || (Array.isArray(fm.tags) ? fm.tags : []);
             const now = new Date().toISOString();

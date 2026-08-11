@@ -7,7 +7,7 @@ import {
     WORLD_FIELD_KEYS, LOCATION_FIELD_KEYS,
 } from '../models/Location';
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
-import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
+import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
 
 /**
  * Manages world & location .md files — loading, saving, creating, deleting.
@@ -43,6 +43,7 @@ export class LocationManager {
      * Returns true if the file was recognised as a world or location.
      */
     addFile(content: string, filePath: string): boolean {
+        if (isExcalidrawFilePath(filePath)) return false;
         const fm = this.extractFrontmatter(content);
         if (!fm) return false;
         if (fm.type === 'world' || fm.type === 'location') {

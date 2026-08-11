@@ -80,6 +80,7 @@ import { makeCustomCodexCategory, makeProfileCodexCategory, UNCATEGORIZED_CATEGO
 import {
     collectMarkdownFiles,
     invalidateAllEntityCaches,
+    isExcalidrawFilePath,
     readVaultText,
     renameAllEntityCachePrefixes,
     renameAllEntityCaches,
@@ -111,10 +112,8 @@ import {
 } from './components/NCanvasManagerModal';
 import { WritingTracker } from './services/WritingTracker';
 import { SnapshotManager } from './services/SnapshotManager';
-import { ViewSnapshotService } from './services/ViewSnapshotService';
 import { PlotlineManager } from './services/PlotlineManager';
 import type { PlotlineDefinition } from './models/Plotline';
-import { openManageSnapshotsModal } from './components/ViewSnapshotModal';
 import { LinkScanner } from './services/LinkScanner';
 import { CascadeRenameService } from './services/CascadeRenameService';
 import { FieldTemplateService } from './services/FieldTemplateService';
@@ -236,7 +235,6 @@ export default class SceneCardsPlugin extends Plugin {
     codexManager!: CodexManager;
     writingTracker: WritingTracker = new WritingTracker();
     snapshotManager!: SnapshotManager;
-    viewSnapshotService!: ViewSnapshotService;
     plotlineManager!: PlotlineManager;
     /** Per-project plotline registry (System/plotlines.json → definitions). */
     plotlineDefinitions: PlotlineDefinition[] = [];
@@ -344,7 +342,6 @@ export default class SceneCardsPlugin extends Plugin {
                 ?? this.settings.defaultProjectLanguage
                 ?? 'en',
         );
-        this.viewSnapshotService = new ViewSnapshotService(this);
         this.linkScanner = new LinkScanner(this.characterManager, this.locationManager);
         this.linkScanner.setCodexManager(this.codexManager);
         this.cascadeRename = new CascadeRenameService(this.sceneManager, this.characterManager, this.locationManager);
@@ -481,8 +478,6 @@ export default class SceneCardsPlugin extends Plugin {
             await this.templateCenter.load();
             // Load corkboard layout from System/board.json
             await this.sceneManager.loadCorkboardPositions();
-            // Load active view snapshot state
-            await this.viewSnapshotService.loadActiveState();
             // Load locations and characters for the active project
             try {
                 await this.loadActiveProjectEntities();
@@ -805,18 +800,6 @@ export default class SceneCardsPlugin extends Plugin {
             id: 'rename-project',
             name: t('Rename current project'),
             callback: () => this.openRenameProjectModal(),
-        });
-
-        this.addCommand({
-            id: 'manage-view-snapshots',
-            name: t('Manage view snapshots'),
-            callback: () => {
-                if (!this.sceneManager.activeProject) {
-                    new Notice(t('No active project.'));
-                    return;
-                }
-                openManageSnapshotsModal(this.app, this.viewSnapshotService);
-            },
         });
 
         this.addCommand({
@@ -3778,7 +3761,7 @@ export default class SceneCardsPlugin extends Plugin {
         if (localCharFolder && localCharFolder !== charFolder && await adapter.exists(localCharFolder)) {
             const listing = await adapter.list(localCharFolder);
             for (const f of listing.files) {
-                if (!f.endsWith('.md')) continue;
+                if (!f.toLowerCase().endsWith('.md') || isExcalidrawFilePath(f)) continue;
                 try {
                     const fp = normalizePath(f);
                     const content = await adapter.read(fp);
@@ -3793,7 +3776,7 @@ export default class SceneCardsPlugin extends Plugin {
                 if (!await adapter.exists(folder)) return;
                 const listing = await adapter.list(folder);
                 for (const f of listing.files) {
-                    if (!f.endsWith('.md')) continue;
+                    if (!f.toLowerCase().endsWith('.md') || isExcalidrawFilePath(f)) continue;
                     try {
                         const fp = normalizePath(f);
                         const content = await adapter.read(fp);

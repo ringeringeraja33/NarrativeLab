@@ -465,11 +465,12 @@ export class NavigatorView extends ItemView {
     }
 
     private pickPlotlineColor(plotline: string, currentColor: string): void {
-        const colorInput = document.createElement('input');
+        const activeDocument = this.containerEl.ownerDocument;
+        const colorInput = activeDocument.createElement('input');
         colorInput.type = 'color';
         colorInput.value = currentColor || '#888888';
-        colorInput.style.cssText = 'position:fixed;left:-9999px;width:0;height:0;opacity:0;pointer-events:none;';
-        document.body.appendChild(colorInput);
+        colorInput.addClass('nl-hidden-color-input');
+        activeDocument.body.appendChild(colorInput);
         colorInput.addEventListener('input', async (ev) => {
             const newColor = (ev.target as HTMLInputElement).value;
             if (!this.plugin.settings.tagColors) this.plugin.settings.tagColors = {};

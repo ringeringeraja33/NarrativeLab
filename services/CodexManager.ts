@@ -9,7 +9,7 @@ import {
     makeUncategorizedCodexCategory,
     withLinkingSection,
 } from '../models/Codex';
-import { collectMarkdownFiles, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
+import { collectMarkdownFiles, isExcalidrawFilePath, isLibraryEntityMarkdownFile, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 
 /**
@@ -175,7 +175,7 @@ export class CodexManager {
         const folder = this.app.vault.getAbstractFileByPath(normalizePath(folderPath));
         if (!(folder instanceof TFolder)) return;
         for (const child of folder.children) {
-            if (!(child instanceof TFile) || child.extension.toLowerCase() !== 'md') continue;
+            if (!(child instanceof TFile) || !isLibraryEntityMarkdownFile(child)) continue;
             const fp = normalizePath(child.path);
             const entry = await loadWithStampCache(
                 this.app,
@@ -195,6 +195,7 @@ export class CodexManager {
      * Returns true if the file matched any category.
      */
     addFile(content: string, filePath: string): boolean {
+        if (isExcalidrawFilePath(filePath)) return false;
         for (const [catId, catDef] of this.categoryDefs) {
             if (catId === UNCATEGORIZED_CATEGORY_ID) continue;
             const entry = this.parseEntry(content, filePath, catDef);

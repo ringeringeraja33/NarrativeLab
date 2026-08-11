@@ -20,6 +20,7 @@ import {
     deriveProjectFoldersFromFilePath,
 } from '../models/StoryLineProject';
 import type SceneCardsPlugin from '../main';
+import { isExcalidrawFilePath } from '../services/EntityFileCache';
 import {
     buildLibraryPathScopeFilter,
     collectReferencedLibraryCategoryIds,
@@ -67,7 +68,7 @@ const migrationLocks = new Map<string, Promise<void>>();
 /** Projects whose Library Base migration already completed this session. */
 const migratedLibraryBasePaths = new Set<string>();
 /** Projects whose Base filters were synced this session. */
-const FILTER_STYLE_VERSION = 'single-library-base-v3-infolder';
+const FILTER_STYLE_VERSION = 'single-library-base-v4-ignore-excalidraw';
 const syncedFilterStyleKeys = new Set<string>();
 
 type BaseViewConfig = Record<string, unknown> & {
@@ -400,6 +401,7 @@ function buildGlobalLibraryFilters(plugin: SceneCardsPlugin): LibraryBaseFilter[
     return [
         buildLibraryPathScopeFilter(roots),
         'file.ext == "md"',
+        'file.basename.lower().endsWith(".excalidraw") == false',
     ];
 }
 
@@ -434,6 +436,7 @@ function viewFiltersMatch(view: BaseViewConfig, required: LibraryBaseFilter[]): 
 function collectNoteProperties(plugin: SceneCardsPlugin, folderPaths: string[], recursive: boolean): string[] {
     const keys = new Set<string>();
     for (const file of plugin.app.vault.getMarkdownFiles()) {
+        if (isExcalidrawFilePath(file.path)) continue;
         const parentPath = normalizePath(file.parent?.path || '');
         const inScope = folderPaths.some(folderPath => recursive
             ? parentPath === folderPath || parentPath.startsWith(`${folderPath}/`)
@@ -552,6 +555,12 @@ function stringArrayEqual(left: unknown, right: string[]): boolean {
     return left.every((item, index) => String(item) === right[index]);
 }
 
+function primitiveText(value: unknown): string {
+    return typeof value === 'string'
+        ? value
+        : (typeof value === 'number' || typeof value === 'boolean' ? String(value) : '');
+}
+
 function sortConfigsEqual(left: unknown, right: ViewLayoutSnapshot['sort']): boolean {
     if (!Array.isArray(left)) return right.length === 0;
     if (left.length !== right.length) return false;
@@ -560,7 +569,7 @@ function sortConfigsEqual(left: unknown, right: ViewLayoutSnapshot['sort']): boo
         const row = item as { property?: unknown; direction?: unknown };
         const expected = right[index];
         return String(row.property) === expected.property
-            && String(row.direction || 'ASC').toUpperCase() === expected.direction;
+            && (primitiveText(row.direction) || 'ASC').toUpperCase() === expected.direction;
     });
 }
 
@@ -616,9 +625,9 @@ function snapshotBasesViewLayout(view: BasesViewLike): ViewLayoutSnapshot {
         for (const item of sortRaw) {
             if (!item || typeof item !== 'object') continue;
             const row = item as { property?: unknown; direction?: unknown };
-            const property = String(row.property || '').trim();
+            const property = primitiveText(row.property).trim();
             if (!property) continue;
-            const direction = String(row.direction || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+            const direction = (primitiveText(row.direction) || 'ASC').toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
             sort.push({ property, direction });
         }
     }
@@ -826,10 +835,10 @@ function hookLiveBasesView(state: NativeBaseEmbedState, view: BasesViewLike): vo
     state.liveView = view;
     trackLiveEmbed(state);
     const config = view.config;
-    const originalSet = typeof config.set === 'function' ? config.set.bind(config) : null;
+    const originalSet = config.set;
     if (originalSet) {
         config.set = (key: string, value: unknown) => {
-            originalSet(key, value);
+            originalSet.call(config, key, value);
             if (key === 'order' || key === 'sort' || key === 'columnSize' || key === 'groupBy') {
                 schedulePersistLiveLayout(state);
             }
@@ -848,7 +857,7 @@ function hookLiveBasesView(state: NativeBaseEmbedState, view: BasesViewLike): vo
     host?.addEventListener('change', onPointerUp, true);
 
     state.unhook = () => {
-        if (originalSet) config.set = originalSet;
+        config.set = originalSet;
         host?.removeEventListener('pointerup', onPointerUp, true);
         host?.removeEventListener('change', onPointerUp, true);
         if (state.persistTimer != null) {
@@ -1381,7 +1390,7 @@ function hideBasesNativeNewButtons(host: HTMLElement): void {
                 || ''
             ).replace(/\s+/g, ' ').trim();
             if (/^(New|新建|New file|新建文件|\+ New|\+ 新建)$/i.test(label)) {
-                (btn as HTMLElement).style.setProperty('display', 'none', 'important');
+                btn.addClass('nl-native-base-new-hidden');
             }
         }
     };

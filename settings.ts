@@ -643,7 +643,6 @@ export interface SceneCardsSettings {
     autoOpenNavigator: boolean;
     showNotesInKanban: boolean;
     showScenesInCorkboard: boolean;
-    plotgridAutoNote: boolean;
     colorCoding: ColorCodingMode;
     showWordCounts: boolean;
     /** Exclude Arc Point scenes from aggregate word counts and stats */
@@ -1003,7 +1002,6 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     autoOpenNavigator: true,
     showNotesInKanban: false,
     showScenesInCorkboard: true,
-    plotgridAutoNote: true,
     colorCoding: 'status',
     showWordCounts: true,
     excludeArcAnchorFromWordcount: true,

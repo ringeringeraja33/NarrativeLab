@@ -15060,165 +15060,6 @@ body.narrative-lab-theme-dark .codex-stale-header {
     margin-top: 12px;
 }
 
-/* ??? View Snapshots Modal ???????????????????????????????? */
-.sl-snapshot-modal .modal-content {
-    max-height: 70vh;
-    overflow-y: auto;
-}
-.sl-snapshot-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 12px;
-}
-.sl-snapshot-header span {
-    color: var(--text-muted);
-    font-size: 0.9em;
-}
-.sl-snapshot-empty {
-    color: var(--text-muted);
-    font-style: italic;
-    text-align: center;
-    padding: 24px 0;
-}
-.sl-snapshot-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-.sl-snapshot-hint {
-    color: var(--text-muted);
-    font-size: 0.85em;
-    margin: 0 0 4px;
-}
-.sl-snapshot-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 10px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    background: var(--background-primary);
-    cursor: pointer;
-}
-.sl-snapshot-item:hover {
-    border-color: var(--interactive-accent);
-}
-.sl-snapshot-item:focus-visible {
-    outline: 2px solid var(--interactive-accent);
-    outline-offset: 1px;
-}
-.sl-snapshot-restore {
-    color: var(--interactive-accent);
-    font-weight: 600;
-}
-.sl-snapshot-restore:hover {
-    color: var(--interactive-accent);
-    background: var(--background-modifier-hover);
-}
-.sl-snapshot-info {
-    flex: 1;
-    min-width: 0;
-}
-.sl-snapshot-title-line {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-}
-.sl-snapshot-id {
-    color: var(--text-muted);
-    font-size: 0.85em;
-    font-weight: 600;
-}
-.sl-snapshot-name {
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.sl-snapshot-date {
-    color: var(--text-muted);
-    font-size: 0.8em;
-    margin-top: 2px;
-}
-.sl-snapshot-desc {
-    color: var(--text-faint);
-    font-size: 0.85em;
-    margin-top: 2px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.sl-snapshot-actions {
-    display: flex;
-    gap: 6px;
-    flex-shrink: 0;
-}
-.sl-snapshot-action-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px 8px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 0.85em;
-    color: var(--text-muted);
-}
-.sl-snapshot-action-btn:hover {
-    background: var(--background-modifier-hover);
-    color: var(--text-normal);
-}
-.sl-snapshot-action-btn .svg-icon {
-    width: 14px;
-    height: 14px;
-}
-.sl-snapshot-delete:hover {
-    color: var(--text-error);
-}
-.sl-snapshot-badge {
-    font-size: 0.7em;
-    font-weight: 700;
-    text-transform: uppercase;
-    color: var(--interactive-accent);
-    border: 1px solid var(--interactive-accent);
-    border-radius: 4px;
-    padding: 0 4px;
-    line-height: 1.6;
-}
-.sl-snapshot-item.is-active {
-    border-color: var(--interactive-accent);
-}
-.sl-snapshot-new-btn {
-    flex-shrink: 0;
-    padding: 4px;
-    border-radius: 6px;
-    cursor: pointer;
-}
-.sl-snapshot-new-btn:hover {
-    background: var(--background-modifier-hover);
-}
-.sl-snapshot-edit-form {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    width: 100%;
-}
-.sl-snapshot-edit-input {
-    width: 100%;
-    padding: 4px 8px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    background: var(--background-primary);
-    color: var(--text-normal);
-    font-size: 0.9em;
-}
-.sl-snapshot-edit-btns {
-    display: flex;
-    gap: 6px;
-    justify-content: flex-end;
-}
-
 /* ?? Manuscript: hide backlinks & outgoing links to avoid gaps ?? */
 .sl-manuscript-embedded-split.sl-manuscript-embedded-split .backlink-pane,
 .sl-manuscript-embedded-split.sl-manuscript-embedded-split .outgoing-link-pane,
@@ -16122,4 +15963,16 @@ body.sl-focus-active-global .titlebar {
 /* ??? Series modal: delete-book button ???????????????????????? */
 .sl-series-delete:hover {
     color: var(--text-error);
+}
+.nl-native-base-new-hidden {
+    display: none !important;
+}
+
+.nl-hidden-color-input {
+    position: fixed;
+    left: -9999px;
+    width: 0;
+    height: 0;
+    opacity: 0;
+    pointer-events: none;
 }

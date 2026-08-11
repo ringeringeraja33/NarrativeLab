@@ -24,7 +24,10 @@ export interface CreateLibraryEntityBoardEntry {
 }
 
 function normalizeVaultPath(value: unknown): string {
-    const normalized = String(value || '')
+    const text = typeof value === 'string'
+        ? value
+        : (typeof value === 'number' || typeof value === 'boolean' ? String(value) : '');
+    const normalized = text
         .trim()
         .replace(/\\/g, '/')
         .replace(/^\/+/, '')
@@ -99,7 +102,8 @@ function readCanvasFrontmatter(app: App, notePath: string): string {
     const file = app.vault.getAbstractFileByPath(normalizeVaultPath(notePath));
     if (!(file instanceof TFile)) return '';
     const cache = app.metadataCache.getFileCache(file);
-    const raw = cache?.frontmatter?.canvas;
+    const frontmatter: Record<string, unknown> | undefined = cache?.frontmatter;
+    const raw = frontmatter?.canvas;
     if (typeof raw === 'string' && raw.trim()) return normalizeVaultPath(raw);
     return '';
 }
@@ -195,7 +199,7 @@ export class LibraryEntityBoardService {
             const mdFile = this.app.vault.getAbstractFileByPath(notePath);
             if (mdFile instanceof TFile) {
                 await this.app.fileManager.processFrontMatter(mdFile, (fm) => {
-                    fm.canvas = canvasPath;
+                    (fm as Record<string, unknown>).canvas = canvasPath;
                 });
                 const embed = (text: string) => (
                     text.includes(`![[${canvasPath}]]`)

@@ -44,11 +44,12 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
                     'r1-c1': {
                         id: 'r1-c1',
                         content: 'meets mentor',
-                        bgColor: '',
-                        textColor: '',
-                        bold: false,
-                        italic: false,
-                        align: 'left',
+                        formula: '="meets mentor"',
+                        bgColor: '#112233',
+                        textColor: '#fefefe',
+                        bold: true,
+                        italic: true,
+                        align: 'right',
                         linkedSceneId: 'Scenes/opening.md',
                         manualContent: true,
                     },
@@ -62,18 +63,39 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         const decoded = await codec.decodePlotGridXlsx(binary);
         assert.equal(decoded.pages.length, 1);
         assert.equal(decoded.pages[0].cells['r1-c1'].content, 'meets mentor');
+        assert.equal(decoded.pages[0].cells['r1-c1'].formula, '="meets mentor"');
         assert.equal(decoded.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
         assert.equal(decoded.pages[0].cells['r1-c1'].manualContent, true);
         assert.equal(decoded.pages[0].rows[0].sourceId, 'Scenes/a.md');
         assert.equal(decoded.pages[0].columns[0].sourceId, 'Characters/hero.md');
 
+        const univer = codec.documentToUniverWorkbookData(decoded);
+        const sheet = univer.sheets['page-1'];
+        assert.deepEqual(sheet.freeze, { startRow: 1, startColumn: 1, ySplit: 1, xSplit: 1 });
+        assert.equal(sheet.rowData[1].h, 40);
+        assert.equal(sheet.columnData[1].w, 120);
+        assert.equal(sheet.cellData[1][1].f, '="meets mentor"');
+        assert.equal(sheet.cellData[1][1].s.bg.rgb, '#112233');
+        assert.equal(sheet.cellData[1][1].s.ht, 3);
+
         // Univer merge must keep linkedSceneId while updating display text
         const merged = codec.mergeUniverCellDataIntoDocument(decoded, 'page-1', {
             0: { 0: { v: '' }, 1: { v: 'Hero' } },
-            1: { 0: { v: 'Scene 1' }, 1: { v: 'updated text' } },
+            1: { 0: { v: 'Scene 1' }, 1: { v: 'updated text', s: 'style-1' } },
+        }, {
+            'style-1': { bg: { rgb: '#abcdef' }, cl: { rgb: '#010203' }, bl: 0, it: 0, ht: 2 },
+        }, {
+            1: { h: 64 },
+        }, {
+            1: { w: 180 },
         });
         assert.equal(merged.pages[0].cells['r1-c1'].content, 'updated text');
         assert.equal(merged.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+        assert.equal(merged.pages[0].cells['r1-c1'].manualContent, true);
+        assert.equal(merged.pages[0].cells['r1-c1'].bgColor, '#abcdef');
+        assert.equal(merged.pages[0].cells['r1-c1'].align, 'center');
+        assert.equal(merged.pages[0].rows[0].height, 64);
+        assert.equal(merged.pages[0].columns[0].width, 180);
 
         // Cleared cells omitted from sparse Univer snapshots must wipe content (keep links).
         const cleared = codec.mergeUniverCellDataIntoDocument(merged, 'page-1', {
@@ -81,6 +103,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
             1: { 0: { v: 'Scene 1' } },
         });
         assert.equal(cleared.pages[0].cells['r1-c1'].content, '');
+        assert.equal(cleared.pages[0].cells['r1-c1'].formula, undefined);
         assert.equal(cleared.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
 
         // Empty reserved matrix must not expand row/col extents
@@ -119,6 +142,17 @@ test('PlotgridView lazy-loads Univer host and keeps note link actions', async ()
     assert.match(view, /Link Note…/);
     assert.match(view, /Unlink Note/);
     assert.match(view, /getActiveDataCellFromUniver/);
+    assert.match(view, /applyUniverViewState/);
+    assert.match(view, /renderGrid\(\{ forcePush: true \}\)/);
+    assert.match(view, /Query Univer first/);
+    assert.match(view, /const dataRow = Math\.max\(1, sel\.row\)/);
+    assert.match(view, /const dataCol = Math\.max\(1, sel\.col\)/);
+    assert.match(view, /setActiveCell\(sel\.sheetId, dataRow, dataCol\)/);
+    assert.doesNotMatch(view, /new FiltersComponent\(/);
+    assert.doesNotMatch(view, /obsidian\.setIcon\(addRowBtn, 'rows-3'\)/);
+    assert.doesNotMatch(view, /obsidian\.setIcon\(addColBtn, 'columns-3'\)/);
+    assert.doesNotMatch(view, /autosizeCellsToContent|autoFitRows|plotgridAutoNote/);
+    assert.doesNotMatch(view, /openManageSnapshotsModal|Manage View Snapshots/);
     assert.match(view, /univerHost\?\.dispose|disposeUniverHost/);
     assert.match(view, /allowEmptyOverwrite:\s*true/);
     assert.doesNotMatch(view, /openActivePageCsv|plotGridCsvSync|Open page CSV/);
@@ -126,4 +160,25 @@ test('PlotgridView lazy-loads Univer host and keeps note link actions', async ()
     assert.match(view, /loadedSystemFolder/);
     assert.match(view, /folderAtSchedule/);
     assert.match(view, /projectChanged/);
+});
+
+test('embedded Univer host exposes the legacy grid view controls', async () => {
+    const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
+    for (const method of ['setZoom', 'setFreeze', 'setActiveCell']) {
+        assert.match(host, new RegExp(`${method}:`));
+    }
+    assert.doesNotMatch(host, /setHiddenRows|showRows|hideRows/);
+    assert.doesNotMatch(host, /setRowAutoHeight|autoFitRows/);
+    assert.match(host, /getActiveCell\?\./);
+    assert.match(host, /getRow\?\.\(\)/);
+    assert.match(host, /getColumn\?\.\(\)/);
+    assert.match(host, /CellPointerDown/);
+    assert.match(host, /p\.column \?\? p\.col/);
+    assert.match(host, /UniverSheetsFilterPreset\(\)/);
+    assert.match(host, /mergeLocales\(sheetsCoreZhCN, sheetsFilterZhCN\)/);
+    assert.equal((host.match(/ribbonType:\s*'simple'/g) || []).length, 2);
+    assert.match(host, /moveFinancialFormulaMenuLast/);
+    assert.match(host, /`\$\{InsertFunctionOperation\.id\}\.financial`/);
+    assert.match(host, /FINANCIAL_FORMULA_MENU_ORDER\s*=\s*99/);
+    assert.match(host, /\[TEXT_TO_NUMBER_TOOLBAR_MENU_ID\]:\s*\{\s*hidden:\s*true\s*\}/);
 });

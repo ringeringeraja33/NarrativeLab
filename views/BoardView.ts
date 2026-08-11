@@ -14,7 +14,6 @@ import { enableDragToPan } from '../components/DragToPan';
 import { SplitSceneModal, MergeSceneModal } from '../components/SplitMergeModals';
 import { isMobile, applyMobileClass, enableTouchDrag } from '../components/MobileAdapter';
 import { BOARD_VIEW_TYPE } from '../constants';
-import { openManageSnapshotsModal } from '../components/ViewSnapshotModal';
 import { cleanStickyNoteColor, resolveStickyNoteColors, resolveStickyNoteFontColor } from '../settings';
 import { attachTooltip } from '../components/Tooltip';
 import { resolveImagePath } from '../components/ImagePicker';
@@ -463,13 +462,6 @@ export class BoardView extends ItemView {
         attachTooltip(archiveBtn, t('Archived Scenes'));
         archiveBtn.addEventListener('click', () => this.openArchiveModal());
 
-        // ── View Snapshots ──
-        const snapManage = iconGroup.createDiv({ cls: 'clickable-icon' });
-        obsidian.setIcon(snapManage, 'history');
-        attachTooltip(snapManage, t('Manage View Snapshots'));
-        snapManage.addEventListener('click', () => {
-            openManageSnapshotsModal(this.plugin.app, this.plugin.viewSnapshotService);
-        });
     }
 
     /**
@@ -2563,7 +2555,6 @@ export class BoardView extends ItemView {
         if (key === this.corkboardPositionsPersistKey) return;
         this.corkboardPositionsPersistKey = key;
         await this.sceneManager.setCorkboardPositions(payload);
-        this.plugin.viewSnapshotService.scheduleAutoSave();
     }
 
     private showCorkboardNoteMenu(scene: Scene, event: MouseEvent): void {
@@ -3102,7 +3093,6 @@ export class BoardView extends ItemView {
         await this.sceneManager.updateScene(draggedPath, sceneUpdates);
         await this.sceneManager.globalResequence();
 
-        this.plugin.viewSnapshotService.scheduleAutoSave();
         this.refreshBoard();
     }
 
@@ -3162,7 +3152,6 @@ export class BoardView extends ItemView {
 
         await this.sceneManager.updateScene(filePath, updates);
         await this.sceneManager.globalResequence();
-        this.plugin.viewSnapshotService.scheduleAutoSave();
         this.refreshBoard();
     }
 

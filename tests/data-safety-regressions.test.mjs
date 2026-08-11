@@ -170,7 +170,8 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(save, /writeVaultBinaryResilient/);
     assert.match(save, /encodePlotGridXlsx/);
     assert.match(save, /ensureVaultFolder/);
-    assert.doesNotMatch(save, /new Notice\(/);
+    assert.match(save, /_reportedInvalidPlotGridXlsxPaths\.has\(path\)/);
+    assert.equal((save.match(/new Notice\(/g) || []).length, 1, 'corrupt workbook warning is deduplicated');
     assert.match(mainTs, /getBasePath\?\./);
 });
 

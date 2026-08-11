@@ -54,12 +54,12 @@ export interface PlotGridNlMeta {
         stickyHeaders?: boolean;
         rows: RowMeta[];
         columns: ColumnMeta[];
-        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'>>;
+        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'>>;
     }>;
 }
 
 function sanitizeSheetName(title: string, used: Set<string>): string {
-    let base = (title || 'Page').replace(/[:\\/?*\[\]]/g, '-').slice(0, 28).trim() || 'Page';
+    let base = (title || 'Page').replace(/[:\\/?*[\]]/g, '-').slice(0, 28).trim() || 'Page';
     if (base.toLowerCase() === NL_META_SHEET.toLowerCase()) base = 'Page';
     let name = base;
     let n = 2;
@@ -68,6 +68,29 @@ function sanitizeSheetName(title: string, used: Set<string>): string {
     }
     used.add(name.toLowerCase());
     return name;
+}
+
+function cellValueText(value: unknown): string {
+    if (value == null) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (value instanceof Date) return value.toISOString();
+    if (typeof value !== 'object') return '';
+
+    const record = value as Record<string, unknown>;
+    if (typeof record.text === 'string') return record.text;
+    if (Array.isArray(record.richText)) {
+        return record.richText
+            .map(part => (
+                part && typeof part === 'object' && typeof (part as Record<string, unknown>).text === 'string'
+                    ? (part as Record<string, unknown>).text as string
+                    : ''
+            ))
+            .join('');
+    }
+    if ('result' in record) return cellValueText(record.result);
+    if (typeof record.error === 'string') return record.error;
+    return '';
 }
 
 function cellKey(rowId: string, colId: string): string {
@@ -84,6 +107,7 @@ function defaultCell(partial?: Partial<CellData>): CellData {
         italic: !!partial?.italic,
         align: partial?.align || 'left',
         linkedSceneId: partial?.linkedSceneId,
+        formula: partial?.formula,
         manualContent: partial?.manualContent,
     };
 }
@@ -101,6 +125,7 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
             cells[key] = {
                 id: cell.id,
                 linkedSceneId: cell.linkedSceneId,
+                formula: cell.formula,
                 manualContent: cell.manualContent,
                 bgColor: cell.bgColor,
                 textColor: cell.textColor,
@@ -128,7 +153,7 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
 }
 
 /** Encode ConceptGridDocument → xlsx ArrayBuffer. */
-export async function encodePlotGridXlsx(raw: ConceptGridDocument | unknown): Promise<ArrayBuffer> {
+export async function encodePlotGridXlsx(raw: unknown): Promise<ArrayBuffer> {
     const doc = normalizeConceptGridDocument(raw);
     const wb = new ExcelJS.Workbook();
     wb.creator = 'NarrativeLab';
@@ -140,9 +165,9 @@ export async function encodePlotGridXlsx(raw: ConceptGridDocument | unknown): Pr
     for (const page of doc.pages) {
         const name = sanitizeSheetName(page.title, usedNames);
         sheetNames.push(name);
-        const sheet = wb.addWorksheet(name, {
-            views: [{ state: 'frozen', xSplit: 1, ySplit: 1 }],
-        });
+        const sheet = wb.addWorksheet(name, page.stickyHeaders === false
+            ? undefined
+            : { views: [{ state: 'frozen', xSplit: 1, ySplit: 1 }] });
 
         const cols = page.columns || [];
         const rows = page.rows || [];
@@ -177,7 +202,9 @@ export async function encodePlotGridXlsx(raw: ConceptGridDocument | unknown): Pr
             cols.forEach((col, ci) => {
                 const data = page.cells[cellKey(row.id, col.id)];
                 const excelCell = sheet.getCell(ri + 2, ci + 2);
-                excelCell.value = data?.content ?? '';
+                excelCell.value = data?.formula
+                    ? { formula: data.formula.replace(/^=/, ''), result: data.content || undefined }
+                    : (data?.content ?? '');
                 if (data?.bgColor) {
                     excelCell.fill = {
                         type: 'pattern',
@@ -216,12 +243,11 @@ export async function encodePlotGridXlsx(raw: ConceptGridDocument | unknown): Pr
     metaSheet.getCell(1, 1).value = JSON.stringify(meta);
 
     const buffer = await wb.xlsx.writeBuffer();
-    return buffer instanceof ArrayBuffer
-        ? buffer
-        : (buffer as Buffer).buffer.slice(
-            (buffer as Buffer).byteOffset,
-            (buffer as Buffer).byteOffset + (buffer as Buffer).byteLength,
-        );
+    if (buffer instanceof ArrayBuffer) return buffer;
+    const bytes = new Uint8Array(buffer);
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    return copy.buffer;
 }
 
 function cssToArgb(css: string): string {
@@ -249,7 +275,7 @@ function argbToCss(argb?: string): string {
 /** Decode xlsx ArrayBuffer → ConceptGridDocument. */
 export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promise<ConceptGridDocument> {
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(data as ExcelJS.Buffer);
+    await wb.xlsx.load(data);
 
     let meta: PlotGridNlMeta | null = null;
     const metaWs = wb.getWorksheet(NL_META_SHEET);
@@ -290,7 +316,7 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
         // If meta missing column/row defs, rebuild from header labels
         if (columns.length === 0) {
             for (let ci = 2; ci <= colCount; ci++) {
-                const label = String(sheet.getCell(1, ci).value ?? '').trim();
+                const label = cellValueText(sheet.getCell(1, ci).value).trim();
                 if (!label && ci > 2) continue;
                 columns.push({
                     id: `col-${ci - 2}-${Date.now().toString(36)}`,
@@ -302,10 +328,10 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
         }
         if (rows.length === 0) {
             for (let ri = 2; ri <= rowCount; ri++) {
-                const label = String(sheet.getCell(ri, 1).value ?? '').trim();
+                const label = cellValueText(sheet.getCell(ri, 1).value).trim();
                 const hasData = columns.some((_, ci) => {
                     const v = sheet.getCell(ri, ci + 2).value;
-                    return v != null && String(v).trim() !== '';
+                    return cellValueText(v).trim() !== '';
                 });
                 if (!label && !hasData && ri > 2) continue;
                 rows.push({
@@ -320,11 +346,13 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
         // Sync header labels from sheet (Excel may have renamed them)
         columns.forEach((col, ci) => {
             const v = sheet.getCell(1, ci + 2).value;
-            if (v != null && String(v).trim()) col.label = String(v).trim();
+            const label = cellValueText(v).trim();
+            if (label) col.label = label;
         });
         rows.forEach((row, ri) => {
             const v = sheet.getCell(ri + 2, 1).value;
-            if (v != null && String(v).trim()) row.label = String(v).trim();
+            const label = cellValueText(v).trim();
+            if (label) row.label = label;
         });
 
         const cells: Record<string, CellData> = {};
@@ -332,15 +360,22 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
             columns.forEach((col, ci) => {
                 const key = cellKey(row.id, col.id);
                 const excelCell = sheet.getCell(ri + 2, ci + 2);
-                const content = excelCell.value == null ? '' : String(excelCell.value);
+                const rawValue = excelCell.value;
+                const formulaValue = rawValue && typeof rawValue === 'object' && 'formula' in rawValue
+                    ? rawValue as ExcelJS.CellFormulaValue
+                    : null;
+                const content = formulaValue
+                    ? cellValueText(formulaValue.result)
+                    : cellValueText(rawValue);
                 const saved = pageMeta?.cells?.[key];
                 const fill = excelCell.fill && excelCell.fill.type === 'pattern'
-                    ? argbToCss((excelCell.fill as ExcelJS.FillPattern).fgColor?.argb)
+                    ? argbToCss(excelCell.fill.fgColor?.argb)
                     : '';
                 cells[key] = defaultCell({
                     id: saved?.id,
                     content,
                     linkedSceneId: saved?.linkedSceneId,
+                    formula: formulaValue?.formula ? `=${formulaValue.formula}` : saved?.formula,
                     manualContent: saved?.manualContent,
                     bgColor: fill || saved?.bgColor || '',
                     textColor: saved?.textColor || '',
@@ -380,7 +415,7 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
 }
 
 /** Convert ConceptGridDocument to a minimal Univer IWorkbookData-like snapshot. */
-export function documentToUniverWorkbookData(raw: ConceptGridDocument | unknown): Record<string, unknown> {
+export function documentToUniverWorkbookData(raw: unknown): Record<string, unknown> {
     const doc = normalizeConceptGridDocument(raw);
     const sheets: Record<string, unknown> = {};
     const sheetOrder: string[] = [];
@@ -388,22 +423,59 @@ export function documentToUniverWorkbookData(raw: ConceptGridDocument | unknown)
     doc.pages.forEach((page, index) => {
         const id = page.id || `sheet-${index}`;
         sheetOrder.push(id);
-        const cellData: Record<number, Record<number, { v: string }>> = {};
+        const cellData: Record<number, Record<number, { v: string; f?: string; s?: UniverStyleSnapshot }>> = {};
         const cols = page.columns || [];
         const rows = page.rows || [];
 
         cellData[0] = cellData[0] || {};
         cellData[0][0] = { v: '' };
         cols.forEach((col, ci) => {
-            cellData[0][ci + 1] = { v: col.label || '' };
+            cellData[0][ci + 1] = {
+                v: col.label || '',
+                s: {
+                    bg: (col.headerBgColor || col.bgColor) ? { rgb: col.headerBgColor || col.bgColor } : undefined,
+                    cl: col.textColor ? { rgb: col.textColor } : undefined,
+                    bl: col.bold ? 1 : undefined,
+                    it: col.italic ? 1 : undefined,
+                    ht: 2,
+                },
+            };
         });
         rows.forEach((row, ri) => {
             cellData[ri + 1] = cellData[ri + 1] || {};
-            cellData[ri + 1][0] = { v: row.label || '' };
+            cellData[ri + 1][0] = {
+                v: row.label || '',
+                s: {
+                    bg: (row.headerBgColor || row.bgColor) ? { rgb: row.headerBgColor || row.bgColor } : undefined,
+                    cl: row.textColor ? { rgb: row.textColor } : undefined,
+                    bl: row.bold ? 1 : undefined,
+                    it: row.italic ? 1 : undefined,
+                    ht: 2,
+                },
+            };
             cols.forEach((col, ci) => {
-                const content = page.cells[cellKey(row.id, col.id)]?.content || '';
-                cellData[ri + 1][ci + 1] = { v: content };
+                const data = page.cells[cellKey(row.id, col.id)];
+                cellData[ri + 1][ci + 1] = {
+                    v: data?.content || '',
+                    f: data?.formula,
+                    s: {
+                        bg: data?.bgColor ? { rgb: data.bgColor } : undefined,
+                        cl: data?.textColor ? { rgb: data.textColor } : undefined,
+                        bl: data?.bold ? 1 : undefined,
+                        it: data?.italic ? 1 : undefined,
+                        ht: data?.align === 'center' ? 2 : data?.align === 'right' ? 3 : 1,
+                    },
+                };
             });
+        });
+
+        const rowData: Record<number, { h: number }> = {};
+        const columnData: Record<number, { w: number }> = {};
+        rows.forEach((row, ri) => {
+            if (row.height > 0) rowData[ri + 1] = { h: row.height };
+        });
+        cols.forEach((col, ci) => {
+            if (col.width > 0) columnData[ci + 1] = { w: col.width };
         });
 
         sheets[id] = {
@@ -414,10 +486,12 @@ export function documentToUniverWorkbookData(raw: ConceptGridDocument | unknown)
             rowCount: Math.max(50, rows.length + 20),
             columnCount: Math.max(20, cols.length + 10),
             zoomRatio: page.zoom || 1,
-            freeze: { startRow: 1, startColumn: 1, ySplit: 1, xSplit: 1 },
+            freeze: page.stickyHeaders === false
+                ? { startRow: 0, startColumn: 0, ySplit: 0, xSplit: 0 }
+                : { startRow: 1, startColumn: 1, ySplit: 1, xSplit: 1 },
             cellData,
-            rowData: {},
-            columnData: {},
+            rowData,
+            columnData,
             showCellStatusBar: 0,
             status: 1,
         };
@@ -440,11 +514,33 @@ export function documentToUniverWorkbookData(raw: ConceptGridDocument | unknown)
     };
 }
 
+type UniverStyleSnapshot = {
+    bg?: { rgb?: string } | null;
+    cl?: { rgb?: string } | null;
+    bl?: number | boolean | null;
+    it?: number | boolean | null;
+    ht?: number | null;
+};
+type UniverCellSnapshot = { v?: unknown; f?: unknown; s?: unknown } | undefined;
+
+function resolveUniverStyle(
+    raw: UniverCellSnapshot,
+    styles?: Record<string, UniverStyleSnapshot>,
+): UniverStyleSnapshot | null {
+    if (!raw?.s) return null;
+    if (typeof raw.s === 'string') return styles?.[raw.s] || null;
+    if (typeof raw.s === 'object') return raw.s;
+    return null;
+}
+
 /** Merge Univer cellData edits back into ConceptGridDocument (preserves links via existing meta). */
 export function mergeUniverCellDataIntoDocument(
     doc: ConceptGridDocument,
     sheetId: string,
-    cellData: Record<number, Record<number, { v?: unknown } | undefined>>,
+    cellData: Record<number, Record<number, UniverCellSnapshot>>,
+    styles?: Record<string, UniverStyleSnapshot>,
+    rowData?: Record<number, { h?: number; ah?: number }>,
+    columnData?: Record<number, { w?: number }>,
 ): ConceptGridDocument {
     const page = doc.pages.find(p => p.id === sheetId);
     if (!page) return doc;
@@ -456,11 +552,26 @@ export function mergeUniverCellDataIntoDocument(
 
     let changed = false;
 
+    rows.forEach((row, index) => {
+        const height = rowData?.[index + 1]?.h ?? rowData?.[index + 1]?.ah;
+        if (typeof height === 'number' && height > 0 && Math.round(height) !== row.height) {
+            row.height = Math.round(height);
+            changed = true;
+        }
+    });
+    cols.forEach((col, index) => {
+        const width = columnData?.[index + 1]?.w;
+        if (typeof width === 'number' && width > 0 && Math.round(width) !== col.width) {
+            col.width = Math.round(width);
+            changed = true;
+        }
+    });
+
     // Update headers
     cols.forEach((col, ci) => {
         const v = cellData[0]?.[ci + 1]?.v;
         if (v == null) return;
-        const next = String(v);
+        const next = cellValueText(v);
         if (col.label !== next) {
             col.label = next;
             changed = true;
@@ -469,7 +580,7 @@ export function mergeUniverCellDataIntoDocument(
     rows.forEach((row, ri) => {
         const v = cellData[ri + 1]?.[0]?.v;
         if (v == null) return;
-        const next = String(v);
+        const next = cellValueText(v);
         if (row.label !== next) {
             row.label = next;
             changed = true;
@@ -489,19 +600,44 @@ export function mergeUniverCellDataIntoDocument(
                 // row vanished after clearing its last cell, also clear when headers exist
                 // (signals a real sheet snapshot rather than an empty stub).
                 const headerPresent = cellData[0] != null;
-                if (existing.content && (rowBucket != null || headerPresent)) {
-                    page.cells[key] = { ...existing, id: existing.id || key, content: '' };
+                if ((existing.content || existing.formula) && (rowBucket != null || headerPresent)) {
+                    page.cells[key] = {
+                        ...existing,
+                        id: existing.id || key,
+                        content: '',
+                        formula: undefined,
+                        manualContent: true,
+                    };
                     changed = true;
                 }
                 return;
             }
-            const nextContent = raw.v == null ? '' : String(raw.v);
-            if (existing.content === nextContent && page.cells[key]) return;
-            page.cells[key] = {
+            const nextContent = cellValueText(raw.v);
+            const style = resolveUniverStyle(raw, styles);
+            const nextFormula = typeof raw.f === 'string' && raw.f.trim()
+                ? (raw.f.startsWith('=') ? raw.f : `=${raw.f}`)
+                : undefined;
+            const nextCell: CellData = {
                 ...existing,
                 id: existing.id || key,
                 content: nextContent,
+                formula: nextFormula,
+                manualContent: true,
+                bgColor: style ? (style.bg?.rgb || '') : existing.bgColor,
+                textColor: style ? (style.cl?.rgb || '') : existing.textColor,
+                bold: style?.bl == null ? existing.bold : !!style.bl,
+                italic: style?.it == null ? existing.italic : !!style.it,
+                align: style?.ht === 2 ? 'center' : style?.ht === 3 ? 'right' : style?.ht === 1 ? 'left' : existing.align,
             };
+            if (page.cells[key]
+                && existing.content === nextCell.content
+                && existing.formula === nextCell.formula
+                && existing.bgColor === nextCell.bgColor
+                && existing.textColor === nextCell.textColor
+                && existing.bold === nextCell.bold
+                && existing.italic === nextCell.italic
+                && existing.align === nextCell.align) return;
+            page.cells[key] = nextCell;
             changed = true;
         });
     });
@@ -519,7 +655,7 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
         for (const col of page.columns || []) parts.push(`c:${col.id}:${col.label || ''}`);
         for (const [key, cell] of Object.entries(page.cells || {})) {
             if (!cell) continue;
-            parts.push(`${key}=${cell.content || ''}`);
+            parts.push(`${key}=${cell.content || ''}::${cell.formula || ''}`);
         }
     }
     return parts.join('\n');

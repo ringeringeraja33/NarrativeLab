@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, ItemView, WorkspaceLeaf, Menu, Modal, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
 import * as obsidian from 'obsidian';
 import {
@@ -18,15 +18,13 @@ import { getActiveUiLanguage, t } from '../utils/i18n';
 import { loadPlotGridUniverModule, type PlotGridUniverHost } from '../utils/loadPlotGridUniver';
 import { conceptGridContentFingerprint } from '../services/PlotGridXlsxCodec';
 import { LocationManager } from '../services/LocationManager';
-import type { SceneFilter, SortConfig } from '../models/Scene';
+import type { SortConfig } from '../models/Scene';
 import { SceneManager } from '../services/SceneManager';
 import { CharacterManager } from '../services/CharacterManager';
 import { coerceString } from '../utils/narrow';
 import { InspectorComponent } from '../components/Inspector';
-import { openManageSnapshotsModal } from '../components/ViewSnapshotModal';
 import { LinkScanner } from '../services/LinkScanner';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { FiltersComponent } from '../components/Filters';
 import { enableDragToPan } from '../components/DragToPan';
 import { isMobile } from '../components/MobileAdapter';
 import { PLOTGRID_VIEW_TYPE } from '../constants';
@@ -75,8 +73,6 @@ export class PlotgridView extends ItemView {
     private selectPointerId: number | null = null;
     private inspectorComponent: InspectorComponent | null = null;
     private inspectorEl: HTMLElement | null = null;
-    private filtersComponent: FiltersComponent | null = null;
-    private currentFilter: SceneFilter = {};
     private currentSort: SortConfig = { field: 'sequence', direction: 'asc' };
     /** Simple undo stack for plot grid cell operations (active page only) */
     private undoStack: PlotGridData[] = [];
@@ -89,6 +85,7 @@ export class PlotgridView extends ItemView {
     private univerLoadFailed = false;
     private univerContextMenuBound = false;
     private lastUniverSel: { sheetId: string; row: number; col: number } | null = null;
+    private univerViewStateSig = '';
     /** System/ folder the in-memory document was loaded from — used to block cross-project saves. */
     private loadedSystemFolder: string | null = null;
     private dragToPanCleanup: (() => void) | null = null;
@@ -174,7 +171,7 @@ export class PlotgridView extends ItemView {
             }
             if (touched) {
                 this.scheduleSave();
-                this.renderGrid();
+                this.renderGrid({ forcePush: true });
                 this.refreshOpenCellInspector();
             }
         }));
@@ -194,6 +191,7 @@ export class PlotgridView extends ItemView {
         this.univerHost = null;
         this.univerMountPromise = null;
         this.univerStructureSig = '';
+        this.univerViewStateSig = '';
         this.resetCanvasLayoutForLegacy();
     }
 
@@ -393,7 +391,6 @@ export class PlotgridView extends ItemView {
                     return;
                 }
                 if (typeof plugin.savePlotGrid === 'function') await plugin.savePlotGrid(this.document);
-                plugin.viewSnapshotService.scheduleAutoSave();
             } catch (e) {
                 // ignore save errors
             }
@@ -436,7 +433,7 @@ export class PlotgridView extends ItemView {
         page.stickyHeaders = snapshot.stickyHeaders;
         this.data = page;
         this.scheduleSave();
-        this.renderGrid();
+        this.renderGrid({ forcePush: true });
         new Notice(t('Plot grid move undone.'));
     }
 
@@ -471,30 +468,6 @@ export class PlotgridView extends ItemView {
 
         const toolbar = this.wrapperEl.createDiv('story-line-toolbar plot-grid-toolbar');
         toolbar.setCssStyles({ flex: '0 0 auto' });
-
-        // Filter bar (shared component, same as Board/Timeline)
-        const filterContainer = this.wrapperEl.createDiv('story-line-filters-container');
-        const filterSceneMgr = this.plugin?.sceneManager as SceneManager | undefined;
-        if (filterSceneMgr && this.plugin) {
-            this.filtersComponent = new FiltersComponent(
-                filterContainer,
-                filterSceneMgr,
-                (filter, sort) => {
-                    this.currentFilter = filter;
-                    if (sort) this.currentSort = sort;
-                    this.renderGrid();
-                },
-                this.plugin,
-                {
-                    showSort: false,
-                    // Concept Grid cells are freeform — not necessarily scenes.
-                    searchPlaceholder: t('Search grid…'),
-                    filterLabel: t('Filter'),
-                    filterTooltip: t('Filter rows by linked scene (act, chapter, status, and more)'),
-                },
-            );
-            this.filtersComponent.render();
-        }
 
         // Work row: grid scroll + docked cell inspector side-by-side (no overlay).
         const workArea = this.wrapperEl.createDiv('plot-grid-work-area');
@@ -757,7 +730,7 @@ export class PlotgridView extends ItemView {
         attachTooltip(unlinkNoteBtn, t('Unlink Note'));
         unlinkNoteBtn.addEventListener('click', () => { this.unlinkNoteForActiveCell(); });
 
-        // Separator between Sync and Add Row/Column
+        // Separate note actions from worksheet view controls.
         const syncSep = left.createDiv();
         syncSep.setCssStyles({
             width: '1px',
@@ -765,17 +738,6 @@ export class PlotgridView extends ItemView {
             background: 'var(--background-modifier-border)',
             margin: '0 4px',
         });
-
-        // Add Row / Add Column buttons
-        const addRowBtn = left.createEl('button', { cls: 'clickable-icon' });
-        obsidian.setIcon(addRowBtn, 'rows-3');
-        attachTooltip(addRowBtn, t('Add Row'));
-        addRowBtn.addEventListener('click', () => { this.addRow(); });
-
-        const addColBtn = left.createEl('button', { cls: 'clickable-icon' });
-        obsidian.setIcon(addColBtn, 'columns-3');
-        attachTooltip(addColBtn, t('Add Column'));
-        addColBtn.addEventListener('click', () => { this.addColumn(); });
 
         // Sticky headers toggle — pin row/col labels while scrolling the grid
         const stickyLabel = this.data.stickyHeaders !== false
@@ -790,31 +752,6 @@ export class PlotgridView extends ItemView {
             this.renderToolbar();
             this.renderGrid();
         });
-
-        const fitCellsBtn = left.createEl('button', { cls: 'clickable-icon' });
-        obsidian.setIcon(fitCellsBtn, 'scan');
-        attachTooltip(fitCellsBtn, t('Fit row heights to content'));
-        fitCellsBtn.addEventListener('click', () => { void this.autosizeCellsToContent(); });
-
-        // Auto-Note toggle
-        if (this.plugin) {
-            const autoNoteLabel = this.plugin.settings.plotgridAutoNote
-                ? t('Auto-Note: On')
-                : t('Auto-Note: Off');
-            const autoNoteBtn = left.createEl('button', {
-                cls: `clickable-icon ${this.plugin.settings.plotgridAutoNote ? 'is-active' : ''}`,
-            });
-            obsidian.setIcon(autoNoteBtn, 'sticky-note');
-            attachTooltip(autoNoteBtn, autoNoteLabel);
-            if (this.plugin.settings.plotgridAutoNote) {
-                autoNoteBtn.setCssStyles({ color: 'var(--interactive-accent)' });
-            }
-            autoNoteBtn.addEventListener('click', async () => {
-                this.plugin!.settings.plotgridAutoNote = !this.plugin!.settings.plotgridAutoNote;
-                await this.plugin!.saveSettings();
-                this.renderToolbar();
-            });
-        }
 
         // Cell text formatting is Markdown-only (no Bold/Italic/align toolbar).
 
@@ -863,19 +800,10 @@ export class PlotgridView extends ItemView {
         attachTooltip(zoomIn, t('Zoom in'));
         zoomIn.addEventListener('click', () => this.setZoom(Math.min(2.0, this.data.zoom + 0.1)));
 
-        // ── View Snapshots ──
-        const snapManage = actions.createDiv({ cls: 'clickable-icon' });
-        obsidian.setIcon(snapManage, 'history');
-        attachTooltip(snapManage, t('Manage View Snapshots'));
-        snapManage.addEventListener('click', () => {
-            if (this.plugin) openManageSnapshotsModal(this.plugin.app, this.plugin.viewSnapshotService);
-        });
-
         actions.appendChild(zoomOut);
         actions.appendChild(zoomLabel);
         actions.appendChild(zoomIn);
         actions.appendChild(resetZoomBtn);
-        actions.appendChild(snapManage);
 
         // Icons are rendered exclusively via `obsidian.setIcon()` above —
         // the previous `lucide.createIcons()` bootstrap was dead code and
@@ -960,7 +888,10 @@ export class PlotgridView extends ItemView {
 
     private setZoom(z: number) {
         this.data.zoom = z;
-        if (this.canvasEl && this.scrollAreaEl) {
+        if (this.univerHost) {
+            this.univerHost.setZoom(this.document.activePageId, z);
+            this.univerHost.syncMeta(this.document);
+        } else if (this.canvasEl && this.scrollAreaEl) {
             // Use CSS zoom instead of transform: scale() to preserve position: sticky
             (this.canvasEl.style as unknown as Record<string, unknown>).zoom = String(z);
             const totalWidth = this.computeTotalWidth();
@@ -976,73 +907,6 @@ export class PlotgridView extends ItemView {
         return ROW_HEADER_WIDTH + this.data.columns.reduce((s, c) => s + c.width, 0);
     }
 
-    private async autosizeCellsToContent(): Promise<void> {
-        if (!this.canvasEl || this.data.rows.length === 0 || this.data.columns.length === 0) return;
-
-        await this.waitForPlotGridLayout();
-
-        const minRowHeight = 40;
-        const maxRowHeight = 900;
-
-        let changed = false;
-        for (let pass = 0; pass < 4; pass++) {
-            if (!this.canvasEl) break;
-
-            const requiredRowHeights = new Map<number, number>();
-
-            const cellElements: HTMLElement[] = Array.from(
-                this.canvasEl.querySelectorAll<HTMLElement>('.plot-grid-cell[data-row][data-col]'),
-            );
-            for (const cellEl of cellElements) {
-                const rowIndex = Number(cellEl.dataset.row);
-                if (!Number.isInteger(rowIndex)) continue;
-                if (!this.data.rows[rowIndex]) continue;
-
-                const requiredHeight = Math.min(maxRowHeight, Math.max(minRowHeight, this.measureCellHeight(cellEl)));
-                requiredRowHeights.set(rowIndex, Math.max(requiredRowHeights.get(rowIndex) ?? minRowHeight, requiredHeight));
-            }
-
-            let passChanged = false;
-            for (const [rowIndex, requiredHeight] of requiredRowHeights) {
-                const nextHeight = Math.round(requiredHeight);
-                if (this.data.rows[rowIndex].height !== nextHeight) {
-                    this.data.rows[rowIndex].height = nextHeight;
-                    passChanged = true;
-                }
-            }
-
-            if (!passChanged) break;
-            changed = true;
-            this.renderGrid();
-            await this.waitForPlotGridLayout();
-        }
-
-        if (!changed) {
-            new Notice(t('Plot Grid row heights already fit their content'));
-            return;
-        }
-
-        this.scheduleSave();
-        new Notice(t('Plot Grid row heights resized to fit content'));
-    }
-
-    private async waitForPlotGridLayout(): Promise<void> {
-        await new Promise<void>((resolve) => {
-            window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
-        });
-    }
-
-    private measureCellHeight(cellEl: HTMLElement): number {
-        let requiredHeight = cellEl.scrollHeight + 2;
-        const descendants = Array.from(cellEl.querySelectorAll<HTMLElement>('*'));
-        for (const descendant of descendants) {
-            if (descendant.scrollHeight > descendant.clientHeight) {
-                requiredHeight = Math.max(requiredHeight, cellEl.offsetHeight + descendant.scrollHeight - descendant.clientHeight + 2);
-            }
-        }
-        return requiredHeight;
-    }
-
     private univerStructureSig = '';
     private univerMountGeneration = 0;
 
@@ -1054,7 +918,7 @@ export class PlotgridView extends ItemView {
         ).join('||');
     }
 
-    private renderGrid() {
+    private renderGrid(options: { forcePush?: boolean } = {}) {
         if (!this.canvasEl || !this.scrollAreaEl) return;
 
         this.ensureDefaults();
@@ -1062,7 +926,8 @@ export class PlotgridView extends ItemView {
         // Univer Sheets path (canonical UI). Only remount/push when page structure changes.
         if (this.preferUniver && !this.univerLoadFailed) {
             const sig = this.getUniverStructureSig();
-            const push = !!this.univerHost && sig !== this.univerStructureSig;
+            const push = !!this.univerHost && (options.forcePush === true || sig !== this.univerStructureSig);
+            if (push) this.univerViewStateSig = '';
             void this.ensureUniverHost({ pushDocument: push }).then(() => {
                 if (this.univerHost) {
                     this.univerStructureSig = this.getUniverStructureSig();
@@ -1070,6 +935,7 @@ export class PlotgridView extends ItemView {
                     try {
                         this.univerHost.setActiveSheet(this.document.activePageId);
                     } catch { /* ignore */ }
+                    this.applyUniverViewState();
                 }
             });
             return;
@@ -1145,7 +1011,7 @@ export class PlotgridView extends ItemView {
                 const locale = getActiveUiLanguage() === 'zh' ? 'zh' : 'en';
                 const host = mod.createPlotGridUniverHost({
                     container: this.canvasEl,
-                    document: this.document,
+                    initialDocument: this.document,
                     locale,
                     getAuthoritativeDocument: () => this.document,
                     onDocumentChange: (doc) => {
@@ -1179,6 +1045,7 @@ export class PlotgridView extends ItemView {
                 this.univerHost = host;
                 this.univerStructureSig = this.getUniverStructureSig();
                 this.bindUniverContextMenu();
+                this.applyUniverViewState();
                 // Let layout settle, then nudge Univer to measure the filled host.
                 window.requestAnimationFrame(() => {
                     window.dispatchEvent(new Event('resize'));
@@ -1200,6 +1067,23 @@ export class PlotgridView extends ItemView {
         await this.univerMountPromise;
     }
 
+    /** Keep legacy NarrativeLab view controls effective without remounting Univer. */
+    private applyUniverViewState(): void {
+        const host = this.univerHost;
+        if (!host) return;
+        const page = this.getActivePage();
+        const stateSig = [
+            page.id,
+            page.zoom || 1,
+            page.stickyHeaders !== false ? 1 : 0,
+        ].join('|');
+        if (stateSig === this.univerViewStateSig) return;
+        this.univerViewStateSig = stateSig;
+        host.setActiveSheet(page.id);
+        host.setZoom(page.id, page.zoom || 1);
+        host.setFreeze(page.id, page.stickyHeaders !== false);
+    }
+
     private bindUniverContextMenu(): void {
         if (this.univerContextMenuBound || !this.canvasEl) return;
         this.univerContextMenuBound = true;
@@ -1210,6 +1094,17 @@ export class PlotgridView extends ItemView {
             evt.preventDefault();
             evt.stopPropagation();
             const menu = new Menu();
+            const selection = this.lastUniverSel || this.univerHost.getActiveCell();
+            const rowIndex = selection ? selection.row - 1 : -1;
+            const colIndex = selection ? selection.col - 1 : -1;
+            const sceneManager = this.plugin?.sceneManager as SceneManager | undefined;
+            const linkedScene = cell.linkedSceneId ? sceneManager?.getScene(cell.linkedSceneId) : undefined;
+
+            if (linkedScene) {
+                menu.addItem(item => item.setTitle(t('Open Scene')).setIcon('file-text').onClick(() => {
+                    this.openScene(linkedScene);
+                }));
+            }
             menu.addItem(item => item.setTitle(t('Link Note…')).setIcon('link').onClick(() => {
                 this.openNoteLinkModal((path) => this.linkFileToCell(cell, path));
             }));
@@ -1222,25 +1117,93 @@ export class PlotgridView extends ItemView {
                     this.unlinkCell(cell.id);
                 }));
             }
+            if (sceneManager) {
+                menu.addSeparator();
+                menu.addItem(item => item.setTitle(t('Convert to Notes')).setIcon('sticky-note').onClick(async () => {
+                    await this.convertCellToNotes(cell);
+                }));
+                menu.addItem(item => item.setTitle(t('Convert to Scene')).setIcon('file-text').onClick(async () => {
+                    await this.convertCellToScene(cell);
+                }));
+                menu.addItem(item => item.setTitle(t('Convert to Research')).setIcon('book-open').onClick(async () => {
+                    await this.convertCellToResearch(cell);
+                }));
+            }
+            if (rowIndex >= 0 && colIndex >= 0) {
+                menu.addSeparator();
+                menu.addItem(item => item.setTitle(t('Insert Row Above')).onClick(() => this.insertRowAt(rowIndex, true)));
+                menu.addItem(item => item.setTitle(t('Insert Row Below')).onClick(() => this.insertRowAt(rowIndex, false)));
+                menu.addItem(item => item.setTitle(t('Insert Column Left')).onClick(() => this.insertColumnAt(colIndex, true)));
+                menu.addItem(item => item.setTitle(t('Insert Column Right')).onClick(() => this.insertColumnAt(colIndex, false)));
+                menu.addSeparator();
+                menu.addItem(item => item.setTitle(t('Delete Row')).setIcon('trash').onClick(() => {
+                    this.confirmDeleteRows([rowIndex]);
+                }));
+                menu.addItem(item => item.setTitle(t('Delete Column')).setIcon('trash').onClick(() => {
+                    this.confirmDeleteColumns([colIndex]);
+                }));
+            }
             menu.showAtMouseEvent(evt);
         });
     }
 
     /** Map Univer sheet coords (including header row/col at 0) → data CellData. */
     private getActiveDataCellFromUniver(): CellData | null {
-        const sel = this.lastUniverSel || this.univerHost?.getActiveCell() || null;
+        // Query Univer first: the event-backed selection can lag while the formula
+        // editor is committing or when a context menu opens immediately after click.
+        const sel = this.univerHost?.getActiveCell() || this.lastUniverSel || null;
         if (!sel) return null;
-        if (sel.row <= 0 || sel.col <= 0) return null;
         // Never fall back to the active page — unknown sheetId after project switch
         // would mutate the wrong grid at the same coordinates.
         const page = this.document.pages.find(p => p.id === sel.sheetId);
         if (!page) return null;
-        const row = page.rows[sel.row - 1];
-        const col = page.columns[sel.col - 1];
+        // Univer uses row 0 / column 0 for NarrativeLab's editable labels. When
+        // the sheet is empty they look like ordinary cells, so move a header
+        // selection to the nearest content cell instead of rejecting it.
+        const dataRow = Math.max(1, sel.row);
+        const dataCol = Math.max(1, sel.col);
+        if (dataRow !== sel.row || dataCol !== sel.col) {
+            this.univerHost?.setActiveCell(sel.sheetId, dataRow, dataCol);
+            this.lastUniverSel = { sheetId: sel.sheetId, row: dataRow, col: dataCol };
+        }
+        let expanded = false;
+        while (page.rows.length < dataRow) {
+            const index = page.rows.length + 1;
+            page.rows.push({
+                id: makeId('r-'),
+                label: t('Row {n}', { n: index }),
+                height: 80,
+                bgColor: '',
+                sourceType: 'manual',
+            });
+            expanded = true;
+        }
+        while (page.columns.length < dataCol) {
+            const index = page.columns.length + 1;
+            page.columns.push({
+                id: makeId('c-'),
+                label: t('Col {n}', { n: index }),
+                width: 160,
+                bgColor: '',
+                sourceType: 'manual',
+            });
+            expanded = true;
+        }
+        if (expanded) {
+            // Pull again after establishing NL row/column identities so text
+            // already entered in a native Univer cell is not lost when linked.
+            this.univerHost?.syncMeta(this.document);
+            this.univerHost?.flush();
+            this.univerStructureSig = this.getUniverStructureSig();
+            this.scheduleSave();
+        }
+        const livePage = this.document.pages.find(p => p.id === sel.sheetId) || page;
+        const row = livePage.rows[dataRow - 1];
+        const col = livePage.columns[dataCol - 1];
         if (!row || !col) return null;
         const key = `${row.id}-${col.id}`;
-        if (!page.cells[key]) {
-            page.cells[key] = {
+        if (!livePage.cells[key]) {
+            livePage.cells[key] = {
                 id: key,
                 content: '',
                 bgColor: '',
@@ -1251,8 +1214,8 @@ export class PlotgridView extends ItemView {
             };
         }
         // Keep working set bound when selection is on active page
-        if (page.id === this.document.activePageId) this.data = page;
-        return page.cells[key];
+        if (livePage.id === this.document.activePageId) this.data = livePage;
+        return livePage.cells[key];
     }
 
     private linkNoteForActiveCell(): void {
@@ -1306,19 +1269,9 @@ export class PlotgridView extends ItemView {
 
         let colTemplate = [ROW_HEADER_WIDTH + 'px', ...this.data.columns.map((c) => c.width + 'px')].join(' ');
 
-        // ── Determine which rows are visible (filter support) ──
-        // Also build a sort-order index if the user changed the sort dropdown
+        // Build the legacy fallback row order from linked scene metadata.
         const sceneManager = this.plugin?.sceneManager as SceneManager | undefined;
         const activeProject = sceneManager?.activeProject;
-        const hasFilter = this.currentFilter && Object.keys(this.currentFilter).some(
-            k => { const v = (this.currentFilter as unknown as Record<string, unknown>)[k]; return v !== undefined && v !== '' && !(Array.isArray(v) && v.length === 0); }
-        );
-        let filteredPaths: Set<string> | null = null;
-        if (hasFilter && sceneManager) {
-            filteredPaths = new Set(
-                sceneManager.queryService.getFilteredScenes(this.currentFilter, undefined).map(s => s.filePath)
-            );
-        }
 
         // Build a row display order based on current sort field
         const rowIndices = this.data.rows.map((_, i) => i);
@@ -1358,14 +1311,7 @@ export class PlotgridView extends ItemView {
             });
         }
 
-        const visibleRows = new Set<number>();
-        for (const ri of rowIndices) {
-            const row = this.data.rows[ri];
-            if (!filteredPaths) { visibleRows.add(ri); continue; }
-            // Manual rows always visible
-            if (!row.sourceId || row.sourceType !== 'auto') { visibleRows.add(ri); continue; }
-            if (filteredPaths.has(row.sourceId)) visibleRows.add(ri);
-        }
+        const visibleRows = new Set<number>(rowIndices);
 
         // ── Build act/chapter divider positions (visible rows only) ──
         const dividersBefore = new Map<number, Array<{type: 'act'|'chapter', label: string}>>();
@@ -1617,7 +1563,7 @@ export class PlotgridView extends ItemView {
         }
 
         for (const ri of rowIndices) {
-            if (!visibleRows.has(ri)) continue; // skip filtered-out rows
+            if (!visibleRows.has(ri)) continue;
             // ── Act/chapter dividers ──
             const divs = dividersBefore.get(ri);
             if (divs) {
@@ -2413,7 +2359,7 @@ export class PlotgridView extends ItemView {
                 maxWidth: '100%',
                 textAlign: 'left',
             });
-            msg.textContent = t("Use 'Add Row' and 'Add Column' to begin building your plot grid.");
+            msg.textContent = t('Enter content directly in the embedded spreadsheet to begin.');
         }
 
         // reapply selection visuals after render
@@ -2462,6 +2408,7 @@ export class PlotgridView extends ItemView {
                     try {
                         this.univerHost.setDocument(this.document);
                         this.univerStructureSig = this.getUniverStructureSig();
+                        this.univerViewStateSig = '';
                     } catch { /* ignore */ }
                 }
             }
@@ -3630,9 +3577,6 @@ export class PlotgridView extends ItemView {
         // Remove wrapper focusability while editing so it can't steal focus
         if (this.wrapperEl) this.wrapperEl.tabIndex = -1;
 
-        const hadContentBefore = !!(cell.content && cell.content.trim());
-        const hadLinkedScene = !!cell.linkedSceneId;
-
         let committed = false;
         const restoreFocusability = () => {
             if (this.wrapperEl) this.wrapperEl.tabIndex = 0;
@@ -3644,15 +3588,8 @@ export class PlotgridView extends ItemView {
             cell.content = ta.value;
             // Mark as manually edited so sync won't overwrite
             cell.manualContent = true;
-            // Auto-Note: if toggled on and new non-empty text entered into an unlinked cell
-            const hasNewContent = !!(ta.value && ta.value.trim());
-            if (this.plugin?.settings.plotgridAutoNote && hasNewContent && !hadLinkedScene && !hadContentBefore) {
-                // Let autoCreateNoteFromCell handle save + render to avoid race
-                void this.autoCreateNoteFromCell(cell);
-            } else {
-                this.scheduleSave();
-                this.renderGrid();
-            }
+            this.scheduleSave();
+            this.renderGrid();
         };
         const cancel = () => {
             if (committed) return;
@@ -3821,14 +3758,6 @@ export class PlotgridView extends ItemView {
         const f = this.resolveLinkedVaultFile(path);
         if (f) this.app.workspace.getLeaf('tab').openFile(f, { state: { mode: 'source', source: false } });
         else new Notice(t('Linked file not found'));
-    }
-
-    /**
-     * Auto-Note / Convert to Notes: create a corkboard note in Notes/
-     * from a cell's text and link it back to the cell.
-     */
-    private async autoCreateNoteFromCell(cell: CellData): Promise<void> {
-        await this.convertCellToNotes(cell);
     }
 
     /** Body text for convert — prefer cell content, else linked note/scene body. */
@@ -4138,6 +4067,9 @@ export class PlotgridView extends ItemView {
         const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
         if (!scMgr) return;
 
+        // Commit in-cell Univer edits before rebuilding NL rows/columns.
+        this.univerHost?.flush();
+
         const scenes = scMgr.getAllScenes().slice().sort((a, b) => {
             // Sort by act → chapter → sequence using the shared numeric-aware
             // comparator (handles string acts like "1.1" / "Prologue").
@@ -4318,7 +4250,7 @@ export class PlotgridView extends ItemView {
         }
 
         this.scheduleSave();
-        this.renderGrid();
+        this.renderGrid({ forcePush: true });
         new Notice(t('Synced {scenes} scenes → {rows} rows, {cols} columns', { scenes: scenes.length, rows: this.data.rows.length, cols: this.data.columns.length }));
     }
 
@@ -4352,24 +4284,9 @@ export class PlotgridView extends ItemView {
         if (typeof (this.data as unknown as Record<string, unknown>).stickyHeaders === 'undefined') (this.data as unknown as Record<string, unknown>).stickyHeaders = true;
     }
 
-    private addRow() {
-        const id = makeId('r-');
-        const n = this.data.rows.length + 1;
-        this.data.rows.push({ id, label: t('Row {n}', { n }), height: 80, bgColor: '' });
-        this.scheduleSave();
-        this.renderGrid();
-    }
-
-    private addColumn() {
-        const id = makeId('c-');
-        const n = this.data.columns.length + 1;
-        this.data.columns.push({ id, label: t('Col {n}', { n }), width: 160, bgColor: '' });
-        this.scheduleSave();
-        this.renderGrid();
-    }
-
     // Insert/Delete helpers
     private insertRowAt(index: number, above: boolean) {
+        this.univerHost?.flush();
         const id = makeId('r-');
         const label = t('Row {n}', { n: this.data.rows.length + 1 });
         const newRow = { id, label, height: 80, bgColor: '' };
@@ -4380,6 +4297,7 @@ export class PlotgridView extends ItemView {
     }
 
     private insertColumnAt(index: number, left: boolean) {
+        this.univerHost?.flush();
         const id = makeId('c-');
         const label = t('Col {n}', { n: this.data.columns.length + 1 });
         const newCol = { id, label, width: 160, bgColor: '' };
@@ -4446,6 +4364,7 @@ export class PlotgridView extends ItemView {
     }
 
     private deleteRows(indices: number[]): void {
+        this.univerHost?.flush();
         const sorted = [...new Set(indices)]
             .filter((i) => i >= 0 && i < this.data.rows.length)
             .sort((a, b) => b - a);
@@ -4471,6 +4390,7 @@ export class PlotgridView extends ItemView {
     }
 
     private deleteColumns(indices: number[]): void {
+        this.univerHost?.flush();
         const sorted = [...new Set(indices)]
             .filter((i) => i >= 0 && i < this.data.columns.length)
             .sort((a, b) => b - a);
@@ -4822,10 +4742,6 @@ export class PlotgridView extends ItemView {
         const scanContainer = cellBody.createDiv('inspector-scan-results');
         this.updateCellInspectorScan(scanContainer, cell);
 
-        // Track initial cell state for auto-note (only create once per empty cell)
-        const inspectorHadContent = !!(cell.content && cell.content.trim());
-        const inspectorHadLinkedScene = !!cell.linkedSceneId;
-
         let textSaveTimer: number | null = null;
         let mdPreviewTimer: number | null = null;
         const syncCellMarkdownPreview = () => {
@@ -4860,14 +4776,7 @@ export class PlotgridView extends ItemView {
             cell.manualContent = true;
             syncCellMarkdownPreview();
             this.updateCellInspectorScan(scanContainer, liveCell);
-            // Auto-Note from inspector: if toggled on and new text on a previously empty, unlinked cell
-            const hasNewContent = !!(textArea.value && textArea.value.trim());
-            if (this.plugin?.settings.plotgridAutoNote && hasNewContent && !inspectorHadLinkedScene && !inspectorHadContent && !liveCell.linkedSceneId) {
-                // Let autoCreateNoteFromCell handle save + render to avoid race
-                void this.autoCreateNoteFromCell(liveCell);
-            } else {
-                this.scheduleSave();
-            }
+            this.scheduleSave();
         });
 
         // ── Linked note / scene + actions ──
@@ -5133,4 +5042,4 @@ export class PlotgridView extends ItemView {
 }
 
 export default PlotgridView;
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents, @typescript-eslint/no-unused-vars -- end of file-wide suppression block opened at line 1 */
