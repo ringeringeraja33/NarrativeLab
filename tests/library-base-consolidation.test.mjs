@@ -66,11 +66,17 @@ test('Browse Properties/Sort changes are persisted into library.base', () => {
     assert.match(nativeLibraryBase, /newestByCategory/);
 });
 
-test('Library Base folder filters use file.inFolder so New can create visible notes', () => {
+test('Library Base folder filters use file.inFolder and only the native New control', () => {
     assert.match(nativeLibraryBase, /single-library-base-v4-ignore-excalidraw/);
     assert.match(nativeLibraryBase, /!file\.inFolder\(/);
-    assert.match(nativeLibraryBase, /onNew\?: \(\) => void/);
-    assert.match(nativeLibraryBase, /has-nl-new/);
+    assert.doesNotMatch(nativeLibraryBase, /has-nl-new|library-native-base-actions|hideBasesNativeNewButtons/);
+});
+
+test('native Base New routes the created note into the active Library category folder', () => {
+    assert.match(nativeLibraryBase, /routeNativeBaseNewNotes\(host, plugin, resolved\.folderPath\)/);
+    assert.match(nativeLibraryBase, /plugin\.app\.vault\.on\('create'/);
+    assert.match(nativeLibraryBase, /plugin\.app\.fileManager\.renameFile\(file, destination\)/);
+    assert.match(nativeLibraryBase, /availableNotePath/);
 });
 
 test('Library Base excludes Excalidraw markdown drawings', () => {

@@ -6,7 +6,6 @@ import {
     TFolder,
     normalizePath,
     parseYaml,
-    setIcon,
     stringifyYaml,
 } from 'obsidian';
 import { BUILTIN_CODEX_CATEGORIES } from '../models/Codex';
@@ -38,6 +37,7 @@ interface NativeBaseEmbedState {
     basePath?: string;
     liveView?: BasesViewLike | null;
     unhook?: (() => void) | null;
+    newNoteUnhook?: (() => void) | null;
     persistTimer?: number | null;
     /** Last time this embed produced a layout snapshot (ms). Newer wins on merge. */
     lastLayoutAt?: number;
@@ -242,6 +242,92 @@ async function ensureVaultFolder(plugin: SceneCardsPlugin, folderPath: string): 
             await plugin.app.vault.createFolder(current);
         }
     }
+}
+
+function isNativeBasesNewButton(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    const control = target.closest<HTMLElement>('button, [role="button"]');
+    if (!control || !control.closest('.bases-toolbar, .bases-toolbar-container')) return false;
+    const labels = [
+        control.textContent,
+        control.getAttribute('aria-label'),
+        control.getAttribute('title'),
+    ];
+    return labels.some(label => {
+        const normalized = (label || '').replace(/^\s*\+\s*/, '').trim().toLocaleLowerCase();
+        return normalized === 'new' || normalized === '新建' || normalized === t('New').trim().toLocaleLowerCase();
+    });
+}
+
+async function availableNotePath(
+    plugin: SceneCardsPlugin,
+    targetFolder: string,
+    file: TFile,
+): Promise<string> {
+    const extension = file.extension ? `.${file.extension}` : '';
+    const stem = file.basename || t('Untitled');
+    let suffix = 0;
+    while (true) {
+        const name = suffix === 0 ? `${stem}${extension}` : `${stem} ${suffix}${extension}`;
+        const candidate = normalizePath(`${targetFolder}/${name}`);
+        if (!(await pathExists(plugin, candidate))) return candidate;
+        suffix += 1;
+    }
+}
+
+/**
+ * Keep the native Bases New control and editor, but route the note it creates
+ * into the active Library category instead of Obsidian's global new-note path.
+ */
+function routeNativeBaseNewNotes(
+    host: HTMLElement,
+    plugin: SceneCardsPlugin,
+    targetFolder: string,
+): () => void {
+    let armedCreateRef: ReturnType<typeof plugin.app.vault.on> | null = null;
+    let disarmTimer: number | null = null;
+
+    const disarm = () => {
+        if (armedCreateRef) {
+            plugin.app.vault.offref(armedCreateRef);
+            armedCreateRef = null;
+        }
+        if (disarmTimer != null) {
+            window.clearTimeout(disarmTimer);
+            disarmTimer = null;
+        }
+    };
+
+    const arm = () => {
+        disarm();
+        armedCreateRef = plugin.app.vault.on('create', file => {
+            if (!(file instanceof TFile) || file.extension.toLocaleLowerCase() !== 'md') return;
+            disarm();
+            void (async () => {
+                const destinationFolder = normalizePath(targetFolder);
+                if (normalizePath(file.parent?.path || '') === destinationFolder) return;
+                await ensureVaultFolder(plugin, destinationFolder);
+                const destination = await availableNotePath(plugin, destinationFolder, file);
+                await plugin.app.fileManager.renameFile(file, destination);
+            })().catch(error => {
+                console.error('[NarrativeLab] Failed to route new Library note:', error);
+            });
+        });
+        disarmTimer = window.setTimeout(disarm, 5000);
+    };
+
+    const onTrigger = (event: MouseEvent | PointerEvent) => {
+        if (isNativeBasesNewButton(event.target)) arm();
+    };
+    // Pointer-down covers Obsidian builds that create before the click event;
+    // click also covers keyboard activation.
+    host.addEventListener('pointerdown', onTrigger, true);
+    host.addEventListener('click', onTrigger, true);
+    return () => {
+        host.removeEventListener('pointerdown', onTrigger, true);
+        host.removeEventListener('click', onTrigger, true);
+        disarm();
+    };
 }
 
 function getKnownLibraryCategoryIds(plugin: SceneCardsPlugin): string[] {
@@ -1264,7 +1350,9 @@ export function disposeNativeLibraryBase(owner: Component): void {
     // Snapshot+write layout while the Bases view is still alive, then detach.
     const flush = flushEmbedLayout(state);
     state.unhook?.();
+    state.newNoteUnhook?.();
     state.unhook = null;
+    state.newNoteUnhook = null;
     state.generation += 1;
     if (state.child) {
         owner.removeChild(state.child);
@@ -1286,43 +1374,18 @@ function escapeWikilinkPath(path: string): string {
  * Render an Obsidian Bases embed for one Library category view inside
  * Library/library.base.
  */
-export interface NativeLibraryBaseOptions {
-    /** Prefer NarrativeLab create (correct folder + frontmatter) over Bases New. */
-    onNew?: () => void;
-    newLabel?: string;
-}
-
 export async function renderNativeLibraryBase(
     container: HTMLElement,
     plugin: SceneCardsPlugin,
     categoryId: string,
     owner: Component,
-    options: NativeLibraryBaseOptions = {},
 ): Promise<void> {
     disposeNativeLibraryBase(owner);
     const state = activeEmbeds.get(owner)!;
     const generation = state.generation;
 
     container.empty();
-    if (options.onNew) {
-        const actions = container.createDiv('library-native-base-actions');
-        const newBtn = actions.createEl('button', {
-            cls: 'library-browse-action-btn',
-            attr: {
-                type: 'button',
-                'aria-label': options.newLabel || t('New'),
-            },
-        });
-        const icon = newBtn.createSpan({ cls: 'library-browse-action-icon' });
-        setIcon(icon, 'plus');
-        newBtn.createSpan({ cls: 'library-browse-action-label', text: options.newLabel || t('New') });
-        newBtn.addEventListener('click', (ev) => {
-            ev.preventDefault();
-            options.onNew?.();
-        });
-    }
     const host = container.createDiv('library-native-base-embed markdown-rendered');
-    host.toggleClass('has-nl-new', !!options.onNew);
     const loading = host.createDiv({ cls: 'library-native-base-loading', text: t('Loading Base…') });
     let resolved: { basePath: string; folderPath: string } | null;
     try {
@@ -1353,6 +1416,7 @@ export async function renderNativeLibraryBase(
     state.plugin = plugin;
     state.categoryId = categoryId;
     state.basePath = resolved.basePath;
+    state.newNoteUnhook = routeNativeBaseNewNotes(host, plugin, resolved.folderPath);
     const linkPath = escapeWikilinkPath(resolved.basePath);
     const linkView = escapeWikilinkPath(viewName);
     await MarkdownRenderer.render(
@@ -1373,28 +1437,5 @@ export async function renderNativeLibraryBase(
     void waitForBasesView(child, generation, () => state.generation).then(view => {
         if (!view || state.generation !== generation || !host.isConnected) return;
         hookLiveBasesView(state, view);
-        if (host.hasClass('has-nl-new')) {
-            hideBasesNativeNewButtons(host);
-        }
     });
-}
-
-/** Hide Obsidian Bases' New control when NarrativeLab supplies create. */
-function hideBasesNativeNewButtons(host: HTMLElement): void {
-    const hide = () => {
-        for (const btn of Array.from(host.querySelectorAll('button'))) {
-            const label = (
-                btn.getAttribute('aria-label')
-                || btn.getAttribute('title')
-                || btn.textContent
-                || ''
-            ).replace(/\s+/g, ' ').trim();
-            if (/^(New|新建|New file|新建文件|\+ New|\+ 新建)$/i.test(label)) {
-                btn.addClass('nl-native-base-new-hidden');
-            }
-        }
-    };
-    hide();
-    window.setTimeout(hide, 200);
-    window.setTimeout(hide, 800);
 }

@@ -32,6 +32,37 @@ test('CSS disclosure indicators are valid and cannot render corrupted text', () 
     assert.match(styles, /data-narrative-lab-language='zh'[^}]+content:\s*'开'/s);
 });
 
+test('Order and plotline tools share one Structure tab with five subviews', async () => {
+    const [switcher, modes, timeline, storyline] = await Promise.all([
+        readFile(new URL('../components/ViewSwitcher.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/StructureModeSwitcher.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/TimelineView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/StorylineView.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(switcher, /label: 'Structure'/);
+    assert.doesNotMatch(switcher, /label: 'Order'/);
+    assert.doesNotMatch(switcher, /label: 'Plotlines'/);
+    for (const label of ['Timeline', 'Track comparison', 'Plot list', 'Subway map', 'Chapter templates']) {
+        assert.match(modes, new RegExp(`label: '${label}'`));
+    }
+    assert.match(timeline, /renderStructureModeSwitcher/);
+    assert.match(storyline, /renderStructureModeSwitcher/);
+    assert.match(modes, /if \(localAction\) \{[\s\S]*?localAction\(\);[\s\S]*?return;/);
+    assert.match(timeline, /await this\.sceneManager\.ensureInitialized\(\)/);
+    assert.match(storyline, /await this\.sceneManager\.ensureInitialized\(\)/);
+    assert.match(modes, /if \(switching\) return/);
+    assert.match(modes, /'aria-pressed'/);
+    assert.match(timeline, /private setZoomLevel/);
+    assert.doesNotMatch(timeline, /private refreshTimeline/);
+    assert.match(timeline, /window\.cancelAnimationFrame\(this\._pendingRefresh\)/);
+    assert.match(storyline, /if \(this\.plotlineViewMode === mode\) return/);
+    assert.match(storyline, /if \(this\.sortMode === mode\) return/);
+    assert.match(storyline, /window\.cancelAnimationFrame\(this\._pendingRefresh\)/);
+    assert.match(storyline, /scrollTop = scroll\.top/);
+    assert.match(styles, /data-type="narrative-lab-timeline"[^}]+flex-wrap:\s*nowrap/s);
+    assert.match(styles, /data-type="narrative-lab-timeline"[^}]+overflow-x:\s*auto/s);
+});
+
 test('column link badge stays in flow and cannot cover the scene title', () => {
     const rule = styles.match(/\.story-line-column-body\.story-line-column-body \.scene-card-detected-badge\s*\{[^}]+\}/)?.[0] || '';
     assert.match(rule, /position:\s*static/);
@@ -181,6 +212,20 @@ test('library story-graph refresh keeps the canvas mounted', () => {
     assert.match(locationView, /querySelector\('\.story-graph-page'\)/);
 });
 
+test('project switching remounts project-bound Library embeds', () => {
+    const switchProject = sceneManager.slice(
+        sceneManager.indexOf('async setActiveProject('),
+        sceneManager.indexOf('async renameProject('),
+    );
+    assert.match(switchProject, /loadProjectSystemData\(\)/);
+    assert.match(switchProject, /libraryCategoriesStructureEpoch \+= 1/);
+    assert.ok(
+        switchProject.indexOf('libraryCategoriesStructureEpoch += 1')
+            > switchProject.indexOf('loadProjectSystemData()'),
+        'the epoch changes only after the new project settings are loaded',
+    );
+});
+
 test('add-relation modal can create character or wikilink kinds', () => {
     assert.match(libraryModeBar, /function openAddStoryGraphRelationModal/);
     assert.match(libraryModeBar, /addOption\('wikilink', t\('Wikilink category'\)\)/);
@@ -223,4 +268,43 @@ test('custom profile categories expose a working profile overview mode', () => {
     assert.match(codexView, /profileOverviewCategoryId = this\.activeCategory/);
     assert.match(codexView, /showLayoutToggle: !this\.isProfileOverviewMode\(\)/);
     assert.match(codexView, /this\.isProfileOverviewMode\(\)\s*\? 'cards'/);
+});
+
+test('plot-grid text keeps Markdown source and renders rich text with native wikilinks', async () => {
+    const [plotgrid, univerHost, codec, markdownInput] = await Promise.all([
+        readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/PlotGridXlsxCodec.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../utils/markdownInput.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(plotgrid, /openCellMarkdownEditor/);
+    assert.match(plotgrid, /new WikilinkSuggest/);
+    assert.match(plotgrid, /MarkdownRenderer\.render/);
+    assert.match(plotgrid, /commit\(this\.textarea\.value\)/);
+    assert.doesNotMatch(plotgrid, /openNoteLinkModal|openSceneLinkModal/);
+    assert.doesNotMatch(univerHost, /onCellRender|canvasMarkdownSegments|fillRect\(/);
+    assert.match(univerHost, /--link-color/);
+    assert.match(codec, /plotGridSourceToUniverRichText/);
+    assert.match(codec, /PLOTGRID_SOURCE_FIELD/);
+    assert.match(codec, /cellDocument/);
+    const contextMenu = univerHost.slice(
+        univerHost.indexOf('function registerNarrativeLabContextMenu'),
+        univerHost.indexOf('function linkedCellAt'),
+    );
+    assert.doesNotMatch(contextMenu, /link-note|unlink-note|open-linked-note/);
+    assert.match(markdownInput, /getHotkeys/);
+    assert.match(markdownInput, /insert-wikilink/);
+});
+
+test('NarrativeCanvas textareas inherit the configured Obsidian Markdown shortcuts', async () => {
+    const [canvasApp, canvasHost] = await Promise.all([
+        readFile(new URL('../canvas-runtime/app.js', import.meta.url), 'utf8'),
+        readFile(new URL('../canvas-runtime/main.js', import.meta.url), 'utf8'),
+    ]);
+    assert.match(canvasApp, /handleObsidianMarkdownShortcut/);
+    assert.match(canvasApp, /target\.tagName !== "TEXTAREA"/);
+    assert.match(canvasApp, /NarrativeCanvasHost\?\.getMarkdownShortcutAction/);
+    assert.match(canvasHost, /getMarkdownShortcutAction\(event\)/);
+    assert.match(canvasHost, /hotkeyManager/);
+    assert.match(canvasHost, /editor:insert-wikilink/);
 });

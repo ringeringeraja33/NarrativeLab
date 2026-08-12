@@ -30,8 +30,7 @@ export interface ViewSwitcherEntry {
 export const VIEW_ENTRIES: ViewSwitcherEntry[] = [
     { type: BOARD_VIEW_TYPE, label: 'Board', icon: 'layout-grid' },
     { type: PLOTGRID_VIEW_TYPE, label: 'Table', icon: 'table' },
-    { type: STORYLINE_VIEW_TYPE, label: 'Plotlines', icon: 'git-branch' },
-    { type: TIMELINE_VIEW_TYPE, label: 'Order', icon: 'list-ordered' },
+    { type: TIMELINE_VIEW_TYPE, label: 'Structure', icon: 'git-branch' },
     { type: MANUSCRIPT_VIEW_TYPE, label: 'Manuscript', icon: 'book-open-text' },
     { type: CODEX_VIEW_TYPE, label: 'Library', icon: 'library-big' },
 ];
@@ -52,6 +51,7 @@ const PLAYMODE_ENTRY: ViewSwitcherEntry = {
 
 /** View types that are considered "inside" the Codex umbrella */
 const CODEX_FAMILY = new Set([CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE]);
+const STRUCTURE_FAMILY = new Set([STORYLINE_VIEW_TYPE, TIMELINE_VIEW_TYPE]);
 
 /**
  * Renders view-switcher tabs into a toolbar container.
@@ -76,7 +76,9 @@ export function renderViewSwitcher(
         const isCodexEntry = entry.type === CODEX_VIEW_TYPE;
         const isActive = isCodexEntry
             ? CODEX_FAMILY.has(activeViewType)
-            : entry.type === activeViewType;
+            : entry.type === TIMELINE_VIEW_TYPE
+                ? STRUCTURE_FAMILY.has(activeViewType)
+                : entry.type === activeViewType;
 
         const tab = switcher.createEl('button', {
             cls: `story-line-view-tab ${isActive ? 'active' : ''}`,

@@ -52,9 +52,11 @@ export interface PlotGridNlMeta {
         id: string;
         zoom?: number;
         stickyHeaders?: boolean;
+        frozenColumns?: number;
+        frozenRows?: number;
         rows: RowMeta[];
         columns: ColumnMeta[];
-        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'>>;
+        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'>>;
     }>;
 }
 
@@ -93,6 +95,185 @@ function cellValueText(value: unknown): string {
     return '';
 }
 
+type UniverTextStyle = {
+    bl?: 0 | 1;
+    it?: 0 | 1;
+    ul?: { s: 0 | 1 };
+    st?: { s: 0 | 1 };
+    cl?: { rgb: string };
+    bg?: { rgb: string };
+    ff?: string;
+};
+
+type UniverTextRun = { st: number; ed: number; ts: UniverTextStyle };
+type RichSegment = { text: string; style: UniverTextStyle };
+
+export const PLOTGRID_SOURCE_FIELD = 'narrativeLabSource';
+
+function decodeHtmlEntities(value: string): string {
+    const named: Record<string, string> = {
+        amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0',
+    };
+    return value.replace(/&(#x[\da-f]+|#\d+|[a-z]+);/gi, (match, entity: string) => {
+        if (entity[0] === '#') {
+            const hex = entity[1]?.toLowerCase() === 'x';
+            const point = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+            return Number.isFinite(point) ? String.fromCodePoint(point) : match;
+        }
+        return named[entity.toLowerCase()] ?? match;
+    });
+}
+
+function mergeTextStyle(base: UniverTextStyle, patch: UniverTextStyle): UniverTextStyle {
+    return { ...base, ...patch };
+}
+
+function markdownSegments(source: string, inherited: UniverTextStyle, linkColor: string): RichSegment[] {
+    const segments: RichSegment[] = [];
+    const input = source.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
+    const token = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\(([^)]*)\)|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|==([^=]+)==|`([^`]+)`|\*([^*\n]+)\*|_([^_\n]+)_/g;
+    let cursor = 0;
+    let match: RegExpExecArray | null;
+    const append = (text: string, style: UniverTextStyle = inherited) => {
+        if (text) segments.push({ text: decodeHtmlEntities(text), style });
+    };
+    const appendParsed = (text: string, style: UniverTextStyle) => {
+        segments.push(...markdownSegments(text, style, linkColor));
+    };
+    while ((match = token.exec(input))) {
+        append(input.slice(cursor, match.index));
+        if (match[1]) append(match[2] || match[1], mergeTextStyle(inherited, { cl: { rgb: linkColor } }));
+        else if (match[3]) append(match[3], mergeTextStyle(inherited, { cl: { rgb: linkColor }, ul: { s: 1 } }));
+        else if (match[5] || match[6]) appendParsed(match[5] || match[6] || '', mergeTextStyle(inherited, { bl: 1 }));
+        else if (match[7]) appendParsed(match[7], mergeTextStyle(inherited, { st: { s: 1 } }));
+        else if (match[8]) appendParsed(match[8], mergeTextStyle(inherited, { bg: { rgb: '#fff3a3' } }));
+        else if (match[9]) append(match[9], mergeTextStyle(inherited, { ff: 'monospace', bg: { rgb: '#ececec' } }));
+        else appendParsed(match[10] || match[11] || '', mergeTextStyle(inherited, { it: 1 }));
+        cursor = match.index + match[0].length;
+    }
+    append(input.slice(cursor));
+    return segments;
+}
+
+function styleFromHtmlTag(tagSource: string, current: UniverTextStyle, linkColor: string): UniverTextStyle {
+    const tag = tagSource.match(/^<\s*([\w-]+)/)?.[1]?.toLowerCase() || '';
+    let next = { ...current };
+    if (tag === 'b' || tag === 'strong') next.bl = 1;
+    if (tag === 'i' || tag === 'em') next.it = 1;
+    if (tag === 's' || tag === 'del' || tag === 'strike') next.st = { s: 1 };
+    if (tag === 'u') next.ul = { s: 1 };
+    if (tag === 'mark') next.bg = { rgb: '#fff3a3' };
+    if (tag === 'code') {
+        next.ff = 'monospace';
+        next.bg = { rgb: '#ececec' };
+    }
+    if (tag === 'a') {
+        next.cl = { rgb: linkColor };
+        next.ul = { s: 1 };
+    }
+    const css = tagSource.match(/\sstyle\s*=\s*["']([^"']*)["']/i)?.[1] || '';
+    for (const declaration of css.split(';')) {
+        const [rawName, ...rawValue] = declaration.split(':');
+        const name = rawName?.trim().toLowerCase();
+        const value = rawValue.join(':').trim();
+        if (!name || !value) continue;
+        if (name === 'font-weight' && (value === 'bold' || Number.parseInt(value, 10) >= 600)) next.bl = 1;
+        else if (name === 'font-style' && value === 'italic') next.it = 1;
+        else if (name === 'color') next.cl = { rgb: value };
+        else if (name === 'background' || name === 'background-color') next.bg = { rgb: value };
+        else if (name === 'font-family') next.ff = value.replace(/["']/g, '');
+        else if (name === 'text-decoration' && value.includes('underline')) next.ul = { s: 1 };
+        else if (name === 'text-decoration' && value.includes('line-through')) next.st = { s: 1 };
+    }
+    return next;
+}
+
+/** Convert Markdown/HTML source to Univer's native rich-text cell document. */
+export function plotGridSourceToUniverRichText(source: string, linkColor = '#5e6ad2'): {
+    displayText: string;
+    cellDocument: Record<string, unknown>;
+} {
+    const normalized = String(source || '')
+        .replace(/\r\n?/g, '\n')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/(?:p|div|section|article|h[1-6]|li|blockquote)>/gi, '$&\n');
+    const segments: RichSegment[] = [];
+    const stack: Array<{ tag: string; style: UniverTextStyle }> = [{ tag: '', style: {} }];
+    const chunks = normalized.match(/<\/?[A-Za-z][^>]*>|[^<]+|</g) || [];
+    for (const chunk of chunks) {
+        if (!/^<\/?[A-Za-z]/.test(chunk)) {
+            segments.push(...markdownSegments(chunk, stack.at(-1)?.style ?? {}, linkColor));
+            continue;
+        }
+        if (/^<\//.test(chunk)) {
+            const closing = chunk.match(/^<\/\s*([\w-]+)/)?.[1]?.toLowerCase() || '';
+            for (let index = stack.length - 1; index > 0; index -= 1) {
+                const popped = stack.pop();
+                if (popped?.tag === closing) break;
+            }
+            continue;
+        }
+        if (/^<\s*(?:br|hr)\b/i.test(chunk)) continue;
+        const tag = chunk.match(/^<\s*([\w-]+)/)?.[1]?.toLowerCase() || '';
+        if (!tag || /\/$/.test(chunk.trim())) continue;
+        stack.push({ tag, style: styleFromHtmlTag(chunk, stack.at(-1)?.style ?? {}, linkColor) });
+    }
+
+    // Clean Markdown block prefixes while retaining the cell's line breaks.
+    const joined: RichSegment[] = [];
+    for (const segment of segments) {
+        let text = segment.text;
+        if (joined.length === 0 || joined.at(-1)?.text.endsWith('\n')) {
+            text = text.replace(/^\s*(?:#{1,6}|>|[-+*]|\d+\.)\s+/, '');
+        }
+        if (text) joined.push({ ...segment, text });
+    }
+    const displayText = joined.map(item => item.text).join('');
+    const textRuns: UniverTextRun[] = [];
+    let offset = 0;
+    for (const segment of joined) {
+        const length = segment.text.length;
+        if (length > 0 && Object.keys(segment.style).length > 0) {
+            textRuns.push({ st: offset, ed: offset + length, ts: segment.style });
+        }
+        offset += length;
+    }
+    const dataStream = `${displayText.replace(/\n/g, '\r')}\r\n`;
+    const paragraphs: Array<{ startIndex: number }> = [];
+    for (let index = 0; index < dataStream.length; index += 1) {
+        if (dataStream[index] === '\r') paragraphs.push({ startIndex: index });
+    }
+    return {
+        displayText,
+        cellDocument: {
+            id: `nl-rich-${Math.random().toString(36).slice(2, 10)}`,
+            body: {
+                dataStream,
+                textRuns,
+                paragraphs,
+                customBlocks: [],
+                customRanges: [],
+                customDecorations: [],
+                sectionBreaks: [],
+                tables: [],
+            },
+            drawings: {},
+            drawingsOrder: [],
+            documentStyle: {},
+        },
+    };
+}
+
+function univerDocumentPlainText(value: unknown): string {
+    if (!value || typeof value !== 'object') return '';
+    const body = (value as { body?: { dataStream?: unknown } }).body;
+    if (typeof body?.dataStream !== 'string') return '';
+    return body.dataStream
+        .replace(/\0$/, '')
+        .replace(/\r\n$/, '')
+        .replace(/\r/g, '\n');
+}
+
 function cellKey(rowId: string, colId: string): string {
     return `${rowId}-${colId}`;
 }
@@ -107,6 +288,7 @@ function defaultCell(partial?: Partial<CellData>): CellData {
         italic: !!partial?.italic,
         align: partial?.align || 'left',
         linkedSceneId: partial?.linkedSceneId,
+        linkedViaWikilink: partial?.linkedViaWikilink,
         formula: partial?.formula,
         manualContent: partial?.manualContent,
     };
@@ -123,8 +305,9 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
         for (const [key, cell] of Object.entries(page.cells || {})) {
             if (!cell) continue;
             cells[key] = {
-                id: cell.id,
+                id: key,
                 linkedSceneId: cell.linkedSceneId,
+                linkedViaWikilink: cell.linkedViaWikilink,
                 formula: cell.formula,
                 manualContent: cell.manualContent,
                 bgColor: cell.bgColor,
@@ -138,6 +321,8 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
             id: page.id,
             zoom: page.zoom,
             stickyHeaders: page.stickyHeaders,
+            frozenColumns: page.frozenColumns,
+            frozenRows: page.frozenRows,
             rows: page.rows.map(r => ({ ...r })),
             columns: page.columns.map(c => ({ ...c })),
             cells,
@@ -167,7 +352,11 @@ export async function encodePlotGridXlsx(raw: unknown): Promise<ArrayBuffer> {
         sheetNames.push(name);
         const sheet = wb.addWorksheet(name, page.stickyHeaders === false
             ? undefined
-            : { views: [{ state: 'frozen', xSplit: 1, ySplit: 1 }] });
+            : { views: [{
+                state: 'frozen',
+                xSplit: Math.max(1, page.frozenColumns ?? 1),
+                ySplit: Math.max(1, page.frozenRows ?? 1),
+            }] });
 
         const cols = page.columns || [];
         const rows = page.rows || [];
@@ -261,7 +450,7 @@ function cssToArgb(css: string): string {
     const m = raw.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
     if (m) {
         const to = (n: string) => Number(n).toString(16).padStart(2, '0');
-        return `FF${to(m[1])}${to(m[2])}${to(m[3])}`.toUpperCase();
+        return `FF${to(m[1] ?? '0')}${to(m[2] ?? '0')}${to(m[3] ?? '0')}`.toUpperCase();
     }
     return 'FFFFFFFF';
 }
@@ -372,9 +561,10 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
                     ? argbToCss(excelCell.fill.fgColor?.argb)
                     : '';
                 cells[key] = defaultCell({
-                    id: saved?.id,
+                    id: key,
                     content,
                     linkedSceneId: saved?.linkedSceneId,
+                    linkedViaWikilink: saved?.linkedViaWikilink,
                     formula: formulaValue?.formula ? `=${formulaValue.formula}` : saved?.formula,
                     manualContent: saved?.manualContent,
                     bgColor: fill || saved?.bgColor || '',
@@ -394,6 +584,16 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
             cells,
             zoom: pageMeta?.zoom ?? 1,
             stickyHeaders: pageMeta?.stickyHeaders !== false,
+            frozenColumns: Math.max(1, Math.floor(
+                pageMeta?.frozenColumns
+                ?? (sheet.views?.[0] as { xSplit?: number } | undefined)?.xSplit
+                ?? 1,
+            )),
+            frozenRows: Math.max(1, Math.floor(
+                pageMeta?.frozenRows
+                ?? (sheet.views?.[0] as { ySplit?: number } | undefined)?.ySplit
+                ?? 1,
+            )),
         });
     });
 
@@ -402,9 +602,11 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
     }
 
     const preferredActive = meta?.activePageId;
+    const firstPage = pages[0];
+    if (!firstPage) return createEmptyConceptGridDocument();
     const activePageId = preferredActive && pages.some(p => p.id === preferredActive)
         ? preferredActive
-        : pages[0].id;
+        : firstPage.id;
 
     return normalizeConceptGridDocument({
         version: 2,
@@ -415,7 +617,10 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
 }
 
 /** Convert ConceptGridDocument to a minimal Univer IWorkbookData-like snapshot. */
-export function documentToUniverWorkbookData(raw: unknown): Record<string, unknown> {
+export function documentToUniverWorkbookData(
+    raw: unknown,
+    options: { linkColor?: string; richText?: boolean } = {},
+): Record<string, unknown> {
     const doc = normalizeConceptGridDocument(raw);
     const sheets: Record<string, unknown> = {};
     const sheetOrder: string[] = [];
@@ -423,14 +628,20 @@ export function documentToUniverWorkbookData(raw: unknown): Record<string, unkno
     doc.pages.forEach((page, index) => {
         const id = page.id || `sheet-${index}`;
         sheetOrder.push(id);
-        const cellData: Record<number, Record<number, { v: string; f?: string; s?: UniverStyleSnapshot }>> = {};
+        const cellData: Record<number, Record<number, {
+            v: string;
+            f?: string;
+            p?: Record<string, unknown>;
+            custom?: Record<string, unknown>;
+            s?: UniverStyleSnapshot;
+        }>> = {};
         const cols = page.columns || [];
         const rows = page.rows || [];
 
-        cellData[0] = cellData[0] || {};
-        cellData[0][0] = { v: '' };
+        const headerRow = cellData[0] ?? (cellData[0] = {});
+        headerRow[0] = { v: '' };
         cols.forEach((col, ci) => {
-            cellData[0][ci + 1] = {
+            headerRow[ci + 1] = {
                 v: col.label || '',
                 s: {
                     bg: (col.headerBgColor || col.bgColor) ? { rgb: col.headerBgColor || col.bgColor } : undefined,
@@ -442,8 +653,8 @@ export function documentToUniverWorkbookData(raw: unknown): Record<string, unkno
             };
         });
         rows.forEach((row, ri) => {
-            cellData[ri + 1] = cellData[ri + 1] || {};
-            cellData[ri + 1][0] = {
+            const bodyRow = cellData[ri + 1] ?? (cellData[ri + 1] = {});
+            bodyRow[0] = {
                 v: row.label || '',
                 s: {
                     bg: (row.headerBgColor || row.bgColor) ? { rgb: row.headerBgColor || row.bgColor } : undefined,
@@ -455,9 +666,17 @@ export function documentToUniverWorkbookData(raw: unknown): Record<string, unkno
             };
             cols.forEach((col, ci) => {
                 const data = page.cells[cellKey(row.id, col.id)];
-                cellData[ri + 1][ci + 1] = {
-                    v: data?.content || '',
+                const source = data?.content || '';
+                const rich = !data?.formula && source
+                    ? plotGridSourceToUniverRichText(source, options.linkColor)
+                    : null;
+                bodyRow[ci + 1] = {
+                    // `p` is rendered and edited by Univer itself. The canonical
+                    // Markdown/HTML source remains in `custom` for round trips.
+                    v: rich?.displayText ?? source,
                     f: data?.formula,
+                    p: options.richText === false ? undefined : rich?.cellDocument,
+                    custom: source ? { [PLOTGRID_SOURCE_FIELD]: source } : undefined,
                     s: {
                         bg: data?.bgColor ? { rgb: data.bgColor } : undefined,
                         cl: data?.textColor ? { rgb: data.textColor } : undefined,
@@ -488,7 +707,12 @@ export function documentToUniverWorkbookData(raw: unknown): Record<string, unkno
             zoomRatio: page.zoom || 1,
             freeze: page.stickyHeaders === false
                 ? { startRow: 0, startColumn: 0, ySplit: 0, xSplit: 0 }
-                : { startRow: 1, startColumn: 1, ySplit: 1, xSplit: 1 },
+                : {
+                    startRow: Math.max(1, page.frozenRows ?? 1),
+                    startColumn: Math.max(1, page.frozenColumns ?? 1),
+                    ySplit: Math.max(1, page.frozenRows ?? 1),
+                    xSplit: Math.max(1, page.frozenColumns ?? 1),
+                },
             cellData,
             rowData,
             columnData,
@@ -521,7 +745,13 @@ type UniverStyleSnapshot = {
     it?: number | boolean | null;
     ht?: number | null;
 };
-type UniverCellSnapshot = { v?: unknown; f?: unknown; s?: unknown } | undefined;
+type UniverCellSnapshot = {
+    v?: unknown;
+    f?: unknown;
+    p?: unknown;
+    custom?: Record<string, unknown>;
+    s?: unknown;
+} | undefined;
 
 function resolveUniverStyle(
     raw: UniverCellSnapshot,
@@ -594,7 +824,7 @@ export function mergeUniverCellDataIntoDocument(
             const existing = page.cells[key] || defaultCell({ id: key });
             // Univer omits emptied cells from sparse snapshots — treat missing as clear
             // when we already had content (full workbook.save() covers all non-empty cells).
-            if (!raw || !('v' in raw)) {
+            if (!raw || (!('v' in raw) && !('p' in raw))) {
                 const rowBucket = cellData[ri + 1];
                 // Prefer clearing when the row is present but the cell is gone. If the whole
                 // row vanished after clearing its last cell, also clear when headers exist
@@ -603,7 +833,7 @@ export function mergeUniverCellDataIntoDocument(
                 if ((existing.content || existing.formula) && (rowBucket != null || headerPresent)) {
                     page.cells[key] = {
                         ...existing,
-                        id: existing.id || key,
+                        id: key,
                         content: '',
                         formula: undefined,
                         manualContent: true,
@@ -612,14 +842,25 @@ export function mergeUniverCellDataIntoDocument(
                 }
                 return;
             }
-            const nextContent = cellValueText(raw.v);
+            const richText = univerDocumentPlainText(raw.p);
+            const displayText = richText || cellValueText(raw.v);
+            const storedSource = typeof raw.custom?.[PLOTGRID_SOURCE_FIELD] === 'string'
+                ? raw.custom[PLOTGRID_SOURCE_FIELD]
+                : '';
+            // Preserve Markdown/HTML while Univer's native rich text still
+            // represents it. A direct in-cell edit intentionally becomes plain
+            // text; syntax-rich edits belong in the focused cell editor.
+            const nextContent = storedSource
+                && plotGridSourceToUniverRichText(storedSource).displayText === displayText
+                ? storedSource
+                : displayText;
             const style = resolveUniverStyle(raw, styles);
             const nextFormula = typeof raw.f === 'string' && raw.f.trim()
                 ? (raw.f.startsWith('=') ? raw.f : `=${raw.f}`)
                 : undefined;
             const nextCell: CellData = {
                 ...existing,
-                id: existing.id || key,
+                id: key,
                 content: nextContent,
                 formula: nextFormula,
                 manualContent: true,
@@ -659,6 +900,34 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
         }
     }
     return parts.join('\n');
+}
+
+/** Mirror Univer row/column drag moves in NarrativeLab metadata (links use row/column ids). */
+export function moveConceptGridAxis(
+    raw: ConceptGridDocument,
+    sheetId: string,
+    axis: 'rows' | 'columns',
+    worksheetFrom: number,
+    worksheetCount: number,
+    worksheetTarget: number,
+): ConceptGridDocument {
+    const doc = structuredClone(raw);
+    const page = doc.pages.find(item => item.id === sheetId);
+    if (!page || worksheetFrom < 1 || worksheetTarget < 1 || worksheetCount < 1) return doc;
+    const items = axis === 'rows' ? page.rows : page.columns;
+    const from = worksheetFrom - 1;
+    const target = worksheetTarget - 1;
+    if (from >= items.length || from + worksheetCount > items.length) return doc;
+    if (from <= target && from + worksheetCount > target) return doc;
+    const insertion = from > target ? target : target - worksheetCount;
+    if (axis === 'rows') {
+        const moved = page.rows.splice(from, worksheetCount);
+        page.rows.splice(Math.max(0, Math.min(page.rows.length, insertion)), 0, ...moved);
+    } else {
+        const moved = page.columns.splice(from, worksheetCount);
+        page.columns.splice(Math.max(0, Math.min(page.columns.length, insertion)), 0, ...moved);
+    }
+    return doc;
 }
 
 export function emptyWorkbookDocument(): ConceptGridDocument {

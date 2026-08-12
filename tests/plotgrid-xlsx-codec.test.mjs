@@ -34,6 +34,8 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
                 title: 'Act I',
                 zoom: 1,
                 stickyHeaders: true,
+                frozenColumns: 2,
+                frozenRows: 3,
                 rows: [
                     { id: 'r1', label: 'Scene 1', height: 40, bgColor: '', sourceType: 'auto', sourceId: 'Scenes/a.md' },
                 ],
@@ -51,6 +53,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
                         italic: true,
                         align: 'right',
                         linkedSceneId: 'Scenes/opening.md',
+                        linkedViaWikilink: true,
                         manualContent: true,
                     },
                 },
@@ -65,17 +68,19 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(decoded.pages[0].cells['r1-c1'].content, 'meets mentor');
         assert.equal(decoded.pages[0].cells['r1-c1'].formula, '="meets mentor"');
         assert.equal(decoded.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+        assert.equal(decoded.pages[0].cells['r1-c1'].linkedViaWikilink, true);
         assert.equal(decoded.pages[0].cells['r1-c1'].manualContent, true);
         assert.equal(decoded.pages[0].rows[0].sourceId, 'Scenes/a.md');
         assert.equal(decoded.pages[0].columns[0].sourceId, 'Characters/hero.md');
 
         const univer = codec.documentToUniverWorkbookData(decoded);
         const sheet = univer.sheets['page-1'];
-        assert.deepEqual(sheet.freeze, { startRow: 1, startColumn: 1, ySplit: 1, xSplit: 1 });
+        assert.deepEqual(sheet.freeze, { startRow: 3, startColumn: 2, ySplit: 3, xSplit: 2 });
         assert.equal(sheet.rowData[1].h, 40);
         assert.equal(sheet.columnData[1].w, 120);
         assert.equal(sheet.cellData[1][1].f, '="meets mentor"');
-        assert.equal(sheet.cellData[1][1].v, 'meets mentor', 'link badge must not alter workbook cell text');
+        assert.equal(sheet.cellData[1][1].v, 'meets mentor', 'native rich text must not alter workbook cell text');
+        assert.equal(sheet.cellData[1][1].custom.narrativeLabSource, 'meets mentor');
         assert.equal(sheet.cellData[1][1].s.bg.rgb, '#112233');
         assert.equal(sheet.cellData[1][1].s.ht, 3);
 
@@ -94,6 +99,16 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(merged.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
         assert.equal(merged.pages[0].cells['r1-c1'].manualContent, true);
         assert.equal(merged.pages[0].cells['r1-c1'].bgColor, '#abcdef');
+
+        const rich = codec.plotGridSourceToUniverRichText(
+            '**Bold** [[Characters/Hero|Hero]] <em>italic</em>',
+            '#765ac1',
+        );
+        assert.equal(rich.displayText, 'Bold Hero italic');
+        assert.equal(rich.cellDocument.body.dataStream, 'Bold Hero italic\r\n');
+        assert.ok(rich.cellDocument.body.textRuns.some(run => run.ts.bl === 1));
+        assert.ok(rich.cellDocument.body.textRuns.some(run => run.ts.cl?.rgb === '#765ac1'));
+        assert.ok(rich.cellDocument.body.textRuns.some(run => run.ts.it === 1));
         assert.equal(merged.pages[0].cells['r1-c1'].align, 'center');
         assert.equal(merged.pages[0].rows[0].height, 64);
         assert.equal(merged.pages[0].columns[0].width, 180);
@@ -115,6 +130,44 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         });
         assert.equal(same.pages[0].rows.length, 1);
         assert.equal(same.pages[0].columns.length, 1);
+
+        const reorderDoc = {
+            version: 2,
+            activePageId: 'page-1',
+            pages: [{
+                id: 'page-1', title: 'Reorder', zoom: 1, stickyHeaders: true,
+                rows: [
+                    { id: 'r1', label: 'R1', height: 30, bgColor: '' },
+                    { id: 'r2', label: 'R2', height: 30, bgColor: '' },
+                ],
+                columns: [
+                    { id: 'c1', label: 'C1', width: 100, bgColor: '' },
+                    { id: 'c2', label: 'C2', width: 100, bgColor: '' },
+                ],
+                cells: {
+                    'r1-c1': { id: 'r1-c1', content: 'A', bgColor: '', textColor: '', bold: false, italic: false, align: 'left', linkedSceneId: 'Notes/A.md' },
+                    'r2-c2': { id: 'r2-c2', content: 'B', bgColor: '', textColor: '', bold: false, italic: false, align: 'left', linkedSceneId: 'Notes/B.md' },
+                },
+            }],
+        };
+        const rowsMoved = codec.moveConceptGridAxis(reorderDoc, 'page-1', 'rows', 1, 1, 3);
+        assert.deepEqual(rowsMoved.pages[0].rows.map(row => row.id), ['r2', 'r1']);
+        assert.equal(rowsMoved.pages[0].cells['r1-c1'].linkedSceneId, 'Notes/A.md');
+        const columnsMoved = codec.moveConceptGridAxis(rowsMoved, 'page-1', 'columns', 1, 1, 3);
+        assert.deepEqual(columnsMoved.pages[0].columns.map(column => column.id), ['c2', 'c1']);
+        assert.equal(columnsMoved.pages[0].cells['r2-c2'].linkedSceneId, 'Notes/B.md');
+
+        const normalizedIds = codec.mergeUniverCellDataIntoDocument({
+            ...reorderDoc,
+            pages: [{
+                ...reorderDoc.pages[0],
+                cells: {
+                    'r1-c1': { ...reorderDoc.pages[0].cells['r1-c1'], id: 'legacy-mismatched-id' },
+                },
+            }],
+        }, 'page-1', { 0: { 0: { v: '' } }, 1: { 1: { v: 'Updated' } } });
+        assert.equal(normalizedIds.pages[0].cells['r1-c1'].id, 'r1-c1');
+        assert.equal(normalizedIds.pages[0].cells['r1-c1'].content, 'Updated');
     } finally {
         await rm(dir, { recursive: true, force: true });
     }
@@ -133,17 +186,23 @@ test('main prefers System/plotgrid.xlsx and migrates legacy PlotGrid folder', as
     assert.doesNotMatch(mainTs, /PlotGridCsvSync/);
 });
 
-test('PlotgridView lazy-loads Univer host and keeps note link actions', async () => {
+test('PlotgridView lazy-loads Univer host and edits links as Markdown text', async () => {
     const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
     assert.match(view, /loadPlotGridUniverModule/);
     assert.match(view, /createPlotGridUniverHost/);
     assert.match(view, /getAuthoritativeDocument/);
     assert.match(view, /syncMeta/);
     assert.match(view, /univerMountGeneration/);
-    assert.match(view, /Link Note…/);
-    assert.match(view, /Unlink Note/);
+    assert.match(view, /Remove wikilinks/);
+    assert.match(view, /Insert wikilink/);
+    assert.match(view, /openCellMarkdownEditor/);
+    assert.match(view, /new WikilinkSuggest/);
+    assert.doesNotMatch(view, /openNoteLinkModal|openSceneLinkModal/);
     assert.match(view, /getActiveDataCellFromUniver/);
     assert.match(view, /handleUniverContextMenuAction/);
+    assert.match(view, /synchronizeWikilinkCells/);
+    assert.match(view, /getFirstLinkpathDest/);
+    assert.match(view, /linkedViaWikilink/);
     assert.doesNotMatch(view, /bindUniverContextMenu/);
     assert.match(view, /applyUniverViewState/);
     assert.match(view, /renderGrid\(\{ forcePush: true \}\)/);
@@ -156,6 +215,7 @@ test('PlotgridView lazy-loads Univer host and keeps note link actions', async ()
     assert.doesNotMatch(view, /obsidian\.setIcon\(addColBtn, 'columns-3'\)/);
     assert.doesNotMatch(view, /autosizeCellsToContent|autoFitRows|plotgridAutoNote/);
     assert.doesNotMatch(view, /openManageSnapshotsModal|Manage View Snapshots/);
+    assert.doesNotMatch(view, /Sync from Scenes|openSyncModal|performSync/);
     assert.match(view, /univerHost\?\.dispose|disposeUniverHost/);
     assert.match(view, /allowEmptyOverwrite:\s*true/);
     assert.doesNotMatch(view, /openActivePageCsv|plotGridCsvSync|Open page CSV/);
@@ -163,6 +223,16 @@ test('PlotgridView lazy-loads Univer host and keeps note link actions', async ()
     assert.match(view, /loadedSystemFolder/);
     assert.match(view, /folderAtSchedule/);
     assert.match(view, /projectChanged/);
+});
+
+test('wikilink suggestions follow the textarea caret inside editor modals', async () => {
+    const suggest = await readFile(new URL('../components/WikilinkSuggest.ts', import.meta.url), 'utf8');
+    assert.match(suggest, /getTextareaCaretRect/);
+    assert.match(suggest, /selectionStart/);
+    assert.match(suggest, /markerRect\.top - textarea\.scrollTop/);
+    assert.match(suggest, /closest\('\.modal'\)/);
+    assert.match(suggest, /openAbove/);
+    assert.doesNotMatch(suggest, /top:\s*`\$\{Math\.round\(rect\.bottom/);
 });
 
 test('embedded Univer host exposes the legacy grid view controls', async () => {
@@ -177,21 +247,48 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /getColumn\?\.\(\)/);
     assert.equal((host.match(/contextMenu:\s*true/g) || []).length, 2);
     assert.match(host, /registerNarrativeLabContextMenu/);
+    assert.match(host, /new Menu\(\)/);
+    assert.match(host, /showAtPosition\(menuPosition\)/);
+    assert.match(host, /removeEventListener\('contextmenu'/);
+    assert.doesNotMatch(host, /createSubmenu\(/);
     assert.match(host, /contextMenu\.mainArea/);
     assert.match(host, /contextMenu\.others/);
     assert.match(host, /CellPointerDown/);
+    assert.match(host, /applyDimensionMutation/);
+    assert.match(host, /applyAxisMoveMutation/);
+    assert.match(host, /sheet\.mutation\.move-rows/);
+    assert.match(host, /sheet\.mutation\.move-columns/);
+    assert.match(host, /sheet\.mutation\.set-worksheet-row-height/);
+    assert.match(host, /sheet\.mutation\.set-worksheet-col-width/);
+    assert.match(host, /event\?\.metaKey \|\| event\?\.ctrlKey/);
     assert.match(host, /p\.column \?\? p\.col/);
     assert.match(host, /UniverSheetsFilterPreset\(\)/);
-    assert.match(host, /onCellRender/);
-    assert.match(host, /refreshLinkMarkers/);
-    assert.match(host, /🔗/);
+    assert.doesNotMatch(host, /onCellRender/);
+    assert.doesNotMatch(host, /refreshLinkMarkers/);
+    assert.equal((host.match(/toolbar:\s*true/g) || []).length, 2);
+    assert.equal((host.match(/formulaBar:\s*true/g) || []).length, 2);
+    assert.match(host, /createNativeWorkbook\(liveDoc\)/);
+    assert.match(host, /richText:\s*false/);
+    assert.match(host, /retrying with native plain cells/);
+    assert.match(host, /--link-color/);
+    assert.doesNotMatch(host, /fillRect\(/);
+    assert.doesNotMatch(host, /🔗/);
     assert.match(host, /mergeLocales\(sheetsCoreZhCN, sheetsFilterZhCN\)/);
     assert.equal((host.match(/ribbonType:\s*'simple'/g) || []).length, 2);
     assert.doesNotMatch(host, /contextMenu:\s*false/);
     assert.match(host, /moveFinancialFormulaMenuLast/);
+    assert.match(host, /addUniverSubscriptionDisposer/);
+    assert.match(host, /univerAPI\.removeEvent\?\./);
+    assert.doesNotMatch(host, /suppressWatcher/);
+    assert.match(host, /scheduleSuppressedDrain/);
     assert.match(host, /`\$\{InsertFunctionOperation\.id\}\.financial`/);
     assert.match(host, /FINANCIAL_FORMULA_MENU_ORDER\s*=\s*99/);
     assert.match(host, /\[TEXT_TO_NUMBER_TOOLBAR_MENU_ID\]:\s*\{\s*hidden:\s*true\s*\}/);
     const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
-    assert.match(view, /resolveLinkedLabel/);
+    assert.doesNotMatch(view, /resolveLinkedLabel/);
+    assert.doesNotMatch(view, /falling back to DOM grid/);
+    assert.match(view, /renderUniverLoadError/);
+    assert.match(view, /Plot Grid autosave failed/);
+    assert.match(view, /finally \{[\s\S]*?this\.saveDebounce === timerId/);
+    assert.match(view, /this\.disposeUniverHost\(\);[\s\S]*?this\.cancelPendingSave\(\);/);
 });

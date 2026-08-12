@@ -11,21 +11,81 @@
  * (which the NarrativeLab Inspector uses for the Notes / Comments field).
  */
 
-import { App } from 'obsidian';
+import { App, TFile } from 'obsidian';
 
 export interface WikilinkSuggestOptions {
     app: App;
     textareaEl: HTMLTextAreaElement;
     /** Maximum suggestions in the dropdown (default 8). */
     maxVisible?: number;
+    /** Source note used by Obsidian to calculate the shortest unambiguous link text. */
+    sourcePath?: string;
+}
+
+type WikilinkCandidate = {
+    target: string;
+    name: string;
+    path: string;
+};
+
+type CaretRect = { left: number; top: number; bottom: number; height: number };
+
+/** Measure a plain textarea caret with a hidden, style-matched mirror. */
+function getTextareaCaretRect(textarea: HTMLTextAreaElement): CaretRect | null {
+    const ownerDocument = textarea.ownerDocument;
+    const ownerWindow = ownerDocument.defaultView || window;
+    const rect = textarea.getBoundingClientRect();
+    const style = ownerWindow.getComputedStyle(textarea);
+    const mirror = ownerDocument.createElement('div');
+    const copiedProperties = [
+        'box-sizing', 'width', 'font-family', 'font-size', 'font-style', 'font-weight',
+        'font-variant', 'font-stretch', 'line-height', 'letter-spacing', 'word-spacing',
+        'text-align', 'text-indent', 'text-transform', 'tab-size', 'padding-top',
+        'padding-right', 'padding-bottom', 'padding-left', 'border-top-width',
+        'border-right-width', 'border-bottom-width', 'border-left-width',
+    ];
+    for (const property of copiedProperties) {
+        mirror.style.setProperty(property, style.getPropertyValue(property));
+    }
+    mirror.setCssStyles({
+        position: 'fixed',
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        minHeight: `${rect.height}px`,
+        whiteSpace: 'pre-wrap',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word',
+        visibility: 'hidden',
+        pointerEvents: 'none',
+        zIndex: '-1',
+    });
+    const caret = textarea.selectionStart ?? textarea.value.length;
+    mirror.appendChild(ownerDocument.createTextNode(textarea.value.slice(0, caret)));
+    const marker = ownerDocument.createElement('span');
+    marker.textContent = textarea.value.slice(caret, caret + 1) || '\u200b';
+    mirror.appendChild(marker);
+    ownerDocument.body.appendChild(mirror);
+    const markerRect = marker.getBoundingClientRect();
+    mirror.remove();
+    if (!Number.isFinite(markerRect.left) || !Number.isFinite(markerRect.top)) return null;
+    const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.4 || 18;
+    const top = markerRect.top - textarea.scrollTop;
+    return {
+        left: markerRect.left - textarea.scrollLeft,
+        top,
+        bottom: top + lineHeight,
+        height: lineHeight,
+    };
 }
 
 export class WikilinkSuggest {
     private app: App;
     private textareaEl: HTMLTextAreaElement;
     private maxVisible: number;
+    private sourcePath: string;
     private dropdown: HTMLDivElement | null = null;
-    private items: { name: string; el: HTMLDivElement }[] = [];
+    private items: { candidate: WikilinkCandidate; el: HTMLDivElement }[] = [];
     private activeIndex = -1;
     private alive = true;
     private triggerStart = -1; // caret index of the `[[`
@@ -34,11 +94,14 @@ export class WikilinkSuggest {
         this.app = opts.app;
         this.textareaEl = opts.textareaEl;
         this.maxVisible = opts.maxVisible ?? 8;
+        this.sourcePath = opts.sourcePath || '';
 
         this.textareaEl.addEventListener('input', this.handleInput);
         this.textareaEl.addEventListener('keydown', this.handleKeydown);
         this.textareaEl.addEventListener('blur', this.handleBlur);
         this.textareaEl.addEventListener('click', this.handleInput);
+        this.textareaEl.addEventListener('scroll', this.handlePositionChange);
+        this.textareaEl.ownerDocument.defaultView?.addEventListener('resize', this.handlePositionChange);
     }
 
     destroy(): void {
@@ -47,6 +110,8 @@ export class WikilinkSuggest {
         this.textareaEl.removeEventListener('keydown', this.handleKeydown);
         this.textareaEl.removeEventListener('blur', this.handleBlur);
         this.textareaEl.removeEventListener('click', this.handleInput);
+        this.textareaEl.removeEventListener('scroll', this.handlePositionChange);
+        this.textareaEl.ownerDocument.defaultView?.removeEventListener('resize', this.handlePositionChange);
         this.removeDropdown();
     }
 
@@ -91,7 +156,7 @@ export class WikilinkSuggest {
         } else if (e.key === 'Enter' || e.key === 'Tab') {
             if (this.activeIndex >= 0 && this.activeIndex < this.items.length) {
                 e.preventDefault();
-                this.commit(this.items[this.activeIndex].name);
+                this.commit(this.items[this.activeIndex].candidate.target);
             }
         } else if (e.key === 'Escape') {
             e.preventDefault();
@@ -104,24 +169,39 @@ export class WikilinkSuggest {
         window.setTimeout(() => { if (this.alive) this.removeDropdown(); }, 150);
     };
 
+    private handlePositionChange = () => {
+        if (this.dropdown) this.positionDropdown();
+    };
+
     // ─── Suggestions ──────────────────────────────────────────
 
-    private getCandidates(query: string): string[] {
+    private getCandidates(query: string): WikilinkCandidate[] {
         const files = this.app.vault.getMarkdownFiles();
         const q = query.toLowerCase();
-        const scored: { name: string; score: number }[] = [];
+        const scored: { candidate: WikilinkCandidate; score: number }[] = [];
         for (const f of files) {
-            const score = this.fuzzyScore(q, f.basename.toLowerCase());
-            if (score >= 0) scored.push({ name: f.basename, score });
+            if (!(f instanceof TFile)) continue;
+            const target = this.app.metadataCache.fileToLinktext(f, this.sourcePath, true);
+            const searchable = `${f.basename} ${f.path}`.toLowerCase();
+            const score = Math.min(
+                this.fuzzyScore(q, f.basename.toLowerCase()),
+                this.fuzzyScore(q, searchable),
+            );
+            if (score >= 0) scored.push({
+                candidate: { target, name: f.basename, path: f.path },
+                score,
+            });
         }
-        scored.sort((a, b) => a.score - b.score || a.name.localeCompare(b.name));
-        // Deduplicate by basename (vault may have multiple files with same name).
+        scored.sort((a, b) => a.score - b.score
+            || a.candidate.name.localeCompare(b.candidate.name)
+            || a.candidate.path.localeCompare(b.candidate.path));
+        // Link text is already disambiguated by Obsidian; deduplicate exact targets only.
         const seen = new Set<string>();
-        const out: string[] = [];
+        const out: WikilinkCandidate[] = [];
         for (const s of scored) {
-            if (seen.has(s.name)) continue;
-            seen.add(s.name);
-            out.push(s.name);
+            if (seen.has(s.candidate.target)) continue;
+            seen.add(s.candidate.target);
+            out.push(s.candidate);
             if (out.length >= this.maxVisible) break;
         }
         return out;
@@ -156,16 +236,17 @@ export class WikilinkSuggest {
         this.activeIndex = 0;
 
         for (let i = 0; i < candidates.length; i++) {
-            const name = candidates[i];
+            const candidate = candidates[i];
             const item = this.dropdown.createDiv('sl-suggest-item');
-            item.textContent = name;
+            item.createDiv({ cls: 'sl-suggest-title', text: candidate.name });
+            item.createDiv({ cls: 'sl-suggest-note', text: candidate.path });
             if (i === 0) item.addClass('is-active');
             item.addEventListener('mousedown', (ev) => {
                 // mousedown (not click) so we run before blur removes the dropdown.
                 ev.preventDefault();
-                this.commit(name);
+                this.commit(candidate.target);
             });
-            this.items.push({ name, el: item });
+            this.items.push({ candidate, el: item });
         }
 
         this.positionDropdown();
@@ -173,9 +254,10 @@ export class WikilinkSuggest {
 
     private ensureDropdown(): void {
         if (this.dropdown) return;
-        const dd = activeDocument.createElement('div');
+        const ownerDocument = this.textareaEl.ownerDocument;
+        const dd = ownerDocument.createElement('div');
         dd.className = 'sl-suggest-dropdown sl-wikilink-suggest';
-        activeDocument.body.appendChild(dd);
+        ownerDocument.body.appendChild(dd);
         this.dropdown = dd;
     }
 
@@ -198,15 +280,35 @@ export class WikilinkSuggest {
 
     private positionDropdown(): void {
         if (!this.dropdown) return;
-        const rect = this.textareaEl.getBoundingClientRect();
-        // Simple heuristic: anchor below the textarea, indented by caret column
-        // approximation. Good enough for a small notes field.
+        const textareaRect = this.textareaEl.getBoundingClientRect();
+        const ownerWindow = this.textareaEl.ownerDocument.defaultView || window;
+        const modalRect = this.textareaEl.closest('.modal')?.getBoundingClientRect();
+        const boundary = modalRect || {
+            left: 0,
+            top: 0,
+            right: ownerWindow.innerWidth,
+            bottom: ownerWindow.innerHeight,
+        };
+        const caret = getTextareaCaretRect(this.textareaEl) || {
+            left: textareaRect.left,
+            top: textareaRect.top,
+            bottom: textareaRect.top + 20,
+            height: 20,
+        };
+        const margin = 8;
+        const availableWidth = Math.max(180, boundary.right - boundary.left - margin * 2);
+        const width = Math.min(420, Math.max(260, Math.min(textareaRect.width, 360)), availableWidth);
+        const left = Math.max(
+            boundary.left + margin,
+            Math.min(caret.left, boundary.right - width - margin),
+        );
         this.dropdown.setCssStyles({
             position: 'fixed',
-            left: `${Math.round(rect.left)}px`,
-            top: `${Math.round(rect.bottom + 2)}px`,
-            minWidth: `${Math.min(320, Math.max(180, rect.width))}px`,
-            maxWidth: '420px',
+            left: `${Math.round(left)}px`,
+            top: `${Math.round(caret.bottom + 4)}px`,
+            width: `${Math.round(width)}px`,
+            minWidth: '180px',
+            maxWidth: `${Math.round(availableWidth)}px`,
             maxHeight: '240px',
             overflowY: 'auto',
             zIndex: '9999',
@@ -215,6 +317,18 @@ export class WikilinkSuggest {
             borderRadius: '6px',
             boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
             padding: '4px',
+            visibility: 'hidden',
+        });
+        const dropdownRect = this.dropdown.getBoundingClientRect();
+        const spaceBelow = boundary.bottom - caret.bottom - margin;
+        const spaceAbove = caret.top - boundary.top - margin;
+        const openAbove = dropdownRect.height > spaceBelow && spaceAbove > spaceBelow;
+        const top = openAbove
+            ? Math.max(boundary.top + margin, caret.top - dropdownRect.height - 4)
+            : Math.min(caret.bottom + 4, boundary.bottom - dropdownRect.height - margin);
+        this.dropdown.setCssStyles({
+            top: `${Math.round(Math.max(boundary.top + margin, top))}px`,
+            visibility: 'visible',
         });
     }
 

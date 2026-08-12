@@ -348,10 +348,7 @@ export class CharacterView extends ItemView {
     private renderCharacterOverview(container: HTMLElement): void {
         container.empty();
         if (this.characterOverviewMode === 'base') {
-            void renderNativeLibraryBase(container, this.plugin, 'characters', this, {
-                onNew: () => this.promptNewCharacter(),
-                newLabel: t('New'),
-            });
+            void renderNativeLibraryBase(container, this.plugin, 'characters', this);
             return;
         }
         // Tab already says “角色” — skip a redundant page title to free vertical space.

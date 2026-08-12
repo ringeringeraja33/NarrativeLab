@@ -292,10 +292,12 @@ export class InfoPanelComponent {
             const editor = (leaf.view as unknown as { editor?: obsidian.Editor })?.editor;
             if (!editor) return;
             const value = editor.getValue();
-            void this.plugin.app.vault.read(file).then((diskValue) => {
+            void this.plugin.app.vault.read(file).then(async (diskValue) => {
                 if (diskValue !== value) {
-                    return this.plugin.app.vault.modify(file, value);
+                    await this.plugin.app.vault.modify(file, value);
                 }
+            }).catch(error => {
+                console.error('[NarrativeLab] Failed to autosave scene notes:', error);
             });
         };
 
@@ -307,9 +309,17 @@ export class InfoPanelComponent {
             }, 250);
         };
 
+        const flushSave = (): void => {
+            if (this.notesSaveTimer !== null) {
+                window.clearTimeout(this.notesSaveTimer);
+                this.notesSaveTimer = null;
+            }
+            saveNow();
+        };
+
         splitEl.addEventListener('input', scheduleSave, true);
         splitEl.addEventListener('keyup', scheduleSave, true);
-        splitEl.addEventListener('focusout', saveNow, true);
+        splitEl.addEventListener('focusout', flushSave, true);
     }
 
     private stripRedundantNotesHeadings(content: string, scene: Scene): string {

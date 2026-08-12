@@ -4,6 +4,7 @@ import * as obsidian from 'obsidian';
 import { Scene } from '../models/Scene';
 import { SceneManager } from '../services/SceneManager';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
+import { renderStructureModeSwitcher } from '../components/StructureModeSwitcher';
 import type SceneCardsPlugin from '../main';
 
 import { STORYLINE_VIEW_TYPE } from '../constants';
@@ -72,14 +73,22 @@ export class StorylineView extends ItemView {
         applyMobileClass(container);
         this.rootContainer = container;
 
-        await this.sceneManager.initialize();
+        await this.sceneManager.ensureInitialized();
+        if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
-    async onClose(): Promise<void> {}
+    async onClose(): Promise<void> {
+        if (this._pendingRefresh != null) {
+            window.cancelAnimationFrame(this._pendingRefresh);
+            this._pendingRefresh = null;
+        }
+        this.rootContainer = null;
+    }
 
     /** Update sort mode, persist, and refresh. */
     private setSortMode(mode: SortMode): void {
+        if (this.sortMode === mode) return;
         this.sortMode = mode;
         this.plugin.settings.lastStorylineSortMode = mode;
         this.plugin.saveSettings();
@@ -88,6 +97,7 @@ export class StorylineView extends ItemView {
 
     /** Update plotline view mode (list/subway), persist, and refresh. */
     private setViewMode(mode: PlotlineViewMode): void {
+        if (this.plotlineViewMode === mode) return;
         this.plotlineViewMode = mode;
         this.plugin.settings.lastStorylineViewMode = mode;
         this.plugin.saveSettings();
@@ -108,6 +118,17 @@ export class StorylineView extends ItemView {
 
         // Controls row
         const controls = toolbar.createDiv('story-line-toolbar-controls');
+
+        renderStructureModeSwitcher(
+            controls,
+            this.plotlineViewMode === 'list' ? 'plot-list' : 'subway',
+            this.plugin,
+            this.leaf,
+            {
+                onPlotList: () => this.setViewMode('list'),
+                onSubway: () => this.setViewMode('subway'),
+            },
+        );
 
         // Sort button
         const sortBtn = controls.createEl('button', {
@@ -152,8 +173,8 @@ export class StorylineView extends ItemView {
             const filterIcon = filterBtn.createSpan();
             obsidian.setIcon(filterIcon, 'filter');
             attachTooltip(filterBtn, this.hiddenPlotlines.size > 0
-                ? `Filtering: ${this.hiddenPlotlines.size} hidden`
-                : 'Filter plotlines');
+                ? t('Filtering: {n} hidden', { n: this.hiddenPlotlines.size })
+                : t('Filter plotlines'));
             filterBtn.addEventListener('click', (e) => {
                 const allTags = this.sceneManager.getPlotlines();
                 const menu = new Menu();
@@ -208,24 +229,6 @@ export class StorylineView extends ItemView {
         refreshBtn.addEventListener('click', () => {
             this.refresh();
         });
-
-        // View mode toggle (list vs subway)
-        const viewToggle = controls.createDiv('storyline-view-toggle');
-        const listBtn = viewToggle.createEl('button', {
-            cls: `storyline-toggle-btn ${this.plotlineViewMode === 'list' ? 'active' : ''}`,
-        });
-        const listIcon = listBtn.createSpan();
-        obsidian.setIcon(listIcon, 'list');
-        attachTooltip(listBtn, t('List view'));
-        listBtn.addEventListener('click', () => { this.setViewMode('list'); });
-
-        const subwayBtn = viewToggle.createEl('button', {
-            cls: `storyline-toggle-btn ${this.plotlineViewMode === 'subway' ? 'active' : ''}`,
-        });
-        const subwayIcon = subwayBtn.createSpan();
-        obsidian.setIcon(subwayIcon, 'chart-gantt');
-        attachTooltip(subwayBtn, t('Subway map'));
-        subwayBtn.addEventListener('click', () => { this.setViewMode('subway'); });
 
         const content = container.createDiv('story-line-storyline-content');
 
@@ -464,7 +467,9 @@ export class StorylineView extends ItemView {
         // Which lanes are active at each column
         const sceneToLanes = new Map<number, number[]>();
         for (let li = 0; li < plotlineKeys.length; li++) {
-            const cols = plotlineCols.get(plotlineKeys[li]) || [];
+            const plotlineKey = plotlineKeys[li];
+            if (plotlineKey === undefined) continue;
+            const cols = plotlineCols.get(plotlineKey) || [];
             for (const col of cols) {
                 if (!sceneToLanes.has(col)) sceneToLanes.set(col, []);
                 sceneToLanes.get(col)!.push(li);
@@ -481,7 +486,9 @@ export class StorylineView extends ItemView {
 
         const actEntries = [...acts.entries()].sort((a, b) => a[0] - b[0]);
         for (let ai = 0; ai < actEntries.length; ai++) {
-            const [actNum, cols] = actEntries[ai];
+            const entry = actEntries[ai];
+            if (!entry) continue;
+            const [actNum, cols] = entry;
             const minCol = Math.min(...cols);
             const maxCol = Math.max(...cols);
 
@@ -516,6 +523,7 @@ export class StorylineView extends ItemView {
         // Each plotline starts at its FIRST scene node and ends at its LAST scene node
         for (let li = 0; li < plotlineKeys.length; li++) {
             const pk = plotlineKeys[li];
+            if (pk === undefined) continue;
             const color = laneColor(li, pk);
             const cols = plotlineCols.get(pk) || [];
             const y = laneY(li);
@@ -541,8 +549,11 @@ export class StorylineView extends ItemView {
             if (cols.length === 0) continue;
 
             // Track runs from first node to last node (with short lead-in curve + trail)
-            const firstX = colX(cols[0]);
-            const lastX = colX(cols[cols.length - 1]);
+            const firstCol = cols[0];
+            const lastCol = cols.at(-1);
+            if (firstCol === undefined || lastCol === undefined) continue;
+            const firstX = colX(firstCol);
+            const lastX = colX(lastCol);
             const leadIn = 30; // small rounded approach before first node
             const trailOut = 30; // small trail after last node
 
@@ -561,8 +572,11 @@ export class StorylineView extends ItemView {
             if (lanes.length <= 1) continue;
             const x = colX(col);
             const sortedLanes = [...lanes].sort((a, b) => a - b);
-            const topY = laneY(sortedLanes[0]) - NODE_RADIUS;
-            const botY = laneY(sortedLanes[sortedLanes.length - 1]) + NODE_RADIUS;
+            const firstLane = sortedLanes[0];
+            const lastLane = sortedLanes.at(-1);
+            if (firstLane === undefined || lastLane === undefined) continue;
+            const topY = laneY(firstLane) - NODE_RADIUS;
+            const botY = laneY(lastLane) + NODE_RADIUS;
 
             // Gradient connector
             const gradId = `conn-grad-${col}`;
@@ -582,7 +596,7 @@ export class StorylineView extends ItemView {
                 const stop = activeDocument.createElementNS(svgNS, 'stop');
                 const offset = (laneY(lane) - topY) / span;
                 stop.setAttribute('offset', `${(offset * 100).toFixed(1)}%`);
-                stop.setAttribute('stop-color', laneColor(lane, plotlineKeys[lane]));
+                stop.setAttribute('stop-color', laneColor(lane, plotlineKeys[lane] ?? ''));
                 grad.appendChild(stop);
             }
             defs.appendChild(grad);
@@ -603,6 +617,7 @@ export class StorylineView extends ItemView {
         // show the scene title + tag pills (like the reference subway map)
         for (let li = 0; li < plotlineKeys.length; li++) {
             const pk = plotlineKeys[li];
+            if (pk === undefined) continue;
             const color = laneColor(li, pk);
             const cols = plotlineCols.get(pk) || [];
             const y = laneY(li);
@@ -610,6 +625,7 @@ export class StorylineView extends ItemView {
             for (const col of cols) {
                 const x = colX(col);
                 const scene = orderedScenes[col];
+                if (!scene) continue;
 
                 // Node shape: diamond for Arc Points, circle for regular scenes
                 const isArcPoint = !!scene.arcAnchor;
@@ -1424,8 +1440,15 @@ export class StorylineView extends ItemView {
         }
         this._pendingRefresh = window.requestAnimationFrame(() => {
             this._pendingRefresh = null;
-            if (this.rootContainer) {
-                this.renderView(this.rootContainer);
+            if (!this.rootContainer) return;
+            const previous = this.rootContainer.querySelector<HTMLElement>('.story-line-storyline-content');
+            const scroll = previous ? { top: previous.scrollTop, left: previous.scrollLeft } : null;
+            this.renderView(this.rootContainer);
+            if (!scroll) return;
+            const current = this.rootContainer.querySelector<HTMLElement>('.story-line-storyline-content');
+            if (current) {
+                current.scrollTop = scroll.top;
+                current.scrollLeft = scroll.left;
             }
         });
     }

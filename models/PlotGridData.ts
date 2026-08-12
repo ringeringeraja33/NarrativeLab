@@ -10,6 +10,8 @@ export interface CellData {
     italic: boolean;
     align: 'left' | 'center' | 'right';
     linkedSceneId?: string;
+    /** Link was inferred from [[wikilink]] text and may be cleared with that text. */
+    linkedViaWikilink?: boolean;
     /** Univer/Excel formula, including the leading '='. */
     formula?: string;
     /** When true, sync will not overwrite this cell's content */
@@ -57,6 +59,10 @@ export interface PlotGridData {
     cells: Record<string, CellData>;
     zoom: number;
     stickyHeaders?: boolean;
+    /** Number of leading worksheet columns frozen (includes the row-label column). */
+    frozenColumns?: number;
+    /** Number of leading worksheet rows frozen (includes the column-label row). */
+    frozenRows?: number;
 }
 
 /** One page inside a multi-page Concept Grid document. */
@@ -86,6 +92,8 @@ export function createEmptyConceptGridPage(title?: string): ConceptGridPage {
         cells: {},
         zoom: 1,
         stickyHeaders: true,
+        frozenColumns: 1,
+        frozenRows: 1,
     };
 }
 
@@ -112,6 +120,30 @@ function isLegacyPlotGridData(value: unknown): value is PlotGridData {
     return Array.isArray(data.rows) || Array.isArray(data.columns) || typeof data.cells === 'object';
 }
 
+function normalizeCells(value: unknown): Record<string, CellData> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const cells: Record<string, CellData> = {};
+    for (const [key, rawCell] of Object.entries(value)) {
+        if (!rawCell || typeof rawCell !== 'object' || Array.isArray(rawCell)) continue;
+        const cell = rawCell as Partial<CellData>;
+        const align = cell.align === 'center' || cell.align === 'right' ? cell.align : 'left';
+        cells[key] = {
+            id: key,
+            content: typeof cell.content === 'string' ? cell.content : '',
+            bgColor: typeof cell.bgColor === 'string' ? cell.bgColor : '',
+            textColor: typeof cell.textColor === 'string' ? cell.textColor : '',
+            bold: cell.bold === true,
+            italic: cell.italic === true,
+            align,
+            linkedSceneId: typeof cell.linkedSceneId === 'string' ? cell.linkedSceneId : undefined,
+            linkedViaWikilink: cell.linkedViaWikilink === true ? true : undefined,
+            formula: typeof cell.formula === 'string' ? cell.formula : undefined,
+            manualContent: cell.manualContent === true ? true : undefined,
+        };
+    }
+    return cells;
+}
+
 /** Normalize vault JSON (v1 single-page or v2 multi-page) into a ConceptGridDocument. */
 export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument {
     if (isConceptGridDocument(raw)) {
@@ -120,13 +152,16 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             title: (page.title || t('Page {n}', { n: index + 1 })).trim() || t('Page {n}', { n: index + 1 }),
             rows: Array.isArray(page.rows) ? page.rows : [],
             columns: Array.isArray(page.columns) ? page.columns : [],
-            cells: page.cells && typeof page.cells === 'object' ? page.cells : {},
+            cells: normalizeCells(page.cells),
             zoom: typeof page.zoom === 'number' ? page.zoom : 1,
             stickyHeaders: typeof page.stickyHeaders === 'boolean' ? page.stickyHeaders : true,
+            frozenColumns: Math.max(1, Math.floor(page.frozenColumns ?? 1)),
+            frozenRows: Math.max(1, Math.floor(page.frozenRows ?? 1)),
         }));
+        const firstPage = pages[0] ?? createEmptyConceptGridPage();
         const activePageId = pages.some(p => p.id === raw.activePageId)
             ? raw.activePageId
-            : pages[0].id;
+            : firstPage.id;
         return {
             version: 2,
             pages,
@@ -141,9 +176,11 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             title: t('Page {n}', { n: 1 }),
             rows: Array.isArray(raw.rows) ? raw.rows : [],
             columns: Array.isArray(raw.columns) ? raw.columns : [],
-            cells: raw.cells && typeof raw.cells === 'object' ? raw.cells : {},
+            cells: normalizeCells(raw.cells),
             zoom: typeof raw.zoom === 'number' ? raw.zoom : 1,
             stickyHeaders: typeof raw.stickyHeaders === 'boolean' ? raw.stickyHeaders : true,
+            frozenColumns: Math.max(1, Math.floor(raw.frozenColumns ?? 1)),
+            frozenRows: Math.max(1, Math.floor(raw.frozenRows ?? 1)),
         };
         return {
             version: 2,
@@ -167,7 +204,7 @@ export function isConceptGridDocumentEmpty(doc: ConceptGridDocument): boolean {
 export function cloneConceptGridPage(page: ConceptGridPage, title?: string): ConceptGridPage {
     const cells: Record<string, CellData> = {};
     for (const [key, cell] of Object.entries(page.cells || {})) {
-        cells[key] = { ...cell };
+        cells[key] = { ...cell, id: key };
     }
     return {
         id: makePageId(),
@@ -177,6 +214,8 @@ export function cloneConceptGridPage(page: ConceptGridPage, title?: string): Con
         cells,
         zoom: page.zoom ?? 1,
         stickyHeaders: page.stickyHeaders,
+        frozenColumns: page.frozenColumns,
+        frozenRows: page.frozenRows,
     };
 }
 /* eslint-enable @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

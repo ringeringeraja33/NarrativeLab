@@ -406,6 +406,55 @@ function getCodexStructuredFingerprint(entry) {
 }
 
 module.exports = class NarrativeCanvasPlugin extends Plugin {
+  getMarkdownShortcutAction(event) {
+    const descriptor = event || {};
+    const platformIsMac = process.platform === "darwin";
+    const eventKey = String(descriptor.key || "").length === 1
+      ? String(descriptor.key || "").toUpperCase()
+      : String(descriptor.key || "");
+    const manager = this.app?.hotkeyManager;
+    const mappings = [
+      [["editor:toggle-bold"], "bold"],
+      [["editor:toggle-italics", "editor:toggle-italic"], "italic"],
+      [["editor:toggle-strikethrough"], "strike"],
+      [["editor:toggle-highlight"], "highlight"],
+      [["editor:toggle-code"], "code"],
+      [["editor:insert-link", "editor:insert-wikilink"], "wikilink"],
+      [["editor:toggle-blockquote"], "quote"],
+      [["editor:toggle-bullet-list"], "list"],
+      [["editor:toggle-numbered-list"], "ordered"],
+      [["editor:toggle-checklist-status", "editor:toggle-task-list"], "task"],
+      [["editor:set-heading-1"], "h1"],
+      [["editor:set-heading-2"], "h2"],
+      [["editor:set-heading-3"], "h3"]
+    ];
+    const matches = (hotkey) => {
+      const modifiers = new Set(hotkey?.modifiers || []);
+      const modPressed = platformIsMac ? Boolean(descriptor.metaKey) : Boolean(descriptor.ctrlKey);
+      const wantsMod = modifiers.has("Mod");
+      if (wantsMod !== modPressed) return false;
+      if (!wantsMod && modifiers.has("Ctrl") !== Boolean(descriptor.ctrlKey)) return false;
+      if (!wantsMod && modifiers.has("Meta") !== Boolean(descriptor.metaKey)) return false;
+      if (modifiers.has("Alt") !== Boolean(descriptor.altKey)) return false;
+      if (modifiers.has("Shift") !== Boolean(descriptor.shiftKey)) return false;
+      return String(hotkey?.key || "").toUpperCase() === eventKey.toUpperCase();
+    };
+    for (const [ids, action] of mappings) {
+      for (const id of ids) {
+        const hotkeys = manager?.getHotkeys?.(id)
+          || manager?.customKeys?.[id]
+          || manager?.defaultKeys?.[id]
+          || [];
+        if (hotkeys.some(matches)) return action;
+      }
+    }
+    const modPressed = platformIsMac ? Boolean(descriptor.metaKey) : Boolean(descriptor.ctrlKey);
+    if (modPressed && !descriptor.altKey && !descriptor.shiftKey && eventKey === "B") return "bold";
+    if (modPressed && !descriptor.altKey && !descriptor.shiftKey && eventKey === "I") return "italic";
+    if (modPressed && !descriptor.altKey && !descriptor.shiftKey && eventKey === "K") return "wikilink";
+    return null;
+  }
+
   async onload() {
     this.codexReloadTimer = null;
     this.codexSyncSuppressUntil = 0;
@@ -2213,6 +2262,7 @@ class NarrativeCanvasView extends ItemView {
         createCodexCanvas: (entry) => this.plugin.createCodexCanvas(entry),
         getDraggedVaultFile: () => this.plugin.getDraggedVaultFile(),
         renderVaultMarkdown: (markdown, container, sourcePath) => this.renderVaultMarkdown(markdown, container, sourcePath),
+        getMarkdownShortcutAction: (event) => this.plugin.getMarkdownShortcutAction(event),
         getProjectFile: () => this.plugin.getCurrentProjectPath(),
         showNotice: (text) => { new Notice(String(text || "")); },
         stateFile: STATE_FILE,
@@ -8271,6 +8321,40 @@ const CANVAS_STYLE_CSS = [
   "  border-top: 1px solid var(--background-modifier-border);",
   "}",
   "",
+  ".codex-asset-toolbar {",
+  "  display: grid;",
+  "  grid-template-columns: minmax(0, 1fr) minmax(156px, 42%);",
+  "  align-items: center;",
+  "  gap: 8px;",
+  "  min-width: 0;",
+  "}",
+  "",
+  ".codex-asset-toolbar > strong {",
+  "  min-width: 0;",
+  "  color: var(--text-normal);",
+  "  font-size: 13px;",
+  "  font-weight: 650;",
+  "  line-height: 1.3;",
+  "}",
+  "",
+  ".codex-asset-toolbar small {",
+  "  color: var(--text-muted);",
+  "  font-weight: 600;",
+  "}",
+  "",
+  ".codex-asset-toolbar .codex-vault-file-input-wrap,",
+  ".codex-asset-toolbar .codex-asset-add-button {",
+  "  width: 100%;",
+  "  min-width: 0;",
+  "}",
+  "",
+  ".codex-asset-toolbar .codex-vault-file-input-wrap > input,",
+  ".codex-asset-toolbar .codex-asset-add-button {",
+  "  height: 32px;",
+  "  min-height: 32px;",
+  "  font-size: 13px;",
+  "}",
+  "",
   ".codex-vault-files-header {",
   "  display: flex;",
   "  align-items: baseline;",
@@ -8762,31 +8846,12 @@ const CANVAS_STYLE_CSS = [
   "  display: grid;",
   "  gap: 8px;",
   "  min-width: 0;",
+  "  padding-top: 8px;",
+  "  border-top: 1px solid var(--background-modifier-border);",
   "}",
   "",
   ".vision-board-toolbar {",
-  "  display: flex;",
-  "  align-items: center;",
-  "  justify-content: space-between;",
-  "  gap: 8px;",
-  "  min-width: 0;",
-  "}",
-  "",
-  ".vision-board-toolbar > div {",
-  "  display: flex;",
-  "  flex-wrap: wrap;",
-  "  justify-content: flex-end;",
-  "  gap: 6px;",
-  "}",
-  "",
-  ".vision-board-toolbar strong {",
-  "  min-width: 0;",
-  "  color: var(--text-normal);",
-  "}",
-  "",
-  ".vision-board-toolbar small {",
-  "  color: var(--text-muted);",
-  "  font-weight: 600;",
+  "  width: 100%;",
   "}",
   "",
   ".vision-board-canvas {",
@@ -8805,6 +8870,43 @@ const CANVAS_STYLE_CSS = [
   "",
   ".vision-board-canvas.is-embedded {",
   "  height: clamp(180px, 24vw, 250px);",
+  "}",
+  "",
+  ".vision-board-expand-button {",
+  "  position: absolute;",
+  "  top: 8px;",
+  "  right: 8px;",
+  "  z-index: 30;",
+  "  display: grid;",
+  "  place-items: center;",
+  "  width: 30px;",
+  "  height: 30px;",
+  "  min-width: 30px;",
+  "  min-height: 30px;",
+  "  padding: 0;",
+  "  appearance: none;",
+  "  -webkit-appearance: none;",
+  "  border: 1px solid rgba(255, 255, 255, 0.34);",
+  "  border-radius: 7px;",
+  "  background: rgba(18, 18, 20, 0.78);",
+  "  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);",
+  "  color: #fff;",
+  "  font: inherit;",
+  "  font-size: 17px;",
+  "  line-height: 1;",
+  "  cursor: pointer;",
+  "}",
+  "",
+  ".vision-board-expand-button:hover,",
+  ".vision-board-expand-button:focus-visible {",
+  "  background: rgba(18, 18, 20, 0.92);",
+  "  border-color: rgba(255, 255, 255, 0.62);",
+  "}",
+  "",
+  ".vision-board-expand-button::before,",
+  ".vision-board-expand-button::after {",
+  "  display: none;",
+  "  content: none;",
   "}",
   "",
   ".vision-board-canvas.is-focused {",
@@ -8934,13 +9036,8 @@ const CANVAS_STYLE_CSS = [
   "}",
   "",
   "@media (max-width: 720px) {",
-  "  .vision-board-toolbar {",
-  "    align-items: flex-start;",
-  "    flex-direction: column;",
-  "  }",
-  "",
-  "  .vision-board-toolbar > div {",
-  "    justify-content: flex-start;",
+  "  .codex-asset-toolbar {",
+  "    grid-template-columns: minmax(0, 1fr) minmax(138px, 48%);",
   "  }",
   "",
   "  .vision-board-dialog {",
@@ -20899,6 +20996,7 @@ function installNarrativeCanvasApp() {
     const focused = Boolean(options.focused);
     return `
       <div${focused ? " id=\"visionBoardCanvas\"" : ""} class="vision-board-canvas${focused ? " is-focused" : " is-embedded"}" data-vision-board-kind="${escapeAttr(kind)}" data-vision-board-id="${escapeAttr(id)}">
+        ${focused ? "" : `<button class="vision-board-expand-button" type="button" data-action="open-vision-board" data-vision-board-kind="${escapeAttr(kind)}" data-vision-board-id="${escapeAttr(id)}" title="${escapeAttr(t("Focus vision board"))}" aria-label="${escapeAttr(t("Focus vision board"))}"><span aria-hidden="true">⛶</span></button>`}
         ${images.map((image, index) => {
           const imageUrl = host.getVaultResourceUrl(image.path);
           return `
@@ -20962,12 +21060,9 @@ function installNarrativeCanvasApp() {
         ` : ""}
         ${renderCodexVaultFileLinks(character)}
         <div class="codex-image-editor${images.length ? " has-image" : ""}${pickerOpen ? " picker-open" : ""}" data-codex-image-drop data-character-id="${escapeAttr(character.id)}">
-          <div class="vision-board-toolbar">
-            ${images.length ? `<strong>${t("Preview images")} <small>${images.length}</small></strong>` : `<span></span>`}
-            <div>
-              <button class="small-button" type="button" data-action="choose-codex-image-file" data-character-id="${escapeAttr(character.id)}">+ ${t("Add images")}</button>
-              ${images.length ? `<button class="small-button" type="button" data-action="open-vision-board" data-vision-board-kind="character" data-vision-board-id="${escapeAttr(character.id)}">${t("Focus")}</button>` : ""}
-            </div>
+          <div class="codex-asset-toolbar vision-board-toolbar">
+            <strong>${t("Preview images")}${images.length ? ` <small>${images.length}</small>` : ""}</strong>
+            <button class="small-button codex-asset-add-button" type="button" data-action="choose-codex-image-file" data-character-id="${escapeAttr(character.id)}">+ ${t("Add images")}</button>
           </div>
           <input data-codex-local-image-input data-character-id="${escapeAttr(character.id)}" type="file" accept="image/*" multiple hidden>
           ${renderVisionBoard("character", character.id, images)}
@@ -20995,7 +21090,13 @@ function installNarrativeCanvasApp() {
     const files = normalizeCodexVaultFiles(character.vaultFiles);
     return `
       <div class="codex-vault-files">
-        <div class="codex-vault-files-header"><span>${t("Vault file")}</span>${files.length ? `<small>${files.length}</small>` : ""}</div>
+        <div class="codex-asset-toolbar">
+          <strong>${t("Vault file")}${files.length ? ` <small>${files.length}</small>` : ""}</strong>
+          <div class="codex-vault-file-input-wrap">
+            <input data-character-vault-file-input data-character-id="${escapeAttr(character.id)}" value="" placeholder="+ ${escapeAttr(t("Search or choose a vault file"))}" spellcheck="false" autocomplete="off" role="combobox" aria-label="${escapeAttr(t("Add vault file"))}" aria-autocomplete="list" aria-expanded="false">
+            <div class="vault-file-suggestions" data-vault-file-suggestions hidden role="listbox" aria-label="${escapeAttr(t("Vault file suggestions"))}"></div>
+          </div>
+        </div>
         ${files.map((path, index) => {
           const parts = path.split("/");
           const name = parts.pop() || path;
@@ -21011,10 +21112,6 @@ function installNarrativeCanvasApp() {
             </div>
           `;
         }).join("")}
-        <div class="codex-vault-file-input-wrap">
-          <input data-character-vault-file-input data-character-id="${escapeAttr(character.id)}" value="" placeholder="${escapeAttr(t("Search or choose a vault file"))}" spellcheck="false" autocomplete="off" role="combobox" aria-label="${escapeAttr(t("Add vault file"))}" aria-autocomplete="list" aria-expanded="false">
-          <div class="vault-file-suggestions" data-vault-file-suggestions hidden role="listbox" aria-label="${escapeAttr(t("Vault file suggestions"))}"></div>
-        </div>
       </div>
     `;
   }
@@ -29822,6 +29919,61 @@ function installNarrativeCanvasApp() {
     }
   }
 
+  function applyMarkdownShortcutToTextarea(input, action) {
+    if (!input || input.tagName !== "TEXTAREA") return false;
+    if (input === dom.expandEditorInput && action !== "wikilink") {
+      applyExpandEditorFormat(action);
+      return true;
+    }
+    const value = input.value || "";
+    const start = input.selectionStart ?? value.length;
+    const end = input.selectionEnd ?? start;
+    const selected = value.slice(start, end);
+    const format = getCurrentRichTextFormat();
+    let insert = "";
+    let selectionStart = start;
+    let selectionEnd = start;
+    if (action === "wikilink") {
+      insert = `[[${selected}]]`;
+      selectionStart = start + 2;
+      selectionEnd = selectionStart + selected.length;
+    } else {
+      const syntax = getRichTextInlineSyntax(format, action);
+      if (syntax) {
+        insert = `${syntax[0]}${selected}${syntax[1]}`;
+        selectionStart = start + syntax[0].length;
+        selectionEnd = selectionStart + selected.length;
+      } else {
+        const block = formatRichTextBlock(format, action, selected);
+        if (block == null) return false;
+        insert = block;
+        selectionEnd = start + block.length;
+      }
+    }
+    input.setRangeText(insert, start, end, "end");
+    input.setSelectionRange(selectionStart, selectionEnd);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    return true;
+  }
+
+  function handleObsidianMarkdownShortcut(event) {
+    const target = event.target;
+    if (!target || target.tagName !== "TEXTAREA" || target.disabled || target.readOnly) return false;
+    const action = window.NarrativeCanvasHost?.getMarkdownShortcutAction?.({
+      key: event.key,
+      code: event.code,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey
+    });
+    if (!action) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    return applyMarkdownShortcutToTextarea(target, action);
+  }
+
   function handleKeyDown(event) {
     if (event.defaultPrevented) return;
     if (handleHistoryShortcutEvent(event)) return;
@@ -29835,6 +29987,7 @@ function installNarrativeCanvasApp() {
     if (handleVaultFileSuggestionKeyDown(event)) return;
     if (handleMentionKeyDown(event)) return;
     if (handleDocumentSourceKeyDown(event)) return;
+    if (handleObsidianMarkdownShortcut(event)) return;
     if (handleCodexTagKeyDown(event)) return;
     if (handleCastEntryPickerKeyDown(event)) return;
     if (event.target?.hasAttribute?.("data-codex-template-input") && event.key === "Enter") {

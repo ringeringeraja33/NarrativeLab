@@ -223,10 +223,12 @@ export class NotesView extends ItemView {
             const editor = (leaf.view as unknown as { editor?: { getValue: () => string } })?.editor;
             if (!editor) return;
             const value = editor.getValue();
-            void this.app.vault.read(file).then((diskValue) => {
+            void this.app.vault.read(file).then(async (diskValue) => {
                 if (diskValue !== value) {
-                    return this.app.vault.modify(file, value);
+                    await this.app.vault.modify(file, value);
                 }
+            }).catch(error => {
+                console.error('[NarrativeLab] Failed to autosave Notes view:', error);
             });
         };
 
@@ -238,9 +240,17 @@ export class NotesView extends ItemView {
             }, 250);
         };
 
+        const flushSave = (): void => {
+            if (this.saveTimer !== null) {
+                window.clearTimeout(this.saveTimer);
+                this.saveTimer = null;
+            }
+            saveNow();
+        };
+
         splitEl.addEventListener('input', scheduleSave, true);
         splitEl.addEventListener('keyup', scheduleSave, true);
-        splitEl.addEventListener('focusout', saveNow, true);
+        splitEl.addEventListener('focusout', flushSave, true);
     }
 
     private detachEditor(): void {

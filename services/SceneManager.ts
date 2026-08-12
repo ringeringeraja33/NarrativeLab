@@ -701,6 +701,10 @@ export class SceneManager implements ISceneStore {
         // saveSettings (which also calls saveProjectSystemData — with the new
         // project's data already loaded this is a harmless round-trip).
         await this.plugin.loadProjectSystemData();
+        // Native Base and Story Graph embeds are bound to concrete Library
+        // paths. Force open Library views to remount for this project instead
+        // of retaining the previous project's rows/categories under a new title.
+        this.plugin.libraryCategoriesStructureEpoch += 1;
         // Reload universal field templates for the new project
         await this.plugin.fieldTemplates.load();
         await this.plugin.templateCenter.load();

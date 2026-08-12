@@ -12,6 +12,7 @@ import sheetsCoreEnUS from '@univerjs/preset-sheets-core/locales/en-US';
 import sheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
 import sheetsFilterEnUS from '@univerjs/preset-sheets-filter/locales/en-US';
 import sheetsFilterZhCN from '@univerjs/preset-sheets-filter/locales/zh-CN';
+import { Menu } from 'obsidian';
 
 import sheetsCoreCss from '@univerjs/preset-sheets-core/lib/index.css';
 
@@ -31,6 +32,7 @@ import {
     conceptGridContentFingerprint,
     documentToUniverWorkbookData,
     mergeUniverCellDataIntoDocument,
+    moveConceptGridAxis,
 } from './PlotGridXlsxCodec';
 
 export interface PlotGridUniverHostOptions {
@@ -42,8 +44,6 @@ export interface PlotGridUniverHostOptions {
      * Pull merges Univer cell values into this snapshot so metadata is not erased.
      */
     getAuthoritativeDocument?: () => ConceptGridDocument;
-    /** Resolve a linked vault path to the title shown in the cell badge. */
-    resolveLinkedLabel?: (path: string) => string;
     /** Run a NarrativeLab action from Univer's native cell context menu. */
     onContextMenuAction?: (action: PlotGridUniverContextAction) => void;
     onDocumentChange: (doc: ConceptGridDocument) => void;
@@ -51,12 +51,11 @@ export interface PlotGridUniverHostOptions {
 }
 
 export type PlotGridUniverContextAction =
-    | 'link-note'
     | 'open-linked-note'
-    | 'unlink-note'
     | 'convert-to-notes'
     | 'convert-to-scene'
-    | 'convert-to-research';
+    | 'convert-to-research'
+    | 'reset-grid';
 
 export interface PlotGridUniverHost {
     dispose: () => void;
@@ -64,28 +63,16 @@ export interface PlotGridUniverHost {
     setDocument: (doc: ConceptGridDocument) => void;
     /** Update host's metadata snapshot without recreating the workbook. */
     syncMeta: (doc: ConceptGridDocument) => void;
-    /** Redraw link badges without replacing workbook content or selection. */
-    refreshLinkMarkers: () => void;
     setActiveSheet: (sheetId: string) => void;
     /** Apply NarrativeLab's legacy view controls to the embedded worksheet. */
     setZoom: (sheetId: string, ratio: number) => void;
-    setFreeze: (sheetId: string, enabled: boolean) => void;
+    setFreeze: (sheetId: string, enabled: boolean, frozenColumns?: number, frozenRows?: number) => void;
     setActiveCell: (sheetId: string, row: number, col: number) => void;
     getActiveCell: () => { sheetId: string; row: number; col: number } | null;
     /** Force a sync pull from Univer cell matrix into the live document. */
     flush: () => void;
     focus: () => void;
 }
-
-type PlotGridCellRender = {
-    zIndex?: number;
-    drawWith: (ctx: CanvasRenderingContext2D, info: {
-        subUnitId: string;
-        row: number;
-        col: number;
-        primaryWithCoord: { startX: number; startY: number; endX: number; endY: number };
-    }) => void;
-};
 
 type UniverAPI = {
     createWorkbook: (data: Record<string, unknown>) => unknown;
@@ -116,20 +103,12 @@ type UniverAPI = {
         save: () => Record<string, unknown>;
     } | null;
     addEvent: (event: string | number, cb: (params: unknown) => void) => { dispose?: () => void } | number;
-    getSheetHooks?: () => {
-        onCellRender?: (renders: PlotGridCellRender[]) => { dispose?: () => void };
-    };
     createMenu: (item: {
         id: string;
         title: string;
         action: () => void;
         order?: number;
     }) => UniverMenuBuilder;
-    createSubmenu: (item: {
-        id: string;
-        title: string;
-        order?: number;
-    }) => UniverSubmenuBuilder;
     removeEvent?: (id: unknown) => void;
     disposeUnit?: (unitId: string) => void;
     dispose?: () => void;
@@ -139,10 +118,26 @@ type UniverMenuBuilder = {
     appendTo: (path: string | string[]) => void;
 };
 
-type UniverSubmenuBuilder = UniverMenuBuilder & {
-    addSubmenu: (menu: UniverMenuBuilder) => UniverSubmenuBuilder;
-    addSeparator: () => UniverSubmenuBuilder;
-};
+function addUniverSubscriptionDisposer(
+    disposers: Array<() => void>,
+    univerAPI: UniverAPI,
+    subscription: unknown,
+): void {
+    disposers.push(() => {
+        if (typeof subscription === 'function') {
+            const dispose = subscription as () => void;
+            dispose();
+            return;
+        }
+        if (subscription && typeof subscription === 'object') {
+            const disposable = subscription as { dispose?: () => void; unsubscribe?: () => void };
+            if (typeof disposable.dispose === 'function') disposable.dispose();
+            else disposable.unsubscribe?.();
+            return;
+        }
+        if (subscription != null) univerAPI.removeEvent?.(subscription);
+    });
+}
 
 const FINANCIAL_FORMULA_MENU_ORDER = 99;
 const TEXT_TO_NUMBER_TOOLBAR_MENU_ID = 'sheet.toolbar.text-to-number';
@@ -150,46 +145,53 @@ const TEXT_TO_NUMBER_TOOLBAR_MENU_ID = 'sheet.toolbar.text-to-number';
 function registerNarrativeLabContextMenu(
     univerAPI: UniverAPI,
     locale: 'en' | 'zh',
+    container: HTMLElement,
     onAction?: (action: PlotGridUniverContextAction) => void,
-): void {
-    if (!onAction) return;
+): () => void {
+    if (!onAction) return () => undefined;
     const labels = locale === 'zh'
         ? {
             root: 'NarrativeLab',
-            link: '链接笔记…',
-            open: '打开链接笔记',
-            unlink: '取消笔记链接',
             notes: '转为笔记',
             scene: '转为场景',
             research: '转为研究资料',
+            reset: '重置表格',
         }
         : {
             root: 'NarrativeLab',
-            link: 'Link Note…',
-            open: 'Open Linked Note',
-            unlink: 'Unlink Note',
             notes: 'Convert to Notes',
             scene: 'Convert to Scene',
             research: 'Convert to Research',
+            reset: 'Reset spreadsheet',
         };
-    const item = (id: string, title: string, action: PlotGridUniverContextAction) => univerAPI.createMenu({
-        id: `narrativelab.plot-grid.${id}`,
-        title,
-        action: () => onAction(action),
-    });
-    univerAPI.createSubmenu({
+    let menuPosition = { x: 0, y: 0 };
+    const rememberPosition = (event: MouseEvent) => {
+        menuPosition = { x: event.clientX, y: event.clientY };
+    };
+    container.addEventListener('contextmenu', rememberPosition, true);
+    const openActionsMenu = () => {
+        const menu = new Menu();
+        const add = (title: string, icon: string, action: PlotGridUniverContextAction) => {
+            menu.addItem(item => item
+                .setTitle(title)
+                .setIcon(icon)
+                .onClick(() => onAction(action)));
+        };
+        add(labels.notes, 'notebook-pen', 'convert-to-notes');
+        add(labels.scene, 'clapperboard', 'convert-to-scene');
+        add(labels.research, 'search', 'convert-to-research');
+        menu.addSeparator();
+        add(labels.reset, 'rotate-ccw', 'reset-grid');
+        menu.showAtPosition(menuPosition);
+    };
+    univerAPI.createMenu({
         id: 'narrativelab.plot-grid.context-menu',
-        title: labels.root,
+        title: `${labels.root}…`,
+        action: openActionsMenu,
         order: 1000,
     })
-        .addSubmenu(item('link-note', labels.link, 'link-note'))
-        .addSubmenu(item('open-linked-note', labels.open, 'open-linked-note'))
-        .addSubmenu(item('unlink-note', labels.unlink, 'unlink-note'))
-        .addSeparator()
-        .addSubmenu(item('convert-to-notes', labels.notes, 'convert-to-notes'))
-        .addSubmenu(item('convert-to-scene', labels.scene, 'convert-to-scene'))
-        .addSubmenu(item('convert-to-research', labels.research, 'convert-to-research'))
         .appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+    return () => container.removeEventListener('contextmenu', rememberPosition, true);
 }
 
 function linkedCellAt(doc: ConceptGridDocument, sheetId: string, row: number, col: number): CellData | null {
@@ -199,45 +201,6 @@ function linkedCellAt(doc: ConceptGridDocument, sheetId: string, row: number, co
     const colMeta = page?.columns[col - 1];
     if (!page || !rowMeta || !colMeta) return null;
     return page.cells[`${rowMeta.id}-${colMeta.id}`] || null;
-}
-
-function linkedPathLabel(path: string): string {
-    const name = path.split('/').pop() || path;
-    return name.replace(/\.[^.]+$/, '') || name;
-}
-
-function fitCanvasLabel(ctx: CanvasRenderingContext2D, label: string, maxWidth: number): string {
-    const prefix = '🔗 ';
-    const full = `${prefix}${label}`;
-    if (ctx.measureText(full).width <= maxWidth) return full;
-    if (ctx.measureText('🔗').width > maxWidth) return '';
-    let shortened = label;
-    while (shortened.length > 1 && ctx.measureText(`${prefix}${shortened}…`).width > maxWidth) {
-        shortened = shortened.slice(0, -1);
-    }
-    return shortened.length > 1 ? `${prefix}${shortened}…` : '🔗';
-}
-
-function roundedRect(
-    ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    radius: number,
-): void {
-    const r = Math.min(radius, width / 2, height / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + width - r, y);
-    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
-    ctx.lineTo(x + width, y + height - r);
-    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-    ctx.lineTo(x + r, y + height);
-    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
 }
 
 function moveFinancialFormulaMenuLast(univer: Univer): void {
@@ -297,6 +260,85 @@ function extractSelection(params: unknown, fallbackSheetId?: string | null): { s
     return { sheetId, row, col };
 }
 
+type DimensionMutation = {
+    id?: string;
+    params?: {
+        subUnitId?: string;
+        ranges?: Array<{ startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }>;
+        rowHeight?: number | Record<number, number>;
+        colWidth?: number | Record<number, number>;
+    };
+};
+
+type AxisMoveMutation = {
+    id?: string;
+    params?: {
+        subUnitId?: string;
+        sourceRange?: { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number };
+        targetRange?: { startRow?: number; startColumn?: number };
+    };
+};
+
+function dimensionAt(value: number | Record<number, number> | undefined, index: number): number | undefined {
+    return typeof value === 'number' ? value : value?.[index];
+}
+
+/** Apply resize mutations directly; workbook.save() can lag behind drag completion. */
+function applyDimensionMutation(doc: ConceptGridDocument, command: unknown): ConceptGridDocument | null {
+    const { id, params } = command as DimensionMutation;
+    if (!params?.subUnitId || !Array.isArray(params.ranges)) return null;
+    const isRow = id === 'sheet.mutation.set-worksheet-row-height';
+    const isColumn = id === 'sheet.mutation.set-worksheet-col-width';
+    if (!isRow && !isColumn) return null;
+    const next = structuredClone(doc);
+    const page = next.pages.find(item => item.id === params.subUnitId);
+    if (!page) return null;
+    for (const range of params.ranges) {
+        if (isRow) {
+            const start = range.startRow ?? 0;
+            const end = range.endRow ?? start;
+            for (let worksheetRow = start; worksheetRow <= end; worksheetRow += 1) {
+                const height = dimensionAt(params.rowHeight, worksheetRow);
+                const row = page.rows[worksheetRow - 1];
+                if (worksheetRow > 0 && height != null && height > 0 && row) {
+                    row.height = height;
+                }
+            }
+        } else {
+            const start = range.startColumn ?? 0;
+            const end = range.endColumn ?? start;
+            for (let worksheetColumn = start; worksheetColumn <= end; worksheetColumn += 1) {
+                const width = dimensionAt(params.colWidth, worksheetColumn);
+                const column = page.columns[worksheetColumn - 1];
+                if (worksheetColumn > 0 && width != null && width > 0 && column) {
+                    column.width = width;
+                }
+            }
+        }
+    }
+    return next;
+}
+
+function applyAxisMoveMutation(doc: ConceptGridDocument, command: unknown): ConceptGridDocument | null {
+    const { id, params } = command as AxisMoveMutation;
+    if (!params?.subUnitId || !params.sourceRange || !params.targetRange) return null;
+    if (id === 'sheet.mutation.move-rows') {
+        const from = params.sourceRange.startRow;
+        const end = params.sourceRange.endRow;
+        const target = params.targetRange.startRow;
+        if (from == null || end == null || target == null) return null;
+        return moveConceptGridAxis(doc, params.subUnitId, 'rows', from, end - from + 1, target);
+    }
+    if (id === 'sheet.mutation.move-columns') {
+        const from = params.sourceRange.startColumn;
+        const end = params.sourceRange.endColumn;
+        const target = params.targetRange.startColumn;
+        if (from == null || end == null || target == null) return null;
+        return moveConceptGridAxis(doc, params.subUnitId, 'columns', from, end - from + 1, target);
+    }
+    return null;
+}
+
 /**
  * Mount Univer Sheets into `container` and keep a ConceptGridDocument in sync.
  */
@@ -332,6 +374,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 UniverSheetsCorePreset({
                     container: opts.container,
                     footer: false,
+                    toolbar: true,
+                    formulaBar: true,
+                    // Simple ribbon is Univer's own compact layout. It keeps
+                    // the complete command registry in the overflow menu.
                     ribbonType: 'simple',
                     contextMenu: true,
                     menu: {
@@ -348,6 +394,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             presets: [
                 UniverSheetsCorePreset({
                     container: opts.container,
+                    toolbar: true,
+                    formulaBar: true,
                     ribbonType: 'simple',
                     contextMenu: true,
                     menu: {
@@ -359,9 +407,36 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }) as unknown as { univer: Univer; univerAPI: UniverAPI });
     }
 
-    const workbookData = documentToUniverWorkbookData(liveDoc);
-    univerAPI.createWorkbook(workbookData);
-    registerNarrativeLabContextMenu(univerAPI, opts.locale, opts.onContextMenuAction);
+    const nativeLinkColor = getComputedStyle(opts.container).getPropertyValue('--link-color').trim()
+        || getComputedStyle(opts.container).getPropertyValue('--interactive-accent').trim()
+        || '#5e6ad2';
+    let nativeRichTextEnabled = true;
+    const disposeActiveWorkbook = () => {
+        try {
+            const existing = univerAPI.getActiveWorkbook?.();
+            const unitId = existing?.getId?.();
+            if (unitId && typeof univerAPI.disposeUnit === 'function') univerAPI.disposeUnit(unitId);
+        } catch { /* ignore cleanup failures */ }
+    };
+    const createNativeWorkbook = (doc: ConceptGridDocument) => {
+        const workbookData = documentToUniverWorkbookData(doc, {
+            linkColor: nativeLinkColor,
+            richText: nativeRichTextEnabled,
+        });
+        try {
+            return univerAPI.createWorkbook(workbookData);
+        } catch (error) {
+            if (!nativeRichTextEnabled) throw error;
+            console.warn('[NarrativeLab] Univer rich-text cells failed; retrying with native plain cells.', error);
+            disposeActiveWorkbook();
+            nativeRichTextEnabled = false;
+            return univerAPI.createWorkbook(documentToUniverWorkbookData(doc, {
+                linkColor: nativeLinkColor,
+                richText: false,
+            }));
+        }
+    };
+    createNativeWorkbook(liveDoc);
     moveFinancialFormulaMenuLast(univerInstance);
     tryActivateSheet(univerAPI, liveDoc.activePageId);
 
@@ -369,75 +444,24 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let suppressUntil = 0;
     let lastSelection: { sheetId: string; row: number; col: number } | null = null;
     const disposers: Array<() => void> = [];
-
-    const refreshLinkMarkers = () => {
-        try {
-            univerAPI.getActiveWorkbook?.()?.getActiveSheet?.()?.refreshCanvas?.();
-        } catch { /* drawing is cosmetic */ }
-    };
-
     try {
-        const linkBadgeRender: PlotGridCellRender = {
-            zIndex: 100,
-            drawWith: (ctx, info) => {
-                const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
-                const cell = linkedCellAt(source, info.subUnitId, info.row, info.col);
-                const path = cell?.linkedSceneId;
-                if (!path) return;
-
-                const { startX, startY, endX, endY } = info.primaryWithCoord;
-                const cellWidth = endX - startX;
-                const cellHeight = endY - startY;
-                if (cellWidth < 18 || cellHeight < 14) return;
-
-                let label = linkedPathLabel(path);
-                try { label = opts.resolveLinkedLabel?.(path) || label; } catch { /* keep filename */ }
-
-                ctx.save();
-                ctx.beginPath();
-                ctx.rect(startX + 1, startY + 1, cellWidth - 2, cellHeight - 2);
-                ctx.clip();
-                ctx.font = '600 10px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-                ctx.textBaseline = 'middle';
-                const maxBadgeWidth = Math.min(180, cellWidth - 6);
-                const text = fitCanvasLabel(ctx, label, maxBadgeWidth - 10);
-                if (!text) {
-                    ctx.restore();
-                    return;
-                }
-                const badgeHeight = Math.min(18, cellHeight - 6);
-                const badgeWidth = Math.min(maxBadgeWidth, Math.ceil(ctx.measureText(text).width) + 10);
-                const x = endX - badgeWidth - 3;
-                const y = startY + 3;
-                roundedRect(ctx, x, y, badgeWidth, badgeHeight, 5);
-                ctx.fillStyle = 'rgba(47, 101, 220, 0.94)';
-                ctx.fill();
-                ctx.fillStyle = '#ffffff';
-                ctx.fillText(text, x + 5, y + badgeHeight / 2);
-                ctx.restore();
-            },
-        };
-        const renderHook = univerAPI.getSheetHooks?.().onCellRender?.([linkBadgeRender]);
-        if (renderHook && typeof renderHook.dispose === 'function') {
-            disposers.push(() => renderHook.dispose?.());
-        }
-        refreshLinkMarkers();
-    } catch (e) {
-        console.warn('[NarrativeLab] Univer link badge renderer unavailable:', e);
+        disposers.push(registerNarrativeLabContextMenu(
+            univerAPI,
+            opts.locale,
+            opts.container,
+            opts.onContextMenuAction,
+        ));
+    } catch (error) {
+        // A NarrativeLab extension must never take down Univer's native menu.
+        console.warn('[NarrativeLab] Could not extend the Univer context menu.', error);
     }
 
     const isSuppressed = () => disposed || Date.now() < suppressUntil;
 
     const replaceWorkbook = (doc: ConceptGridDocument) => {
         suppressUntil = Date.now() + 800;
-        try {
-            const existing = univerAPI.getActiveWorkbook?.();
-            const unitId = existing?.getId?.();
-            if (unitId && typeof univerAPI.disposeUnit === 'function') {
-                try { univerAPI.disposeUnit(unitId); } catch { /* ignore */ }
-            }
-        } catch { /* ignore */ }
-        univerAPI.createWorkbook(documentToUniverWorkbookData(doc));
+        disposeActiveWorkbook();
+        createNativeWorkbook(doc);
         tryActivateSheet(univerAPI, doc.activePageId);
     };
 
@@ -457,7 +481,13 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 }>;
                 sheets?: Record<string, {
                     id?: string;
-                    cellData?: Record<number, Record<number, { v?: unknown; f?: unknown; s?: unknown }>>;
+                    cellData?: Record<number, Record<number, {
+                        v?: unknown;
+                        f?: unknown;
+                        p?: unknown;
+                        custom?: Record<string, unknown>;
+                        s?: unknown;
+                    }>>;
                     rowData?: Record<number, { h?: number; ah?: number }>;
                     columnData?: Record<number, { w?: number }>;
                 }>;
@@ -500,10 +530,26 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     // Debounced command listener — Univer fires many mutations while editing.
     let timer = 0;
     let pendingAfterSuppress = false;
+    let suppressDrainTimer = 0;
+    const scheduleSuppressedDrain = () => {
+        if (suppressDrainTimer || disposed) return;
+        const delay = Math.max(16, suppressUntil - Date.now() + 16);
+        suppressDrainTimer = window.setTimeout(() => {
+            suppressDrainTimer = 0;
+            if (disposed || !pendingAfterSuppress) return;
+            if (isSuppressed()) {
+                scheduleSuppressedDrain();
+                return;
+            }
+            pendingAfterSuppress = false;
+            schedulePull();
+        }, delay);
+    };
     const schedulePull = () => {
         if (disposed) return;
         if (isSuppressed()) {
             pendingAfterSuppress = true;
+            scheduleSuppressedDrain();
             return;
         }
         if (timer) window.clearTimeout(timer);
@@ -513,15 +559,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }, 600);
     };
 
-    // Drain pulls that were deferred during workbook bootstrap/replace.
-    const suppressWatcher = window.setInterval(() => {
-        if (disposed) return;
-        if (pendingAfterSuppress && !isSuppressed()) {
-            pendingAfterSuppress = false;
-            schedulePull();
-        }
-    }, 200);
-    disposers.push(() => window.clearInterval(suppressWatcher));
+    disposers.push(() => {
+        if (suppressDrainTimer) window.clearTimeout(suppressDrainTimer);
+        suppressDrainTimer = 0;
+    });
 
     try {
         const api = univerAPI as UniverAPI & {
@@ -530,15 +571,24 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 SelectionChanged?: string;
                 CellPointerDown?: string;
             };
-            onCommandExecuted?: (cb: (c: unknown) => void) => void;
+            onCommandExecuted?: (cb: (c: unknown) => void) => unknown;
         };
         if (api.Event?.CommandExecuted) {
-            const sub = univerAPI.addEvent(api.Event.CommandExecuted, () => schedulePull());
-            disposers.push(() => {
-                if (sub && typeof sub === 'object' && typeof sub.dispose === 'function') sub.dispose();
+            const sub = univerAPI.addEvent(api.Event.CommandExecuted, (command) => {
+                const authoritative = opts.getAuthoritativeDocument?.() ?? liveDoc;
+                const mutated = applyDimensionMutation(authoritative, command)
+                    ?? applyAxisMoveMutation(authoritative, command);
+                if (mutated) {
+                    liveDoc = mutated;
+                    contentFp = conceptGridContentFingerprint(liveDoc);
+                    opts.onDocumentChange(liveDoc);
+                }
+                schedulePull();
             });
+            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
         } else if (typeof api.onCommandExecuted === 'function') {
-            api.onCommandExecuted(() => schedulePull());
+            const sub = api.onCommandExecuted(() => schedulePull());
+            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
         } else {
             const id = window.setInterval(() => {
                 if (!disposed && opts.container.isConnected && !isSuppressed()) schedulePull();
@@ -558,18 +608,22 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
         if (api.Event?.SelectionChanged) {
             const sub = univerAPI.addEvent(api.Event.SelectionChanged, handleSelection);
-            disposers.push(() => {
-                if (sub && typeof sub === 'object' && typeof sub.dispose === 'function') sub.dispose();
-            });
+            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
         }
         // SelectionChanged may lag or be skipped when NarrativeLab's toolbar
         // takes focus immediately after a sheet click. PointerDown carries the
-        // exact row/column and keeps link-note actions in sync.
+        // exact row/column and keeps toolbar actions in sync.
         if (api.Event?.CellPointerDown) {
-            const sub = univerAPI.addEvent(api.Event.CellPointerDown, handleSelection);
-            disposers.push(() => {
-                if (sub && typeof sub === 'object' && typeof sub.dispose === 'function') sub.dispose();
+            const sub = univerAPI.addEvent(api.Event.CellPointerDown, (params) => {
+                handleSelection(params);
+                const event = (params as { event?: MouseEvent | PointerEvent }).event;
+                if (!(event?.metaKey || event?.ctrlKey) || !lastSelection) return;
+                const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
+                if (linkedCellAt(source, lastSelection.sheetId, lastSelection.row, lastSelection.col)?.linkedSceneId) {
+                    opts.onContextMenuAction?.('open-linked-note');
+                }
             });
+            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
         }
     } catch (e) {
         console.warn('[NarrativeLab] Univer event hook failed:', e);
@@ -585,6 +639,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             if (timer) {
                 window.clearTimeout(timer);
                 timer = 0;
+            }
+            if (suppressDrainTimer) {
+                window.clearTimeout(suppressDrainTimer);
+                suppressDrainTimer = 0;
             }
             try { pullFromUniver(true); } catch { /* ignore */ }
             disposed = true;
@@ -606,9 +664,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             // Keep host snapshot aligned with NL meta without remounting Univer.
             liveDoc = structuredClone(doc);
             contentFp = conceptGridContentFingerprint(liveDoc);
-            refreshLinkMarkers();
         },
-        refreshLinkMarkers,
         setActiveSheet: (sheetId: string) => {
             tryActivateSheet(univerAPI, sheetId);
         },
@@ -616,11 +672,18 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
             sheet?.zoom?.(Math.min(4, Math.max(0.1, ratio)));
         },
-        setFreeze: (sheetId: string, enabled: boolean) => {
+        setFreeze: (sheetId: string, enabled: boolean, frozenColumns = 1, frozenRows = 1) => {
             const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
             if (!sheet) return;
             if (enabled) {
-                sheet.setFreeze?.({ startRow: 1, startColumn: 1, xSplit: 1, ySplit: 1 });
+                const columnCount = Math.max(1, Math.floor(frozenColumns));
+                const rowCount = Math.max(1, Math.floor(frozenRows));
+                sheet.setFreeze?.({
+                    startRow: rowCount,
+                    startColumn: columnCount,
+                    xSplit: columnCount,
+                    ySplit: rowCount,
+                });
             } else {
                 sheet.cancelFreeze?.();
             }
@@ -679,6 +742,7 @@ function pickMeta(doc: ConceptGridDocument): unknown {
         cells: Object.fromEntries(
             Object.entries(p.cells || {}).map(([k, c]) => [k, {
                 linkedSceneId: c?.linkedSceneId,
+                linkedViaWikilink: c?.linkedViaWikilink,
                 formula: c?.formula,
                 manualContent: c?.manualContent,
                 bgColor: c?.bgColor,
@@ -690,6 +754,8 @@ function pickMeta(doc: ConceptGridDocument): unknown {
         ),
         rows: (p.rows || []).map(r => ({ id: r.id, height: r.height, sourceId: r.sourceId, sourceType: r.sourceType })),
         columns: (p.columns || []).map(c => ({ id: c.id, width: c.width, sourceId: c.sourceId, sourceType: c.sourceType })),
+        frozenColumns: p.frozenColumns,
+        frozenRows: p.frozenRows,
     }));
 }
 

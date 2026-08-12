@@ -6,6 +6,7 @@ import { InspectorComponent } from '../components/Inspector';
 import { QuickAddModal } from '../components/QuickAddModal';
 import { BeatSheetApplyModal } from '../components/BeatSheetApplyModal';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
+import { renderStructureModeSwitcher } from '../components/StructureModeSwitcher';
 import { enableDragToPan } from '../components/DragToPan';
 import type SceneCardsPlugin from '../main';
 
@@ -78,11 +79,20 @@ export class TimelineView extends ItemView {
         applyMobileClass(container);
         this.rootContainer = container;
 
-        await this.sceneManager.initialize();
+        await this.sceneManager.ensureInitialized();
+        if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
-    async onClose(): Promise<void> {}
+    async onClose(): Promise<void> {
+        if (this._pendingRefresh != null) {
+            window.cancelAnimationFrame(this._pendingRefresh);
+            this._pendingRefresh = null;
+        }
+        this.inspectorComponent = null;
+        this.selectedScene = null;
+        this.rootContainer = null;
+    }
 
     private isNoteScene(scene: Scene): boolean {
         const value: unknown = (scene as Scene & { corkboardNote?: unknown }).corkboardNote;
@@ -107,34 +117,24 @@ export class TimelineView extends ItemView {
 
         const controls = toolbar.createDiv('story-line-toolbar-controls');
 
+        renderStructureModeSwitcher(
+            controls,
+            this.swimlaneMode ? 'tracks' : 'timeline',
+            this.plugin,
+            this.leaf,
+            {
+                onTimeline: () => this.setSwimlaneMode(false),
+                onTracks: () => this.setSwimlaneMode(true),
+                onTemplates: () => this.openStructureModal(),
+            },
+        );
+
         // Add scene button
         const addBtn = controls.createEl('button', {
             cls: 'mod-cta story-line-add-btn',
             text: t('+ New Scene')
         });
         addBtn.addEventListener('click', () => this.openQuickAdd());
-
-        // Swimlane toggle (layout)
-        const swimToggle = controls.createEl('button', {
-            cls: `clickable-icon${this.swimlaneMode ? ' is-active' : ''}`,
-        });
-        obsidian.setIcon(swimToggle, 'columns-2');
-        attachTooltip(swimToggle, this.swimlaneMode ? t('Switch to linear') : t('Switch to swimlanes'));
-        swimToggle.addEventListener('click', () => {
-            this.swimlaneMode = !this.swimlaneMode;
-            this.plugin.settings.timelineSwimlaneMode = this.swimlaneMode;
-            void this.plugin.saveSettings();
-            this.refresh();
-        });
-
-        // Add acts/chapters — beside the swimlane layout control
-        const structBtn = controls.createEl('button', {
-            cls: 'clickable-icon',
-            attr: { 'aria-label': t('Add acts or chapters') },
-        });
-        obsidian.setIcon(structBtn, 'layers');
-        attachTooltip(structBtn, t('Beat Sheet Templates / Add acts or chapters'));
-        structBtn.addEventListener('click', () => this.openStructureModal());
 
         // Reading order / Chronological order toggle
         const orderSelect = controls.createEl('select', {
@@ -192,8 +192,7 @@ export class TimelineView extends ItemView {
         });
         attachTooltip(zoomOut, t('Zoom out'));
         zoomOut.addEventListener('click', () => {
-            this.zoomLevel = Math.max(0.5, this.zoomLevel - 0.25);
-            this.refreshTimeline(container);
+            this.setZoomLevel(this.zoomLevel - 0.25);
         });
 
         controls.createSpan({
@@ -207,8 +206,7 @@ export class TimelineView extends ItemView {
         });
         attachTooltip(zoomIn, t('Zoom in'));
         zoomIn.addEventListener('click', () => {
-            this.zoomLevel = Math.min(3, this.zoomLevel + 0.25);
-            this.refreshTimeline(container);
+            this.setZoomLevel(this.zoomLevel + 0.25);
         });
 
         // Refresh button
@@ -251,6 +249,14 @@ export class TimelineView extends ItemView {
         );
     }
 
+    private setSwimlaneMode(enabled: boolean): void {
+        if (this.swimlaneMode === enabled) return;
+        this.swimlaneMode = enabled;
+        this.plugin.settings.timelineSwimlaneMode = enabled;
+        this.refresh();
+        void this.plugin.saveSettings();
+    }
+
     private renderTimeline(container: HTMLElement): void {
         // Remove old timeline if exists
         const existing = container.querySelector('.story-line-timeline');
@@ -273,9 +279,9 @@ export class TimelineView extends ItemView {
         const timeTs = scenes.map(s => this.parseSceneTimeTimestamp(s));
         const dateInvalidFlags = scenes.map((s, idx) => {
             if (EXEMPT_FROM_DATE_ORDER_SET.has(s.timeline_mode)) return false;
-            const prev = idx > 0 ? dateTs[idx - 1] : null;
-            const curr = dateTs[idx];
-            const next = idx < scenes.length - 1 ? dateTs[idx + 1] : null;
+            const prev = idx > 0 ? dateTs[idx - 1] ?? null : null;
+            const curr = dateTs[idx] ?? null;
+            const next = idx < scenes.length - 1 ? dateTs[idx + 1] ?? null : null;
             // Also exempt if the adjacent scene is exempt
             if (prev !== null && curr !== null && prev > curr) {
                 if (!EXEMPT_FROM_DATE_ORDER_SET.has(scenes[idx - 1]?.timeline_mode)) return true;
@@ -287,11 +293,11 @@ export class TimelineView extends ItemView {
         });
         const timeInvalidFlags = scenes.map((s, idx) => {
             if (EXEMPT_FROM_DATE_ORDER_SET.has(s.timeline_mode)) return false;
-            const prevDate = idx > 0 ? dateTs[idx - 1] : null;
-            const nextDate = idx < scenes.length - 1 ? dateTs[idx + 1] : null;
-            const prevTime = idx > 0 ? timeTs[idx - 1] : null;
-            const currTime = timeTs[idx];
-            const nextTime = idx < scenes.length - 1 ? timeTs[idx + 1] : null;
+            const prevDate = idx > 0 ? dateTs[idx - 1] ?? null : null;
+            const nextDate = idx < scenes.length - 1 ? dateTs[idx + 1] ?? null : null;
+            const prevTime = idx > 0 ? timeTs[idx - 1] ?? null : null;
+            const currTime = timeTs[idx] ?? null;
+            const nextTime = idx < scenes.length - 1 ? timeTs[idx + 1] ?? null : null;
 
             let invalid = false;
             if (prevTime !== null && currTime !== null) {
@@ -342,6 +348,10 @@ export class TimelineView extends ItemView {
             const scrollEl = track.closest('.story-line-main-area') || track.parentElement;
             if (!scrollEl) return;
             const loop = () => {
+                if (!track.isConnected || !scrollEl.isConnected) {
+                    autoScrollRAF = null;
+                    return;
+                }
                 const rect = scrollEl.getBoundingClientRect();
                 if (lastDragClientY < rect.top + AUTO_SCROLL_ZONE) {
                     scrollEl.scrollTop -= AUTO_SCROLL_SPEED;
@@ -380,19 +390,18 @@ export class TimelineView extends ItemView {
         const handleDrop = async (fromIdx: number, toIdx: number) => {
             if (fromIdx === toIdx || fromIdx === toIdx - 1) return;
 
-            // Save scroll position to restore after refresh
-            const scrollEl = track.closest('.story-line-main-area') || track.parentElement;
-            const savedScroll = scrollEl ? scrollEl.scrollTop : 0;
-
             const moved = scenes.splice(fromIdx, 1)[0];
+            if (!moved) return;
             const insertAt = toIdx > fromIdx ? toIdx - 1 : toIdx;
             scenes.splice(insertAt, 0, moved);
 
             if (this.timelineOrder === 'chronological') {
                 // Chronological order is a single global counter — flat 1..N is correct.
                 for (let i = 0; i < scenes.length; i++) {
+                    const scene = scenes[i];
+                    if (!scene) continue;
                     await this.sceneManager.updateScene(
-                        scenes[i].filePath,
+                        scene.filePath,
                         { chronologicalOrder: i + 1 } as Partial<Scene>,
                     );
                 }
@@ -421,11 +430,6 @@ export class TimelineView extends ItemView {
                 await this.sceneManager.globalResequence();
             }
             this.refresh();
-
-            // Restore scroll position after DOM rebuild
-            window.requestAnimationFrame(() => {
-                if (scrollEl) scrollEl.scrollTop = savedScroll;
-            });
         };
 
         // Build a combined list: scenes + empty act placeholders
@@ -458,6 +462,7 @@ export class TimelineView extends ItemView {
         let lastRenderedAct: number | undefined = undefined;
         for (let globalIdx = 0; globalIdx < scenes.length; globalIdx++) {
             const scene = scenes[globalIdx];
+            if (!scene) continue;
             const currentAct = scene.act !== undefined ? Number(scene.act) : undefined;
             if (currentAct !== lastRenderedAct) {
                 const beatLabel = currentAct !== undefined ? this.sceneManager.getActLabel(currentAct) : undefined;
@@ -469,7 +474,13 @@ export class TimelineView extends ItemView {
                 tlItems.push({ kind: 'divider', actLabel, actNum: currentAct });
                 lastRenderedAct = currentAct;
             }
-            tlItems.push({ kind: 'scene', scene, globalIdx, dateInvalid: dateInvalidFlags[globalIdx], timeInvalid: timeInvalidFlags[globalIdx] });
+            tlItems.push({
+                kind: 'scene',
+                scene,
+                globalIdx,
+                dateInvalid: dateInvalidFlags[globalIdx] ?? false,
+                timeInvalid: timeInvalidFlags[globalIdx] ?? false,
+            });
         }
 
         // Add empty-act placeholders for defined acts with no scenes
@@ -534,7 +545,10 @@ export class TimelineView extends ItemView {
             for (const item of tlItems) renderTLItem(item);
         } else {
             // Large project — chunked rendering
-            for (let i = 0; i < INITIAL_BATCH; i++) renderTLItem(tlItems[i]);
+            for (let i = 0; i < INITIAL_BATCH; i++) {
+                const item = tlItems[i];
+                if (item) renderTLItem(item);
+            }
 
             let cursor = INITIAL_BATCH;
             const scheduleChunk = () => {
@@ -542,7 +556,10 @@ export class TimelineView extends ItemView {
                 window.requestAnimationFrame(() => {
                     if (!track.isConnected) return;
                     const end = Math.min(cursor + CHUNK_SIZE, total);
-                    for (let i = cursor; i < end; i++) renderTLItem(tlItems[i]);
+                    for (let i = cursor; i < end; i++) {
+                        const item = tlItems[i];
+                        if (item) renderTLItem(item);
+                    }
                     cursor = end;
                     if (cursor < total) scheduleChunk();
                 });
@@ -601,6 +618,7 @@ export class TimelineView extends ItemView {
         let lastAct: number | undefined = undefined;
         for (let i = 0; i < scenes.length; i++) {
             const scene = scenes[i];
+            if (!scene) continue;
             const currentAct = scene.act !== undefined ? Number(scene.act) : undefined;
             if (currentAct !== lastAct) {
                 const beatLabel = currentAct !== undefined ? this.sceneManager.getActLabel(currentAct) : undefined;
@@ -691,6 +709,7 @@ export class TimelineView extends ItemView {
             // Render one cell per lane
             for (let laneIdx = 0; laneIdx < laneKeys.length; laneIdx++) {
                 const lane = laneKeys[laneIdx];
+                if (lane === undefined) continue;
                 const cell = grid.createDiv('swimlane-lane-cell');
 
                 if (sceneKeySet.has(lane)) {
@@ -1035,7 +1054,7 @@ export class TimelineView extends ItemView {
                 if (!isNaN(parsed)) return new Date(new Date(parsed).toDateString()).getTime();
                 const dayMatch = datePart.match(/dag\s*(\d+)/i) || (scene.timeline || '').match(/dag\s*(\d+)/i);
                 if (dayMatch) {
-                    const dayNum = parseInt(dayMatch[1], 10);
+                    const dayNum = parseInt(dayMatch[1] ?? '', 10);
                     if (!isNaN(dayNum)) return dayNum * 24 * 60 * 60 * 1000;
                 }
             }
@@ -1057,8 +1076,8 @@ export class TimelineView extends ItemView {
                 // Accept HH:MM or HH:MM:SS
                 const m = timePart.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
                 if (m) {
-                    const h = parseInt(m[1], 10);
-                    const mm = parseInt(m[2], 10);
+                    const h = parseInt(m[1] ?? '', 10);
+                    const mm = parseInt(m[2] ?? '', 10);
                     const ss = m[3] ? parseInt(m[3], 10) : 0;
                     if (!isNaN(h) && !isNaN(mm)) {
                         const val = (h * 3600 + mm * 60 + ss) * 1000;
@@ -1217,7 +1236,7 @@ export class TimelineView extends ItemView {
     /**
      * Open the structure modal to add/remove acts, chapters, and apply beat sheet templates
      */
-    private openStructureModal(): void {
+    openStructureModal(): void {
         const modal = new Modal(this.app);
         modal.titleEl.setText(t('Manage Story Structure'));
 
@@ -1575,8 +1594,8 @@ export class TimelineView extends ItemView {
                     const val = input.value.trim();
                     const rangeMatch = val.match(/^(\d+)\s*-\s*(\d+)$/);
                     if (rangeMatch) {
-                        const start = parseInt(rangeMatch[1]);
-                        const end = parseInt(rangeMatch[2]);
+                        const start = parseInt(rangeMatch[1] ?? '', 10);
+                        const end = parseInt(rangeMatch[2] ?? '', 10);
                         for (let i = start; i <= end; i++) nums.push(i);
                     } else {
                         nums = val.split(',')
@@ -1747,8 +1766,17 @@ export class TimelineView extends ItemView {
         }
     }
 
-    private refreshTimeline(container: HTMLElement): void {
-        this.renderView(container);
+    private setZoomLevel(value: number): void {
+        const next = Math.min(3, Math.max(0.5, value));
+        if (next === this.zoomLevel) return;
+        this.zoomLevel = next;
+        const root = this.rootContainer;
+        if (!root) return;
+        root.querySelectorAll<HTMLElement>('.timeline-card').forEach(card => {
+            card.setCssStyles({ transform: `scale(${next})` });
+        });
+        const label = root.querySelector<HTMLElement>('.story-line-zoom-level');
+        if (label) label.setText(`${Math.round(next * 100)}%`);
     }
 
     /**
@@ -1784,6 +1812,8 @@ export class TimelineView extends ItemView {
                     if (!this.plugin.isSceneInspectorOpen()) {
                         this.inspectorComponent?.show(updated);
                     }
+                } else {
+                    this.selectedScene = null;
                 }
             }
         });

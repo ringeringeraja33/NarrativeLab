@@ -76,7 +76,6 @@ export const EXTRA_ZH: Record<string, string> = {
     'Split failed:': '拆分失败：',
     'Status: {status}': '状态：{status}',
     'Switch to project…': '切换到项目…',
-    'Synced {scenes} scenes → {rows} rows, {cols} columns': '已同步 {scenes} 个场景 → {rows} 行，{cols} 列',
     'The project will be removed from the series "': '项目将从系列「',
     'Unlink "{alias}" from {canonical}': '取消「{alias}」与 {canonical} 的关联',
     'Updated {n} setup/payoff link(s)': '已更新 {n} 个铺垫/兑现链接',

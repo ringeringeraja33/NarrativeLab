@@ -50,3 +50,12 @@ test("native Canvas sync stays in advanced project tools", () => {
   assert.match(pluginBundle, /getNarrativeCanvasProjectionPath/);
   assert.match(pluginBundle, /validateNarrativeCanvasProjection/);
 });
+
+test("library files and preview images share aligned controls", () => {
+  assert.equal((app.match(/class="codex-asset-toolbar/g) || []).length, 2);
+  assert.match(app, /class="small-button codex-asset-add-button"/);
+  assert.match(app, /class="vision-board-expand-button"[^>]*data-action="open-vision-board"/);
+  assert.match(css, /\.codex-asset-toolbar\s*\{[\s\S]*?grid-template-columns:/);
+  assert.match(css, /\.vision-board-expand-button\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*8px;[\s\S]*?right:\s*8px;/);
+  assert.match(pluginBundle, /vision-board-expand-button/);
+});

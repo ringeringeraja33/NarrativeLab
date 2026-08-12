@@ -19,9 +19,10 @@ const TOOLTIP_CLASS = 'sl-instant-tooltip';
  * mouseleave or click.  Any stale tooltips left behind by DOM re-renders
  * are cleaned up automatically.
  */
-export function attachTooltip(el: HTMLElement, text: string): void {
+export function attachTooltip(el: HTMLElement, text: string | (() => string)): void {
     let tip: HTMLDivElement | null = null;
-    if (!el.hasAttribute('aria-label')) el.setAttribute('aria-label', text);
+    const resolveText = (): string => typeof text === 'function' ? text() : text;
+    if (!el.hasAttribute('aria-label')) el.setAttribute('aria-label', resolveText());
     // Our zero-delay tooltip replaces the browser title only after an
     // accessible name has been retained for keyboard and screen-reader users.
     el.removeAttribute('title');
@@ -44,7 +45,7 @@ export function attachTooltip(el: HTMLElement, text: string): void {
 
         tip = activeDocument.createElement('div');
         tip.className = TOOLTIP_CLASS;
-        tip.textContent = text;
+        tip.textContent = resolveText();
         activeDocument.body.appendChild(tip);
 
         const rect = el.getBoundingClientRect();
