@@ -8,7 +8,7 @@ import { SceneCardComponent } from '../components/SceneCard';
 import { QuickAddModal } from '../components/QuickAddModal';
 import { compareActChapter, getActDisplayLabel } from '../utils/actChapter';
 import { SceneManager } from '../services/SceneManager';
-import { MANUSCRIPT_VIEW_TYPE, NAVIGATOR_VIEW_TYPE } from '../constants';
+import { MANUSCRIPT_VIEW_TYPE, NAVIGATOR_VIEW_TYPE, BOARD_VIEW_TYPE } from '../constants';
 import { Scene, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import type { ProjectDraft, StoryLineProject } from '../models/StoryLineProject';
 import { RESEARCH_TYPE_CONFIG, type ResearchPost } from '../models/Research';
@@ -190,6 +190,24 @@ export class NavigatorView extends ItemView {
         }
     }
 
+    /** Explicit open action from the project-row trailing button (always opens Board). */
+    private async openProjectFromNavigator(project: StoryLineProject): Promise<void> {
+        try {
+            const current = this.sceneManager.activeProject;
+            if (current?.filePath !== project.filePath) {
+                this.plotlineFilter = null;
+                this.selectedScenePath = null;
+                await this.sceneManager.setActiveProject(project);
+            }
+            this.collapsedNodes.delete(`project:${project.filePath}`);
+            await this.plugin.refreshOpenViews();
+            if (this.plugin.settings.autoOpenNavigator) this.plugin.openNavigator();
+            await this.plugin.activateView(BOARD_VIEW_TYPE);
+        } catch (err) {
+            new Notice(t('Failed to open project: ') + String(err));
+        }
+    }
+
     private isCollapsed(key: string): boolean {
         return this.collapsedNodes.has(key);
     }
@@ -317,6 +335,16 @@ export class NavigatorView extends ItemView {
                 depth: 0,
                 expandable: isActive,
                 onActivate: () => { void this.switchToProject(project); },
+                trailing: (el) => {
+                    const open = el.createSpan('sl-nav-folder-action is-always sl-nav-project-open');
+                    setIcon(open, 'folder-open');
+                    attachTooltip(open, t('Open Project'));
+                    open.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void this.openProjectFromNavigator(project);
+                    });
+                },
             });
 
             if (isActive && node.expanded && node.body) {

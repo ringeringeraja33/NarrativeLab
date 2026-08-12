@@ -19,6 +19,7 @@ import {
     type PlotGridUniverHost,
 } from '../utils/loadPlotGridUniver';
 import { conceptGridContentFingerprint } from '../services/PlotGridXlsxCodec';
+import { cellRequiresMarkdownEditor } from '../utils/plotGridCellEdit';
 import { SceneManager } from '../services/SceneManager';
 import { CharacterManager } from '../services/CharacterManager';
 import { InspectorComponent } from '../components/Inspector';
@@ -85,6 +86,8 @@ export class PlotgridView extends ItemView {
     private univerLoadFailed = false;
     private univerLoadError: unknown = null;
     private lastUniverSel: { sheetId: string; row: number; col: number } | null = null;
+    private linkHoverEl: HTMLElement | null = null;
+    private linkHoverHideTimer = 0;
     private univerViewStateSig = '';
     /** System/ folder the in-memory document was loaded from — used to block cross-project saves. */
     private loadedSystemFolder: string | null = null;
@@ -200,6 +203,7 @@ export class PlotgridView extends ItemView {
         this.univerMountPromise = null;
         this.univerStructureSig = '';
         this.univerViewStateSig = '';
+        this.hideLinkHoverCardImmediate();
         this.resetUniverCanvasLayout();
     }
 
@@ -259,11 +263,15 @@ export class PlotgridView extends ItemView {
             win.remove();
         }
         this.cellEditorWindows.clear();
+        this.hideLinkHoverCardImmediate();
     }
 
     private bringCellEditorToFront(win: HTMLElement, pinned = false): void {
         this.cellEditorZSeq += 1;
-        win.style.zIndex = String((pinned ? 20000 : 10000) + (this.cellEditorZSeq % 10000));
+        // Stay below Obsidian modals / FuzzySuggestModal (--layer-modal ≈ 50).
+        // The previous 10000+ stacking hid note pickers behind this window.
+        const base = pinned ? 44 : 34;
+        win.style.zIndex = String(base + (this.cellEditorZSeq % 10));
     }
 
     private resolveCellEditorHeading(cell: CellData): string {
@@ -325,6 +333,7 @@ export class PlotgridView extends ItemView {
             window.clearTimeout(this.saveDebounce);
             this.saveDebounce = null;
         }
+        this.saveBusyRetries = 0;
     }
 
     private async loadData() {
@@ -445,15 +454,26 @@ export class PlotgridView extends ItemView {
         if (dirty) this.scheduleSave();
     }
 
+    /** How many times autosave deferred because Univer reported editor-busy. */
+    private saveBusyRetries = 0;
+
     private scheduleSave() {
         const plugin = this.plugin;
         if (!plugin) return;
         // Never autosave while Univer's in-cell editor / IME is live — writing the
         // vault triggers refreshPlotGridViews and remounts the workbook mid-keystroke.
+        // After ~5s of busy stalls, force a flush+save so edits are not stranded.
         if (this.univerHost?.isEditorBusy()) {
-            if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
-            this.saveDebounce = window.setTimeout(() => this.scheduleSave(), 200);
-            return;
+            this.saveBusyRetries += 1;
+            if (this.saveBusyRetries < 25) {
+                if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
+                this.saveDebounce = window.setTimeout(() => this.scheduleSave(), 200);
+                return;
+            }
+            try { this.univerHost.flush(); } catch { /* ignore */ }
+            this.saveBusyRetries = 0;
+        } else {
+            this.saveBusyRetries = 0;
         }
         // Capture the System/ folder this in-memory document belongs to.
         const folderAtSchedule = this.loadedSystemFolder || this.getActiveSystemFolder();
@@ -469,6 +489,15 @@ export class PlotgridView extends ItemView {
                 if (folderAtSchedule && currentFolder && folderAtSchedule !== currentFolder) {
                     // Active project changed — do not write the previous workbook into the new folder.
                     return;
+                }
+                // Pull latest Univer cells/sizes into memory before disk write —
+                // otherwise deferred pulls leave this.document stale and "save" drops edits.
+                if (this.univerHost) {
+                    try {
+                        this.univerHost.flush();
+                        this.document = normalizeConceptGridDocument(this.univerHost.getDocument());
+                        this.bindActivePage();
+                    } catch { /* ignore */ }
                 }
                 if (typeof plugin.savePlotGrid === 'function') await plugin.savePlotGrid(this.document);
             } catch (error) {
@@ -866,6 +895,24 @@ export class PlotgridView extends ItemView {
         attachTooltip(editCellBtn, t('Open cell editor'));
         editCellBtn.addEventListener('click', () => { this.openCellEditorForActiveCell(); });
 
+        const markdownMode = this.plugin?.settings?.plotGridMarkdownEditMode === true;
+        const modeBtn = left.createEl('button', {
+            cls: `clickable-icon${markdownMode ? ' is-active' : ''}`,
+        });
+        obsidian.setIcon(modeBtn, 'notebook-pen');
+        attachTooltip(
+            modeBtn,
+            markdownMode
+                ? t('Markdown edit mode on — all data cells open the cell editor')
+                : t('Markdown edit mode off — plain cells edit in place; linked cells use the cell editor'),
+        );
+        modeBtn.addEventListener('click', () => {
+            if (!this.plugin) return;
+            this.plugin.settings.plotGridMarkdownEditMode = !markdownMode;
+            void this.plugin.saveSettings();
+            this.renderToolbar();
+        });
+
         // Sticky headers toggle — pin row/col labels while scrolling the grid
         const selectedFreezeColumns = this.lastUniverSel?.col != null
             ? Math.max(1, this.lastUniverSel.col + 1)
@@ -1157,6 +1204,22 @@ export class PlotgridView extends ItemView {
                     initialDocument: this.document,
                     locale,
                     getAuthoritativeDocument: () => this.document,
+                    shouldBlockUniverCellEdit: (sheetId, row, col) => {
+                        const cell = this.getDataCellAt(sheetId, row, col);
+                        const mode = this.plugin?.settings?.plotGridMarkdownEditMode === true;
+                        return cellRequiresMarkdownEditor(cell, row, col, mode);
+                    },
+                    onRequestMarkdownCellEdit: (info) => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        this.lastUniverSel = {
+                            sheetId: info.sheetId,
+                            row: info.row,
+                            col: info.col,
+                        };
+                        // Ensure the NL cell exists, then open the Markdown editor.
+                        const cell = this.getActiveDataCellFromUniver();
+                        if (cell) this.openCellMarkdownEditor(cell);
+                    },
                     onContextMenuAction: (action) => {
                         if (mountGen !== this.univerMountGeneration) return;
                         void this.handleUniverContextMenuAction(action);
@@ -1164,6 +1227,20 @@ export class PlotgridView extends ItemView {
                     onShowConnectedNotes: (position) => {
                         if (mountGen !== this.univerMountGeneration) return;
                         this.showConnectedNotesMenu(position);
+                    },
+                    onShowConnectedNotesHover: (info) => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        this.lastUniverSel = {
+                            sheetId: info.sheetId,
+                            row: info.row,
+                            col: info.col,
+                        };
+                        const cell = this.getDataCellAt(info.sheetId, info.row, info.col);
+                        this.showLinkHoverCard(info.position, cell);
+                    },
+                    onHideConnectedNotesHover: () => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        this.hideLinkHoverCard();
                     },
                     onContextMenuRequest: (position) => {
                         if (mountGen !== this.univerMountGeneration) return;
@@ -1230,6 +1307,7 @@ export class PlotgridView extends ItemView {
                 this.univerHost = host;
                 this.univerStructureSig = this.getUniverStructureSig();
                 this.applyUniverViewState();
+                try { host.refreshLinkMarkers(); } catch { /* ignore */ }
                 // Let layout settle, then nudge Univer to measure the filled host.
                 window.requestAnimationFrame(() => {
                     window.dispatchEvent(new Event('resize'));
@@ -1429,6 +1507,72 @@ export class PlotgridView extends ItemView {
         menu.showAtPosition(position);
     }
 
+    /** Read-only cell lookup (Univer coords; does not expand the grid). */
+    private getDataCellAt(sheetId: string, row: number, col: number): CellData | null {
+        if (row < 1 || col < 1) return null;
+        const page = this.document.pages.find(p => p.id === sheetId);
+        const rowMeta = page?.rows[row - 1];
+        const colMeta = page?.columns[col - 1];
+        if (!page || !rowMeta || !colMeta) return null;
+        return page.cells[`${rowMeta.id}-${colMeta.id}`] || null;
+    }
+
+    private showLinkHoverCard(position: { x: number; y: number }, cell: CellData | null): void {
+        this.hideLinkHoverCardImmediate();
+        const notes = this.collectConnectedNotes(cell);
+        if (notes.length === 0) return;
+
+        const el = activeDocument.body.createDiv('plot-grid-link-hover');
+        el.createDiv({ cls: 'plot-grid-link-hover-kicker', text: t('Connected notes') });
+        const list = el.createDiv('plot-grid-link-hover-list');
+        for (const note of notes) {
+            const row = list.createEl('button', {
+                cls: 'plot-grid-link-hover-item',
+                attr: { type: 'button', title: note.path },
+            });
+            row.createSpan({ cls: 'plot-grid-link-hover-name', text: note.name });
+            row.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                this.hideLinkHoverCardImmediate();
+                this.openConnectedNote(note.path);
+            });
+        }
+
+        const margin = 8;
+        const left = Math.max(margin, Math.min(position.x + 12, window.innerWidth - 240));
+        const top = Math.max(margin, Math.min(position.y + 14, window.innerHeight - 120));
+        el.setCssStyles({ left: `${Math.round(left)}px`, top: `${Math.round(top)}px` });
+
+        el.addEventListener('mouseenter', () => {
+            if (this.linkHoverHideTimer) {
+                window.clearTimeout(this.linkHoverHideTimer);
+                this.linkHoverHideTimer = 0;
+            }
+        });
+        el.addEventListener('mouseleave', () => this.hideLinkHoverCard());
+        this.linkHoverEl = el;
+    }
+
+    private hideLinkHoverCard(): void {
+        if (this.linkHoverHideTimer) window.clearTimeout(this.linkHoverHideTimer);
+        // Brief grace so the pointer can travel from the cell onto the card.
+        this.linkHoverHideTimer = window.setTimeout(() => {
+            this.linkHoverHideTimer = 0;
+            if (this.linkHoverEl?.matches(':hover')) return;
+            this.hideLinkHoverCardImmediate();
+        }, 180);
+    }
+
+    private hideLinkHoverCardImmediate(): void {
+        if (this.linkHoverHideTimer) {
+            window.clearTimeout(this.linkHoverHideTimer);
+            this.linkHoverHideTimer = 0;
+        }
+        this.linkHoverEl?.remove();
+        this.linkHoverEl = null;
+    }
+
     /** Map Univer sheet coords (including header row/col at 0) → data CellData. */
     private getActiveDataCellFromUniver(): CellData | null {
         // Query Univer first: the event-backed selection can lag while the formula
@@ -1559,7 +1703,9 @@ export class PlotgridView extends ItemView {
         this.cellEditorWindows.set(cellKey, win);
         this.bringCellEditorToFront(win);
 
-        let previewMode = false;
+        // Open in preview by default; switch to edit only when the user asks
+        // (mode button / double-click preview) or when inserting a wikilink.
+        let previewMode = !options.insertWikilink;
         let alwaysOnTop = false;
         let textarea: HTMLTextAreaElement | null = null;
         let previewEl: HTMLDivElement | null = null;
@@ -1767,8 +1913,10 @@ export class PlotgridView extends ItemView {
         closeBtn.addEventListener('click', () => closeWindow());
         save.addEventListener('click', () => {
             if (!textarea) return;
-            commit(textarea.value);
+            const value = textarea.value;
+            // Close first so focus leaves the floating editor before Univer remount/push.
             closeWindow();
+            commit(value);
         });
         textarea.addEventListener('keydown', event => {
             if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
@@ -1912,6 +2060,10 @@ export class PlotgridView extends ItemView {
                 if (this.saveDebounce) return;
                 // Pending sync after flush should have scheduled save; still guard.
                 if (this.univerHost?.hasPendingSync()) return;
+                // Floating Markdown editors mount on <body> — vault refresh must not wipe them.
+                for (const win of this.cellEditorWindows.values()) {
+                    if (win.isConnected) return;
+                }
                 // If a cell is being edited, skip refresh to avoid destroying the textarea
                 if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
                 // If any input/textarea in the grid or inspector is focused, skip refresh to avoid losing edits

@@ -322,6 +322,11 @@ export const VIEWS_ZH: Record<string, string> = {
     'Insert wikilink': '插入双链',
     'Remove wikilinks': '取消单元格双链',
     'Open cell editor': '打开单元格编辑器',
+    'Markdown edit mode': 'Markdown 编辑模式',
+    'Markdown edit mode on — all data cells open the cell editor':
+        'Markdown 编辑模式已开启 — 所有数据格都走单元格编辑器',
+    'Markdown edit mode off — plain cells edit in place; linked cells use the cell editor':
+        'Markdown 编辑模式已关闭 — 普通格可原位编辑；已链接单元格走单元格编辑器',
     'Cell editor': '单元格编辑器',
     'Editor': '编辑器',
     'Markdown and HTML': 'Markdown 与 HTML',

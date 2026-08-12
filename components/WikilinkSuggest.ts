@@ -48,10 +48,17 @@ class WikilinkNotePickerModal extends FuzzySuggestModal<TFile> {
         this.onCancelPick = onCancelPick;
         this.initialQuery = query;
         this.setPlaceholder('Search notes…');
+        this.modalEl.addClass('nl-wikilink-suggest-modal');
     }
 
     onOpen(): void {
         super.onOpen();
+        // Floating cell editors used to sit at z-index 10000+ and covered Obsidian modals.
+        const ownerDocument = this.containerEl.ownerDocument;
+        ownerDocument.body.addClass('nl-wikilink-picker-open');
+        const shell = this.containerEl.closest('.modal-container') as HTMLElement | null;
+        if (shell) shell.style.zIndex = '100000';
+        this.containerEl.style.zIndex = '100001';
         if (!this.initialQuery) return;
         this.inputEl.value = this.initialQuery;
         this.inputEl.dispatchEvent(new Event('input'));
@@ -71,6 +78,8 @@ class WikilinkNotePickerModal extends FuzzySuggestModal<TFile> {
     }
 
     onClose(): void {
+        const ownerDocument = this.containerEl.ownerDocument;
+        ownerDocument.body.removeClass('nl-wikilink-picker-open');
         if (!this.picked) this.onCancelPick();
     }
 }

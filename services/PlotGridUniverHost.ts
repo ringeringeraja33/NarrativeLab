@@ -53,6 +53,7 @@ function injectUniverCss(activeDocument: Document): void {
 }
 
 import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
+import { cellHasNoteLink } from '../utils/plotGridCellEdit';
 import {
     conceptGridContentFingerprint,
     documentToUniverWorkbookData,
@@ -60,6 +61,8 @@ import {
     moveConceptGridAxis,
     preserveConceptGridAxisSizes,
 } from './PlotGridXlsxCodec';
+
+export { cellRequiresMarkdownEditor } from '../utils/plotGridCellEdit';
 
 export interface PlotGridUniverHostOptions {
     container: HTMLElement;
@@ -76,6 +79,22 @@ export interface PlotGridUniverHostOptions {
     onContextMenuRequest?: (position: { x: number; y: number }) => void;
     /** Show the expanded Connected notes menu (filenames → open note). */
     onShowConnectedNotes?: (position: { x: number; y: number }) => void;
+    /** Hover card for a linked cell (after a long hover). */
+    onShowConnectedNotesHover?: (info: {
+        position: { x: number; y: number };
+        sheetId: string;
+        row: number;
+        col: number;
+    }) => void;
+    /** Hide the hover card when the pointer leaves linked cells. */
+    onHideConnectedNotesHover?: () => void;
+    /**
+     * Return true to cancel Univer's in-cell editor for this coordinate and
+     * route editing through NarrativeLab's Markdown cell editor instead.
+     */
+    shouldBlockUniverCellEdit?: (sheetId: string, row: number, col: number) => boolean;
+    /** Open the Markdown cell editor for the given Univer coordinates. */
+    onRequestMarkdownCellEdit?: (info: { sheetId: string; row: number; col: number }) => void;
     onDocumentChange: (doc: ConceptGridDocument) => void;
     onSelectionChange?: (info: { sheetId: string; row: number; col: number }) => void;
 }
@@ -95,6 +114,8 @@ export interface PlotGridUniverHost {
     setDocument: (doc: ConceptGridDocument) => void;
     /** Update host's metadata snapshot without recreating the workbook. */
     syncMeta: (doc: ConceptGridDocument) => void;
+    /** Redraw link icons without replacing workbook content or selection. */
+    refreshLinkMarkers: () => void;
     setActiveSheet: (sheetId: string) => void;
     /** Rename a worksheet to match NarrativeLab page tabs (Univer footer is hidden). */
     setSheetTitle: (sheetId: string, title: string) => void;
@@ -111,6 +132,16 @@ export interface PlotGridUniverHost {
     flush: () => void;
     focus: () => void;
 }
+
+type PlotGridCellRender = {
+    zIndex?: number;
+    drawWith: (ctx: CanvasRenderingContext2D, info: {
+        subUnitId: string;
+        row: number;
+        col: number;
+        primaryWithCoord: { startX: number; startY: number; endX: number; endY: number };
+    }) => void;
+};
 
 type UniverAPI = {
     executeCommand?: (id: string, params?: Record<string, unknown>) => unknown;
@@ -143,6 +174,9 @@ type UniverAPI = {
         save: () => Record<string, unknown>;
     } | null;
     addEvent: (event: string | number, cb: (params: unknown) => void) => { dispose?: () => void } | number;
+    getSheetHooks?: () => {
+        onCellRender?: (renders: PlotGridCellRender[]) => { dispose?: () => void };
+    };
     createMenu: (item: {
         id: string;
         title: string;
@@ -278,6 +312,73 @@ function linkedCellAt(doc: ConceptGridDocument, sheetId: string, row: number, co
     const colMeta = page?.columns[col - 1];
     if (!page || !rowMeta || !colMeta) return null;
     return page.cells[`${rowMeta.id}-${colMeta.id}`] || null;
+}
+
+function roundedRect(
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    radius: number,
+): void {
+    const r = Math.min(radius, width / 2, height / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
+
+/** Tiny chain-link glyph in the cell's top-right corner. */
+function drawTinyLinkIcon(
+    ctx: CanvasRenderingContext2D,
+    endX: number,
+    startY: number,
+    cellWidth: number,
+    cellHeight: number,
+): void {
+    if (cellWidth < 16 || cellHeight < 14) return;
+    const size = Math.min(11, Math.max(8, Math.min(cellWidth, cellHeight) * 0.2));
+    const pad = 3;
+    const box = size + 4;
+    const x = endX - box - pad;
+    const y = startY + pad;
+
+    ctx.save();
+    roundedRect(ctx, x, y, box, box, 3);
+    ctx.fillStyle = 'rgba(47, 101, 220, 0.92)';
+    ctx.fill();
+
+    // Lucide-style link (two rings), scaled into the chip.
+    const s = size / 16;
+    ctx.translate(x + 2, y + 2);
+    ctx.scale(s, s);
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = Math.max(1.4, 1.8 / s);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(8.5, 10.5);
+    ctx.bezierCurveTo(7.2, 11.8, 5.2, 11.8, 3.9, 10.5);
+    ctx.bezierCurveTo(2.6, 9.2, 2.6, 7.2, 3.9, 5.9);
+    ctx.lineTo(5.6, 4.2);
+    ctx.bezierCurveTo(6.9, 2.9, 8.9, 2.9, 10.2, 4.2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(7.5, 5.5);
+    ctx.bezierCurveTo(8.8, 4.2, 10.8, 4.2, 12.1, 5.5);
+    ctx.bezierCurveTo(13.4, 6.8, 13.4, 8.8, 12.1, 10.1);
+    ctx.lineTo(10.4, 11.8);
+    ctx.bezierCurveTo(9.1, 13.1, 7.1, 13.1, 5.8, 11.8);
+    ctx.stroke();
+    ctx.restore();
 }
 
 function moveFinancialFormulaMenuLast(univer: Univer): void {
@@ -578,6 +679,97 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         console.warn('[NarrativeLab] Could not extend the Univer context menu.', error);
     }
 
+    const refreshLinkMarkers = () => {
+        try {
+            univerAPI.getActiveWorkbook?.()?.getActiveSheet?.()?.refreshCanvas?.();
+        } catch { /* drawing is cosmetic */ }
+    };
+
+    try {
+        const linkIconRender: PlotGridCellRender = {
+            zIndex: 100,
+            drawWith: (ctx, info) => {
+                const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
+                const cell = linkedCellAt(source, info.subUnitId, info.row, info.col);
+                if (!cellHasNoteLink(cell)) return;
+                const { startX, startY, endX, endY } = info.primaryWithCoord;
+                drawTinyLinkIcon(ctx, endX, startY, endX - startX, endY - startY);
+            },
+        };
+        const renderHook = univerAPI.getSheetHooks?.().onCellRender?.([linkIconRender]);
+        if (renderHook && typeof renderHook.dispose === 'function') {
+            disposers.push(() => renderHook.dispose?.());
+        }
+        refreshLinkMarkers();
+    } catch (error) {
+        console.warn('[NarrativeLab] Univer link icon renderer unavailable:', error);
+    }
+
+    // Long-hover (3s) on a linked cell → connected-notes floating card.
+    const LINK_HOVER_MS = 3000;
+    let lastPointer = { x: 0, y: 0 };
+    let hoverKey: string | null = null;
+    let hoverTimer = 0;
+    let hoverShownKey: string | null = null;
+
+    const clearLinkHoverTimer = () => {
+        if (!hoverTimer) return;
+        window.clearTimeout(hoverTimer);
+        hoverTimer = 0;
+    };
+
+    const hideLinkHover = () => {
+        clearLinkHoverTimer();
+        hoverKey = null;
+        if (hoverShownKey) {
+            hoverShownKey = null;
+            try { opts.onHideConnectedNotesHover?.(); } catch { /* ignore */ }
+        }
+    };
+
+    const noteHoverOnCell = (sel: { sheetId: string; row: number; col: number } | null) => {
+        if (!sel || isEditorBusy()) {
+            hideLinkHover();
+            return;
+        }
+        const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
+        const cell = linkedCellAt(source, sel.sheetId, sel.row, sel.col);
+        const key = cellHasNoteLink(cell) ? `${sel.sheetId}:${sel.row}:${sel.col}` : null;
+        if (key === hoverKey) return;
+        clearLinkHoverTimer();
+        if (hoverShownKey && hoverShownKey !== key) {
+            hoverShownKey = null;
+            try { opts.onHideConnectedNotesHover?.(); } catch { /* ignore */ }
+        }
+        hoverKey = key;
+        if (!key || !opts.onShowConnectedNotesHover) return;
+        hoverTimer = window.setTimeout(() => {
+            hoverTimer = 0;
+            if (hoverKey !== key || disposed) return;
+            hoverShownKey = key;
+            try {
+                opts.onShowConnectedNotesHover?.({
+                    position: { ...lastPointer },
+                    sheetId: sel.sheetId,
+                    row: sel.row,
+                    col: sel.col,
+                });
+            } catch { /* ignore */ }
+        }, LINK_HOVER_MS);
+    };
+
+    const onHostPointerMove = (event: PointerEvent) => {
+        lastPointer = { x: event.clientX, y: event.clientY };
+    };
+    const onHostPointerLeave = () => hideLinkHover();
+    opts.container.addEventListener('pointermove', onHostPointerMove);
+    opts.container.addEventListener('pointerleave', onHostPointerLeave);
+    disposers.push(() => {
+        opts.container.removeEventListener('pointermove', onHostPointerMove);
+        opts.container.removeEventListener('pointerleave', onHostPointerLeave);
+        hideLinkHover();
+    });
+
     const isSuppressed = () => disposed || Date.now() < suppressUntil;
 
     // Cell editor + IME: defer pull / remount until the session ends.
@@ -604,6 +796,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         disposeActiveWorkbook();
         createNativeWorkbook(doc);
         tryActivateSheet(univerAPI, doc.activePageId);
+        // Workbook remount clears canvas overlays until the next paint.
+        window.requestAnimationFrame(() => refreshLinkMarkers());
     };
 
     const pullFromUniver = (
@@ -702,6 +896,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         if (cellEditing || composing) return true;
         // Univer does not always emit set-cell-edit-visible for every edit path,
         // and the formula/cell editor may portal outside the host container.
+        // Keep this narrow: matching any `[class*="univer"]` input blocked autosave
+        // indefinitely whenever focus lingered on sheet chrome after an edit.
         try {
             const doc = opts.container.ownerDocument;
             const active = doc?.activeElement;
@@ -709,10 +905,15 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             const tag = active.tagName;
             const isField = active.isContentEditable || tag === 'TEXTAREA' || tag === 'INPUT';
             if (!isField) return false;
-            const shell = opts.container.closest('.plot-grid-wrapper, .workspace-leaf-content') || opts.container;
-            if (shell.contains(active)) return true;
-            // Body-level Univer editor portals still belong to this sheet session.
-            if (active.closest('[class*="univer"]')) return true;
+            // NarrativeLab's floating Markdown editor lives on <body> — never block saves for it.
+            if (active.closest('.plot-grid-cell-editor-window, .modal, .prompt')) return false;
+            if (active.closest(
+                '.univer-cell-editor, .univer-editor-container, .univer-formula-bar, [class*="cell-editor"], [class*="formula-editor"]',
+            )) {
+                return true;
+            }
+            // In-host contenteditable only (the actual cell editor surface).
+            if (opts.container.contains(active) && active.isContentEditable) return true;
             return false;
         } catch {
             return false;
@@ -852,6 +1053,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 CommandExecuted?: string;
                 SelectionChanged?: string;
                 CellPointerDown?: string;
+                CellHover?: string;
+                CellPointerMove?: string;
+                BeforeSheetEditStart?: string;
             };
             onCommandExecuted?: (cb: (c: unknown) => void) => unknown;
         };
@@ -866,6 +1070,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     const visible = params?.visible;
                     if (typeof visible === 'boolean') {
                         cellEditing = visible;
+                        if (visible) hideLinkHover();
                         if (!visible) onEditorSessionEnd();
                     }
                     return;
@@ -947,15 +1152,80 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         if (api.Event?.CellPointerDown) {
             const sub = univerAPI.addEvent(api.Event.CellPointerDown, (params) => {
                 handleSelection(params);
+                hideLinkHover();
                 const event = (params as { event?: MouseEvent | PointerEvent }).event;
-                if (!(event?.metaKey || event?.ctrlKey || (event?.detail ?? 0) >= 2) || !lastSelection) return;
+                if (!lastSelection) return;
                 const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
-                if (linkedCellAt(source, lastSelection.sheetId, lastSelection.row, lastSelection.col)?.linkedSceneId) {
+                const linked = linkedCellAt(
+                    source,
+                    lastSelection.sheetId,
+                    lastSelection.row,
+                    lastSelection.col,
+                );
+                // Cmd/Ctrl+click still opens the linked note.
+                if ((event?.metaKey || event?.ctrlKey) && linked && cellHasNoteLink(linked)) {
                     event?.preventDefault();
                     event?.stopPropagation();
                     opts.onContextMenuAction?.('open-linked-note');
+                    return;
+                }
+                // Double-click on a Markdown-routed cell opens the NL editor.
+                if ((event?.detail ?? 0) >= 2
+                    && opts.shouldBlockUniverCellEdit?.(
+                        lastSelection.sheetId,
+                        lastSelection.row,
+                        lastSelection.col,
+                    )) {
+                    event?.preventDefault();
+                    event?.stopPropagation();
+                    opts.onRequestMarkdownCellEdit?.(lastSelection);
                 }
             });
+            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
+        }
+
+        // Cancel Univer in-cell edit for Markdown-routed cells and open NL editor.
+        if (api.Event?.BeforeSheetEditStart) {
+            let lastRequestAt = 0;
+            let lastRequestKey = '';
+            const sub = univerAPI.addEvent(api.Event.BeforeSheetEditStart, (raw) => {
+                const params = raw as {
+                    cancel?: boolean;
+                    row?: number;
+                    column?: number;
+                    worksheet?: { getSheetId?: () => string };
+                };
+                const fallback = univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId?.() ?? null;
+                const sheetId = params.worksheet?.getSheetId?.() || fallback;
+                const row = params.row;
+                const col = params.column;
+                if (sheetId == null || row == null || col == null) return;
+                if (!opts.shouldBlockUniverCellEdit?.(sheetId, row, col)) return;
+                params.cancel = true;
+                const key = `${sheetId}:${row}:${col}`;
+                const now = Date.now();
+                if (key === lastRequestKey && now - lastRequestAt < 400) return;
+                lastRequestKey = key;
+                lastRequestAt = now;
+                window.setTimeout(() => {
+                    opts.onRequestMarkdownCellEdit?.({ sheetId, row, col });
+                }, 0);
+            });
+            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
+        }
+
+        const handleCellHover = (params: unknown) => {
+            try {
+                const fallback = univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId?.() ?? null;
+                const sel = extractSelection(params, fallback);
+                noteHoverOnCell(sel);
+            } catch { /* ignore */ }
+        };
+        if (api.Event?.CellHover) {
+            const sub = univerAPI.addEvent(api.Event.CellHover, handleCellHover);
+            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
+        } else if (api.Event?.CellPointerMove) {
+            const sub = univerAPI.addEvent(api.Event.CellPointerMove, handleCellHover);
             addUniverSubscriptionDisposer(disposers, univerAPI, sub);
         }
     } catch (e) {
@@ -1018,7 +1288,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             preserveConceptGridAxisSizes(next, liveDoc);
             liveDoc = next;
             contentFp = conceptGridContentFingerprint(liveDoc);
+            refreshLinkMarkers();
         },
+        refreshLinkMarkers,
         setActiveSheet: (sheetId: string) => {
             tryActivateSheet(univerAPI, sheetId);
         },

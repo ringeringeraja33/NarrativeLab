@@ -641,6 +641,13 @@ export interface SceneCardsSettings {
     /** Remembered Research view active type filter */
     researchActiveType: string | null;
     autoOpenNavigator: boolean;
+    /**
+     * Concept Grid: when true, ALL data cells open the Markdown cell editor
+     * instead of Univer in-cell edit. When false (default), only linked-note /
+     * wikilink cells are forced through the Markdown editor; plain cells stay
+     * click-to-edit in Univer. Header labels and formula cells always use Univer.
+     */
+    plotGridMarkdownEditMode: boolean;
     showNotesInKanban: boolean;
     showScenesInCorkboard: boolean;
     colorCoding: ColorCodingMode;
@@ -1000,6 +1007,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     researchActiveTag: null,
     researchActiveType: null,
     autoOpenNavigator: true,
+    plotGridMarkdownEditMode: false,
     showNotesInKanban: false,
     showScenesInCorkboard: true,
     colorCoding: 'status',
