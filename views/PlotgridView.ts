@@ -86,14 +86,13 @@ export class PlotgridView extends ItemView {
     private univerLoadFailed = false;
     private univerLoadError: unknown = null;
     private lastUniverSel: { sheetId: string; row: number; col: number } | null = null;
-    private linkHoverEl: HTMLElement | null = null;
-    private linkHoverHideTimer = 0;
     private univerViewStateSig = '';
     /** System/ folder the in-memory document was loaded from — used to block cross-project saves. */
     private loadedSystemFolder: string | null = null;
     /** Floating cell editors keyed by cell id (multiple may be open at once). */
     private cellEditorWindows = new Map<string, HTMLElement & {
         __nlCellEditorCleanup?: () => void;
+        __nlCellEditorFlush?: () => void;
         __nlCellEditorFocus?: (opts?: { insertWikilink?: boolean }) => void;
     }>();
     private cellEditorZSeq = 10000;
@@ -203,7 +202,6 @@ export class PlotgridView extends ItemView {
         this.univerMountPromise = null;
         this.univerStructureSig = '';
         this.univerViewStateSig = '';
-        this.hideLinkHoverCardImmediate();
         this.resetUniverCanvasLayout();
     }
 
@@ -259,11 +257,11 @@ export class PlotgridView extends ItemView {
 
     private closeAllCellEditors(): void {
         for (const win of [...this.cellEditorWindows.values()]) {
+            try { win.__nlCellEditorFlush?.(); } catch { /* ignore */ }
             try { win.__nlCellEditorCleanup?.(); } catch { /* ignore */ }
             win.remove();
         }
         this.cellEditorWindows.clear();
-        this.hideLinkHoverCardImmediate();
     }
 
     private bringCellEditorToFront(win: HTMLElement, pinned = false): void {
@@ -1228,20 +1226,6 @@ export class PlotgridView extends ItemView {
                         if (mountGen !== this.univerMountGeneration) return;
                         this.showConnectedNotesMenu(position);
                     },
-                    onShowConnectedNotesHover: (info) => {
-                        if (mountGen !== this.univerMountGeneration) return;
-                        this.lastUniverSel = {
-                            sheetId: info.sheetId,
-                            row: info.row,
-                            col: info.col,
-                        };
-                        const cell = this.getDataCellAt(info.sheetId, info.row, info.col);
-                        this.showLinkHoverCard(info.position, cell);
-                    },
-                    onHideConnectedNotesHover: () => {
-                        if (mountGen !== this.univerMountGeneration) return;
-                        this.hideLinkHoverCard();
-                    },
                     onContextMenuRequest: (position) => {
                         if (mountGen !== this.univerMountGeneration) return;
                         const menu = new Menu();
@@ -1517,62 +1501,6 @@ export class PlotgridView extends ItemView {
         return page.cells[`${rowMeta.id}-${colMeta.id}`] || null;
     }
 
-    private showLinkHoverCard(position: { x: number; y: number }, cell: CellData | null): void {
-        this.hideLinkHoverCardImmediate();
-        const notes = this.collectConnectedNotes(cell);
-        if (notes.length === 0) return;
-
-        const el = activeDocument.body.createDiv('plot-grid-link-hover');
-        el.createDiv({ cls: 'plot-grid-link-hover-kicker', text: t('Connected notes') });
-        const list = el.createDiv('plot-grid-link-hover-list');
-        for (const note of notes) {
-            const row = list.createEl('button', {
-                cls: 'plot-grid-link-hover-item',
-                attr: { type: 'button', title: note.path },
-            });
-            row.createSpan({ cls: 'plot-grid-link-hover-name', text: note.name });
-            row.addEventListener('click', (event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                this.hideLinkHoverCardImmediate();
-                this.openConnectedNote(note.path);
-            });
-        }
-
-        const margin = 8;
-        const left = Math.max(margin, Math.min(position.x + 12, window.innerWidth - 240));
-        const top = Math.max(margin, Math.min(position.y + 14, window.innerHeight - 120));
-        el.setCssStyles({ left: `${Math.round(left)}px`, top: `${Math.round(top)}px` });
-
-        el.addEventListener('mouseenter', () => {
-            if (this.linkHoverHideTimer) {
-                window.clearTimeout(this.linkHoverHideTimer);
-                this.linkHoverHideTimer = 0;
-            }
-        });
-        el.addEventListener('mouseleave', () => this.hideLinkHoverCard());
-        this.linkHoverEl = el;
-    }
-
-    private hideLinkHoverCard(): void {
-        if (this.linkHoverHideTimer) window.clearTimeout(this.linkHoverHideTimer);
-        // Brief grace so the pointer can travel from the cell onto the card.
-        this.linkHoverHideTimer = window.setTimeout(() => {
-            this.linkHoverHideTimer = 0;
-            if (this.linkHoverEl?.matches(':hover')) return;
-            this.hideLinkHoverCardImmediate();
-        }, 180);
-    }
-
-    private hideLinkHoverCardImmediate(): void {
-        if (this.linkHoverHideTimer) {
-            window.clearTimeout(this.linkHoverHideTimer);
-            this.linkHoverHideTimer = 0;
-        }
-        this.linkHoverEl?.remove();
-        this.linkHoverEl = null;
-    }
-
     /** Map Univer sheet coords (including header row/col at 0) → data CellData. */
     private getActiveDataCellFromUniver(): CellData | null {
         // Query Univer first: the event-backed selection can lag while the formula
@@ -1672,18 +1600,49 @@ export class PlotgridView extends ItemView {
 
         const editorApp = this.app;
         const sourcePath = this.plugin?.sceneManager?.activeProject?.filePath || '';
-        const commit = (value: string): void => {
+        // Structural link draft; content lives in the textarea and autosaves.
+        let editorLinkedSceneId: string | undefined = cell.linkedSceneId;
+        let autosaveTimer: number | null = null;
+        const persistDraft = (opts: { pushGrid?: boolean } = {}): void => {
+            if (!textarea) return;
             const liveCell = this.ensureCellInData(cell);
+            const value = textarea.value;
+            const linkChanged = (editorLinkedSceneId || undefined) !== (liveCell.linkedSceneId || undefined);
+            const contentChanged = liveCell.content !== value || !liveCell.manualContent;
+            if (!contentChanged && !linkChanged) return;
             liveCell.content = value;
             liveCell.manualContent = true;
+            if (linkChanged) {
+                liveCell.linkedSceneId = editorLinkedSceneId;
+                if (!editorLinkedSceneId) liveCell.linkedViaWikilink = undefined;
+            }
             this.synchronizeWikilinkCells();
             this.scheduleSave();
-            this.renderGrid({ forcePush: true });
+            if (opts.pushGrid) {
+                this.renderGrid({ forcePush: true });
+            } else {
+                try { this.univerHost?.refreshLinkMarkers(); } catch { /* ignore */ }
+            }
             this.refreshOpenCellInspector();
+        };
+        const scheduleAutosave = (): void => {
+            if (autosaveTimer) window.clearTimeout(autosaveTimer);
+            autosaveTimer = window.setTimeout(() => {
+                autosaveTimer = null;
+                persistDraft({ pushGrid: false });
+            }, 500);
+        };
+        const flushAutosave = (): void => {
+            if (autosaveTimer) {
+                window.clearTimeout(autosaveTimer);
+                autosaveTimer = null;
+            }
+            persistDraft({ pushGrid: true });
         };
 
         type EditorWin = HTMLElement & {
             __nlCellEditorCleanup?: () => void;
+            __nlCellEditorFlush?: () => void;
             __nlCellEditorFocus?: (opts?: { insertWikilink?: boolean }) => void;
         };
         const win = activeDocument.body.createDiv('plot-grid-cell-editor-window') as EditorWin;
@@ -1858,7 +1817,7 @@ export class PlotgridView extends ItemView {
             if (target.closest('button, a, textarea, input, .plot-grid-cell-editor-preview, .plot-grid-cell-editor-resize-handle')) {
                 return;
             }
-            if (target.closest('.plot-grid-cell-editor-titlebar, .plot-grid-cell-editor-meta, .plot-grid-cell-editor-toolbar, .plot-grid-cell-editor-footer')) {
+            if (target.closest('.plot-grid-cell-editor-titlebar, .plot-grid-cell-editor-meta, .plot-grid-cell-editor-toolbar, .plot-grid-cell-editor-links, .plot-grid-cell-editor-footer')) {
                 void setPreview(true);
             }
         };
@@ -1866,12 +1825,123 @@ export class PlotgridView extends ItemView {
             this.bringCellEditorToFront(win, alwaysOnTop);
             maybePreviewFromChrome(event);
         });
+
+        const notePathKey = (path: string): string => path.replace(/\\/g, '/').trim().toLowerCase();
+        const draftMatchesNote = (rawTarget: string, notePath: string): boolean => {
+            const target = rawTarget.trim();
+            if (!target) return false;
+            const want = notePathKey(notePath);
+            let file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+            if (!file) {
+                const direct = this.app.vault.getAbstractFileByPath(target)
+                    ?? this.app.vault.getAbstractFileByPath(`${target}.md`);
+                if (direct instanceof TFile) file = direct;
+            }
+            if (file instanceof TFile) return notePathKey(file.path) === want;
+            const fallback = notePathKey(target.endsWith('.md') ? target : `${target}.md`);
+            return fallback === want || notePathKey(target) === want;
+        };
+
+        const linksBar = win.createDiv('plot-grid-cell-editor-links');
+        const removeConnectedNoteFromDraft = (note: { path: string; name: string }): void => {
+            if (!textarea) return;
+            const next = textarea.value.replace(
+                /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g,
+                (full, target: string) => (draftMatchesNote(target, note.path) ? '' : full),
+            ).replace(/[ \t]{2,}/g, ' ').replace(/ ?\n ?/g, '\n');
+            textarea.value = next;
+            if (editorLinkedSceneId && notePathKey(editorLinkedSceneId) === notePathKey(note.path)) {
+                editorLinkedSceneId = undefined;
+            } else if (editorLinkedSceneId && draftMatchesNote(editorLinkedSceneId, note.path)) {
+                editorLinkedSceneId = undefined;
+            }
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            refreshLinkedNotesBar();
+        };
+        const addConnectedNoteViaPicker = (): void => {
+            void setPreview(false).then(() => {
+                if (!textarea) return;
+                const current = textarea.value;
+                const prefix = current && !/\s$/.test(current) ? ' ' : '';
+                textarea.value = `${current}${prefix}[[`;
+                const end = textarea.value.length;
+                textarea.setSelectionRange(end, end);
+                textarea.focus();
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+                suggest?.refresh();
+            });
+        };
+        const refreshLinkedNotesBar = (): void => {
+            if (!textarea) return;
+            const notes = this.collectConnectedNotes({
+                ...cell,
+                content: textarea.value,
+                linkedSceneId: editorLinkedSceneId,
+            });
+            linksBar.empty();
+            linksBar.createSpan({
+                cls: 'plot-grid-cell-editor-links-label',
+                text: t('Connected notes'),
+            });
+            if (notes.length === 0) {
+                linksBar.createSpan({
+                    cls: 'plot-grid-cell-editor-links-empty',
+                    text: t('No connected notes'),
+                });
+            } else {
+                const list = linksBar.createDiv('plot-grid-cell-editor-links-list');
+                for (const note of notes) {
+                    const chip = list.createDiv('plot-grid-cell-editor-link-chip');
+                    const openBtn = chip.createEl('button', {
+                        cls: 'plot-grid-cell-editor-link-chip-open',
+                        attr: { type: 'button', title: note.path },
+                    });
+                    openBtn.createSpan({ text: note.name });
+                    openBtn.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        this.openConnectedNote(note.path);
+                    });
+                    const removeBtn = chip.createEl('button', {
+                        cls: 'clickable-icon plot-grid-cell-editor-link-chip-remove',
+                        attr: {
+                            type: 'button',
+                            title: t('Unlink Note'),
+                            'aria-label': t('Unlink Note'),
+                        },
+                    });
+                    obsidian.setIcon(removeBtn, 'x');
+                    removeBtn.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        removeConnectedNoteFromDraft(note);
+                    });
+                }
+            }
+            const addBtn = linksBar.createEl('button', {
+                cls: 'clickable-icon plot-grid-cell-editor-links-add',
+                attr: {
+                    type: 'button',
+                    title: t('Link Note…'),
+                    'aria-label': t('Link Note…'),
+                },
+            });
+            obsidian.setIcon(addBtn, 'plus');
+            addBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                addConnectedNoteViaPicker();
+            });
+        };
+
         const footer = win.createDiv('plot-grid-cell-editor-footer');
         const shortcutHint = footer.createSpan({ text: t('Type [[ to search vault notes') });
         shortcutHint.addClass('plot-grid-cell-editor-footer-hint');
-        const actions = footer.createDiv('plot-grid-cell-editor-actions');
-        const cancel = actions.createEl('button', { text: t('Cancel'), attr: { type: 'button' } });
-        const save = actions.createEl('button', { cls: 'mod-cta', text: t('Save'), attr: { type: 'button' } });
+        textarea.addEventListener('input', () => {
+            refreshLinkedNotesBar();
+            scheduleAutosave();
+        });
+        refreshLinkedNotesBar();
 
         const resizeHandle = win.createDiv('plot-grid-cell-editor-resize-handle');
 
@@ -1890,6 +1960,10 @@ export class PlotgridView extends ItemView {
         };
 
         const cleanup = (): void => {
+            if (autosaveTimer) {
+                window.clearTimeout(autosaveTimer);
+                autosaveTimer = null;
+            }
             activeDocument.removeEventListener('keydown', onKey);
             suggest?.destroy();
             suggest = null;
@@ -1898,6 +1972,7 @@ export class PlotgridView extends ItemView {
             renderer.unload();
             if (this.cellEditorWindows.get(cellKey) === win) this.cellEditorWindows.delete(cellKey);
             delete win.__nlCellEditorCleanup;
+            delete win.__nlCellEditorFlush;
             delete win.__nlCellEditorFocus;
         };
         const onKey = (e: KeyboardEvent) => {
@@ -1906,22 +1981,15 @@ export class PlotgridView extends ItemView {
             closeWindow();
         };
         const closeWindow = (): void => {
+            flushAutosave();
             cleanup();
             win.remove();
         };
-        cancel.addEventListener('click', () => closeWindow());
         closeBtn.addEventListener('click', () => closeWindow());
-        save.addEventListener('click', () => {
-            if (!textarea) return;
-            const value = textarea.value;
-            // Close first so focus leaves the floating editor before Univer remount/push.
-            closeWindow();
-            commit(value);
-        });
         textarea.addEventListener('keydown', event => {
             if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                 event.preventDefault();
-                save.click();
+                closeWindow();
             }
         });
         activeDocument.addEventListener('keydown', onKey);
@@ -1938,6 +2006,7 @@ export class PlotgridView extends ItemView {
         };
 
         win.__nlCellEditorCleanup = cleanup;
+        win.__nlCellEditorFlush = flushAutosave;
         win.__nlCellEditorFocus = (opts) => {
             this.bringCellEditorToFront(win, alwaysOnTop);
             void setPreview(false).then(() => {

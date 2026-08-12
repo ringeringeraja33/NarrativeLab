@@ -79,15 +79,6 @@ export interface PlotGridUniverHostOptions {
     onContextMenuRequest?: (position: { x: number; y: number }) => void;
     /** Show the expanded Connected notes menu (filenames → open note). */
     onShowConnectedNotes?: (position: { x: number; y: number }) => void;
-    /** Hover card for a linked cell (after a long hover). */
-    onShowConnectedNotesHover?: (info: {
-        position: { x: number; y: number };
-        sheetId: string;
-        row: number;
-        col: number;
-    }) => void;
-    /** Hide the hover card when the pointer leaves linked cells. */
-    onHideConnectedNotesHover?: () => void;
     /**
      * Return true to cancel Univer's in-cell editor for this coordinate and
      * route editing through NarrativeLab's Markdown cell editor instead.
@@ -705,71 +696,6 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         console.warn('[NarrativeLab] Univer link icon renderer unavailable:', error);
     }
 
-    // Long-hover (3s) on a linked cell → connected-notes floating card.
-    const LINK_HOVER_MS = 3000;
-    let lastPointer = { x: 0, y: 0 };
-    let hoverKey: string | null = null;
-    let hoverTimer = 0;
-    let hoverShownKey: string | null = null;
-
-    const clearLinkHoverTimer = () => {
-        if (!hoverTimer) return;
-        window.clearTimeout(hoverTimer);
-        hoverTimer = 0;
-    };
-
-    const hideLinkHover = () => {
-        clearLinkHoverTimer();
-        hoverKey = null;
-        if (hoverShownKey) {
-            hoverShownKey = null;
-            try { opts.onHideConnectedNotesHover?.(); } catch { /* ignore */ }
-        }
-    };
-
-    const noteHoverOnCell = (sel: { sheetId: string; row: number; col: number } | null) => {
-        if (!sel || isEditorBusy()) {
-            hideLinkHover();
-            return;
-        }
-        const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
-        const cell = linkedCellAt(source, sel.sheetId, sel.row, sel.col);
-        const key = cellHasNoteLink(cell) ? `${sel.sheetId}:${sel.row}:${sel.col}` : null;
-        if (key === hoverKey) return;
-        clearLinkHoverTimer();
-        if (hoverShownKey && hoverShownKey !== key) {
-            hoverShownKey = null;
-            try { opts.onHideConnectedNotesHover?.(); } catch { /* ignore */ }
-        }
-        hoverKey = key;
-        if (!key || !opts.onShowConnectedNotesHover) return;
-        hoverTimer = window.setTimeout(() => {
-            hoverTimer = 0;
-            if (hoverKey !== key || disposed) return;
-            hoverShownKey = key;
-            try {
-                opts.onShowConnectedNotesHover?.({
-                    position: { ...lastPointer },
-                    sheetId: sel.sheetId,
-                    row: sel.row,
-                    col: sel.col,
-                });
-            } catch { /* ignore */ }
-        }, LINK_HOVER_MS);
-    };
-
-    const onHostPointerMove = (event: PointerEvent) => {
-        lastPointer = { x: event.clientX, y: event.clientY };
-    };
-    const onHostPointerLeave = () => hideLinkHover();
-    opts.container.addEventListener('pointermove', onHostPointerMove);
-    opts.container.addEventListener('pointerleave', onHostPointerLeave);
-    disposers.push(() => {
-        opts.container.removeEventListener('pointermove', onHostPointerMove);
-        opts.container.removeEventListener('pointerleave', onHostPointerLeave);
-        hideLinkHover();
-    });
-
     const isSuppressed = () => disposed || Date.now() < suppressUntil;
 
     // Cell editor + IME: defer pull / remount until the session ends.
@@ -1053,8 +979,6 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 CommandExecuted?: string;
                 SelectionChanged?: string;
                 CellPointerDown?: string;
-                CellHover?: string;
-                CellPointerMove?: string;
                 BeforeSheetEditStart?: string;
             };
             onCommandExecuted?: (cb: (c: unknown) => void) => unknown;
@@ -1070,7 +994,6 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     const visible = params?.visible;
                     if (typeof visible === 'boolean') {
                         cellEditing = visible;
-                        if (visible) hideLinkHover();
                         if (!visible) onEditorSessionEnd();
                     }
                     return;
@@ -1152,7 +1075,6 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         if (api.Event?.CellPointerDown) {
             const sub = univerAPI.addEvent(api.Event.CellPointerDown, (params) => {
                 handleSelection(params);
-                hideLinkHover();
                 const event = (params as { event?: MouseEvent | PointerEvent }).event;
                 if (!lastSelection) return;
                 const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
@@ -1211,21 +1133,6 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     opts.onRequestMarkdownCellEdit?.({ sheetId, row, col });
                 }, 0);
             });
-            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
-        }
-
-        const handleCellHover = (params: unknown) => {
-            try {
-                const fallback = univerAPI.getActiveWorkbook()?.getActiveSheet()?.getSheetId?.() ?? null;
-                const sel = extractSelection(params, fallback);
-                noteHoverOnCell(sel);
-            } catch { /* ignore */ }
-        };
-        if (api.Event?.CellHover) {
-            const sub = univerAPI.addEvent(api.Event.CellHover, handleCellHover);
-            addUniverSubscriptionDisposer(disposers, univerAPI, sub);
-        } else if (api.Event?.CellPointerMove) {
-            const sub = univerAPI.addEvent(api.Event.CellPointerMove, handleCellHover);
             addUniverSubscriptionDisposer(disposers, univerAPI, sub);
         }
     } catch (e) {
