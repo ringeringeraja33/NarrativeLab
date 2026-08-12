@@ -1,6 +1,5 @@
-
 /**
- * WikilinkSuggest \u2014 a lightweight wikilink autocomplete for plain
+ * WikilinkSuggest — a lightweight wikilink autocomplete for plain
  * <textarea> elements (issue #84).
  *
  * Watches typing in a textarea, detects an unclosed `[[` token before the
@@ -11,7 +10,7 @@
  * (which the NarrativeLab Inspector uses for the Notes / Comments field).
  */
 
-import { App, TFile } from 'obsidian';
+import { App, FuzzySuggestModal, TFile } from 'obsidian';
 
 export interface WikilinkSuggestOptions {
     app: App;
@@ -20,6 +19,60 @@ export interface WikilinkSuggestOptions {
     maxVisible?: number;
     /** Source note used by Obsidian to calculate the shortest unambiguous link text. */
     sourcePath?: string;
+    /**
+     * Use Obsidian's FuzzySuggestModal instead of a body-mounted dropdown.
+     * Prefer this inside floating hosts (Plot Grid cell editor) where z-index /
+     * overflow clipping make the custom menu unreliable.
+     */
+    preferModal?: boolean;
+}
+
+/** Note picker used when `preferModal` is enabled. */
+class WikilinkNotePickerModal extends FuzzySuggestModal<TFile> {
+    private files: TFile[];
+    private onPick: (file: TFile) => void;
+    private onCancelPick: () => void;
+    private initialQuery: string;
+    private picked = false;
+
+    constructor(
+        app: App,
+        files: TFile[],
+        query: string,
+        onPick: (file: TFile) => void,
+        onCancelPick: () => void,
+    ) {
+        super(app);
+        this.files = files;
+        this.onPick = onPick;
+        this.onCancelPick = onCancelPick;
+        this.initialQuery = query;
+        this.setPlaceholder('Search notes…');
+    }
+
+    onOpen(): void {
+        super.onOpen();
+        if (!this.initialQuery) return;
+        this.inputEl.value = this.initialQuery;
+        this.inputEl.dispatchEvent(new Event('input'));
+    }
+
+    getItems(): TFile[] {
+        return this.files;
+    }
+
+    getItemText(item: TFile): string {
+        return item.path;
+    }
+
+    onChooseItem(item: TFile): void {
+        this.picked = true;
+        this.onPick(item);
+    }
+
+    onClose(): void {
+        if (!this.picked) this.onCancelPick();
+    }
 }
 
 type WikilinkCandidate = {
@@ -47,36 +100,49 @@ function getTextareaCaretRect(textarea: HTMLTextAreaElement): CaretRect | null {
     for (const property of copiedProperties) {
         mirror.style.setProperty(property, style.getPropertyValue(property));
     }
-    mirror.setCssStyles({
-        position: 'fixed',
-        left: `${rect.left}px`,
-        top: `${rect.top}px`,
-        width: `${rect.width}px`,
-        minHeight: `${rect.height}px`,
-        whiteSpace: 'pre-wrap',
-        overflowWrap: 'break-word',
-        wordBreak: 'break-word',
-        visibility: 'hidden',
-        pointerEvents: 'none',
-        zIndex: '-1',
-    });
+    mirror.style.position = 'fixed';
+    mirror.style.left = `${rect.left}px`;
+    mirror.style.top = `${rect.top}px`;
+    mirror.style.width = `${rect.width}px`;
+    mirror.style.height = `${rect.height}px`;
+    mirror.style.whiteSpace = 'pre-wrap';
+    mirror.style.overflow = 'auto';
+    mirror.style.overflowWrap = 'break-word';
+    mirror.style.wordBreak = 'break-word';
+    mirror.style.visibility = 'hidden';
+    mirror.style.pointerEvents = 'none';
+    mirror.style.zIndex = '-1';
+
     const caret = textarea.selectionStart ?? textarea.value.length;
     mirror.appendChild(ownerDocument.createTextNode(textarea.value.slice(0, caret)));
     const marker = ownerDocument.createElement('span');
     marker.textContent = textarea.value.slice(caret, caret + 1) || '\u200b';
     mirror.appendChild(marker);
+    // Trailing text keeps wrap identical to the live textarea.
+    mirror.appendChild(ownerDocument.createTextNode(textarea.value.slice(caret + 1) || ''));
     ownerDocument.body.appendChild(mirror);
+    mirror.scrollTop = textarea.scrollTop;
+    mirror.scrollLeft = textarea.scrollLeft;
     const markerRect = marker.getBoundingClientRect();
     mirror.remove();
     if (!Number.isFinite(markerRect.left) || !Number.isFinite(markerRect.top)) return null;
     const lineHeight = Number.parseFloat(style.lineHeight) || Number.parseFloat(style.fontSize) * 1.4 || 18;
-    const top = markerRect.top - textarea.scrollTop;
+    // markerRect is already viewport-relative — do not re-subtract scroll offsets.
     return {
-        left: markerRect.left - textarea.scrollLeft,
-        top,
-        bottom: top + lineHeight,
+        left: markerRect.left,
+        top: markerRect.top,
+        bottom: markerRect.top + lineHeight,
         height: lineHeight,
     };
+}
+
+function isMarkdownFile(file: unknown): file is TFile {
+    if (file instanceof TFile) return file.extension === 'md';
+    // Duck-type: avoids false negatives when `instanceof TFile` fails across bundles.
+    const candidate = file as { extension?: unknown; basename?: unknown; path?: unknown };
+    return candidate?.extension === 'md'
+        && typeof candidate.basename === 'string'
+        && typeof candidate.path === 'string';
 }
 
 export class WikilinkSuggest {
@@ -84,24 +150,36 @@ export class WikilinkSuggest {
     private textareaEl: HTMLTextAreaElement;
     private maxVisible: number;
     private sourcePath: string;
+    private preferModal: boolean;
     private dropdown: HTMLDivElement | null = null;
     private items: { candidate: WikilinkCandidate; el: HTMLDivElement }[] = [];
     private activeIndex = -1;
     private alive = true;
     private triggerStart = -1; // caret index of the `[[`
+    private hadTrigger = false;
+    private forceOpenModal = false;
+    private modalOpen = false;
 
     constructor(opts: WikilinkSuggestOptions) {
         this.app = opts.app;
         this.textareaEl = opts.textareaEl;
         this.maxVisible = opts.maxVisible ?? 8;
         this.sourcePath = opts.sourcePath || '';
+        this.preferModal = !!opts.preferModal;
 
         this.textareaEl.addEventListener('input', this.handleInput);
         this.textareaEl.addEventListener('keydown', this.handleKeydown);
         this.textareaEl.addEventListener('blur', this.handleBlur);
         this.textareaEl.addEventListener('click', this.handleInput);
+        this.textareaEl.addEventListener('keyup', this.handleInput);
         this.textareaEl.addEventListener('scroll', this.handlePositionChange);
         this.textareaEl.ownerDocument.defaultView?.addEventListener('resize', this.handlePositionChange);
+    }
+
+    /** Re-run trigger detection (e.g. after a toolbar inserted `[[`). */
+    refresh(): void {
+        if (this.preferModal) this.forceOpenModal = true;
+        this.handleInput();
     }
 
     destroy(): void {
@@ -110,6 +188,7 @@ export class WikilinkSuggest {
         this.textareaEl.removeEventListener('keydown', this.handleKeydown);
         this.textareaEl.removeEventListener('blur', this.handleBlur);
         this.textareaEl.removeEventListener('click', this.handleInput);
+        this.textareaEl.removeEventListener('keyup', this.handleInput);
         this.textareaEl.removeEventListener('scroll', this.handlePositionChange);
         this.textareaEl.ownerDocument.defaultView?.removeEventListener('resize', this.handlePositionChange);
         this.removeDropdown();
@@ -136,17 +215,78 @@ export class WikilinkSuggest {
 
     private handleInput = () => {
         if (!this.alive) return;
-        const trigger = this.detectTrigger();
-        if (!trigger) {
+        try {
+            const trigger = this.detectTrigger();
+            if (!trigger) {
+                this.hadTrigger = false;
+                this.removeDropdown();
+                return;
+            }
+            this.triggerStart = trigger.start;
+            if (this.preferModal) {
+                const justOpened = !this.hadTrigger;
+                this.hadTrigger = true;
+                if ((justOpened || this.forceOpenModal) && !this.modalOpen) {
+                    this.forceOpenModal = false;
+                    this.openNotePickerModal(trigger.query);
+                }
+                return;
+            }
+            this.renderDropdown(trigger.query);
+        } catch (error) {
+            console.warn('[NarrativeLab] Wikilink suggest failed:', error);
             this.removeDropdown();
-            return;
         }
-        this.triggerStart = trigger.start;
-        this.renderDropdown(trigger.query);
     };
 
+    private openNotePickerModal(query: string): void {
+        if (this.modalOpen) return;
+        let files: TFile[] = [];
+        try {
+            files = (this.app.vault.getMarkdownFiles() || []).filter(isMarkdownFile);
+        } catch (error) {
+            console.warn('[NarrativeLab] Could not list markdown files for wikilink suggest:', error);
+            return;
+        }
+        this.modalOpen = true;
+        const modal = new WikilinkNotePickerModal(
+            this.app,
+            files,
+            query,
+            (file) => {
+                this.modalOpen = false;
+                try {
+                    const target = this.app.metadataCache.fileToLinktext(file, this.sourcePath, true)
+                        || file.basename;
+                    this.commit(target);
+                } catch {
+                    this.commit(file.basename);
+                }
+                this.hadTrigger = false;
+            },
+            () => {
+                this.modalOpen = false;
+                // Keep hadTrigger true so canceling does not immediately re-open.
+                window.setTimeout(() => this.textareaEl.focus(), 0);
+            },
+        );
+        modal.open();
+    }
+
     private handleKeydown = (e: KeyboardEvent) => {
-        if (!this.dropdown) return;
+        if (this.preferModal) {
+            if (e.key === '[' || e.key === 'Process') {
+                window.setTimeout(() => this.handleInput(), 0);
+            }
+            return;
+        }
+        if (!this.dropdown) {
+            // `[` may arrive via keydown before input in some IME / shortcut paths.
+            if (e.key === '[' || e.key === 'Process') {
+                window.setTimeout(() => this.handleInput(), 0);
+            }
+            return;
+        }
         if (e.key === 'ArrowDown') {
             e.preventDefault();
             this.moveSelection(1);
@@ -166,7 +306,13 @@ export class WikilinkSuggest {
 
     private handleBlur = () => {
         // Delay so a click on a dropdown item still registers.
-        window.setTimeout(() => { if (this.alive) this.removeDropdown(); }, 150);
+        window.setTimeout(() => {
+            if (!this.alive || !this.dropdown) return;
+            const active = this.textareaEl.ownerDocument.activeElement;
+            if (active && this.dropdown.contains(active)) return;
+            if (active === this.textareaEl) return;
+            this.removeDropdown();
+        }, 150);
     };
 
     private handlePositionChange = () => {
@@ -176,21 +322,34 @@ export class WikilinkSuggest {
     // ─── Suggestions ──────────────────────────────────────────
 
     private getCandidates(query: string): WikilinkCandidate[] {
-        const files = this.app.vault.getMarkdownFiles();
+        let files: TFile[] = [];
+        try {
+            files = this.app.vault.getMarkdownFiles() || [];
+        } catch (error) {
+            console.warn('[NarrativeLab] Could not list markdown files for wikilink suggest:', error);
+            return [];
+        }
         const q = query.toLowerCase();
         const scored: { candidate: WikilinkCandidate; score: number }[] = [];
         for (const f of files) {
-            if (!(f instanceof TFile)) continue;
-            const target = this.app.metadataCache.fileToLinktext(f, this.sourcePath, true);
-            const searchable = `${f.basename} ${f.path}`.toLowerCase();
-            const score = Math.min(
-                this.fuzzyScore(q, f.basename.toLowerCase()),
-                this.fuzzyScore(q, searchable),
-            );
-            if (score >= 0) scored.push({
-                candidate: { target, name: f.basename, path: f.path },
-                score,
-            });
+            if (!isMarkdownFile(f)) continue;
+            try {
+                const target = this.app.metadataCache.fileToLinktext(f, this.sourcePath, true)
+                    || f.basename;
+                const searchable = `${f.basename} ${f.path}`.toLowerCase();
+                const score = Math.min(
+                    this.fuzzyScore(q, f.basename.toLowerCase()),
+                    this.fuzzyScore(q, searchable),
+                );
+                if (score >= 0) {
+                    scored.push({
+                        candidate: { target, name: f.basename, path: f.path },
+                        score,
+                    });
+                }
+            } catch {
+                // Skip files that fail link-text resolution.
+            }
         }
         scored.sort((a, b) => a.score - b.score
             || a.candidate.name.localeCompare(b.candidate.name)
@@ -240,7 +399,7 @@ export class WikilinkSuggest {
             const item = this.dropdown.createDiv('sl-suggest-item');
             item.createDiv({ cls: 'sl-suggest-title', text: candidate.name });
             item.createDiv({ cls: 'sl-suggest-note', text: candidate.path });
-            if (i === 0) item.addClass('is-active');
+            if (i === 0) item.addClass('is-active').addClass('sl-suggest-active');
             item.addEventListener('mousedown', (ev) => {
                 // mousedown (not click) so we run before blur removes the dropdown.
                 ev.preventDefault();
@@ -252,11 +411,37 @@ export class WikilinkSuggest {
         this.positionDropdown();
     }
 
+    /** Floating hosts that sit above Obsidian chrome. */
+    private resolveStackingHost(): HTMLElement | null {
+        return this.textareaEl.closest(
+            '.plot-grid-cell-editor-window, .modal, .vertical-tab-content',
+        ) as HTMLElement | null;
+    }
+
+    private resolveDropdownZIndex(): number {
+        const host = this.resolveStackingHost();
+        let hostZ = 0;
+        if (host) {
+            const inline = Number.parseInt(host.style.zIndex || '', 10);
+            const computed = Number.parseInt(
+                (host.ownerDocument.defaultView || window).getComputedStyle(host).zIndex,
+                10,
+            );
+            hostZ = Math.max(
+                Number.isFinite(inline) ? inline : 0,
+                Number.isFinite(computed) ? computed : 0,
+            );
+        }
+        // Stay above floating cell editors (10000–29999) and Obsidian popovers.
+        return Math.max(hostZ + 100, 2147483000);
+    }
+
     private ensureDropdown(): void {
         if (this.dropdown) return;
         const ownerDocument = this.textareaEl.ownerDocument;
         const dd = ownerDocument.createElement('div');
         dd.className = 'sl-suggest-dropdown sl-wikilink-suggest';
+        // Always mount on body — editor windows use overflow:hidden and would clip us.
         ownerDocument.body.appendChild(dd);
         this.dropdown = dd;
     }
@@ -273,7 +458,9 @@ export class WikilinkSuggest {
         if (this.items.length === 0) return;
         this.activeIndex = (this.activeIndex + delta + this.items.length) % this.items.length;
         for (let i = 0; i < this.items.length; i++) {
-            this.items[i].el.toggleClass('is-active', i === this.activeIndex);
+            const active = i === this.activeIndex;
+            this.items[i].el.toggleClass('is-active', active);
+            this.items[i].el.toggleClass('sl-suggest-active', active);
         }
         this.items[this.activeIndex].el.scrollIntoView({ block: 'nearest' });
     }
@@ -282,54 +469,55 @@ export class WikilinkSuggest {
         if (!this.dropdown) return;
         const textareaRect = this.textareaEl.getBoundingClientRect();
         const ownerWindow = this.textareaEl.ownerDocument.defaultView || window;
-        const modalRect = this.textareaEl.closest('.modal')?.getBoundingClientRect();
-        const boundary = modalRect || {
+        const host = this.resolveStackingHost();
+        // Modals: keep the menu inside the dialog. Floating cell editors: use the
+        // viewport — the window is overflow:hidden and clamping to it hides the menu.
+        const useHostBoundary = !!host && host.classList.contains('modal');
+        const hostRect = useHostBoundary ? host!.getBoundingClientRect() : null;
+        const boundary = hostRect || {
             left: 0,
             top: 0,
             right: ownerWindow.innerWidth,
             bottom: ownerWindow.innerHeight,
         };
         const caret = getTextareaCaretRect(this.textareaEl) || {
-            left: textareaRect.left,
-            top: textareaRect.top,
-            bottom: textareaRect.top + 20,
-            height: 20,
+            left: textareaRect.left + 12,
+            top: textareaRect.top + 12,
+            bottom: textareaRect.top + 30,
+            height: 18,
         };
         const margin = 8;
         const availableWidth = Math.max(180, boundary.right - boundary.left - margin * 2);
-        const width = Math.min(420, Math.max(260, Math.min(textareaRect.width, 360)), availableWidth);
+        const width = Math.min(420, Math.max(260, Math.min(textareaRect.width || 360, 360)), availableWidth);
         const left = Math.max(
             boundary.left + margin,
             Math.min(caret.left, boundary.right - width - margin),
         );
-        this.dropdown.setCssStyles({
-            position: 'fixed',
-            left: `${Math.round(left)}px`,
-            top: `${Math.round(caret.bottom + 4)}px`,
-            width: `${Math.round(width)}px`,
-            minWidth: '180px',
-            maxWidth: `${Math.round(availableWidth)}px`,
-            maxHeight: '240px',
-            overflowY: 'auto',
-            zIndex: '9999',
-            background: 'var(--background-primary)',
-            border: '1px solid var(--background-modifier-border)',
-            borderRadius: '6px',
-            boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
-            padding: '4px',
-            visibility: 'hidden',
-        });
+        this.dropdown.style.position = 'fixed';
+        this.dropdown.style.left = `${Math.round(left)}px`;
+        this.dropdown.style.top = `${Math.round(caret.bottom + 4)}px`;
+        this.dropdown.style.width = `${Math.round(width)}px`;
+        this.dropdown.style.minWidth = '180px';
+        this.dropdown.style.maxWidth = `${Math.round(availableWidth)}px`;
+        this.dropdown.style.maxHeight = '240px';
+        this.dropdown.style.overflowY = 'auto';
+        this.dropdown.style.zIndex = String(this.resolveDropdownZIndex());
+        this.dropdown.style.background = 'var(--background-primary)';
+        this.dropdown.style.border = '1px solid var(--background-modifier-border)';
+        this.dropdown.style.borderRadius = '6px';
+        this.dropdown.style.boxShadow = '0 4px 16px rgba(0,0,0,0.18)';
+        this.dropdown.style.padding = '4px 0';
+        this.dropdown.style.visibility = 'hidden';
+
         const dropdownRect = this.dropdown.getBoundingClientRect();
         const spaceBelow = boundary.bottom - caret.bottom - margin;
         const spaceAbove = caret.top - boundary.top - margin;
         const openAbove = dropdownRect.height > spaceBelow && spaceAbove > spaceBelow;
         const top = openAbove
             ? Math.max(boundary.top + margin, caret.top - dropdownRect.height - 4)
-            : Math.min(caret.bottom + 4, boundary.bottom - dropdownRect.height - margin);
-        this.dropdown.setCssStyles({
-            top: `${Math.round(Math.max(boundary.top + margin, top))}px`,
-            visibility: 'visible',
-        });
+            : Math.min(caret.bottom + 4, Math.max(boundary.top + margin, boundary.bottom - dropdownRect.height - margin));
+        this.dropdown.style.top = `${Math.round(top)}px`;
+        this.dropdown.style.visibility = 'visible';
     }
 
     // ─── Commit ───────────────────────────────────────────────
@@ -344,8 +532,9 @@ export class WikilinkSuggest {
         const before = value.slice(0, this.triggerStart);
         const after = value.slice(caret);
         // Insert "<name>]]" replacing the in-progress query.
-        const inserted = `${name}]]`;
-        const newValue = `${before}${inserted}${after}`;
+        // If the toolbar already closed with `]]`, drop the duplicate closer.
+        const inserted = after.startsWith(']]') ? name : `${name}]]`;
+        const newValue = `${before}${inserted}${after.startsWith(']]') ? after.slice(2) : after}`;
         const newCaret = before.length + inserted.length;
         this.textareaEl.value = newValue;
         this.textareaEl.setSelectionRange(newCaret, newCaret);

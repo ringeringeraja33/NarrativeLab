@@ -8114,6 +8114,22 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.concept-grid-page-tab-rename {
+    display: block;
+    width: 100%;
+    min-width: 56px;
+    margin: 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-weight: inherit;
+    line-height: inherit;
+    outline: 1px solid var(--interactive-accent);
+    border-radius: 2px;
+    box-sizing: border-box;
+}
 .concept-grid-add-page-btn {
     flex: 0 0 auto;
     align-self: center;

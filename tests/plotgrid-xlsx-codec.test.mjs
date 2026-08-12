@@ -144,6 +144,35 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(sheet.rowData[1].h, 40);
         assert.equal(sheet.rowData[1].ia, 0, 'manual row height must disable Univer auto-height');
         assert.equal(sheet.columnData[1].w, 120);
+
+        decoded.pages[0].headerRowHeight = 44;
+        decoded.pages[0].labelColumnWidth = 96;
+        const axisWorkbook = codec.documentToUniverWorkbookData(decoded);
+        const axisSheet = Object.values(axisWorkbook.sheets)[0];
+        assert.equal(axisSheet.rowData[0].h, 44);
+        assert.equal(axisSheet.rowData[0].ia, 0);
+        assert.equal(axisSheet.columnData[0].w, 96);
+
+        const axisMerged = codec.mergeUniverCellDataIntoDocument(structuredClone(decoded), 'page-1', {
+            0: { 0: { v: 'agent num' }, 1: { v: 'Hero' } },
+            1: { 0: { v: 'Scene 1' }, 1: { v: 'ok' } },
+        }, undefined, {
+            0: { h: 52 },
+            1: { h: 40 },
+        }, {
+            0: { w: 110 },
+            1: { w: 120 },
+        });
+        assert.equal(axisMerged.pages[0].headerRowHeight, 52);
+        assert.equal(axisMerged.pages[0].labelColumnWidth, 110);
+        assert.match(
+            codec.conceptGridContentFingerprint(axisMerged),
+            /headerH:52/,
+        );
+        assert.match(
+            codec.conceptGridContentFingerprint(axisMerged),
+            /labelW:110/,
+        );
         assert.equal(sheet.cellData[1][1].f, '="meets mentor"');
         assert.equal(sheet.cellData[1][1].v, 'meets mentor', 'native rich text must not alter workbook cell text');
         assert.equal(sheet.cellData[1][1].custom.narrativeLabSource, 'meets mentor');
@@ -202,6 +231,25 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
             /corner:Corner/,
             'corner edits must dirty the content fingerprint so autosave runs',
         );
+        headerRich.pages[0].columns[0].width = 240;
+        headerRich.pages[0].rows[0].height = 48;
+        assert.match(
+            codec.conceptGridContentFingerprint(headerRich),
+            /:240:/,
+            'column width must dirty the content fingerprint so resize autosave runs',
+        );
+        assert.match(
+            codec.conceptGridContentFingerprint(headerRich),
+            /:48:/,
+            'row height must dirty the content fingerprint so resize autosave runs',
+        );
+
+        const sized = structuredClone(headerRich);
+        sized.pages[0].columns[0].width = 120;
+        sized.pages[0].rows[0].height = 32;
+        codec.preserveConceptGridAxisSizes(sized, headerRich);
+        assert.equal(sized.pages[0].columns[0].width, 240);
+        assert.equal(sized.pages[0].rows[0].height, 48);
 
         // Cleared cells omitted from sparse Univer snapshots wipe content only when
         // clearMissing is opted in (after the cell editor has closed).
@@ -431,15 +479,21 @@ test('wikilink suggestions follow the textarea caret inside editor modals', asyn
     const suggest = await readFile(new URL('../components/WikilinkSuggest.ts', import.meta.url), 'utf8');
     assert.match(suggest, /getTextareaCaretRect/);
     assert.match(suggest, /selectionStart/);
-    assert.match(suggest, /markerRect\.top - textarea\.scrollTop/);
-    assert.match(suggest, /closest\('\.modal'\)/);
+    assert.match(suggest, /mirror\.scrollTop = textarea\.scrollTop/);
+    assert.match(suggest, /plot-grid-cell-editor-window/);
+    assert.match(suggest, /resolveDropdownZIndex/);
+    assert.match(suggest, /2147483000/);
+    assert.match(suggest, /refresh\(\)/);
     assert.match(suggest, /openAbove/);
+    assert.doesNotMatch(suggest, /markerRect\.top - textarea\.scrollTop/);
+    assert.doesNotMatch(suggest, /zIndex:\s*'9999'/);
     assert.doesNotMatch(suggest, /top:\s*`\$\{Math\.round\(rect\.bottom/);
 });
 
 test('embedded Univer host exposes the legacy grid view controls', async () => {
     const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
     const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
+    const codecSrc = await readFile(new URL('../services/PlotGridXlsxCodec.ts', import.meta.url), 'utf8');
     for (const method of ['setZoom', 'setFreeze', 'setActiveCell']) {
         assert.match(host, new RegExp(`${method}:`));
     }
@@ -465,7 +519,14 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /CellPointerDown/);
     assert.match(host, /sheetName|sheet\.name/);
     assert.match(host, /page\.title = sheetName/);
-    assert.match(host, /applyDimensionMutation/);
+    assert.match(host, /headerRowHeight/);
+    assert.match(host, /labelColumnWidth/);
+    assert.match(host, /worksheetRow === 0/);
+    assert.match(host, /worksheetColumn === 0/);
+    assert.match(codecSrc, /headerRowHeight/);
+    assert.match(codecSrc, /labelColumnWidth/);
+    assert.match(codecSrc, /rowData\[0\]/);
+    assert.match(codecSrc, /columnData\[0\]/);
     assert.match(host, /applyAxisMoveMutation/);
     assert.match(host, /sheet\.mutation\.move-rows/);
     assert.match(host, /sheet\.mutation\.move-columns/);
@@ -482,13 +543,18 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /tryCommitCellEditor|executeCommand\?\.\('sheet\.operation\.set-cell-edit-visible'/);
     assert.match(host, /clearMissing/);
     assert.match(host, /clearMissing:\s*false/);
-    assert.match(host, /mergeDimensions:\s*false/);
+    assert.match(host, /mergeDimensions:\s*true/);
+    assert.match(host, /mergeDimensions === true/);
+    assert.match(host, /preserveConceptGridAxisSizes/);
+    assert.match(host, /flushPendingDimensionNotify/);
+    assert.match(host, /scheduleDimensionPull/);
     assert.match(host, /scheduleDimensionNotify/);
     assert.match(view, /univerHost\?\.isEditorBusy\(\)/);
     assert.match(view, /hasPendingSync\(\)/);
     assert.match(view, /Never autosave while Univer/);
     assert.match(view, /Own autosave \/ no-op disk echo/);
     assert.match(view, /Only re-apply sheet\/freeze\/zoom/);
+    assert.match(view, /getDocument\(\)/);
 
     assert.match(view, /persistBoundPlotGrid/);
     assert.match(view, /disposeUniverHost\(\{\s*persist:\s*false\s*\}\)/);

@@ -58,6 +58,7 @@ import {
     documentToUniverWorkbookData,
     mergeUniverCellDataIntoDocument,
     moveConceptGridAxis,
+    preserveConceptGridAxisSizes,
 } from './PlotGridXlsxCodec';
 
 export interface PlotGridUniverHostOptions {
@@ -95,6 +96,8 @@ export interface PlotGridUniverHost {
     /** Update host's metadata snapshot without recreating the workbook. */
     syncMeta: (doc: ConceptGridDocument) => void;
     setActiveSheet: (sheetId: string) => void;
+    /** Rename a worksheet to match NarrativeLab page tabs (Univer footer is hidden). */
+    setSheetTitle: (sheetId: string, title: string) => void;
     /** Apply NarrativeLab's legacy view controls to the embedded worksheet. */
     setZoom: (sheetId: string, ratio: number) => void;
     setFreeze: (sheetId: string, enabled: boolean, frozenColumns?: number, frozenRows?: number) => void;
@@ -125,6 +128,7 @@ type UniverAPI = {
             getSheetId: () => string;
             activate?: () => void;
             zoom?: (ratio: number) => unknown;
+            setName?: (name: string) => unknown;
             setFreeze?: (freeze: { startRow: number; startColumn: number; xSplit: number; ySplit: number }) => unknown;
             cancelFreeze?: () => unknown;
             refreshCanvas?: () => unknown;
@@ -384,15 +388,26 @@ function applyDimensionMutation(doc: ConceptGridDocument, command: unknown): Con
     const next = structuredClone(doc);
     const page = next.pages.find(item => item.id === params.subUnitId);
     if (!page) return null;
+    let changed = false;
     for (const range of params.ranges) {
         if (isRow) {
             const start = range.startRow ?? 0;
             const end = range.endRow ?? start;
             for (let worksheetRow = start; worksheetRow <= end; worksheetRow += 1) {
                 const height = dimensionAt(params.rowHeight, worksheetRow);
+                if (height == null || height <= 0) continue;
+                const nextHeight = Math.round(height);
+                if (worksheetRow === 0) {
+                    if ((page.headerRowHeight || 0) !== nextHeight) {
+                        page.headerRowHeight = nextHeight;
+                        changed = true;
+                    }
+                    continue;
+                }
                 const row = page.rows[worksheetRow - 1];
-                if (worksheetRow > 0 && height != null && height > 0 && row) {
-                    row.height = height;
+                if (row && row.height !== nextHeight) {
+                    row.height = nextHeight;
+                    changed = true;
                 }
             }
         } else {
@@ -400,14 +415,24 @@ function applyDimensionMutation(doc: ConceptGridDocument, command: unknown): Con
             const end = range.endColumn ?? start;
             for (let worksheetColumn = start; worksheetColumn <= end; worksheetColumn += 1) {
                 const width = dimensionAt(params.colWidth, worksheetColumn);
+                if (width == null || width <= 0) continue;
+                const nextWidth = Math.round(width);
+                if (worksheetColumn === 0) {
+                    if ((page.labelColumnWidth || 0) !== nextWidth) {
+                        page.labelColumnWidth = nextWidth;
+                        changed = true;
+                    }
+                    continue;
+                }
                 const column = page.columns[worksheetColumn - 1];
-                if (worksheetColumn > 0 && width != null && width > 0 && column) {
-                    column.width = width;
+                if (column && column.width !== nextWidth) {
+                    column.width = nextWidth;
+                    changed = true;
                 }
             }
         }
     }
-    return next;
+    return changed ? next : null;
 }
 
 function applyAxisMoveMutation(doc: ConceptGridDocument, command: unknown): ConceptGridDocument | null {
@@ -621,10 +646,15 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 (opts.getAuthoritativeDocument?.() ?? liveDoc),
             );
 
-            // Dimensions are owned by resize mutations. Polling workbook.save()
-            // often lags mid-drag and would snap previously resized rows/cols back.
+            // Dimensions are owned by resize mutations during polling. Mid-drag
+            // workbook.save() often lags and would snap sizes back — but the host
+            // liveDoc may already hold newer widths/heights that this.document
+            // has not received yet. Keep those unless we explicitly merge from Univer.
             const clearMissing = mergeOptions.clearMissing === true;
             const mergeDimensions = mergeOptions.mergeDimensions === true;
+            if (!mergeDimensions) {
+                preserveConceptGridAxisSizes(base, liveDoc);
+            }
 
             let next = base;
             for (const sheet of Object.values(saved.sheets)) {
@@ -639,16 +669,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     mergeDimensions ? sheet.columnData : undefined,
                     { clearMissing, mergeDimensions },
                 );
-                // Univer sheet-tab renames are not in cellData — pull the title too.
-                const sheetName = typeof (sheet as { name?: unknown }).name === 'string'
-                    ? (sheet as { name: string }).name.trim()
-                    : '';
-                if (sheetName) {
-                    const page = next.pages.find(p => p.id === id);
-                    if (page && page.title !== sheetName) {
-                        page.title = sheetName;
-                    }
-                }
+                // NarrativeLab owns page titles via the bottom sheet tabs
+                // (Univer's sheet bar is hidden). Do not overwrite NL titles
+                // from workbook.save() sheet names — that snaps renames back.
             }
             const nextFp = conceptGridContentFingerprint(next);
             // Also detect meta drift (links) even when display text is unchanged.
@@ -670,9 +693,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let pendingAfterSuppress = false;
     let suppressDrainTimer = 0;
     let dimNotifyTimer = 0;
+    let dimPullTimer = 0;
     let pendingAfterEdit = false;
     let pendingSetDoc: ConceptGridDocument | null = null;
-    let schedulePull: (opts?: { clearMissing?: boolean }) => void = () => { /* assigned below */ };
+    let schedulePull: (opts?: { clearMissing?: boolean; mergeDimensions?: boolean }) => void = () => { /* assigned below */ };
 
     const isEditorBusy = () => {
         if (cellEditing || composing) return true;
@@ -750,6 +774,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }
         if (timer) window.clearTimeout(timer);
         const clearMissing = pullOpts.clearMissing === true;
+        const mergeDimensions = pullOpts.mergeDimensions === true;
         // Keep this short: a long debounce left edits only in Univer while vault
         // refresh / tab close could reload or save a stale NarrativeLab document.
         timer = window.setTimeout(() => {
@@ -758,8 +783,17 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 pendingAfterEdit = true;
                 return;
             }
-            pullFromUniver(false, { clearMissing, mergeDimensions: false });
+            pullFromUniver(false, { clearMissing, mergeDimensions });
         }, 80);
+    };
+
+    const flushPendingDimensionNotify = () => {
+        if (!dimNotifyTimer) return;
+        window.clearTimeout(dimNotifyTimer);
+        dimNotifyTimer = 0;
+        if (disposed) return;
+        contentFp = conceptGridContentFingerprint(liveDoc);
+        opts.onDocumentChange(liveDoc);
     };
 
     const scheduleDimensionNotify = () => {
@@ -775,11 +809,25 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }, 120);
     };
 
+    const scheduleDimensionPull = () => {
+        if (disposed) return;
+        if (dimPullTimer) window.clearTimeout(dimPullTimer);
+        // Command-level resize events may not carry sizes; read them from Univer
+        // after the mutation settles.
+        dimPullTimer = window.setTimeout(() => {
+            dimPullTimer = 0;
+            if (disposed) return;
+            schedulePull({ mergeDimensions: true });
+        }, 150);
+    };
+
     disposers.push(() => {
         if (suppressDrainTimer) window.clearTimeout(suppressDrainTimer);
         suppressDrainTimer = 0;
         if (dimNotifyTimer) window.clearTimeout(dimNotifyTimer);
         dimNotifyTimer = 0;
+        if (dimPullTimer) window.clearTimeout(dimPullTimer);
+        dimPullTimer = 0;
     });
 
     const commandId = (command: unknown): string => {
@@ -833,14 +881,17 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 }
 
                 // Resize / axis moves: update NL meta immediately; do not poll
-                // workbook.save() (it lags and snaps other sizes back).
+                // workbook.save() mid-drag (it lags and snaps other sizes back).
                 if (isDimensionCommand(id) || id === 'sheet.mutation.move-rows' || id === 'sheet.mutation.move-columns') {
-                    const authoritative = opts.getAuthoritativeDocument?.() ?? liveDoc;
-                    const mutated = applyDimensionMutation(authoritative, command)
-                        ?? applyAxisMoveMutation(authoritative, command);
+                    // Apply onto liveDoc (not stale this.document) so successive
+                    // resizes keep earlier width/height changes in the same gesture.
+                    const mutated = applyDimensionMutation(liveDoc, command)
+                        ?? applyAxisMoveMutation(liveDoc, command);
                     if (mutated) {
                         liveDoc = mutated;
                         scheduleDimensionNotify();
+                    } else if (isDimensionCommand(id)) {
+                        scheduleDimensionPull();
                     }
                     return;
                 }
@@ -926,15 +977,18 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 window.clearTimeout(suppressDrainTimer);
                 suppressDrainTimer = 0;
             }
-            if (dimNotifyTimer) {
-                window.clearTimeout(dimNotifyTimer);
-                dimNotifyTimer = 0;
+            if (dimPullTimer) {
+                window.clearTimeout(dimPullTimer);
+                dimPullTimer = 0;
             }
+            // Flush coalesced resize notifies BEFORE the final pull so sizes
+            // are already on the authoritative document snapshot.
+            flushPendingDimensionNotify();
             tryCommitCellEditor();
             cellEditing = false;
             composing = false;
-            // Never clearMissing on teardown — sparse save() must not wipe cells.
-            try { pullFromUniver(true, { clearMissing: false, mergeDimensions: false }); } catch { /* ignore */ }
+            // Final commit: read live axis sizes from Univer (drag has finished).
+            try { pullFromUniver(true, { clearMissing: false, mergeDimensions: true }); } catch { /* ignore */ }
             disposed = true;
             for (const d of disposers) {
                 try { d(); } catch { /* ignore */ }
@@ -958,11 +1012,28 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         },
         syncMeta: (doc: ConceptGridDocument) => {
             // Keep host snapshot aligned with NL meta without remounting Univer.
-            liveDoc = structuredClone(doc);
+            // Preserve live resize sizes that may not have been pushed to the
+            // parent document yet (syncMeta is called from wikilink sync, zoom…).
+            const next = structuredClone(doc);
+            preserveConceptGridAxisSizes(next, liveDoc);
+            liveDoc = next;
             contentFp = conceptGridContentFingerprint(liveDoc);
         },
         setActiveSheet: (sheetId: string) => {
             tryActivateSheet(univerAPI, sheetId);
+        },
+        setSheetTitle: (sheetId: string, title: string) => {
+            const name = title.trim();
+            if (!name) return;
+            const page = liveDoc.pages.find(item => item.id === sheetId);
+            if (page) page.title = name;
+            contentFp = conceptGridContentFingerprint(liveDoc);
+            try {
+                const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
+                sheet?.setName?.(name);
+            } catch (error) {
+                console.warn('[NarrativeLab] Could not rename Univer sheet:', error);
+            }
         },
         setZoom: (sheetId: string, ratio: number) => {
             const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
@@ -1008,7 +1079,12 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         isEditorBusy,
         hasPendingSync: () => {
             if (disposed) return false;
-            return isEditorBusy() || pendingAfterEdit || timer !== 0 || pendingAfterSuppress;
+            return isEditorBusy()
+                || pendingAfterEdit
+                || timer !== 0
+                || pendingAfterSuppress
+                || dimNotifyTimer !== 0
+                || dimPullTimer !== 0;
         },
         flush: () => {
             // Commit the open editor first so workbook.save() includes typed text.
@@ -1022,9 +1098,15 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 window.clearTimeout(timer);
                 timer = 0;
             }
+            if (dimPullTimer) {
+                window.clearTimeout(dimPullTimer);
+                dimPullTimer = 0;
+            }
+            flushPendingDimensionNotify();
             // clearMissing:false — forced flush snapshots are often sparse and
             // must not blank cells that were merely omitted from the dump.
-            pullFromUniver(true, { clearMissing: false, mergeDimensions: false });
+            // mergeDimensions:true — capture finished resize gesture sizes.
+            pullFromUniver(true, { clearMissing: false, mergeDimensions: true });
         },
         focus: () => {
             opts.container.querySelector<HTMLElement>('[contenteditable], canvas, .univer-workbook')?.focus?.();
@@ -1064,6 +1146,8 @@ function pickMeta(doc: ConceptGridDocument): unknown {
         ),
         rows: (p.rows || []).map(r => ({ id: r.id, height: r.height, sourceId: r.sourceId, sourceType: r.sourceType })),
         columns: (p.columns || []).map(c => ({ id: c.id, width: c.width, sourceId: c.sourceId, sourceType: c.sourceType })),
+        headerRowHeight: p.headerRowHeight || 0,
+        labelColumnWidth: p.labelColumnWidth || 0,
         frozenColumns: p.frozenColumns,
         frozenRows: p.frozenRows,
     }));

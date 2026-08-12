@@ -86,6 +86,8 @@ export interface PlotGridNlMeta {
         frozenColumns?: number;
         frozenRows?: number;
         cornerLabel?: string;
+        headerRowHeight?: number;
+        labelColumnWidth?: number;
         rows: RowMeta[];
         columns: ColumnMeta[];
         cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'> & {
@@ -302,6 +304,12 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
             frozenColumns: Math.max(1, Math.floor(pageMeta?.frozenColumns ?? 1)),
             frozenRows: Math.max(1, Math.floor(pageMeta?.frozenRows ?? 1)),
             cornerLabel: pageMeta?.cornerLabel || '',
+            headerRowHeight: typeof pageMeta?.headerRowHeight === 'number' && pageMeta.headerRowHeight > 0
+                ? Math.round(pageMeta.headerRowHeight)
+                : 0,
+            labelColumnWidth: typeof pageMeta?.labelColumnWidth === 'number' && pageMeta.labelColumnWidth > 0
+                ? Math.round(pageMeta.labelColumnWidth)
+                : 0,
         };
     }).filter(page => page.rows.length > 0 || page.columns.length > 0 || Object.keys(page.cells).length > 0);
 
@@ -696,6 +704,8 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
             frozenColumns: page.frozenColumns,
             frozenRows: page.frozenRows,
             cornerLabel: page.cornerLabel || '',
+            headerRowHeight: page.headerRowHeight || 0,
+            labelColumnWidth: page.labelColumnWidth || 0,
             rows: page.rows.map(r => ({ ...r })),
             columns: page.columns.map(c => ({ ...c })),
             cells,
@@ -754,6 +764,12 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
 
         // Header row: corner + column labels
         sheet.getCell(1, 1).value = clampExcelCellText(page.cornerLabel || '');
+        if ((page.labelColumnWidth || 0) > 0) {
+            sheet.getColumn(1).width = Math.max(8, (page.labelColumnWidth || 0) / 8);
+        }
+        if ((page.headerRowHeight || 0) > 0) {
+            sheet.getRow(1).height = Math.max(12, (page.headerRowHeight || 0) * 0.75);
+        }
         cols.forEach((col, ci) => {
             const cell = sheet.getCell(1, ci + 2);
             cell.value = clampExcelCellText(col.label || '');
@@ -1036,6 +1052,16 @@ export async function decodePlotGridXlsx(
             cornerLabel: cellValueText(sheet.getCell(1, 1).value)
                 || pageMeta?.cornerLabel
                 || '',
+            headerRowHeight: typeof pageMeta?.headerRowHeight === 'number' && pageMeta.headerRowHeight > 0
+                ? Math.round(pageMeta.headerRowHeight)
+                : (typeof sheet.getRow(1).height === 'number' && (sheet.getRow(1).height || 0) > 0
+                    ? Math.round((sheet.getRow(1).height || 0) / 0.75)
+                    : 0),
+            labelColumnWidth: typeof pageMeta?.labelColumnWidth === 'number' && pageMeta.labelColumnWidth > 0
+                ? Math.round(pageMeta.labelColumnWidth)
+                : (typeof sheet.getColumn(1).width === 'number' && (sheet.getColumn(1).width || 0) > 0
+                    ? Math.round((sheet.getColumn(1).width || 0) * 8)
+                    : 0),
         });
     });
 
@@ -1166,6 +1192,12 @@ export function documentToUniverWorkbookData(
         // null/1, so a later column-resize auto-fit would wipe custom row heights.
         const rowData: Record<number, { h: number; ia: number }> = {};
         const columnData: Record<number, { w: number }> = {};
+        if ((page.headerRowHeight || 0) > 0) {
+            rowData[0] = { h: page.headerRowHeight || 0, ia: 0 };
+        }
+        if ((page.labelColumnWidth || 0) > 0) {
+            columnData[0] = { w: page.labelColumnWidth || 0 };
+        }
         rows.forEach((row, ri) => {
             if (row.height > 0) rowData[ri + 1] = { h: row.height, ia: 0 };
         });
@@ -1249,6 +1281,18 @@ export function mergeUniverCellDataIntoDocument(
     let changed = false;
 
     if (mergeDimensions) {
+        const headerHeight = rowData?.[0]?.h ?? rowData?.[0]?.ah;
+        if (typeof headerHeight === 'number' && headerHeight > 0
+            && Math.round(headerHeight) !== (page.headerRowHeight || 0)) {
+            page.headerRowHeight = Math.round(headerHeight);
+            changed = true;
+        }
+        const labelWidth = columnData?.[0]?.w;
+        if (typeof labelWidth === 'number' && labelWidth > 0
+            && Math.round(labelWidth) !== (page.labelColumnWidth || 0)) {
+            page.labelColumnWidth = Math.round(labelWidth);
+            changed = true;
+        }
         rows.forEach((row, index) => {
             // Prefer explicit height over auto-height so column-resize auto-fit
             // snapshots cannot silently shrink manually sized rows.
@@ -1364,19 +1408,25 @@ export function mergeUniverCellDataIntoDocument(
     return { ...doc, pages: [...doc.pages] };
 }
 
-/** Fingerprint of cell display text + headers (for dirty checks). */
+/** Fingerprint of cell display text + headers + axis sizes (for dirty checks). */
 export function conceptGridContentFingerprint(doc: ConceptGridDocument): string {
     const parts: string[] = [doc.activePageId || ''];
     for (const page of doc.pages) {
-        parts.push(page.id, page.title || '', `corner:${page.cornerLabel || ''}`);
+        parts.push(
+            page.id,
+            page.title || '',
+            `corner:${page.cornerLabel || ''}`,
+            `headerH:${page.headerRowHeight || 0}`,
+            `labelW:${page.labelColumnWidth || 0}`,
+        );
         for (const row of page.rows || []) {
             parts.push(
-                `r:${row.id}:${row.label || ''}:${row.headerBgColor || ''}:${row.textColor || ''}:${row.bold ? 1 : 0}:${row.italic ? 1 : 0}`,
+                `r:${row.id}:${row.label || ''}:${row.height || 0}:${row.headerBgColor || ''}:${row.textColor || ''}:${row.bold ? 1 : 0}:${row.italic ? 1 : 0}`,
             );
         }
         for (const col of page.columns || []) {
             parts.push(
-                `c:${col.id}:${col.label || ''}:${col.headerBgColor || ''}:${col.textColor || ''}:${col.bold ? 1 : 0}:${col.italic ? 1 : 0}`,
+                `c:${col.id}:${col.label || ''}:${col.width || 0}:${col.headerBgColor || ''}:${col.textColor || ''}:${col.bold ? 1 : 0}:${col.italic ? 1 : 0}`,
             );
         }
         for (const [key, cell] of Object.entries(page.cells || {})) {
@@ -1385,6 +1435,33 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
         }
     }
     return parts.join('\n');
+}
+
+/**
+ * Copy matching row heights / column widths from `source` onto `target`.
+ * Used so mid-drag resize values in the host snapshot are not wiped by a
+ * cell-only pull or syncMeta that still carries stale axis sizes.
+ */
+export function preserveConceptGridAxisSizes(
+    target: ConceptGridDocument,
+    source: ConceptGridDocument,
+): void {
+    for (const page of target.pages) {
+        const srcPage = source.pages.find(item => item.id === page.id);
+        if (!srcPage) continue;
+        if ((srcPage.headerRowHeight || 0) > 0) page.headerRowHeight = srcPage.headerRowHeight;
+        if ((srcPage.labelColumnWidth || 0) > 0) page.labelColumnWidth = srcPage.labelColumnWidth;
+        page.rows.forEach((row, index) => {
+            const src = srcPage.rows[index];
+            if (!src || src.id !== row.id) return;
+            if (typeof src.height === 'number' && src.height > 0) row.height = src.height;
+        });
+        page.columns.forEach((col, index) => {
+            const src = srcPage.columns[index];
+            if (!src || src.id !== col.id) return;
+            if (typeof src.width === 'number' && src.width > 0) col.width = src.width;
+        });
+    }
 }
 
 /** Mirror Univer row/column drag moves in NarrativeLab metadata (links use row/column ids). */

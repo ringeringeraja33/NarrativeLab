@@ -65,6 +65,10 @@ export interface PlotGridData {
     frozenRows?: number;
     /** Text in the sheet corner cell (A1) — row/column header intersection. */
     cornerLabel?: string;
+    /** Height of Univer row 0 (column-header / first sheet row). */
+    headerRowHeight?: number;
+    /** Width of Univer column 0 (row-label / first sheet column). */
+    labelColumnWidth?: number;
 }
 
 /** One page inside a multi-page Concept Grid document. */
@@ -97,6 +101,8 @@ export function createEmptyConceptGridPage(title?: string): ConceptGridPage {
         frozenColumns: 1,
         frozenRows: 1,
         cornerLabel: '',
+        headerRowHeight: 0,
+        labelColumnWidth: 0,
     };
 }
 
@@ -147,6 +153,12 @@ function normalizeCells(value: unknown): Record<string, CellData> {
     return cells;
 }
 
+function normalizeAxisSize(value: unknown, fallback = 0): number {
+    const n = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(n) || n <= 0) return fallback;
+    return Math.round(n);
+}
+
 /** Normalize vault JSON (v1 single-page or v2 multi-page) into a ConceptGridDocument. */
 export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument {
     if (isConceptGridDocument(raw)) {
@@ -161,6 +173,8 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             frozenColumns: Math.max(1, Math.floor(page.frozenColumns ?? 1)),
             frozenRows: Math.max(1, Math.floor(page.frozenRows ?? 1)),
             cornerLabel: typeof page.cornerLabel === 'string' ? page.cornerLabel : '',
+            headerRowHeight: normalizeAxisSize(page.headerRowHeight),
+            labelColumnWidth: normalizeAxisSize(page.labelColumnWidth),
         }));
         const firstPage = pages[0] ?? createEmptyConceptGridPage();
         const activePageId = pages.some(p => p.id === raw.activePageId)
@@ -175,6 +189,11 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
     }
 
     if (isLegacyPlotGridData(raw)) {
+        const legacy = raw as PlotGridData & {
+            headerRowHeight?: unknown;
+            labelColumnWidth?: unknown;
+            cornerLabel?: unknown;
+        };
         const page: ConceptGridPage = {
             id: makePageId(),
             title: t('Page {n}', { n: 1 }),
@@ -185,9 +204,9 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             stickyHeaders: typeof raw.stickyHeaders === 'boolean' ? raw.stickyHeaders : true,
             frozenColumns: Math.max(1, Math.floor(raw.frozenColumns ?? 1)),
             frozenRows: Math.max(1, Math.floor(raw.frozenRows ?? 1)),
-            cornerLabel: typeof (raw as { cornerLabel?: unknown }).cornerLabel === 'string'
-                ? (raw as { cornerLabel: string }).cornerLabel
-                : '',
+            cornerLabel: typeof legacy.cornerLabel === 'string' ? legacy.cornerLabel : '',
+            headerRowHeight: normalizeAxisSize(legacy.headerRowHeight),
+            labelColumnWidth: normalizeAxisSize(legacy.labelColumnWidth),
         };
         return {
             version: 2,
@@ -243,6 +262,8 @@ export function cloneConceptGridPage(page: ConceptGridPage, title?: string): Con
         frozenColumns: page.frozenColumns,
         frozenRows: page.frozenRows,
         cornerLabel: page.cornerLabel,
+        headerRowHeight: page.headerRowHeight,
+        labelColumnWidth: page.labelColumnWidth,
     };
 }
 /* eslint-enable @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

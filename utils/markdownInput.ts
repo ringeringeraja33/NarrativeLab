@@ -124,7 +124,13 @@ export function applyMarkdownInputAction(textarea: HTMLTextAreaElement, action: 
     else if (action === 'strikethrough') wrapSelection(textarea, '~~');
     else if (action === 'highlight') wrapSelection(textarea, '==');
     else if (action === 'inline-code') wrapSelection(textarea, '`');
-    else if (action === 'wikilink') wrapSelection(textarea, '[[', ']]');
+    else if (action === 'wikilink') {
+        const start = textarea.selectionStart ?? textarea.value.length;
+        const end = textarea.selectionEnd ?? start;
+        // Empty selection: open an unclosed `[[` so autocomplete can run.
+        if (start === end) replaceSelection(textarea, '[[', start, end);
+        else wrapSelection(textarea, '[[', ']]');
+    }
     else if (action === 'blockquote') prefixLines(textarea, '> ');
     else if (action === 'bullet-list') prefixLines(textarea, '- ');
     else if (action === 'numbered-list') prefixLines(textarea, '1. ', /^\d+\.\s/);

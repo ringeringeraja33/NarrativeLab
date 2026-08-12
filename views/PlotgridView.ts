@@ -208,6 +208,10 @@ export class PlotgridView extends ItemView {
         const folder = this.loadedSystemFolder;
         try {
             this.univerHost?.flush();
+            if (this.univerHost) {
+                this.document = normalizeConceptGridDocument(this.univerHost.getDocument());
+                this.bindActivePage();
+            }
         } catch { /* ignore */ }
         this.cancelPendingSave();
         if (!folder || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
@@ -225,6 +229,10 @@ export class PlotgridView extends ItemView {
         const folder = this.loadedSystemFolder;
         try {
             this.univerHost?.flush();
+            if (this.univerHost) {
+                this.document = normalizeConceptGridDocument(this.univerHost.getDocument());
+                this.bindActivePage();
+            }
         } catch { /* ignore */ }
         this.cancelPendingSave();
         if (folder && this.plugin && typeof this.plugin.savePlotGrid === 'function') {
@@ -609,6 +617,7 @@ export class PlotgridView extends ItemView {
                     type: 'button',
                     'aria-pressed': String(isActive),
                     title: page.title,
+                    'data-page-id': page.id,
                 },
             });
             tab.createSpan({
@@ -690,16 +699,34 @@ export class PlotgridView extends ItemView {
     private renamePage(pageId: string): void {
         const page = this.document.pages.find(p => p.id === pageId);
         if (!page) return;
+        const applyTitle = (next: string): void => {
+            const title = next.trim();
+            if (!title || title === page.title) return;
+            page.title = title;
+            try {
+                this.univerHost?.setSheetTitle(page.id, title);
+                this.univerHost?.syncMeta(this.document);
+            } catch { /* ignore */ }
+            this.scheduleSave();
+            this.renderPageSidebar();
+        };
+
+        // Prefer inline rename on the tab (Excel-like). Fall back to a modal.
+        const labelEl = this.sidebarEl?.querySelector(
+            `.concept-grid-page-tab[data-page-id="${CSS.escape(pageId)}"] .concept-grid-page-tab-label`,
+        ) as HTMLElement | null;
+        if (labelEl) {
+            this.beginInlinePageRename(labelEl, page, applyTitle);
+            return;
+        }
+
         const modal = new Modal(this.app);
         modal.titleEl.setText(t('Rename page'));
         const inp = modal.contentEl.createEl('input', { type: 'text', cls: 'plot-grid-rename-input' });
         inp.setCssStyles({ width: '100%' });
         inp.value = page.title;
         const commit = () => {
-            const next = inp.value.trim();
-            if (next) page.title = next;
-            this.scheduleSave();
-            this.renderPageSidebar();
+            applyTitle(inp.value);
             modal.close();
         };
         inp.addEventListener('keydown', (ke) => {
@@ -712,6 +739,49 @@ export class PlotgridView extends ItemView {
         modal.open();
         inp.focus();
         inp.select();
+    }
+
+    private beginInlinePageRename(
+        labelEl: HTMLElement,
+        page: { id: string; title: string },
+        applyTitle: (next: string) => void,
+    ): void {
+        if (labelEl.querySelector('input')) return;
+        const original = page.title || labelEl.textContent || '';
+        const input = activeDocument.createElement('input');
+        input.type = 'text';
+        input.className = 'concept-grid-page-tab-rename';
+        input.value = original;
+        input.setAttribute('aria-label', t('Rename page'));
+        labelEl.textContent = '';
+        labelEl.appendChild(input);
+        let finished = false;
+        const finish = (commit: boolean) => {
+            if (finished) return;
+            finished = true;
+            const next = input.value;
+            input.remove();
+            labelEl.textContent = commit && next.trim() ? next.trim() : original;
+            if (commit) applyTitle(next);
+            else this.renderPageSidebar();
+        };
+        input.addEventListener('keydown', (event) => {
+            event.stopPropagation();
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                finish(true);
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                finish(false);
+            }
+        });
+        input.addEventListener('blur', () => finish(true));
+        input.addEventListener('click', (event) => event.stopPropagation());
+        input.addEventListener('mousedown', (event) => event.stopPropagation());
+        window.setTimeout(() => {
+            input.focus();
+            input.select();
+        }, 0);
     }
 
     private deletePage(pageId: string): void {
@@ -1489,7 +1559,7 @@ export class PlotgridView extends ItemView {
         this.cellEditorWindows.set(cellKey, win);
         this.bringCellEditorToFront(win);
 
-        let previewMode = !options.insertWikilink;
+        let previewMode = false;
         let alwaysOnTop = false;
         let textarea: HTMLTextAreaElement | null = null;
         let previewEl: HTMLDivElement | null = null;
@@ -1522,6 +1592,20 @@ export class PlotgridView extends ItemView {
         meta.createSpan({ cls: 'plot-grid-cell-editor-hint', text: t('Obsidian Markdown shortcuts are available') });
 
         const toolbar = win.createDiv({ cls: 'plot-grid-cell-editor-toolbar', attr: { role: 'toolbar' } });
+        const insertOpenWikilink = (): void => {
+            if (!textarea || previewMode) return;
+            const start = textarea.selectionStart ?? textarea.value.length;
+            const end = textarea.selectionEnd ?? start;
+            const selected = textarea.value.slice(start, end);
+            if (selected) {
+                applyMarkdownInputAction(textarea, 'wikilink');
+            } else {
+                textarea.setRangeText('[[', start, end, 'end');
+                textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            textarea.focus();
+            suggest?.refresh();
+        };
         const addButton = (label: string, action: MarkdownInputAction, icon?: string): void => {
             const button = toolbar.createEl('button', {
                 cls: 'clickable-icon plot-grid-cell-editor-format',
@@ -1532,7 +1616,12 @@ export class PlotgridView extends ItemView {
             button.addEventListener('mousedown', event => {
                 event.preventDefault();
                 if (!textarea || previewMode) return;
+                if (action === 'wikilink') {
+                    insertOpenWikilink();
+                    return;
+                }
                 applyMarkdownInputAction(textarea, action);
+                suggest?.refresh();
             });
         };
         addButton(t('Bold'), 'bold', 'bold');
@@ -1587,6 +1676,7 @@ export class PlotgridView extends ItemView {
             textareaEl: textarea,
             maxVisible: 10,
             sourcePath,
+            preferModal: true,
         });
         removeShortcuts = installObsidianMarkdownShortcuts(editorApp, textarea);
 
@@ -1696,6 +1786,7 @@ export class PlotgridView extends ItemView {
             const end = textarea.value.length;
             textarea.setSelectionRange(end, end);
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            suggest?.refresh();
         };
 
         win.__nlCellEditorCleanup = cleanup;
