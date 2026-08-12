@@ -216,7 +216,7 @@ export class CorkboardCanvasService {
             }
             const suppress = this.plugin.beginSuppressVaultRefresh?.(path);
             try {
-                await this.app.vault.modify(existing, payload);
+                await this.modifyWithRetry(existing, payload);
             } finally {
                 suppress?.();
             }
@@ -228,6 +228,26 @@ export class CorkboardCanvasService {
         } finally {
             suppress?.();
         }
+    }
+
+    /** Retry vault.modify on Windows sharing violations while Canvas embeds are open. */
+    private async modifyWithRetry(file: TFile, payload: string): Promise<void> {
+        const isTransient = (error: unknown): boolean => {
+            const msg = error instanceof Error ? `${error.message} ${error.name}` : String(error);
+            return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied|sharing violation/i.test(msg);
+        };
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 5; attempt++) {
+            try {
+                await this.app.vault.modify(file, payload);
+                return;
+            } catch (error) {
+                lastError = error;
+                if (!isTransient(error) || attempt === 4) break;
+                await new Promise<void>(resolve => window.setTimeout(resolve, 50 * (attempt + 1) * (attempt + 1)));
+            }
+        }
+        throw lastError instanceof Error ? lastError : new Error(String(lastError));
     }
 
     /** Pull geometry from .canvas file nodes into a board.json-compatible map. */

@@ -632,8 +632,14 @@ export class BoardView extends ItemView {
             this.corkboardCanvasResizeObserver = null;
         }
         if (this.corkboardCanvasLeaf) {
-            try { this.corkboardCanvasLeaf.detach(); } catch { /* ignore */ }
+            const leaf = this.corkboardCanvasLeaf;
             this.corkboardCanvasLeaf = null;
+            // Unload the Canvas view before detach — abrupt detach leaves Bases /
+            // file embeds evaluating null file handles ("reading 'path'").
+            try {
+                void leaf.setViewState({ type: 'empty', state: {} });
+            } catch { /* ignore */ }
+            try { leaf.detach(); } catch { /* ignore */ }
         }
         // Keep hostEl when still connected so callers can remount into it.
         if (!this.corkboardCanvasHostEl?.isConnected) {
@@ -671,6 +677,24 @@ export class BoardView extends ItemView {
         } catch (e) {
             console.warn('[NarrativeLab] Failed to read corkboard canvas positions:', e);
         }
+    }
+
+    /**
+     * True while the user is typing inside a native Canvas file-card embed.
+     * Remounting or rewriting membership mid-edit races Obsidian's autosave and
+     * surfaces "UNKNOWN: unknown error, open" on Windows.
+     */
+    private isNativeCorkboardEditorFocused(): boolean {
+        const host = this.corkboardCanvasHostEl;
+        if (!host) return false;
+        const active = host.ownerDocument?.activeElement as HTMLElement | null;
+        if (!active || !host.contains(active)) return false;
+        if (active.closest('textarea, input, [contenteditable="true"], .cm-editor, .cm-content, .markdown-source-view, .markdown-preview-view')) {
+            return true;
+        }
+        return active.isContentEditable
+            || active.tagName === 'TEXTAREA'
+            || active.tagName === 'INPUT';
     }
 
     private async syncNativeCorkboardFile(
@@ -718,6 +742,16 @@ export class BoardView extends ItemView {
             // Live Canvas can still drift from disk (unsaved in-memory nodes).
             this.pruneLiveCorkboardToVisible(visible);
             return { file: existing, membershipChanged: false, visible };
+        }
+
+        // Defer membership rewrite/remount while an embed editor is focused —
+        // tearing down Canvas mid-keystroke locks the note on Windows.
+        if (!opts?.force && this.isNativeCorkboardEditorFocused()) {
+            return {
+                file: existing instanceof TFile ? existing : null,
+                membershipChanged: false,
+                visible,
+            };
         }
 
         // Capture live geometry, then detach BEFORE rewriting membership so a
@@ -1321,6 +1355,7 @@ export class BoardView extends ItemView {
         const host = this.corkboardCanvasHostEl;
         const pull = () => {
             if (!this.corkboardCanvasLeaf || this.boardMode !== 'corkboard') return;
+            if (this.isNativeCorkboardEditorFocused()) return;
             void (async () => {
                 await this.pullPositionsFromNativeCanvas();
                 await this.persistCorkboardLayout();

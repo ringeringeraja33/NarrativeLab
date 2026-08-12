@@ -1,9 +1,15 @@
 /**
  * Concept Grid ↔ Excel (.xlsx) codec.
  *
- * Visible sheets = pages (row 0 = column labels, col 0 = row labels).
- * Hidden sheet `_nl_meta` stores NarrativeLab metadata (cell links, sourceIds, …)
- * as a single JSON blob so Excel edits to values do not wipe links.
+ * Interop layout (Excel / Univer / NarrativeLab):
+ * - `Library/datasheet.xlsx` — visible page sheets only (row 0 = column labels,
+ *   col 0 = row labels). Safe to open in Microsoft Excel or Univer.
+ * - `System/datasheet.nlmeta.json` — NarrativeLab metadata (links, ids, styles),
+ *   alongside other System/*.json project files.
+ *
+ * Legacy workbooks may still embed a veryHidden `_nl_meta` sheet; load migrates
+ * that into the sidecar and rewrites a clean xlsx on the next save.
+ * A brief-lived `Library/datasheet.nlmeta.json` is also migrated into System/.
  */
 import ExcelJS from 'exceljs';
 import type {
@@ -18,22 +24,47 @@ import {
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
 
-export const PLOTGRID_XLSX_FILENAME = 'plotgrid.xlsx';
+export const PLOTGRID_XLSX_FILENAME = 'datasheet.xlsx';
+/** Sidecar next to datasheet.xlsx — NarrativeLab links / ids / styles. */
+export const PLOTGRID_NLMETA_FILENAME = 'datasheet.nlmeta.json';
+/** Previous canonical filename under System/ — migrated to Library/datasheet.xlsx */
+export const LEGACY_PLOTGRID_XLSX_FILENAME = 'plotgrid.xlsx';
 /** Brief-lived subfolder used before settling on System/plotgrid.xlsx */
 export const PLOTGRID_FOLDER = 'PlotGrid';
 export const NL_META_SHEET = '_nl_meta';
-const META_SCHEMA = 1;
+/** Bump when meta cell payload shape changes (v2 stores display `content`). */
+const META_SCHEMA = 2;
+/** Excel shared-string / cell text hard limit (OOXML). Exceeding it makes Excel repair sharedStrings.xml. */
+export const EXCEL_MAX_CELL_CHARS = 32767;
 
-/** Canonical path: `{systemFolder}/plotgrid.xlsx` */
-export function plotGridXlsxPath(systemFolder: string): string {
+/** Canonical path: `{projectBase}/Library/datasheet.xlsx` */
+export function plotGridXlsxPath(projectBaseFolder: string): string {
+    const base = projectBaseFolder.replace(/\/+$/, '');
+    return `${base}/Library/${PLOTGRID_XLSX_FILENAME}`.replace(/\\/g, '/');
+}
+
+/** Canonical sidecar: `{systemFolder}/datasheet.nlmeta.json` */
+export function plotGridNlMetaPath(systemFolder: string): string {
     const base = systemFolder.replace(/\/+$/, '');
-    return `${base}/${PLOTGRID_XLSX_FILENAME}`.replace(/\\/g, '/');
+    return `${base}/${PLOTGRID_NLMETA_FILENAME}`.replace(/\\/g, '/');
+}
+
+/** Brief-lived Library sidecar before settling on System/datasheet.nlmeta.json */
+export function legacyLibraryPlotGridNlMetaPath(projectBaseFolder: string): string {
+    const base = projectBaseFolder.replace(/\/+$/, '');
+    return `${base}/Library/${PLOTGRID_NLMETA_FILENAME}`.replace(/\\/g, '/');
+}
+
+/** Former canonical path: `{systemFolder}/plotgrid.xlsx` */
+export function legacySystemPlotGridXlsxPath(systemFolder: string): string {
+    const base = systemFolder.replace(/\/+$/, '');
+    return `${base}/${LEGACY_PLOTGRID_XLSX_FILENAME}`.replace(/\\/g, '/');
 }
 
 /** Short-lived path: `{systemFolder}/PlotGrid/plotgrid.xlsx` */
 export function legacyPlotGridFolderXlsxPath(systemFolder: string): string {
     const base = systemFolder.replace(/\/+$/, '');
-    return `${base}/${PLOTGRID_FOLDER}/${PLOTGRID_XLSX_FILENAME}`.replace(/\\/g, '/');
+    return `${base}/${PLOTGRID_FOLDER}/${LEGACY_PLOTGRID_XLSX_FILENAME}`.replace(/\\/g, '/');
 }
 
 /** Legacy CSV-mirror folder: `{systemFolder}/PlotGrid` */
@@ -54,10 +85,53 @@ export interface PlotGridNlMeta {
         stickyHeaders?: boolean;
         frozenColumns?: number;
         frozenRows?: number;
+        cornerLabel?: string;
         rows: RowMeta[];
         columns: ColumnMeta[];
-        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'>>;
+        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'> & {
+            /** Canonical cell display / Markdown text (schema ≥ 2). */
+            content?: string;
+            /** Original Markdown source when the visible xlsx cell stores rendered link text. */
+            markdownSource?: string;
+        }>;
     }>;
+}
+
+export interface PlotGridXlsxEncodeOptions {
+    /** Current Obsidian vault name, used to make linked cells clickable from Excel. */
+    vaultName?: string;
+    /**
+     * When true, also embed a veryHidden `_nl_meta` sheet (legacy single-file).
+     * Default false — Excel/Univer see only data sheets; NL meta lives in the sidecar.
+     */
+    embedMetaSheet?: boolean;
+}
+
+export interface DecodePlotGridXlsxOptions {
+    /** Prefer sidecar / caller-supplied meta over any embedded `_nl_meta`. */
+    meta?: PlotGridNlMeta | null;
+}
+
+function obsidianOpenUri(linkedPath: string, vaultName?: string): string {
+    const params: string[] = [];
+    if (vaultName?.trim()) params.push(`vault=${encodeURIComponent(vaultName.trim())}`);
+    params.push(`file=${encodeURIComponent(linkedPath.replace(/\\/g, '/'))}`);
+    return `obsidian://open?${params.join('&')}`;
+}
+
+function obsidianFileFromCellValue(value: unknown): string | undefined {
+    if (!value || typeof value !== 'object') return undefined;
+    const hyperlink = (value as Record<string, unknown>).hyperlink;
+    if (typeof hyperlink !== 'string' || !hyperlink.toLowerCase().startsWith('obsidian://')) return undefined;
+    try {
+        const uri = new URL(hyperlink);
+        if (uri.protocol !== 'obsidian:' || uri.hostname.toLowerCase() !== 'open') return undefined;
+        const file = uri.searchParams.get('file')?.trim().replace(/\\/g, '/').replace(/^\/+/, '');
+        if (!file) return undefined;
+        return /\.[^/]+$/.test(file) ? file : `${file}.md`;
+    } catch {
+        return undefined;
+    }
 }
 
 function sanitizeSheetName(title: string, used: Set<string>): string {
@@ -93,6 +167,232 @@ function cellValueText(value: unknown): string {
     if ('result' in record) return cellValueText(record.result);
     if (typeof record.error === 'string') return record.error;
     return '';
+}
+
+/** Strip characters illegal in XML 1.0 text nodes (keep tab/LF/CR). */
+export function sanitizeExcelXmlText(value: string): string {
+    return String(value || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+}
+
+/** Clamp a visible cell string to Excel's per-cell limit after XML sanitization. */
+export function clampExcelCellText(value: string): string {
+    const cleaned = sanitizeExcelXmlText(value);
+    return cleaned.length > EXCEL_MAX_CELL_CHARS
+        ? cleaned.slice(0, EXCEL_MAX_CELL_CHARS)
+        : cleaned;
+}
+
+/** Write a JSON blob across column A so no single shared string exceeds Excel's limit. */
+export function writeChunkedMetaText(sheet: ExcelJS.Worksheet, text: string): void {
+    const payload = sanitizeExcelXmlText(text);
+    const chunkSize = EXCEL_MAX_CELL_CHARS;
+    if (!payload) {
+        sheet.getCell(1, 1).value = '';
+        return;
+    }
+    let row = 1;
+    for (let offset = 0; offset < payload.length; offset += chunkSize) {
+        sheet.getCell(row, 1).value = payload.slice(offset, offset + chunkSize);
+        row += 1;
+    }
+}
+
+/** Reassemble meta JSON from A1..An (also accepts legacy single-cell blobs). */
+export function readChunkedMetaText(sheet: ExcelJS.Worksheet): string {
+    const parts: string[] = [];
+    const maxRows = Math.max(sheet.rowCount || 0, 1);
+    for (let row = 1; row <= maxRows; row++) {
+        const part = cellValueText(sheet.getCell(row, 1).value);
+        if (!part && row > 1) break;
+        if (part) parts.push(part);
+        // Legacy / truncated: stop after first empty once we've started collecting
+        // (single-cell meta files only use A1).
+        if (row === 1 && !part) break;
+    }
+    return parts.join('');
+}
+
+/** True when text looks like a NarrativeLab `_nl_meta` JSON payload. */
+export function looksLikeNlMetaJson(text: string): boolean {
+    const trimmed = (text || '').trim();
+    if (!trimmed.startsWith('{') || !trimmed.includes('"schema"')) return false;
+    if (!trimmed.includes('"activePageId"') || !trimmed.includes('"pages"')) return false;
+    return true;
+}
+
+/** Parse NarrativeLab workbook meta JSON; returns null when invalid. */
+export function tryParseNlMeta(text: string): PlotGridNlMeta | null {
+    if (!looksLikeNlMetaJson(text)) return null;
+    try {
+        const parsed = JSON.parse(text) as PlotGridNlMeta;
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (typeof parsed.schema !== 'number' || !parsed.pages || typeof parsed.pages !== 'object') {
+            return null;
+        }
+        return parsed;
+    } catch {
+        return null;
+    }
+}
+
+function sheetLooksLikeNlMetaDump(sheet: ExcelJS.Worksheet): boolean {
+    if (sheet.name === NL_META_SHEET) return true;
+    const text = readChunkedMetaText(sheet);
+    return !!tryParseNlMeta(text);
+}
+
+function titleForMetaPage(meta: PlotGridNlMeta, pageId: string): string {
+    for (const [sheetName, id] of Object.entries(meta.pageIds || {})) {
+        if (id === pageId) return sheetName;
+    }
+    return meta.pages[pageId]?.id || pageId;
+}
+
+/**
+ * Rebuild a ConceptGridDocument from `_nl_meta` alone.
+ * Used when Excel sheets were wiped/replaced by an external Univer/Excel save.
+ */
+export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
+    const pageIds = Object.keys(meta.pages || {});
+    // Prefer pageIds order when present; otherwise object key order.
+    const orderedIds: string[] = [];
+    const seen = new Set<string>();
+    for (const id of Object.values(meta.pageIds || {})) {
+        if (meta.pages[id] && !seen.has(id)) {
+            orderedIds.push(id);
+            seen.add(id);
+        }
+    }
+    for (const id of pageIds) {
+        if (!seen.has(id)) {
+            orderedIds.push(id);
+            seen.add(id);
+        }
+    }
+
+    const pages: ConceptGridPage[] = orderedIds.map((pageId) => {
+        const pageMeta = meta.pages[pageId];
+        const rows = (pageMeta?.rows || []).map(r => ({ ...r }));
+        const columns = (pageMeta?.columns || []).map(c => ({ ...c }));
+        const cells: Record<string, CellData> = {};
+        for (const [key, saved] of Object.entries(pageMeta?.cells || {})) {
+            if (!saved) continue;
+            cells[key] = defaultCell({
+                id: key,
+                content: saved.content || saved.markdownSource || '',
+                linkedSceneId: saved.linkedSceneId,
+                linkedViaWikilink: saved.linkedViaWikilink,
+                formula: saved.formula,
+                manualContent: saved.manualContent,
+                bgColor: saved.bgColor || '',
+                textColor: saved.textColor || '',
+                bold: saved.bold,
+                italic: saved.italic,
+                align: saved.align || 'left',
+            });
+        }
+        return {
+            id: pageId,
+            title: titleForMetaPage(meta, pageId),
+            rows,
+            columns,
+            cells,
+            zoom: pageMeta?.zoom ?? 1,
+            stickyHeaders: pageMeta?.stickyHeaders !== false,
+            frozenColumns: Math.max(1, Math.floor(pageMeta?.frozenColumns ?? 1)),
+            frozenRows: Math.max(1, Math.floor(pageMeta?.frozenRows ?? 1)),
+            cornerLabel: pageMeta?.cornerLabel || '',
+        };
+    }).filter(page => page.rows.length > 0 || page.columns.length > 0 || Object.keys(page.cells).length > 0);
+
+    if (pages.length === 0) return createEmptyConceptGridDocument();
+
+    const activePageId = meta.activePageId && pages.some(p => p.id === meta.activePageId)
+        ? meta.activePageId
+        : pages[0]!.id;
+
+    return normalizeConceptGridDocument({
+        version: 2,
+        pages,
+        activePageId,
+        sidebarCollapsed: !!meta.sidebarCollapsed,
+    });
+}
+
+/**
+ * True when an external Univer/Excel open+save replaced NarrativeLab sheets with
+ * meta JSON dumps (or unrelated empty sheets), or when a legacy `_nl_meta` sheet
+ * is still embedded (should migrate to the sidecar).
+ */
+export async function plotGridXlsxNeedsRewrite(data: ArrayBuffer | Uint8Array): Promise<boolean> {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(data);
+
+    if (wb.getWorksheet(NL_META_SHEET)) return true;
+
+    let meta: PlotGridNlMeta | null = null;
+    wb.eachSheet((sheet) => {
+        if (meta) return;
+        meta = tryParseNlMeta(readChunkedMetaText(sheet));
+    });
+    if (!meta || Object.keys(meta.pages || {}).length === 0) return false;
+
+    let dataSheetCount = 0;
+    let metaDumpCount = 0;
+    let titlesOverlap = false;
+    wb.eachSheet((sheet) => {
+        if (sheetLooksLikeNlMetaDump(sheet)) {
+            metaDumpCount += 1;
+            return;
+        }
+        dataSheetCount += 1;
+        if (meta?.pageIds?.[sheet.name]) titlesOverlap = true;
+    });
+
+    if (dataSheetCount === 0 && metaDumpCount > 0) return true;
+    if (metaDumpCount > 0 && !titlesOverlap) return true;
+    return false;
+}
+
+/** Count non-empty data cells in visible (non-meta) Excel sheets. */
+export async function countPlotGridXlsxFilledCells(
+    data: ArrayBuffer | Uint8Array,
+): Promise<number> {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(data);
+    let count = 0;
+    wb.eachSheet((sheet) => {
+        if (sheetLooksLikeNlMetaDump(sheet)) return;
+        sheet.eachRow((row, rowNumber) => {
+            row.eachCell((cell, colNumber) => {
+                // Skip corner + header labels when counting "body" richness? Keep all —
+                // headers alone are weak signal; body cells dominate.
+                if (rowNumber === 1 || colNumber === 1) return;
+                const text = cellValueText(cell.value).trim();
+                if (text) count += 1;
+            });
+        });
+    });
+    return count;
+}
+
+/** Read NarrativeLab meta from an embedded `_nl_meta` sheet or a JSON dump sheet. */
+export async function extractEmbeddedNlMeta(
+    data: ArrayBuffer | Uint8Array,
+): Promise<PlotGridNlMeta | null> {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(data);
+    const metaWs = wb.getWorksheet(NL_META_SHEET);
+    if (metaWs) {
+        const embedded = tryParseNlMeta(readChunkedMetaText(metaWs));
+        if (embedded) return embedded;
+    }
+    let found: PlotGridNlMeta | null = null;
+    wb.eachSheet((sheet) => {
+        if (found || sheet.name === NL_META_SHEET) return;
+        found = tryParseNlMeta(readChunkedMetaText(sheet));
+    });
+    return found;
 }
 
 type UniverTextStyle = {
@@ -274,6 +574,76 @@ function univerDocumentPlainText(value: unknown): string {
         .replace(/\r/g, '\n');
 }
 
+type UniverStyleSnapshot = {
+    bg?: { rgb?: string } | null;
+    cl?: { rgb?: string } | null;
+    bl?: number | boolean | null;
+    it?: number | boolean | null;
+    ht?: number | null;
+};
+type UniverCellSnapshot = {
+    v?: unknown;
+    f?: unknown;
+    p?: unknown;
+    custom?: Record<string, unknown>;
+    s?: unknown;
+} | undefined;
+
+function resolveUniverStyle(
+    raw: UniverCellSnapshot,
+    styles?: Record<string, UniverStyleSnapshot>,
+): UniverStyleSnapshot | null {
+    if (!raw?.s) return null;
+    if (typeof raw.s === 'string') return styles?.[raw.s] || null;
+    if (typeof raw.s === 'object') return raw.s;
+    return null;
+}
+
+/** Prefer Univer rich-text `p` (live edits) over plain `v`. Null when neither is present. */
+function univerCellPlainText(raw: UniverCellSnapshot | null): string | null {
+    if (!raw || (!('v' in raw) && !('p' in raw))) return null;
+    const richText = univerDocumentPlainText(raw.p);
+    return richText || cellValueText(raw.v);
+}
+
+/** Apply Univer cell style onto a row/column header meta (label cells at row0/col0). */
+function applyHeaderStyleFromUniver(
+    target: {
+        headerBgColor?: string;
+        textColor?: string;
+        bold?: boolean;
+        italic?: boolean;
+    },
+    raw: UniverCellSnapshot | null,
+    styles?: Record<string, UniverStyleSnapshot>,
+): boolean {
+    if (!raw) return false;
+    const style = resolveUniverStyle(raw, styles);
+    if (!style) return false;
+    let changed = false;
+    const bg = style.bg?.rgb || '';
+    if ((target.headerBgColor || '') !== bg) {
+        target.headerBgColor = bg;
+        changed = true;
+    }
+    const text = style.cl?.rgb || '';
+    if ((target.textColor || '') !== text) {
+        target.textColor = text;
+        changed = true;
+    }
+    const bold = !!(style.bl);
+    if (!!target.bold !== bold) {
+        target.bold = bold;
+        changed = true;
+    }
+    const italic = !!(style.it);
+    if (!!target.italic !== italic) {
+        target.italic = italic;
+        changed = true;
+    }
+    return changed;
+}
+
 function cellKey(rowId: string, colId: string): string {
     return `${rowId}-${colId}`;
 }
@@ -294,7 +664,7 @@ function defaultCell(partial?: Partial<CellData>): CellData {
     };
 }
 
-/** Build NL meta from a ConceptGridDocument (no cell display text). */
+/** Build NL meta from a ConceptGridDocument (includes cell display text for recovery). */
 export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): PlotGridNlMeta {
     const pageIds: Record<string, string> = {};
     const pages: PlotGridNlMeta['pages'] = {};
@@ -306,8 +676,10 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
             if (!cell) continue;
             cells[key] = {
                 id: key,
+                content: cell.content || '',
                 linkedSceneId: cell.linkedSceneId,
                 linkedViaWikilink: cell.linkedViaWikilink,
+                markdownSource: cell.linkedSceneId ? cell.content : undefined,
                 formula: cell.formula,
                 manualContent: cell.manualContent,
                 bgColor: cell.bgColor,
@@ -323,6 +695,7 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
             stickyHeaders: page.stickyHeaders,
             frozenColumns: page.frozenColumns,
             frozenRows: page.frozenRows,
+            cornerLabel: page.cornerLabel || '',
             rows: page.rows.map(r => ({ ...r })),
             columns: page.columns.map(c => ({ ...c })),
             cells,
@@ -337,8 +710,26 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
     };
 }
 
+/** Stable Excel sheet names for each Concept Grid page (matches encode). */
+export function sheetNamesForDocument(raw: unknown): string[] {
+    const doc = normalizeConceptGridDocument(raw);
+    const usedNames = new Set<string>();
+    return doc.pages.map(page => sanitizeSheetName(page.title, usedNames));
+}
+
+/** Build sidecar / embeddable meta for a document. */
+export function buildNlMetaForDocument(raw: unknown): PlotGridNlMeta {
+    const doc = normalizeConceptGridDocument(raw);
+    return buildNlMeta(doc, sheetNamesForDocument(doc));
+}
+
+/** Pretty-printed sidecar JSON for System/datasheet.nlmeta.json. */
+export function serializePlotGridNlMeta(raw: unknown): string {
+    return `${JSON.stringify(buildNlMetaForDocument(raw), null, 2)}\n`;
+}
+
 /** Encode ConceptGridDocument → xlsx ArrayBuffer. */
-export async function encodePlotGridXlsx(raw: unknown): Promise<ArrayBuffer> {
+export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEncodeOptions = {}): Promise<ArrayBuffer> {
     const doc = normalizeConceptGridDocument(raw);
     const wb = new ExcelJS.Workbook();
     wb.creator = 'NarrativeLab';
@@ -361,11 +752,11 @@ export async function encodePlotGridXlsx(raw: unknown): Promise<ArrayBuffer> {
         const cols = page.columns || [];
         const rows = page.rows || [];
 
-        // Header row: blank corner + column labels
-        sheet.getCell(1, 1).value = '';
+        // Header row: corner + column labels
+        sheet.getCell(1, 1).value = clampExcelCellText(page.cornerLabel || '');
         cols.forEach((col, ci) => {
             const cell = sheet.getCell(1, ci + 2);
-            cell.value = col.label || '';
+            cell.value = clampExcelCellText(col.label || '');
             if (col.headerBgColor || col.bgColor) {
                 cell.fill = {
                     type: 'pattern',
@@ -378,7 +769,7 @@ export async function encodePlotGridXlsx(raw: unknown): Promise<ArrayBuffer> {
 
         rows.forEach((row, ri) => {
             const header = sheet.getCell(ri + 2, 1);
-            header.value = row.label || '';
+            header.value = clampExcelCellText(row.label || '');
             if (row.headerBgColor || row.bgColor) {
                 header.fill = {
                     type: 'pattern',
@@ -391,9 +782,29 @@ export async function encodePlotGridXlsx(raw: unknown): Promise<ArrayBuffer> {
             cols.forEach((col, ci) => {
                 const data = page.cells[cellKey(row.id, col.id)];
                 const excelCell = sheet.getCell(ri + 2, ci + 2);
-                excelCell.value = data?.formula
-                    ? { formula: data.formula.replace(/^=/, ''), result: data.content || undefined }
-                    : (data?.content ?? '');
+                const nativeHyperlink = data?.linkedSceneId && !data.formula
+                    ? obsidianOpenUri(data.linkedSceneId, options.vaultName)
+                    : '';
+                if (data?.formula) {
+                    const formulaResult = data.content
+                        ? clampExcelCellText(String(data.content))
+                        : undefined;
+                    excelCell.value = { formula: data.formula.replace(/^=/, ''), result: formulaResult };
+                } else if (nativeHyperlink) {
+                    const linkText = clampExcelCellText(
+                        plotGridSourceToUniverRichText(data.content || '').displayText
+                        || data.content
+                        || data.linkedSceneId
+                        || '',
+                    );
+                    excelCell.value = {
+                        text: linkText,
+                        hyperlink: nativeHyperlink,
+                        tooltip: clampExcelCellText(data.linkedSceneId || '').slice(0, 255),
+                    };
+                } else {
+                    excelCell.value = clampExcelCellText(data?.content ?? '');
+                }
                 if (data?.bgColor) {
                     excelCell.fill = {
                         type: 'pattern',
@@ -401,12 +812,13 @@ export async function encodePlotGridXlsx(raw: unknown): Promise<ArrayBuffer> {
                         fgColor: { argb: cssToArgb(data.bgColor) },
                     };
                 }
-                if (data?.textColor) {
+                if (data?.textColor || nativeHyperlink) {
                     excelCell.font = {
                         ...(excelCell.font || {}),
-                        color: { argb: cssToArgb(data.textColor) },
+                        color: { argb: data?.textColor ? cssToArgb(data.textColor) : 'FF0563C1' },
                         bold: data.bold,
                         italic: data.italic,
+                        underline: nativeHyperlink ? true : undefined,
                     };
                 } else if (data?.bold || data?.italic) {
                     excelCell.font = {
@@ -427,9 +839,12 @@ export async function encodePlotGridXlsx(raw: unknown): Promise<ArrayBuffer> {
         }
     }
 
-    const meta = buildNlMeta(doc, sheetNames);
-    const metaSheet = wb.addWorksheet(NL_META_SHEET, { state: 'veryHidden' });
-    metaSheet.getCell(1, 1).value = JSON.stringify(meta);
+    // Default: no embedded meta — Excel/Univer only see data sheets.
+    if (options.embedMetaSheet === true) {
+        const meta = buildNlMeta(doc, sheetNames);
+        const metaSheet = wb.addWorksheet(NL_META_SHEET, { state: 'veryHidden' });
+        writeChunkedMetaText(metaSheet, JSON.stringify(meta));
+    }
 
     const buffer = await wb.xlsx.writeBuffer();
     if (buffer instanceof ArrayBuffer) return buffer;
@@ -462,29 +877,40 @@ function argbToCss(argb?: string): string {
 }
 
 /** Decode xlsx ArrayBuffer → ConceptGridDocument. */
-export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promise<ConceptGridDocument> {
+export async function decodePlotGridXlsx(
+    data: ArrayBuffer | Uint8Array,
+    options: DecodePlotGridXlsxOptions = {},
+): Promise<ConceptGridDocument> {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(data);
 
-    let meta: PlotGridNlMeta | null = null;
-    const metaWs = wb.getWorksheet(NL_META_SHEET);
-    if (metaWs) {
-        const raw = metaWs.getCell(1, 1).value;
-        const text = typeof raw === 'string'
-            ? raw
-            : (raw && typeof raw === 'object' && 'text' in raw ? String((raw as { text: string }).text) : '');
-        if (text) {
-            try {
-                meta = JSON.parse(text) as PlotGridNlMeta;
-            } catch { /* ignore corrupt meta */ }
+    let meta: PlotGridNlMeta | null = options.meta ?? null;
+    if (!meta) {
+        const metaWs = wb.getWorksheet(NL_META_SHEET);
+        if (metaWs) {
+            meta = tryParseNlMeta(readChunkedMetaText(metaWs));
+        }
+        // External Univer/Excel saves often unhide or rename `_nl_meta`. Recover by
+        // scanning sheet A1..An for NarrativeLab meta JSON.
+        if (!meta) {
+            wb.eachSheet((sheet) => {
+                if (meta) return;
+                meta = tryParseNlMeta(readChunkedMetaText(sheet));
+            });
         }
     }
 
     const pages: ConceptGridPage[] = [];
     const usedIds = new Set<string>();
+    let dataSheetCount = 0;
+    let metaDumpSheetCount = 0;
 
     wb.eachSheet((sheet) => {
-        if (sheet.name === NL_META_SHEET) return;
+        if (sheetLooksLikeNlMetaDump(sheet)) {
+            metaDumpSheetCount += 1;
+            return;
+        }
+        dataSheetCount += 1;
         const pageId = meta?.pageIds?.[sheet.name]
             || `page-${sheet.name}-${Date.now().toString(36)}`;
         const stableId = usedIds.has(pageId) ? `${pageId}-${pages.length}` : pageId;
@@ -532,15 +958,14 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
             }
         }
 
-        // Sync header labels from sheet (Excel may have renamed them)
+        // Sync header labels from sheet when Excel renamed them. Keep meta labels
+        // when the sheet cell is blank (external saves often omit empty headers).
         columns.forEach((col, ci) => {
-            const v = sheet.getCell(1, ci + 2).value;
-            const label = cellValueText(v).trim();
+            const label = cellValueText(sheet.getCell(1, ci + 2).value).trim();
             if (label) col.label = label;
         });
         rows.forEach((row, ri) => {
-            const v = sheet.getCell(ri + 2, 1).value;
-            const label = cellValueText(v).trim();
+            const label = cellValueText(sheet.getCell(ri + 2, 1).value).trim();
             if (label) row.label = label;
         });
 
@@ -557,14 +982,27 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
                     ? cellValueText(formulaValue.result)
                     : cellValueText(rawValue);
                 const saved = pageMeta?.cells?.[key];
+                const hyperlinkPath = obsidianFileFromCellValue(rawValue);
+                const linkedSceneId = saved?.linkedSceneId || hyperlinkPath;
+                const restoredMarkdown = saved?.markdownSource
+                    && plotGridSourceToUniverRichText(saved.markdownSource).displayText === content
+                    ? saved.markdownSource
+                    : undefined;
+                const recoveredWikilink = !saved?.linkedSceneId && hyperlinkPath
+                    ? `[[${hyperlinkPath.replace(/\.md$/i, '')}|${content || hyperlinkPath.replace(/\.md$/i, '').split('/').pop() || hyperlinkPath}]]`
+                    : undefined;
                 const fill = excelCell.fill && excelCell.fill.type === 'pattern'
                     ? argbToCss(excelCell.fill.fgColor?.argb)
                     : '';
+                // Prefer live Excel text; fall back to meta content when a cell was wiped.
+                const metaContent = saved?.content || saved?.markdownSource || '';
                 cells[key] = defaultCell({
                     id: key,
-                    content,
-                    linkedSceneId: saved?.linkedSceneId,
-                    linkedViaWikilink: saved?.linkedViaWikilink,
+                    content: restoredMarkdown || recoveredWikilink || content || metaContent,
+                    linkedSceneId,
+                    linkedViaWikilink: restoredMarkdown
+                        ? saved?.linkedViaWikilink
+                        : (recoveredWikilink ? true : (saved?.linkedSceneId ? false : saved?.linkedViaWikilink)),
                     formula: formulaValue?.formula ? `=${formulaValue.formula}` : saved?.formula,
                     manualContent: saved?.manualContent,
                     bgColor: fill || saved?.bgColor || '',
@@ -594,11 +1032,47 @@ export async function decodePlotGridXlsx(data: ArrayBuffer | Uint8Array): Promis
                 ?? (sheet.views?.[0] as { ySplit?: number } | undefined)?.ySplit
                 ?? 1,
             )),
+            // Sheet is canonical for visible A1; meta is only a fallback.
+            cornerLabel: cellValueText(sheet.getCell(1, 1).value)
+                || pageMeta?.cornerLabel
+                || '',
         });
     });
 
+    // Univer/Excel re-save wiped NarrativeLab sheets and left only meta JSON dumps.
+    if (meta && (pages.length === 0 || (dataSheetCount === 0 && metaDumpSheetCount > 0))) {
+        return documentFromNlMeta(meta);
+    }
+
     if (pages.length === 0) {
         return createEmptyConceptGridDocument();
+    }
+
+    // Meta describes real pages (e.g. 角色) but Excel only kept junk sheets
+    // like "datasheet"/"references" after an external Univer open+save.
+    if (meta) {
+        const fromMeta = documentFromNlMeta(meta);
+        const metaMeaningful = fromMeta.pages.some(p =>
+            (p.rows?.length || 0) > 0 && (p.columns?.length || 0) > 0);
+        const liveHasText = pages.some(page =>
+            Object.values(page.cells || {}).some(cell => !!(cell?.content || '').trim()));
+        const metaTitles = new Set(Object.keys(meta.pageIds || {}));
+        const liveTitles = new Set(pages.map(p => p.title));
+        const titlesOverlap = [...metaTitles].some(title => liveTitles.has(title));
+        if (metaMeaningful && !liveHasText && !titlesOverlap) {
+            return fromMeta;
+        }
+        const metaPageCount = Object.keys(meta.pages || {}).length;
+        const metaCellCount = Object.values(meta.pages || {}).reduce(
+            (n, page) => n + Object.keys(page?.cells || {}).length,
+            0,
+        );
+        const metaHasText = Object.values(meta.pages || {}).some(page =>
+            Object.values(page?.cells || {}).some(cell =>
+                !!(cell?.content || cell?.markdownSource || '').trim()));
+        if (metaPageCount > pages.length && metaCellCount > 0 && !liveHasText && metaHasText) {
+            return fromMeta;
+        }
     }
 
     const preferredActive = meta?.activePageId;
@@ -639,7 +1113,7 @@ export function documentToUniverWorkbookData(
         const rows = page.rows || [];
 
         const headerRow = cellData[0] ?? (cellData[0] = {});
-        headerRow[0] = { v: '' };
+        headerRow[0] = { v: page.cornerLabel || '' };
         cols.forEach((col, ci) => {
             headerRow[ci + 1] = {
                 v: col.label || '',
@@ -688,10 +1162,12 @@ export function documentToUniverWorkbookData(
             });
         });
 
-        const rowData: Record<number, { h: number }> = {};
+        // ia:0 locks manual row height. Univer prefers auto-height (ah) when ia is
+        // null/1, so a later column-resize auto-fit would wipe custom row heights.
+        const rowData: Record<number, { h: number; ia: number }> = {};
         const columnData: Record<number, { w: number }> = {};
         rows.forEach((row, ri) => {
-            if (row.height > 0) rowData[ri + 1] = { h: row.height };
+            if (row.height > 0) rowData[ri + 1] = { h: row.height, ia: 0 };
         });
         cols.forEach((col, ci) => {
             if (col.width > 0) columnData[ci + 1] = { w: col.width };
@@ -738,30 +1214,17 @@ export function documentToUniverWorkbookData(
     };
 }
 
-type UniverStyleSnapshot = {
-    bg?: { rgb?: string } | null;
-    cl?: { rgb?: string } | null;
-    bl?: number | boolean | null;
-    it?: number | boolean | null;
-    ht?: number | null;
+export type MergeUniverCellDataOptions = {
+    /**
+     * When true, cells present in the NarrativeLab model but omitted from Univer's
+     * sparse snapshot are cleared. Unsafe while a cell editor / IME session is open
+     * (the active cell is often missing from mid-edit saves). Prefer false for
+     * polling; use true only after the editor has closed.
+     */
+    clearMissing?: boolean;
+    /** When false, skip row/column size merges (sizes come from resize mutations). */
+    mergeDimensions?: boolean;
 };
-type UniverCellSnapshot = {
-    v?: unknown;
-    f?: unknown;
-    p?: unknown;
-    custom?: Record<string, unknown>;
-    s?: unknown;
-} | undefined;
-
-function resolveUniverStyle(
-    raw: UniverCellSnapshot,
-    styles?: Record<string, UniverStyleSnapshot>,
-): UniverStyleSnapshot | null {
-    if (!raw?.s) return null;
-    if (typeof raw.s === 'string') return styles?.[raw.s] || null;
-    if (typeof raw.s === 'object') return raw.s;
-    return null;
-}
 
 /** Merge Univer cellData edits back into ConceptGridDocument (preserves links via existing meta). */
 export function mergeUniverCellDataIntoDocument(
@@ -771,7 +1234,10 @@ export function mergeUniverCellDataIntoDocument(
     styles?: Record<string, UniverStyleSnapshot>,
     rowData?: Record<number, { h?: number; ah?: number }>,
     columnData?: Record<number, { w?: number }>,
+    options: MergeUniverCellDataOptions = {},
 ): ConceptGridDocument {
+    const clearMissing = options.clearMissing === true;
+    const mergeDimensions = options.mergeDimensions !== false;
     const page = doc.pages.find(p => p.id === sheetId);
     if (!page) return doc;
 
@@ -782,39 +1248,53 @@ export function mergeUniverCellDataIntoDocument(
 
     let changed = false;
 
-    rows.forEach((row, index) => {
-        const height = rowData?.[index + 1]?.h ?? rowData?.[index + 1]?.ah;
-        if (typeof height === 'number' && height > 0 && Math.round(height) !== row.height) {
-            row.height = Math.round(height);
-            changed = true;
-        }
-    });
-    cols.forEach((col, index) => {
-        const width = columnData?.[index + 1]?.w;
-        if (typeof width === 'number' && width > 0 && Math.round(width) !== col.width) {
-            col.width = Math.round(width);
-            changed = true;
-        }
-    });
+    if (mergeDimensions) {
+        rows.forEach((row, index) => {
+            // Prefer explicit height over auto-height so column-resize auto-fit
+            // snapshots cannot silently shrink manually sized rows.
+            const height = rowData?.[index + 1]?.h
+                ?? (rowData?.[index + 1]?.ah);
+            if (typeof height === 'number' && height > 0 && Math.round(height) !== row.height) {
+                row.height = Math.round(height);
+                changed = true;
+            }
+        });
+        cols.forEach((col, index) => {
+            const width = columnData?.[index + 1]?.w;
+            if (typeof width === 'number' && width > 0 && Math.round(width) !== col.width) {
+                col.width = Math.round(width);
+                changed = true;
+            }
+        });
+    }
 
-    // Update headers
+    // Update corner (A1) + headers — same rich-text path as body cells so
+    // mid-edit Univer `p` snapshots (and cleared labels) persist.
+    {
+        const corner = cellData[0]?.[0];
+        const next = univerCellPlainText(corner);
+        if (next != null && (page.cornerLabel || '') !== next) {
+            page.cornerLabel = next;
+            changed = true;
+        }
+    }
     cols.forEach((col, ci) => {
-        const v = cellData[0]?.[ci + 1]?.v;
-        if (v == null) return;
-        const next = cellValueText(v);
-        if (col.label !== next) {
+        const raw = cellData[0]?.[ci + 1];
+        const next = univerCellPlainText(raw);
+        if (next != null && col.label !== next) {
             col.label = next;
             changed = true;
         }
+        if (applyHeaderStyleFromUniver(col, raw, styles)) changed = true;
     });
     rows.forEach((row, ri) => {
-        const v = cellData[ri + 1]?.[0]?.v;
-        if (v == null) return;
-        const next = cellValueText(v);
-        if (row.label !== next) {
+        const raw = cellData[ri + 1]?.[0];
+        const next = univerCellPlainText(raw);
+        if (next != null && row.label !== next) {
             row.label = next;
             changed = true;
         }
+        if (applyHeaderStyleFromUniver(row, raw, styles)) changed = true;
     });
 
     rows.forEach((row, ri) => {
@@ -822,13 +1302,11 @@ export function mergeUniverCellDataIntoDocument(
             const key = cellKey(row.id, col.id);
             const raw = cellData[ri + 1]?.[ci + 1];
             const existing = page.cells[key] || defaultCell({ id: key });
-            // Univer omits emptied cells from sparse snapshots — treat missing as clear
-            // when we already had content (full workbook.save() covers all non-empty cells).
+            // Mid-edit workbook.save() often omits the active cell. Treating that as a
+            // clear wipes content and, after remount, interrupts IME (pinyin flies away).
             if (!raw || (!('v' in raw) && !('p' in raw))) {
+                if (!clearMissing) return;
                 const rowBucket = cellData[ri + 1];
-                // Prefer clearing when the row is present but the cell is gone. If the whole
-                // row vanished after clearing its last cell, also clear when headers exist
-                // (signals a real sheet snapshot rather than an empty stub).
                 const headerPresent = cellData[0] != null;
                 if ((existing.content || existing.formula) && (rowBucket != null || headerPresent)) {
                     page.cells[key] = {
@@ -842,8 +1320,7 @@ export function mergeUniverCellDataIntoDocument(
                 }
                 return;
             }
-            const richText = univerDocumentPlainText(raw.p);
-            const displayText = richText || cellValueText(raw.v);
+            const displayText = univerCellPlainText(raw) || '';
             const storedSource = typeof raw.custom?.[PLOTGRID_SOURCE_FIELD] === 'string'
                 ? raw.custom[PLOTGRID_SOURCE_FIELD]
                 : '';
@@ -891,9 +1368,17 @@ export function mergeUniverCellDataIntoDocument(
 export function conceptGridContentFingerprint(doc: ConceptGridDocument): string {
     const parts: string[] = [doc.activePageId || ''];
     for (const page of doc.pages) {
-        parts.push(page.id, page.title || '');
-        for (const row of page.rows || []) parts.push(`r:${row.id}:${row.label || ''}`);
-        for (const col of page.columns || []) parts.push(`c:${col.id}:${col.label || ''}`);
+        parts.push(page.id, page.title || '', `corner:${page.cornerLabel || ''}`);
+        for (const row of page.rows || []) {
+            parts.push(
+                `r:${row.id}:${row.label || ''}:${row.headerBgColor || ''}:${row.textColor || ''}:${row.bold ? 1 : 0}:${row.italic ? 1 : 0}`,
+            );
+        }
+        for (const col of page.columns || []) {
+            parts.push(
+                `c:${col.id}:${col.label || ''}:${col.headerBgColor || ''}:${col.textColor || ''}:${col.bold ? 1 : 0}:${col.italic ? 1 : 0}`,
+            );
+        }
         for (const [key, cell] of Object.entries(page.cells || {})) {
             if (!cell) continue;
             parts.push(`${key}=${cell.content || ''}::${cell.formula || ''}`);

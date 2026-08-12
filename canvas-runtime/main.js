@@ -1650,6 +1650,55 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     return canvasPath;
   }
 
+  /**
+   * Resolve Library/<Category>/ for a canvas library entry.
+   * Prefers an existing subfolder whose name matches kind/category;
+   * otherwise uses a stable English default when known.
+   */
+  resolveCodexCategoryFolder(libraryRoot, entry = null) {
+    const root = normalizeVaultPath(libraryRoot);
+    if (!root) return "";
+    const kind = String(entry?.kind || entry?.category || "").trim();
+    if (!kind) return root;
+    const libraryFolder = getVaultFolder(this.app, root);
+    const kindLower = kind.toLowerCase();
+    const existing = (libraryFolder?.children || []).find((child) => (
+      child instanceof TFolder && String(child.name || "").trim().toLowerCase() === kindLower
+    ));
+    if (existing) return joinVaultPath(root, existing.name);
+    const defaults = {
+      character: "Characters",
+      characters: "Characters",
+      location: "Locations",
+      locations: "Locations",
+      creature: "Creatures",
+      creatures: "Creatures",
+      item: "Items",
+      items: "Items",
+      lore: "Lore",
+      organization: "Organizations",
+      organizations: "Organizations",
+      culture: "Culture",
+      system: "Systems",
+      systems: "Systems",
+      skill: "Skills",
+      skills: "Skills",
+    };
+    const folderName = defaults[kindLower] || sanitizeFileName(kind) || "";
+    if (!folderName || folderName.toLowerCase() === "attachments") return root;
+    // Only place into a category folder that already exists — do not invent
+    // deleted categories (e.g. Skills) just because an embedded snapshot mentions them.
+    const candidate = joinVaultPath(root, folderName);
+    if (getVaultFolder(this.app, candidate)) return candidate;
+    const localizedMatch = (libraryFolder?.children || []).find((child) => {
+      if (!(child instanceof TFolder)) return false;
+      const name = String(child.name || "").trim().toLowerCase();
+      return name.includes(kindLower) || kindLower.includes(name);
+    });
+    if (localizedMatch) return joinVaultPath(root, localizedMatch.name);
+    return root;
+  }
+
   async syncCodexFiles(savedStateJson, projectPath = this.getCurrentProjectPath()) {
     let payload;
     try {
@@ -1682,10 +1731,23 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     for (let index = 0; index < characters.length; index += 1) {
       const entry = normalizeCodexEntryForMarkdown(characters[index], index);
       const existing = existingById.get(entry.id);
-      let targetPath = normalizeVaultPath(entry.codexFile || existing?.codexFile);
-      if (!targetPath || !targetPath.startsWith(`${folderPath}/`) || !vaultFileExists(this.app, targetPath)) {
+      const previousPath = normalizeVaultPath(entry.codexFile || existing?.codexFile);
+      let targetPath = "";
+      if (previousPath && previousPath.startsWith(`${folderPath}/`)) {
+        if (!vaultFileExists(this.app, previousPath)) {
+          // Local file was deleted — disk wins. Never recreate from .ncanvas snapshot.
+          continue;
+        }
+        targetPath = previousPath;
+      } else if (!previousPath) {
+        // Brand-new canvas entry with no vault file yet → create under category folder.
+        const categoryFolder = this.resolveCodexCategoryFolder(folderPath, entry);
+        await ensureVaultFolder(this.app, categoryFolder);
         const fileName = `${sanitizeFileName(entry.name) || `Library Entry ${index + 1}`}.md`;
-        targetPath = await this.uniqueProjectPath(joinVaultPath(folderPath, fileName));
+        targetPath = await this.uniqueProjectPath(joinVaultPath(categoryFolder, fileName));
+      } else {
+        // Path outside this project's Library — do not relocate or invent a root copy.
+        continue;
       }
       const fileBefore = getVaultFile(this.app, targetPath);
       const stampBefore = fileBefore instanceof TFile
@@ -36929,27 +36991,37 @@ function installNarrativeCanvasApp() {
     if (!host?.loadCodexEntries) return false;
     try {
       const loaded = await host.loadCodexEntries();
-      if (!Array.isArray(loaded) || !loaded.length) return false;
-      const current = getCharacters();
-      const currentById = new Map(current.map((entry) => [entry.id, entry]));
-      let changed = false;
+      // Disk is the source of truth — including an empty Library. Returning early
+      // on [] used to keep stale characters embedded in .ncanvas and the next
+      // save recreated deleted notes under Library/.
+      if (!Array.isArray(loaded)) return false;
+      const diskEntries = [];
+      const diskIds = new Set();
       loaded.forEach((source, index) => {
         const external = normalizeCharacter(source, index);
         if (!external) return;
-        const existing = currentById.get(external.id);
-        if (existing) {
-          if (JSON.stringify(existing) !== JSON.stringify(external)) {
-            Object.assign(existing, external);
-            changed = true;
-          }
-          return;
-        }
-        current.push(external);
-        currentById.set(external.id, external);
-        changed = true;
+        diskEntries.push(external);
+        diskIds.add(external.id);
       });
-      if (!changed) return false;
-      state.project.characters = normalizeCharacters(current);
+      let next = diskEntries;
+      // Mid-session vault refreshes may keep brand-new entries that have not been
+      // written yet. Project load must not — otherwise deleted Skills embedded in
+      // .ncanvas (empty codexFile) would survive and be recreated on save.
+      if (options.preserveUnsaved !== false) {
+        const pendingNew = getCharacters().filter((entry) => {
+          const path = String(entry?.codexFile || "").trim();
+          return !path && entry?.id && !diskIds.has(entry.id);
+        });
+        next = [...diskEntries, ...pendingNew];
+      }
+      next = normalizeCharacters(next);
+      const before = JSON.stringify(getCharacters());
+      const after = JSON.stringify(next);
+      if (before === after) return false;
+      state.project.characters = next;
+      if (state.codexSelectedEntryId && !next.some((entry) => entry.id === state.codexSelectedEntryId)) {
+        state.codexSelectedEntryId = next[0]?.id || null;
+      }
       invalidateCharacterRenderContext();
       if (options.markDirty !== false) setProjectDirty(true);
       if (options.render !== false) renderCharacterAwareSurfaces();
@@ -37172,7 +37244,9 @@ function installNarrativeCanvasApp() {
       if (!state.selectedNodeId) state.selectedNodeId = state.project.nodes[0]?.id || null;
       state.externalProjectChangePending = false;
       setProjectDirty(false);
-      await reloadCodexFiles({ render: false, silent: true });
+      // Replace embedded library snapshots with vault Library notes. Do not keep
+      // unsaved embeds — those are exactly the deleted Skills that used to revive.
+      await reloadCodexFiles({ render: false, silent: true, preserveUnsaved: false });
       if (announce) setStatus(`Loaded ${getHostProjectFileLabel()}.`);
       return restoredView;
     } catch (error) {

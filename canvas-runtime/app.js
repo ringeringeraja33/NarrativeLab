@@ -22686,27 +22686,37 @@ async function reloadCodexFiles(options = {}) {
   if (!host?.loadCodexEntries) return false;
   try {
     const loaded = await host.loadCodexEntries();
-    if (!Array.isArray(loaded) || !loaded.length) return false;
-    const current = getCharacters();
-    const currentById = new Map(current.map((entry) => [entry.id, entry]));
-    let changed = false;
+    // Disk is the source of truth — including an empty Library. Returning early
+    // on [] used to keep stale characters embedded in .ncanvas and the next
+    // save recreated deleted notes under Library/.
+    if (!Array.isArray(loaded)) return false;
+    const diskEntries = [];
+    const diskIds = new Set();
     loaded.forEach((source, index) => {
       const external = normalizeCharacter(source, index);
       if (!external) return;
-      const existing = currentById.get(external.id);
-      if (existing) {
-        if (JSON.stringify(existing) !== JSON.stringify(external)) {
-          Object.assign(existing, external);
-          changed = true;
-        }
-        return;
-      }
-      current.push(external);
-      currentById.set(external.id, external);
-      changed = true;
+      diskEntries.push(external);
+      diskIds.add(external.id);
     });
-    if (!changed) return false;
-    state.project.characters = normalizeCharacters(current);
+    let next = diskEntries;
+    // Mid-session vault refreshes may keep brand-new entries that have not been
+    // written yet. Project load must not — otherwise deleted Skills embedded in
+    // .ncanvas (empty codexFile) would survive and be recreated on save.
+    if (options.preserveUnsaved !== false) {
+      const pendingNew = getCharacters().filter((entry) => {
+        const path = String(entry?.codexFile || "").trim();
+        return !path && entry?.id && !diskIds.has(entry.id);
+      });
+      next = [...diskEntries, ...pendingNew];
+    }
+    next = normalizeCharacters(next);
+    const before = JSON.stringify(getCharacters());
+    const after = JSON.stringify(next);
+    if (before === after) return false;
+    state.project.characters = next;
+    if (state.codexSelectedEntryId && !next.some((entry) => entry.id === state.codexSelectedEntryId)) {
+      state.codexSelectedEntryId = next[0]?.id || null;
+    }
     invalidateCharacterRenderContext();
     if (options.markDirty !== false) setProjectDirty(true);
     if (options.render !== false) renderCharacterAwareSurfaces();
@@ -22944,7 +22954,9 @@ async function loadFromVault(announce = true) {
     if (!state.selectedNodeId) state.selectedNodeId = state.project.nodes[0]?.id || null;
     state.externalProjectChangePending = false;
     setProjectDirty(false);
-    await reloadCodexFiles({ render: false, silent: true });
+    // Replace embedded library snapshots with vault Library notes. Do not keep
+    // unsaved embeds — those are exactly the deleted Skills that used to revive.
+    await reloadCodexFiles({ render: false, silent: true, preserveUnsaved: false });
     if (announce) setStatus(`Loaded ${getHostProjectFileLabel()}.`);
     return restoredView;
   } catch (error) {

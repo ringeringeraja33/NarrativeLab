@@ -7869,6 +7869,14 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     min-height: 0 !important;
     box-sizing: border-box;
     overflow: hidden;
+    /* Transforms break OS IME caret geometry (candidate window "flies away"). */
+    transform: none !important;
+}
+
+/* Formula / cell editors need unclipped caret reporting for CJK IME. */
+.plot-grid-scroll-area.is-univer-host textarea,
+.plot-grid-scroll-area.is-univer-host [contenteditable="true"] {
+    transform: none !important;
 }
 
 .plot-grid-univer-error {
@@ -8119,25 +8127,60 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     color: var(--text-normal);
 }
 
-/* Concept Grid cell markdown preview/edit */
-.plot-grid-cell-editor-modal {
-    width: min(1120px, calc(100vw - 48px));
-    max-width: 1120px;
-    height: min(760px, calc(100vh - 56px));
-    max-height: 760px;
-}
-.plot-grid-cell-editor-modal .modal-content {
+/* Concept Grid cell markdown floating editor (draggable / resizable / always-on-top) */
+.plot-grid-cell-editor-window {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 10000;
     display: flex;
     flex-direction: column;
-    min-height: 0;
-    height: 100%;
-    padding: 0;
+    min-width: 420px;
+    min-height: 260px;
+    max-width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+    overflow: hidden;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 10px;
+    background: var(--background-primary);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
 }
-.plot-grid-cell-editor-modal .plot-grid-cell-editor-title {
+.plot-grid-cell-editor-window.is-always-on-top {
+    box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--interactive-accent) 55%, transparent),
+        0 14px 44px rgba(0, 0, 0, 0.34);
+}
+.plot-grid-cell-editor-titlebar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex: 0 0 auto;
+    padding: 10px 12px 8px 16px;
+    background: var(--background-secondary);
+    cursor: grab;
+    user-select: none;
+}
+.plot-grid-cell-editor-titlebar:active {
+    cursor: grabbing;
+}
+.plot-grid-cell-editor-title {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 3px;
+    gap: 2px;
+    min-width: 0;
+}
+.plot-grid-cell-editor-title-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex: 0 0 auto;
+}
+.plot-grid-cell-editor-pin.is-active {
+    color: var(--text-on-accent);
+    background: var(--interactive-accent);
 }
 .plot-grid-cell-editor-title-kicker {
     color: var(--text-muted);
@@ -8148,8 +8191,8 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 }
 .plot-grid-cell-editor-title-text {
     color: var(--text-normal);
-    font-size: var(--h2-size);
-    font-weight: var(--h2-weight);
+    font-size: var(--h3-size, 1.1em);
+    font-weight: var(--h3-weight, 600);
     line-height: 1.15;
 }
 .plot-grid-cell-editor-meta {
@@ -8157,7 +8200,8 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 0 22px 12px;
+    flex: 0 0 auto;
+    padding: 0 18px 10px;
     color: var(--text-muted);
     font-size: var(--font-ui-smaller);
 }
@@ -8170,8 +8214,9 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     display: flex;
     align-items: center;
     gap: 3px;
-    min-height: 48px;
-    padding: 6px 18px;
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 6px 14px;
     overflow-x: auto;
     border-block: 1px solid var(--background-modifier-border);
     background: var(--background-secondary);
@@ -8202,7 +8247,7 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .plot-grid-cell-editor-body {
     position: relative;
     flex: 1 1 auto;
-    min-height: 300px;
+    min-height: 160px;
     overflow: hidden;
     background: var(--background-primary);
 }
@@ -8210,9 +8255,9 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .plot-grid-cell-editor-preview {
     width: 100%;
     height: 100%;
-    min-height: 300px;
+    min-height: 160px;
     box-sizing: border-box;
-    padding: 28px 32px;
+    padding: 20px 24px;
     overflow: auto;
     border: 0;
     border-radius: 0;
@@ -8237,9 +8282,10 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 12px 18px;
+    flex: 0 0 auto;
+    padding: 10px 16px 12px;
     border-top: 1px solid var(--background-modifier-border);
-    background: var(--background-secondary-alt);
+    background: var(--background-secondary);
 }
 .plot-grid-cell-editor-footer-hint {
     color: var(--text-muted);
@@ -8247,8 +8293,41 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 }
 .plot-grid-cell-editor-actions {
     display: flex;
-    align-items: center;
     gap: 8px;
+}
+.plot-grid-cell-editor-resize-handle {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 18px;
+    height: 18px;
+    cursor: nwse-resize;
+    z-index: 2;
+}
+.plot-grid-cell-editor-resize-handle::after {
+    content: '';
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 10px;
+    height: 10px;
+    border-right: 2px solid var(--text-faint);
+    border-bottom: 2px solid var(--text-faint);
+}
+
+/* Legacy modal class kept for safety if an old build still opens Modal */
+.plot-grid-cell-editor-modal {
+    width: min(1120px, calc(100vw - 48px));
+    max-width: 1120px;
+    height: min(760px, calc(100vh - 56px));
+    max-height: 760px;
+}
+.plot-grid-cell-editor-modal .modal-content {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    padding: 0;
 }
 
 .plot-grid-cell .plot-grid-cell-content.markdown-rendered {

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
 
 const require = createRequire(import.meta.url);
+const ExcelJS = require('exceljs');
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async () => {
@@ -41,6 +42,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
                 ],
                 columns: [
                     { id: 'c1', label: 'Hero', width: 120, bgColor: '', sourceType: 'auto', sourceId: 'Characters/hero.md' },
+                    { id: 'c2', label: 'Character', width: 120, bgColor: '' },
                 ],
                 cells: {
                     'r1-c1': {
@@ -56,27 +58,91 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
                         linkedViaWikilink: true,
                         manualContent: true,
                     },
+                    'r1-c2': {
+                        id: 'r1-c2',
+                        content: '[[Characters/Falcon|游隼]]',
+                        bgColor: '',
+                        textColor: '',
+                        bold: false,
+                        italic: false,
+                        align: 'left',
+                        linkedSceneId: 'Characters/Falcon.md',
+                        linkedViaWikilink: true,
+                        manualContent: true,
+                    },
                 },
             }],
         };
 
-        const binary = await codec.encodePlotGridXlsx(doc);
+        const binary = await codec.encodePlotGridXlsx(doc, { vaultName: 'Narrative Lab' });
         assert.ok(binary.byteLength > 100, 'xlsx should be non-trivial');
 
-        const decoded = await codec.decodePlotGridXlsx(binary);
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(binary);
+        // Clean interop xlsx: Excel/Univer must not see an embedded meta sheet.
+        assert.equal(workbook.getWorksheet('_nl_meta'), undefined);
+        const nativeLink = workbook.getWorksheet('Act I').getCell(2, 3).value;
+        assert.equal(nativeLink.text, '游隼');
+        assert.equal(nativeLink.hyperlink, 'obsidian://open?vault=Narrative%20Lab&file=Characters%2FFalcon.md');
+        assert.equal(workbook.getWorksheet('Act I').getCell(2, 3).font.underline, true);
+        assert.equal(workbook.getWorksheet('Act I').getCell(2, 2).value.formula, '"meets mentor"', 'real formulas must win over hyperlinks');
+
+        const sidecarMeta = codec.buildNlMetaForDocument(doc);
+        assert.equal(sidecarMeta.schema, 2);
+        assert.equal(sidecarMeta.pages['page-1'].cells['r1-c1'].content, 'meets mentor');
+
+        const decoded = await codec.decodePlotGridXlsx(binary, { meta: sidecarMeta });
         assert.equal(decoded.pages.length, 1);
         assert.equal(decoded.pages[0].cells['r1-c1'].content, 'meets mentor');
         assert.equal(decoded.pages[0].cells['r1-c1'].formula, '="meets mentor"');
         assert.equal(decoded.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
         assert.equal(decoded.pages[0].cells['r1-c1'].linkedViaWikilink, true);
         assert.equal(decoded.pages[0].cells['r1-c1'].manualContent, true);
+        assert.equal(decoded.pages[0].cells['r1-c2'].content, '[[Characters/Falcon|游隼]]');
+        assert.equal(decoded.pages[0].cells['r1-c2'].linkedSceneId, 'Characters/Falcon.md');
+        assert.equal(decoded.pages[0].cells['r1-c2'].linkedViaWikilink, true);
         assert.equal(decoded.pages[0].rows[0].sourceId, 'Scenes/a.md');
         assert.equal(decoded.pages[0].columns[0].sourceId, 'Characters/hero.md');
+        assert.equal(decoded.pages[0].cells['r1-c1'].content, 'meets mentor');
+
+        // Legacy single-file embed still round-trips when requested.
+        const legacyBinary = await codec.encodePlotGridXlsx(doc, { embedMetaSheet: true });
+        const legacyBook = new ExcelJS.Workbook();
+        await legacyBook.xlsx.load(legacyBinary);
+        const metaSheet = legacyBook.getWorksheet('_nl_meta');
+        assert.ok(metaSheet);
+        const embeddedMeta = JSON.parse(codec.readChunkedMetaText(metaSheet));
+        assert.equal(embeddedMeta.schema, 2);
+
+        // Simulate Univer opening datasheet.xlsx and leaving only meta JSON in a
+        // sheet named "datasheet" (real page sheets gone).
+        const ruined = new ExcelJS.Workbook();
+        const dump = ruined.addWorksheet('datasheet');
+        codec.writeChunkedMetaText(dump, JSON.stringify(sidecarMeta));
+        ruined.addWorksheet('references');
+        const ruinedBin = await ruined.xlsx.writeBuffer();
+        assert.equal(await codec.plotGridXlsxNeedsRewrite(ruinedBin), true);
+        const fromDump = await codec.decodePlotGridXlsx(ruinedBin);
+        assert.equal(fromDump.pages.length, 1);
+        assert.equal(fromDump.pages[0].title, 'Act I');
+        assert.equal(fromDump.pages[0].cells['r1-c1'].content, 'meets mentor');
+        assert.equal(fromDump.pages[0].cells['r1-c2'].content, '[[Characters/Falcon|游隼]]');
+
+        // A normal Excel file without NarrativeLab metadata can still recover
+        // Obsidian links from the native cell hyperlink.
+        const withoutMeta = await workbook.xlsx.writeBuffer();
+        const recovered = await codec.decodePlotGridXlsx(withoutMeta);
+        const recoveredLink = Object.values(recovered.pages[0].cells)
+            .find(cell => cell.linkedSceneId === 'Characters/Falcon.md');
+        assert.ok(recoveredLink);
+        assert.equal(recoveredLink.content, '[[Characters/Falcon|游隼]]');
+        assert.equal(recoveredLink.linkedViaWikilink, true);
 
         const univer = codec.documentToUniverWorkbookData(decoded);
         const sheet = univer.sheets['page-1'];
         assert.deepEqual(sheet.freeze, { startRow: 3, startColumn: 2, ySplit: 3, xSplit: 2 });
         assert.equal(sheet.rowData[1].h, 40);
+        assert.equal(sheet.rowData[1].ia, 0, 'manual row height must disable Univer auto-height');
         assert.equal(sheet.columnData[1].w, 120);
         assert.equal(sheet.cellData[1][1].f, '="meets mentor"');
         assert.equal(sheet.cellData[1][1].v, 'meets mentor', 'native rich text must not alter workbook cell text');
@@ -113,11 +179,41 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(merged.pages[0].rows[0].height, 64);
         assert.equal(merged.pages[0].columns[0].width, 180);
 
-        // Cleared cells omitted from sparse Univer snapshots must wipe content (keep links).
-        const cleared = codec.mergeUniverCellDataIntoDocument(merged, 'page-1', {
+        // Header / corner edits often land in Univer rich-text `p` (not plain `v`).
+        const headerRich = codec.mergeUniverCellDataIntoDocument(structuredClone(decoded), 'page-1', {
+            0: {
+                0: { p: { body: { dataStream: 'Corner\r\n' } } },
+                1: { p: { body: { dataStream: 'Heroine\r\n' } }, s: { bg: { rgb: '#ffcc00' }, bl: 1 } },
+            },
+            1: {
+                0: { p: { body: { dataStream: 'Act I\r\n' } }, s: { cl: { rgb: '#112233' }, it: 1 } },
+                1: { v: 'meets mentor' },
+            },
+        });
+        assert.equal(headerRich.pages[0].cornerLabel, 'Corner');
+        assert.equal(headerRich.pages[0].columns[0].label, 'Heroine');
+        assert.equal(headerRich.pages[0].columns[0].headerBgColor, '#ffcc00');
+        assert.equal(headerRich.pages[0].columns[0].bold, true);
+        assert.equal(headerRich.pages[0].rows[0].label, 'Act I');
+        assert.equal(headerRich.pages[0].rows[0].textColor, '#112233');
+        assert.equal(headerRich.pages[0].rows[0].italic, true);
+        assert.match(
+            codec.conceptGridContentFingerprint(headerRich),
+            /corner:Corner/,
+            'corner edits must dirty the content fingerprint so autosave runs',
+        );
+
+        // Cleared cells omitted from sparse Univer snapshots wipe content only when
+        // clearMissing is opted in (after the cell editor has closed).
+        const kept = codec.mergeUniverCellDataIntoDocument(merged, 'page-1', {
             0: { 0: { v: '' }, 1: { v: 'Hero' } },
             1: { 0: { v: 'Scene 1' } },
         });
+        assert.equal(kept.pages[0].cells['r1-c1'].content, 'updated text', 'polling must not clear omitted cells');
+        const cleared = codec.mergeUniverCellDataIntoDocument(merged, 'page-1', {
+            0: { 0: { v: '' }, 1: { v: 'Hero' } },
+            1: { 0: { v: 'Scene 1' } },
+        }, undefined, undefined, undefined, { clearMissing: true });
         assert.equal(cleared.pages[0].cells['r1-c1'].content, '');
         assert.equal(cleared.pages[0].cells['r1-c1'].formula, undefined);
         assert.equal(cleared.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
@@ -129,7 +225,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
             40: { 15: { v: '' } },
         });
         assert.equal(same.pages[0].rows.length, 1);
-        assert.equal(same.pages[0].columns.length, 1);
+        assert.equal(same.pages[0].columns.length, 2);
 
         const reorderDoc = {
             version: 2,
@@ -173,10 +269,100 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
     }
 });
 
-test('main prefers System/plotgrid.xlsx and migrates legacy PlotGrid folder', async () => {
+test('plotgrid xlsx codec chunks oversized _nl_meta under Excel cell limit', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nl-plotgrid-xlsx-meta-'));
+    const outfile = join(dir, 'codec.cjs');
+    try {
+        await esbuild.build({
+            absWorkingDir: projectRoot,
+            entryPoints: [join(projectRoot, 'services/PlotGridXlsxCodec.ts')],
+            bundle: true,
+            platform: 'node',
+            format: 'cjs',
+            outfile,
+            logLevel: 'silent',
+        });
+
+        const codec = require(outfile);
+        const fatNote = 'x'.repeat(4000);
+        const cells = {};
+        for (let i = 0; i < 12; i++) {
+            const key = `r1-c${i}`;
+            cells[key] = {
+                id: key,
+                content: `[[Library/Note${i}|${fatNote}]]`,
+                bgColor: '',
+                textColor: '',
+                bold: false,
+                italic: false,
+                align: 'left',
+                linkedSceneId: `Library/Note${i}.md`,
+                linkedViaWikilink: true,
+                manualContent: true,
+                markdownSource: `[[Library/Note${i}|${fatNote}]]`,
+            };
+        }
+        const columns = Array.from({ length: 12 }, (_, i) => ({
+            id: `c${i}`,
+            label: `Col ${i}`,
+            width: 120,
+            bgColor: '',
+            sourceType: 'auto',
+            sourceId: `Library/Col${i}.md`,
+        }));
+        const doc = {
+            version: 2,
+            activePageId: 'page-1',
+            sidebarCollapsed: false,
+            pages: [{
+                id: 'page-1',
+                title: 'Fat Meta',
+                zoom: 1,
+                stickyHeaders: true,
+                rows: [{ id: 'r1', label: 'Row', height: 32, bgColor: '', sourceType: 'manual' }],
+                columns,
+                cells,
+            }],
+        };
+
+        const binary = await codec.encodePlotGridXlsx(doc, { embedMetaSheet: true });
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(binary);
+        const metaSheet = workbook.getWorksheet('_nl_meta');
+        assert.ok(metaSheet);
+        let maxCell = 0;
+        let joined = '';
+        for (let row = 1; row <= Math.max(metaSheet.rowCount, 1); row++) {
+            const text = metaSheet.getCell(row, 1).value;
+            if (typeof text !== 'string' || !text) break;
+            maxCell = Math.max(maxCell, text.length);
+            joined += text;
+        }
+        assert.ok(joined.length > codec.EXCEL_MAX_CELL_CHARS, 'fixture must exceed Excel cell limit');
+        assert.ok(maxCell <= codec.EXCEL_MAX_CELL_CHARS, `meta chunk ${maxCell} must stay <= ${codec.EXCEL_MAX_CELL_CHARS}`);
+        assert.equal(metaSheet.getCell(2, 1).value?.length > 0, true, 'meta must span multiple cells');
+
+        const decoded = await codec.decodePlotGridXlsx(binary);
+        assert.equal(decoded.pages[0].cells['r1-c0'].linkedSceneId, 'Library/Note0.md');
+        assert.equal(decoded.pages[0].cells['r1-c11'].linkedSceneId, 'Library/Note11.md');
+        assert.match(decoded.pages[0].cells['r1-c0'].content, /Library\/Note0/);
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
+test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', async () => {
     const mainTs = await readFile(new URL('../main.ts', import.meta.url), 'utf8');
     assert.match(mainTs, /plotGridXlsxPath/);
+    assert.match(mainTs, /plotGridNlMetaPath/);
+    assert.match(mainTs, /legacyLibraryPlotGridNlMetaPath/);
+    assert.match(mainTs, /serializePlotGridNlMeta/);
+    assert.match(mainTs, /System\/datasheet\.nlmeta\.json|datasheet\.nlmeta\.json/);
+    assert.match(mainTs, /legacySystemPlotGridXlsxPath/);
     assert.match(mainTs, /legacyPlotGridFolderXlsxPath|cleanupLegacyPlotGridArtifacts/);
+    assert.match(mainTs, /getProjectLibraryFolder/);
+    assert.match(mainTs, /migratePlotGridToLibraryIfNeeded/);
+    assert.match(mainTs, /Library\/datasheet\.xlsx|datasheet\.xlsx/);
     assert.match(mainTs, /encodePlotGridXlsx/);
     assert.match(mainTs, /decodePlotGridXlsx/);
     assert.match(mainTs, /\.bak`|jsonPath.*bak|rename\(jsonPath/);
@@ -190,13 +376,21 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
     assert.match(view, /loadPlotGridUniverModule/);
     assert.match(view, /createPlotGridUniverHost/);
+    assert.match(view, /onContextMenuRequest/);
     assert.match(view, /getAuthoritativeDocument/);
     assert.match(view, /syncMeta/);
     assert.match(view, /univerMountGeneration/);
-    assert.match(view, /Remove wikilinks/);
-    assert.match(view, /Insert wikilink/);
     assert.match(view, /openCellMarkdownEditor/);
+    assert.match(view, /cellEditorWindows/);
+    assert.match(view, /Always on top/);
+    assert.doesNotMatch(view, /Replace any existing floating cell editor/);
+    assert.doesNotMatch(view, /is-pinned-top/);
+    assert.match(view, /Open cell editor/);
+    assert.doesNotMatch(view, /toggleWikilinkForActiveCell/);
+    assert.match(view, /appendChild\(trailingActions\)/);
+    assert.doesNotMatch(view, /const syncSep/);
     assert.match(view, /new WikilinkSuggest/);
+    assert.match(view, /workspace\.openLinkText/);
     assert.doesNotMatch(view, /openNoteLinkModal|openSceneLinkModal/);
     assert.match(view, /getActiveDataCellFromUniver/);
     assert.match(view, /handleUniverContextMenuAction/);
@@ -207,9 +401,10 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /applyUniverViewState/);
     assert.match(view, /renderGrid\(\{ forcePush: true \}\)/);
     assert.match(view, /Query Univer first/);
-    assert.match(view, /const dataRow = Math\.max\(1, sel\.row\)/);
-    assert.match(view, /const dataCol = Math\.max\(1, sel\.col\)/);
-    assert.match(view, /setActiveCell\(sel\.sheetId, dataRow, dataCol\)/);
+    assert.match(view, /sel\.row < 1 \|\| sel\.col < 1/);
+    assert.doesNotMatch(view, /setActiveCell\(sel\.sheetId, dataRow, dataCol\)/);
+    assert.match(view, /scheduleSave\(\)/);
+    assert.match(view, /info\.sheetId !== this\.document\.activePageId/);
     assert.doesNotMatch(view, /new FiltersComponent\(/);
     assert.doesNotMatch(view, /obsidian\.setIcon\(addRowBtn, 'rows-3'\)/);
     assert.doesNotMatch(view, /obsidian\.setIcon\(addColBtn, 'columns-3'\)/);
@@ -225,6 +420,13 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /projectChanged/);
 });
 
+test('lazy Univer host receives Obsidian UI through the main bundle', async () => {
+    const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
+    assert.doesNotMatch(host, /from ['"]obsidian['"]/);
+    assert.match(host, /onContextMenuRequest/);
+    assert.match(host, /event\?\.detail/);
+});
+
 test('wikilink suggestions follow the textarea caret inside editor modals', async () => {
     const suggest = await readFile(new URL('../components/WikilinkSuggest.ts', import.meta.url), 'utf8');
     assert.match(suggest, /getTextareaCaretRect/);
@@ -237,6 +439,7 @@ test('wikilink suggestions follow the textarea caret inside editor modals', asyn
 
 test('embedded Univer host exposes the legacy grid view controls', async () => {
     const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
+    const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
     for (const method of ['setZoom', 'setFreeze', 'setActiveCell']) {
         assert.match(host, new RegExp(`${method}:`));
     }
@@ -247,19 +450,48 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /getColumn\?\.\(\)/);
     assert.equal((host.match(/contextMenu:\s*true/g) || []).length, 2);
     assert.match(host, /registerNarrativeLabContextMenu/);
-    assert.match(host, /new Menu\(\)/);
-    assert.match(host, /showAtPosition\(menuPosition\)/);
+    assert.match(host, /onContextMenuRequest/);
+    assert.match(view, /new Menu\(\)/);
+    assert.match(view, /showAtPosition\(position\)/);
     assert.match(host, /removeEventListener\('contextmenu'/);
-    assert.doesNotMatch(host, /createSubmenu\(/);
+    assert.doesNotMatch(host, /title:\s*'NarrativeLab'/);
+    assert.doesNotMatch(host, /createSubmenu\(\{\s*id:\s*'narrativelab\.plot-grid\.submenu'/);
+    assert.match(host, /已连接笔记|Connected notes/);
+    assert.match(host, /onShowConnectedNotes/);
+    assert.doesNotMatch(host, /打开已链接笔记/);
+    assert.match(view, /collectConnectedNotes|showConnectedNotesMenu/);
     assert.match(host, /contextMenu\.mainArea/);
     assert.match(host, /contextMenu\.others/);
     assert.match(host, /CellPointerDown/);
+    assert.match(host, /sheetName|sheet\.name/);
+    assert.match(host, /page\.title = sheetName/);
     assert.match(host, /applyDimensionMutation/);
     assert.match(host, /applyAxisMoveMutation/);
     assert.match(host, /sheet\.mutation\.move-rows/);
     assert.match(host, /sheet\.mutation\.move-columns/);
     assert.match(host, /sheet\.mutation\.set-worksheet-row-height/);
     assert.match(host, /sheet\.mutation\.set-worksheet-col-width/);
+    assert.match(host, /sheet\.operation\.set-cell-edit-visible/);
+    assert.match(host, /doc\.command\.ime-input/);
+    assert.match(host, /isEditorBusy/);
+    assert.match(host, /activeElement/);
+    assert.match(host, /isContentEditable/);
+    assert.match(host, /sheet\.mutation\.set-range-values/);
+    assert.match(host, /pendingAfterEdit = true/);
+    assert.match(host, /hasPendingSync/);
+    assert.match(host, /tryCommitCellEditor|executeCommand\?\.\('sheet\.operation\.set-cell-edit-visible'/);
+    assert.match(host, /clearMissing/);
+    assert.match(host, /clearMissing:\s*false/);
+    assert.match(host, /mergeDimensions:\s*false/);
+    assert.match(host, /scheduleDimensionNotify/);
+    assert.match(view, /univerHost\?\.isEditorBusy\(\)/);
+    assert.match(view, /hasPendingSync\(\)/);
+    assert.match(view, /Never autosave while Univer/);
+    assert.match(view, /Own autosave \/ no-op disk echo/);
+    assert.match(view, /Only re-apply sheet\/freeze\/zoom/);
+
+    assert.match(view, /persistBoundPlotGrid/);
+    assert.match(view, /disposeUniverHost\(\{\s*persist:\s*false\s*\}\)/);
     assert.match(host, /event\?\.metaKey \|\| event\?\.ctrlKey/);
     assert.match(host, /p\.column \?\? p\.col/);
     assert.match(host, /UniverSheetsFilterPreset\(\)/);
@@ -273,10 +505,18 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /--link-color/);
     assert.doesNotMatch(host, /fillRect\(/);
     assert.doesNotMatch(host, /🔗/);
-    assert.match(host, /mergeLocales\(sheetsCoreZhCN, sheetsFilterZhCN\)/);
+    assert.match(host, /withNarrativeLabZhTerminology\(sheetsCoreZhCN\)/);
+    assert.match(host, /freeze:\s*'固定'/);
+    assert.match(host, /freezeCell:\s*'固定至活动单元格/);
+    assert.match(host, /freezeFirstCol:\s*'固定首列'/);
+    assert.match(host, /freezeFirstRow:\s*'固定首行'/);
+    assert.match(host, /cancelFreeze:\s*'取消固定'/);
     assert.equal((host.match(/ribbonType:\s*'simple'/g) || []).length, 2);
     assert.doesNotMatch(host, /contextMenu:\s*false/);
     assert.match(host, /moveFinancialFormulaMenuLast/);
+    assert.match(host, /keepFilterInToolbar\(univerInstance\)/);
+    assert.match(host, /\[RibbonPosition\.DATA\]:\s*\{\s*order:\s*FILTER_TOOLBAR_GROUP_ORDER/s);
+    assert.match(host, /FILTER_TOOLBAR_GROUP_ORDER\s*=\s*-100/);
     assert.match(host, /addUniverSubscriptionDisposer/);
     assert.match(host, /univerAPI\.removeEvent\?\./);
     assert.doesNotMatch(host, /suppressWatcher/);
@@ -284,11 +524,12 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /`\$\{InsertFunctionOperation\.id\}\.financial`/);
     assert.match(host, /FINANCIAL_FORMULA_MENU_ORDER\s*=\s*99/);
     assert.match(host, /\[TEXT_TO_NUMBER_TOOLBAR_MENU_ID\]:\s*\{\s*hidden:\s*true\s*\}/);
-    const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
     assert.doesNotMatch(view, /resolveLinkedLabel/);
     assert.doesNotMatch(view, /falling back to DOM grid/);
     assert.match(view, /renderUniverLoadError/);
     assert.match(view, /Plot Grid autosave failed/);
     assert.match(view, /finally \{[\s\S]*?this\.saveDebounce === timerId/);
-    assert.match(view, /this\.disposeUniverHost\(\);[\s\S]*?this\.cancelPendingSave\(\);/);
+    assert.match(view, /persistBoundPlotGrid\(\)/);
+    assert.match(view, /disposeUniverHost\(\{\s*persist:\s*false\s*\}\)/);
+    assert.match(view, /this\.cancelPendingSave\(\)/);
 });

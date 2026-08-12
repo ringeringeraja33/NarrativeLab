@@ -59,3 +59,12 @@ test("library files and preview images share aligned controls", () => {
   assert.match(css, /\.vision-board-expand-button\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*8px;[\s\S]*?right:\s*8px;/);
   assert.match(pluginBundle, /vision-board-expand-button/);
 });
+
+test("ncanvas library sync treats vault Library as source of truth", () => {
+  assert.match(app, /preserveUnsaved:\s*false/);
+  assert.match(app, /Disk is the source of truth/);
+  assert.doesNotMatch(app, /if \(!Array\.isArray\(loaded\) \|\| !loaded\.length\) return false;/);
+  assert.match(pluginBundle, /resolveCodexCategoryFolder/);
+  assert.match(pluginBundle, /Never recreate from \.ncanvas snapshot/);
+  assert.match(pluginBundle, /Brand-new canvas entry with no vault file yet/);
+});

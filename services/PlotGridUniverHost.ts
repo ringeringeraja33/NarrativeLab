@@ -7,14 +7,39 @@ import type { Univer } from '@univerjs/core';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import { UniverSheetsFilterPreset } from '@univerjs/preset-sheets-filter';
 import { InsertFunctionOperation } from '@univerjs/sheets-formula-ui';
-import { IMenuManagerService, RibbonFormulasGroup } from '@univerjs/ui';
+import { IMenuManagerService, RibbonFormulasGroup, RibbonPosition } from '@univerjs/ui';
 import sheetsCoreEnUS from '@univerjs/preset-sheets-core/locales/en-US';
 import sheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
 import sheetsFilterEnUS from '@univerjs/preset-sheets-filter/locales/en-US';
 import sheetsFilterZhCN from '@univerjs/preset-sheets-filter/locales/zh-CN';
-import { Menu } from 'obsidian';
 
 import sheetsCoreCss from '@univerjs/preset-sheets-core/lib/index.css';
+
+function withNarrativeLabZhTerminology(base: unknown): Record<string, unknown> {
+    const locale = (base && typeof base === 'object' ? base : {}) as Record<string, unknown>;
+    const sheetsUi = (locale['sheets-ui'] && typeof locale['sheets-ui'] === 'object'
+        ? locale['sheets-ui']
+        : {}) as Record<string, unknown>;
+    const rightClick = (sheetsUi.rightClick && typeof sheetsUi.rightClick === 'object'
+        ? sheetsUi.rightClick
+        : {}) as Record<string, unknown>;
+    return {
+        ...locale,
+        'sheets-ui': {
+            ...sheetsUi,
+            rightClick: {
+                ...rightClick,
+                freeze: '固定',
+                freezeCell: '固定至活动单元格（{0}行{1}列）',
+                freezeCol: '固定至第 {0} 列',
+                freezeRow: '固定至第 {0} 行',
+                freezeFirstCol: '固定首列',
+                freezeFirstRow: '固定首行',
+                cancelFreeze: '取消固定',
+            },
+        },
+    };
+}
 
 function injectUniverCss(activeDocument: Document): void {
     const id = 'narrativelab-univer-sheets-css';
@@ -46,12 +71,18 @@ export interface PlotGridUniverHostOptions {
     getAuthoritativeDocument?: () => ConceptGridDocument;
     /** Run a NarrativeLab action from Univer's native cell context menu. */
     onContextMenuAction?: (action: PlotGridUniverContextAction) => void;
+    /** Ask the main plugin bundle to show Obsidian's native action menu. */
+    onContextMenuRequest?: (position: { x: number; y: number }) => void;
+    /** Show the expanded Connected notes menu (filenames → open note). */
+    onShowConnectedNotes?: (position: { x: number; y: number }) => void;
     onDocumentChange: (doc: ConceptGridDocument) => void;
     onSelectionChange?: (info: { sheetId: string; row: number; col: number }) => void;
 }
 
 export type PlotGridUniverContextAction =
     | 'open-linked-note'
+    | 'link-note'
+    | 'unlink-note'
     | 'convert-to-notes'
     | 'convert-to-scene'
     | 'convert-to-research'
@@ -69,12 +100,17 @@ export interface PlotGridUniverHost {
     setFreeze: (sheetId: string, enabled: boolean, frozenColumns?: number, frozenRows?: number) => void;
     setActiveCell: (sheetId: string, row: number, col: number) => void;
     getActiveCell: () => { sheetId: string; row: number; col: number } | null;
+    /** True while the in-cell / formula editor or IME composition is active. */
+    isEditorBusy: () => boolean;
+    /** True when a debounced Univer→document pull is waiting (or editor still open). */
+    hasPendingSync: () => boolean;
     /** Force a sync pull from Univer cell matrix into the live document. */
     flush: () => void;
     focus: () => void;
 }
 
 type UniverAPI = {
+    executeCommand?: (id: string, params?: Record<string, unknown>) => unknown;
     createWorkbook: (data: Record<string, unknown>) => unknown;
     getActiveWorkbook: () => {
         getId: () => string;
@@ -109,12 +145,23 @@ type UniverAPI = {
         action: () => void;
         order?: number;
     }) => UniverMenuBuilder;
+    createSubmenu?: (item: {
+        id: string;
+        title: string;
+        order?: number;
+    }) => UniverSubmenuBuilder;
     removeEvent?: (id: unknown) => void;
     disposeUnit?: (unitId: string) => void;
     dispose?: () => void;
 };
 
 type UniverMenuBuilder = {
+    appendTo: (path: string | string[]) => void;
+};
+
+type UniverSubmenuBuilder = {
+    addSubmenu: (menu: UniverMenuBuilder | UniverSubmenuBuilder) => UniverSubmenuBuilder;
+    addSeparator: () => UniverSubmenuBuilder;
     appendTo: (path: string | string[]) => void;
 };
 
@@ -141,56 +188,82 @@ function addUniverSubscriptionDisposer(
 
 const FINANCIAL_FORMULA_MENU_ORDER = 99;
 const TEXT_TO_NUMBER_TOOLBAR_MENU_ID = 'sheet.toolbar.text-to-number';
+const FILTER_TOOLBAR_GROUP_ORDER = -100;
+
+function hideUniverContextMenu(univer: Univer): void {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        const menuService = univer.__getInjector().get('ui.contextmenu.service');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        menuService?.hideContextMenu?.();
+    } catch {
+        // Optional — older builds may not expose the service.
+    }
+}
 
 function registerNarrativeLabContextMenu(
     univerAPI: UniverAPI,
-    locale: 'en' | 'zh',
+    univer: Univer,
     container: HTMLElement,
-    onAction?: (action: PlotGridUniverContextAction) => void,
+    opts: {
+        locale: 'en' | 'zh';
+        onShowConnectedNotes?: (position: { x: number; y: number }) => void;
+        onAction?: (action: PlotGridUniverContextAction) => void;
+        onRequest?: (position: { x: number; y: number }) => void;
+    },
 ): () => void {
-    if (!onAction) return () => undefined;
-    const labels = locale === 'zh'
-        ? {
-            root: 'NarrativeLab',
-            notes: '转为笔记',
-            scene: '转为场景',
-            research: '转为研究资料',
-            reset: '重置表格',
-        }
-        : {
-            root: 'NarrativeLab',
-            notes: 'Convert to Notes',
-            scene: 'Convert to Scene',
-            research: 'Convert to Research',
-            reset: 'Reset spreadsheet',
-        };
     let menuPosition = { x: 0, y: 0 };
     const rememberPosition = (event: MouseEvent) => {
         menuPosition = { x: event.clientX, y: event.clientY };
     };
     container.addEventListener('contextmenu', rememberPosition, true);
-    const openActionsMenu = () => {
-        const menu = new Menu();
-        const add = (title: string, icon: string, action: PlotGridUniverContextAction) => {
-            menu.addItem(item => item
-                .setTitle(title)
-                .setIcon(icon)
-                .onClick(() => onAction(action)));
-        };
-        add(labels.notes, 'notebook-pen', 'convert-to-notes');
-        add(labels.scene, 'clapperboard', 'convert-to-scene');
-        add(labels.research, 'search', 'convert-to-research');
-        menu.addSeparator();
-        add(labels.reset, 'rotate-ccw', 'reset-grid');
-        menu.showAtPosition(menuPosition);
+
+    const zh = opts.locale === 'zh';
+    const connectedTitle = zh ? '已连接笔记' : 'Connected notes';
+
+    const openConnectedNotesMenu = () => {
+        hideUniverContextMenu(univer);
+        window.setTimeout(() => {
+            if (opts.onShowConnectedNotes) opts.onShowConnectedNotes(menuPosition);
+            else opts.onRequest?.(menuPosition);
+        }, 0);
     };
+
+    // Top-level entry — expands into a filename list (Obsidian menu).
     univerAPI.createMenu({
-        id: 'narrativelab.plot-grid.context-menu',
-        title: `${labels.root}…`,
-        action: openActionsMenu,
-        order: 1000,
-    })
-        .appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+        id: 'narrativelab.plot-grid.connected',
+        title: connectedTitle,
+        action: openConnectedNotesMenu,
+        order: -200,
+    }).appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+
+    if (opts.onAction) {
+        const append = (id: string, title: string, action: PlotGridUniverContextAction, order: number) => {
+            univerAPI.createMenu({
+                id,
+                title,
+                action: () => opts.onAction?.(action),
+                order,
+            }).appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+        };
+        append('narrativelab.plot-grid.link', zh ? '链接笔记…' : 'Link Note…', 'link-note', 1000);
+        append('narrativelab.plot-grid.unlink', zh ? '取消链接' : 'Unlink Note', 'unlink-note', 1001);
+        append('narrativelab.plot-grid.to-notes', zh ? '转为笔记' : 'Convert to Notes', 'convert-to-notes', 1010);
+        append('narrativelab.plot-grid.to-scene', zh ? '转为场景' : 'Convert to Scene', 'convert-to-scene', 1011);
+        append('narrativelab.plot-grid.to-research', zh ? '转为调研' : 'Convert to Research', 'convert-to-research', 1012);
+        append('narrativelab.plot-grid.reset', zh ? '重置表格' : 'Reset spreadsheet', 'reset-grid', 1020);
+    } else if (opts.onRequest) {
+        univerAPI.createMenu({
+            id: 'narrativelab.plot-grid.context-menu',
+            title: zh ? '更多操作…' : 'More actions…',
+            action: () => {
+                hideUniverContextMenu(univer);
+                window.setTimeout(() => opts.onRequest?.(menuPosition), 0);
+            },
+            order: 1000,
+        }).appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+    }
+
     return () => container.removeEventListener('contextmenu', rememberPosition, true);
 }
 
@@ -219,6 +292,24 @@ function moveFinancialFormulaMenuLast(univer: Univer): void {
         });
     } catch (e) {
         console.warn('[NarrativeLab] Failed to reorder Univer formula menus:', e);
+    }
+}
+
+/** Keep the filter control ahead of lower-priority items in the simple ribbon. */
+function keepFilterInToolbar(univer: Univer): void {
+    try {
+        // The filter preset registers under ribbon.data. Univer's simple ribbon
+        // collapses later groups first, so making Data first keeps Filter visible.
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        const menuManager = univer.__getInjector().get(IMenuManagerService);
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        menuManager.mergeMenu({
+            [RibbonPosition.DATA]: {
+                order: FILTER_TOOLBAR_GROUP_ORDER,
+            },
+        });
+    } catch (e) {
+        console.warn('[NarrativeLab] Failed to pin Univer filter in the toolbar:', e);
     }
 }
 
@@ -347,7 +438,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let contentFp = conceptGridContentFingerprint(liveDoc);
     const locale = opts.locale === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US;
     const locales = opts.locale === 'zh'
-        ? { [LocaleType.ZH_CN]: mergeLocales(sheetsCoreZhCN, sheetsFilterZhCN) }
+        ? { [LocaleType.ZH_CN]: mergeLocales(withNarrativeLabZhTerminology(sheetsCoreZhCN), sheetsFilterZhCN) }
         : { [LocaleType.EN_US]: mergeLocales(sheetsCoreEnUS, sheetsFilterEnUS) };
 
     injectUniverCss(opts.container.ownerDocument);
@@ -437,6 +528,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }
     };
     createNativeWorkbook(liveDoc);
+    keepFilterInToolbar(univerInstance);
     moveFinancialFormulaMenuLast(univerInstance);
     tryActivateSheet(univerAPI, liveDoc.activePageId);
 
@@ -447,9 +539,14 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     try {
         disposers.push(registerNarrativeLabContextMenu(
             univerAPI,
-            opts.locale,
+            univerInstance,
             opts.container,
-            opts.onContextMenuAction,
+            {
+                locale: opts.locale,
+                onShowConnectedNotes: opts.onShowConnectedNotes,
+                onAction: opts.onContextMenuAction,
+                onRequest: opts.onContextMenuRequest,
+            },
         ));
     } catch (error) {
         // A NarrativeLab extension must never take down Univer's native menu.
@@ -458,6 +555,25 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     const isSuppressed = () => disposed || Date.now() < suppressUntil;
 
+    // Cell editor + IME: defer pull / remount until the session ends.
+    // Declared before pullFromUniver so the closure never hits a TDZ read.
+    let cellEditing = false;
+    let composing = false;
+
+    /** Ask Univer to commit the in-cell editor into the worksheet matrix. */
+    const tryCommitCellEditor = () => {
+        try {
+            univerAPI.executeCommand?.('sheet.operation.set-cell-edit-visible', { visible: false });
+        } catch { /* ignore */ }
+        try {
+            // Blur any leftover contenteditable so IME/editor buffers flush.
+            const active = opts.container.ownerDocument?.activeElement;
+            if (active instanceof HTMLElement && opts.container.contains(active)) {
+                active.blur();
+            }
+        } catch { /* ignore */ }
+    };
+
     const replaceWorkbook = (doc: ConceptGridDocument) => {
         suppressUntil = Date.now() + 800;
         disposeActiveWorkbook();
@@ -465,9 +581,15 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         tryActivateSheet(univerAPI, doc.activePageId);
     };
 
-    const pullFromUniver = (force = false) => {
+    const pullFromUniver = (
+        force = false,
+        mergeOptions: { clearMissing?: boolean; mergeDimensions?: boolean } = {},
+    ) => {
         if (disposed) return;
         if (!force && isSuppressed()) return;
+        // Never pull while the in-cell / formula editor or IME is active — mid-edit
+        // snapshots omit the active cell and remounts abort composition.
+        if (!force && (cellEditing || composing)) return;
         try {
             const wb = univerAPI.getActiveWorkbook?.();
             if (!wb) return;
@@ -499,6 +621,11 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 (opts.getAuthoritativeDocument?.() ?? liveDoc),
             );
 
+            // Dimensions are owned by resize mutations. Polling workbook.save()
+            // often lags mid-drag and would snap previously resized rows/cols back.
+            const clearMissing = mergeOptions.clearMissing === true;
+            const mergeDimensions = mergeOptions.mergeDimensions === true;
+
             let next = base;
             for (const sheet of Object.values(saved.sheets)) {
                 const id = sheet.id;
@@ -508,9 +635,20 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     id,
                     sheet.cellData,
                     saved.styles,
-                    sheet.rowData,
-                    sheet.columnData,
+                    mergeDimensions ? sheet.rowData : undefined,
+                    mergeDimensions ? sheet.columnData : undefined,
+                    { clearMissing, mergeDimensions },
                 );
+                // Univer sheet-tab renames are not in cellData — pull the title too.
+                const sheetName = typeof (sheet as { name?: unknown }).name === 'string'
+                    ? (sheet as { name: string }).name.trim()
+                    : '';
+                if (sheetName) {
+                    const page = next.pages.find(p => p.id === id);
+                    if (page && page.title !== sheetName) {
+                        page.title = sheetName;
+                    }
+                }
             }
             const nextFp = conceptGridContentFingerprint(next);
             // Also detect meta drift (links) even when display text is unchanged.
@@ -531,6 +669,60 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let timer = 0;
     let pendingAfterSuppress = false;
     let suppressDrainTimer = 0;
+    let dimNotifyTimer = 0;
+    let pendingAfterEdit = false;
+    let pendingSetDoc: ConceptGridDocument | null = null;
+    let schedulePull: (opts?: { clearMissing?: boolean }) => void = () => { /* assigned below */ };
+
+    const isEditorBusy = () => {
+        if (cellEditing || composing) return true;
+        // Univer does not always emit set-cell-edit-visible for every edit path,
+        // and the formula/cell editor may portal outside the host container.
+        try {
+            const doc = opts.container.ownerDocument;
+            const active = doc?.activeElement;
+            if (!(active instanceof HTMLElement)) return false;
+            const tag = active.tagName;
+            const isField = active.isContentEditable || tag === 'TEXTAREA' || tag === 'INPUT';
+            if (!isField) return false;
+            const shell = opts.container.closest('.plot-grid-wrapper, .workspace-leaf-content') || opts.container;
+            if (shell.contains(active)) return true;
+            // Body-level Univer editor portals still belong to this sheet session.
+            if (active.closest('[class*="univer"]')) return true;
+            return false;
+        } catch {
+            return false;
+        }
+    };
+
+    const applyPendingSetDoc = () => {
+        if (disposed || !pendingSetDoc || isEditorBusy()) return;
+        const next = pendingSetDoc;
+        pendingSetDoc = null;
+        liveDoc = next;
+        contentFp = conceptGridContentFingerprint(liveDoc);
+        // Let Univer finish compositionend / editor teardown before remounting.
+        window.setTimeout(() => {
+            if (disposed || isEditorBusy()) {
+                pendingSetDoc = next;
+                return;
+            }
+            replaceWorkbook(liveDoc);
+        }, 0);
+    };
+
+    const onEditorSessionEnd = () => {
+        if (disposed || isEditorBusy()) return;
+        if (pendingSetDoc) {
+            applyPendingSetDoc();
+            return;
+        }
+        if (!pendingAfterEdit) return;
+        pendingAfterEdit = false;
+        // Editor closed: safe to treat omitted cells as clears (Delete / Backspace).
+        schedulePull({ clearMissing: true });
+    };
+
     const scheduleSuppressedDrain = () => {
         if (suppressDrainTimer || disposed) return;
         const delay = Math.max(16, suppressUntil - Date.now() + 16);
@@ -545,24 +737,66 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             schedulePull();
         }, delay);
     };
-    const schedulePull = () => {
+    schedulePull = (pullOpts = {}) => {
         if (disposed) return;
+        if (isEditorBusy()) {
+            pendingAfterEdit = true;
+            return;
+        }
         if (isSuppressed()) {
             pendingAfterSuppress = true;
             scheduleSuppressedDrain();
             return;
         }
         if (timer) window.clearTimeout(timer);
+        const clearMissing = pullOpts.clearMissing === true;
+        // Keep this short: a long debounce left edits only in Univer while vault
+        // refresh / tab close could reload or save a stale NarrativeLab document.
         timer = window.setTimeout(() => {
             timer = 0;
-            pullFromUniver();
-        }, 600);
+            if (isEditorBusy()) {
+                pendingAfterEdit = true;
+                return;
+            }
+            pullFromUniver(false, { clearMissing, mergeDimensions: false });
+        }, 80);
+    };
+
+    const scheduleDimensionNotify = () => {
+        if (disposed) return;
+        if (dimNotifyTimer) window.clearTimeout(dimNotifyTimer);
+        // Coalesce rapid drag deltas so we don't clone/normalize the whole doc
+        // on every pointer move (jank + stale overwrites).
+        dimNotifyTimer = window.setTimeout(() => {
+            dimNotifyTimer = 0;
+            if (disposed) return;
+            contentFp = conceptGridContentFingerprint(liveDoc);
+            opts.onDocumentChange(liveDoc);
+        }, 120);
     };
 
     disposers.push(() => {
         if (suppressDrainTimer) window.clearTimeout(suppressDrainTimer);
         suppressDrainTimer = 0;
+        if (dimNotifyTimer) window.clearTimeout(dimNotifyTimer);
+        dimNotifyTimer = 0;
     });
+
+    const commandId = (command: unknown): string => {
+        const c = command as { id?: string };
+        return typeof c?.id === 'string' ? c.id : '';
+    };
+    const commandParams = (command: unknown): Record<string, unknown> | undefined => {
+        const c = command as { params?: Record<string, unknown> };
+        return c?.params && typeof c.params === 'object' ? c.params : undefined;
+    };
+    const isDimensionCommand = (id: string) =>
+        id === 'sheet.mutation.set-worksheet-row-height'
+        || id === 'sheet.mutation.set-worksheet-col-width'
+        || id === 'sheet.command.delta-row-height'
+        || id === 'sheet.command.delta-column-width'
+        || id === 'sheet.command.set-worksheet-row-height'
+        || id === 'sheet.command.set-worksheet-col-width';
 
     try {
         const api = univerAPI as UniverAPI & {
@@ -575,14 +809,58 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         };
         if (api.Event?.CommandExecuted) {
             const sub = univerAPI.addEvent(api.Event.CommandExecuted, (command) => {
-                const authoritative = opts.getAuthoritativeDocument?.() ?? liveDoc;
-                const mutated = applyDimensionMutation(authoritative, command)
-                    ?? applyAxisMoveMutation(authoritative, command);
-                if (mutated) {
-                    liveDoc = mutated;
-                    contentFp = conceptGridContentFingerprint(liveDoc);
-                    opts.onDocumentChange(liveDoc);
+                const id = commandId(command);
+                const params = commandParams(command);
+
+                if (id === 'sheet.operation.set-cell-edit-visible'
+                    || id === 'sheet.operation.set-cell-edit-visible-f2'
+                    || id === 'sheet.operation.set-cell-edit-visible-arrow') {
+                    const visible = params?.visible;
+                    if (typeof visible === 'boolean') {
+                        cellEditing = visible;
+                        if (!visible) onEditorSessionEnd();
+                    }
+                    return;
                 }
+
+                if (id === 'doc.command.ime-input') {
+                    if (params?.isCompositionStart) composing = true;
+                    if (params?.isCompositionEnd) {
+                        composing = false;
+                        onEditorSessionEnd();
+                    }
+                    return;
+                }
+
+                // Resize / axis moves: update NL meta immediately; do not poll
+                // workbook.save() (it lags and snaps other sizes back).
+                if (isDimensionCommand(id) || id === 'sheet.mutation.move-rows' || id === 'sheet.mutation.move-columns') {
+                    const authoritative = opts.getAuthoritativeDocument?.() ?? liveDoc;
+                    const mutated = applyDimensionMutation(authoritative, command)
+                        ?? applyAxisMoveMutation(authoritative, command);
+                    if (mutated) {
+                        liveDoc = mutated;
+                        scheduleDimensionNotify();
+                    }
+                    return;
+                }
+
+                // Value edits while the cell editor is open are deferred via isEditorBusy.
+                // Also skip noisy formula/doc mutations until the editor session ends —
+                // polling mid-keystroke causes autosave → vault refresh → workbook remount jumps.
+                if (
+                    id.startsWith('doc.mutation.')
+                    || id.startsWith('doc.command.')
+                    || id === 'sheet.mutation.set-range-values'
+                    || id === 'sheet.mutation.set-range-formatted-value'
+                    || id === 'sheet.command.set-range-values'
+                ) {
+                    if (isEditorBusy()) {
+                        pendingAfterEdit = true;
+                        return;
+                    }
+                }
+
                 schedulePull();
             });
             addUniverSubscriptionDisposer(disposers, univerAPI, sub);
@@ -591,7 +869,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             addUniverSubscriptionDisposer(disposers, univerAPI, sub);
         } else {
             const id = window.setInterval(() => {
-                if (!disposed && opts.container.isConnected && !isSuppressed()) schedulePull();
+                if (!disposed && opts.container.isConnected && !isSuppressed() && !isEditorBusy()) {
+                    schedulePull();
+                }
             }, 3000);
             disposers.push(() => window.clearInterval(id));
         }
@@ -617,9 +897,11 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             const sub = univerAPI.addEvent(api.Event.CellPointerDown, (params) => {
                 handleSelection(params);
                 const event = (params as { event?: MouseEvent | PointerEvent }).event;
-                if (!(event?.metaKey || event?.ctrlKey) || !lastSelection) return;
+                if (!(event?.metaKey || event?.ctrlKey || (event?.detail ?? 0) >= 2) || !lastSelection) return;
                 const source = opts.getAuthoritativeDocument?.() ?? liveDoc;
                 if (linkedCellAt(source, lastSelection.sheetId, lastSelection.row, lastSelection.col)?.linkedSceneId) {
+                    event?.preventDefault();
+                    event?.stopPropagation();
                     opts.onContextMenuAction?.('open-linked-note');
                 }
             });
@@ -644,7 +926,15 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 window.clearTimeout(suppressDrainTimer);
                 suppressDrainTimer = 0;
             }
-            try { pullFromUniver(true); } catch { /* ignore */ }
+            if (dimNotifyTimer) {
+                window.clearTimeout(dimNotifyTimer);
+                dimNotifyTimer = 0;
+            }
+            tryCommitCellEditor();
+            cellEditing = false;
+            composing = false;
+            // Never clearMissing on teardown — sparse save() must not wipe cells.
+            try { pullFromUniver(true, { clearMissing: false, mergeDimensions: false }); } catch { /* ignore */ }
             disposed = true;
             for (const d of disposers) {
                 try { d(); } catch { /* ignore */ }
@@ -656,7 +946,13 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         },
         getDocument: () => liveDoc,
         setDocument: (doc: ConceptGridDocument) => {
-            liveDoc = structuredClone(doc);
+            const next = structuredClone(doc);
+            if (isEditorBusy()) {
+                // Remounting mid-edit / mid-IME clears the cell and aborts composition.
+                pendingSetDoc = next;
+                return;
+            }
+            liveDoc = next;
             contentFp = conceptGridContentFingerprint(liveDoc);
             replaceWorkbook(liveDoc);
         },
@@ -709,12 +1005,26 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             }
             return lastSelection;
         },
+        isEditorBusy,
+        hasPendingSync: () => {
+            if (disposed) return false;
+            return isEditorBusy() || pendingAfterEdit || timer !== 0 || pendingAfterSuppress;
+        },
         flush: () => {
+            // Commit the open editor first so workbook.save() includes typed text.
+            tryCommitCellEditor();
+            cellEditing = false;
+            composing = false;
+            pendingAfterEdit = false;
+            pendingAfterSuppress = false;
+            pendingSetDoc = null;
             if (timer) {
                 window.clearTimeout(timer);
                 timer = 0;
             }
-            pullFromUniver(true);
+            // clearMissing:false — forced flush snapshots are often sparse and
+            // must not blank cells that were merely omitted from the dump.
+            pullFromUniver(true, { clearMissing: false, mergeDimensions: false });
         },
         focus: () => {
             opts.container.querySelector<HTMLElement>('[contenteditable], canvas, .univer-workbook')?.focus?.();

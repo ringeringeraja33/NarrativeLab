@@ -16,12 +16,23 @@ export function areCaseEquivalentVaultPaths(left: string, right: string): boolea
 /** Exact folder scope for an Obsidian Base, including every requested root.
  * Prefer `file.inFolder` so Bases New can place notes in the category folder
  * (path.contains filters cannot be applied to a new note → toast + disappear).
+ * Guard with if(file, …) so Bases does not toast
+ * "Failed to evaluate a filter: Cannot read properties of null (reading 'path')"
+ * when a row's file handle is briefly null (view close / vault race).
  */
 export function buildLibraryPathScopeFilter(folderPaths: readonly string[]): LibraryBaseFilter {
     const unique = [...new Set(folderPaths.map(path => path.trim().replace(/\/+$/, '')).filter(Boolean))];
-    const filters = unique.map(path => `file.inFolder(${JSON.stringify(path)})`);
+    const filters = unique.map(path => `if(file, file.inFolder(${JSON.stringify(path)}), false)`);
     if (filters.length === 0) return 'false';
     return filters.length === 1 ? filters[0] : { or: filters };
+}
+
+/** Null-safe Bases filter: skip rows whose file handle is missing mid-refresh. */
+export function guardLibraryBaseFileFilter(expression: string): string {
+    const trimmed = expression.trim();
+    if (!trimmed || trimmed === 'false' || trimmed === 'true') return trimmed;
+    if (trimmed.startsWith('if(file,')) return trimmed;
+    return `if(file, ${trimmed}, false)`;
 }
 
 /** Allocate a stable category id without merging two distinct Library folders. */

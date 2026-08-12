@@ -1,6 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
@@ -34,6 +34,15 @@ function deployPluginFiles() {
       copyFileSync(src, join(dir, file));
     }
     console.log(`[deploy] → ${dir}`);
+  }
+}
+
+function rejectObsidianRuntimeImport(outputFile) {
+  const bundle = readFileSync(outputFile, "utf8");
+  if (/require\(["']obsidian["']\)/.test(bundle)) {
+    throw new Error(
+      "The lazy Univer bundle must not import Obsidian at runtime; inject Obsidian-backed UI through host options.",
+    );
   }
 }
 
@@ -112,6 +121,7 @@ const univerContext = await esbuild.context({
         build.onEnd((result) => {
           if (result.errors.length === 0) {
             try {
+              rejectObsidianRuntimeImport(join(projectRoot, "plotgrid-univer.js"));
               deployPluginFiles();
             } catch (err) {
               console.warn("[deploy] skipped:", err instanceof Error ? err.message : err);
@@ -125,6 +135,7 @@ const univerContext = await esbuild.context({
 
 if (prod) {
   await Promise.all([mainContext.rebuild(), univerContext.rebuild()]);
+  rejectObsidianRuntimeImport(join(projectRoot, "plotgrid-univer.js"));
   deployPluginFiles();
   process.exit(0);
 } else {

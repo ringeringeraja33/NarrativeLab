@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [nativeLibraryBase, storyLineProject, sceneManager, entityFileCache, codexManager, characterManager, locationManager] = await Promise.all([
+const [nativeLibraryBase, storyLineProject, sceneManager, entityFileCache, codexManager, characterManager, locationManager, transactions] = await Promise.all([
     readFile(new URL('../components/NativeLibraryBase.ts', import.meta.url), 'utf8'),
     readFile(new URL('../models/StoryLineProject.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/SceneManager.ts', import.meta.url), 'utf8'),
@@ -10,6 +10,7 @@ const [nativeLibraryBase, storyLineProject, sceneManager, entityFileCache, codex
     readFile(new URL('../services/CodexManager.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/CharacterManager.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/LocationManager.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../utils/libraryCategoryTransactions.ts', import.meta.url), 'utf8'),
 ]);
 
 test('canonical Library Base lives under Library/library.base', () => {
@@ -67,7 +68,8 @@ test('Browse Properties/Sort changes are persisted into library.base', () => {
 });
 
 test('Library Base folder filters use file.inFolder and only the native New control', () => {
-    assert.match(nativeLibraryBase, /single-library-base-v4-ignore-excalidraw/);
+    assert.match(nativeLibraryBase, /single-library-base-v5-null-file-guard/);
+    assert.match(nativeLibraryBase, /guardLibraryBaseFileFilter/);
     assert.match(nativeLibraryBase, /!file\.inFolder\(/);
     assert.doesNotMatch(nativeLibraryBase, /has-nl-new|library-native-base-actions|hideBasesNativeNewButtons/);
 });
@@ -82,6 +84,7 @@ test('native Base New routes the created note into the active Library category f
 test('Library Base excludes Excalidraw markdown drawings', () => {
     assert.match(nativeLibraryBase, /file\.basename\.lower\(\)\.endsWith\(\"\.excalidraw\"\) == false/);
     assert.match(nativeLibraryBase, /isExcalidrawFilePath\(file\.path\)/);
+    assert.match(transactions, /if\(file,/);
 });
 
 test('every Library entity loader ignores Excalidraw files', () => {

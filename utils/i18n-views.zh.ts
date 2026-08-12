@@ -341,10 +341,18 @@ export const VIEWS_ZH: Record<string, string> = {
     'Click to edit zoom %': '点击编辑缩放百分比',
     'Reset zoom': '重置缩放',
     'Reset Grid': '重置网格',
-    'Could not read plotgrid.xlsx — empty save blocked. Reset Grid or fix the file to continue.':
-        '无法读取 plotgrid.xlsx — 已阻止空表覆盖。请重置网格或修复文件后继续。',
-    'Could not read plotgrid.xlsx — opened empty grid; empty autosave is blocked until Reset Grid.':
-        '无法读取 plotgrid.xlsx — 已打开空表；在重置网格前不会用空数据自动覆盖。',
+    'Could not read datasheet.xlsx — empty save blocked. Reset Grid or fix the file to continue.':
+        '无法读取 datasheet.xlsx — 已阻止空表覆盖。请重置网格或修复文件后继续。',
+    'Could not read datasheet.xlsx — opened empty grid; empty autosave is blocked until Reset Grid.':
+        '无法读取 datasheet.xlsx — 已打开空表；在重置网格前不会用空数据自动覆盖。',
+    'Repaired datasheet.xlsx for Excel/Univer interop. NarrativeLab metadata is in System/datasheet.nlmeta.json.':
+        '已把 datasheet.xlsx 整理为可被 Excel/Univer 直接打开的格式；NarrativeLab 元数据在 System/datasheet.nlmeta.json。',
+    'datasheet.xlsx still has spreadsheet values that NarrativeLab could not fully merge; left the Excel file unchanged.':
+        'datasheet.xlsx 里仍有表格正文，但 NarrativeLab 未能完整合并，已保留 Excel 文件不改写。',
+    'Repaired datasheet.xlsx for Excel/Univer interop. NarrativeLab metadata is in datasheet.nlmeta.json.':
+        '已把 datasheet.xlsx 整理为可被 Excel/Univer 直接打开的格式；NarrativeLab 元数据在 System/datasheet.nlmeta.json。',
+    'Repaired datasheet.xlsx after an external spreadsheet editor overwrote it. Open Concept Grid instead of the .xlsx file.':
+        '已修复被外部表格编辑器覆盖的 datasheet.xlsx。请用「概念网格」打开；也可直接用 Excel/Univer 编辑 datasheet.xlsx。',
     'Are you sure you want to reset the Grid? Resetting will delete everything.': '确定要重置网格吗？重置将删除全部内容。',
     'Rename Column': '重命名列',
     'OK': '确定',
@@ -376,6 +384,12 @@ export const VIEWS_ZH: Record<string, string> = {
     'Edit Cell Text': '编辑单元格文字',
     'Unlink Note': '取消链接',
     'Open Note': '打开笔记',
+    'Open note: {name}': '打开笔记：{name}',
+    'Open linked note': '打开已链接笔记',
+    'Connected notes': '已连接笔记',
+    'No connected notes': '暂无已连接笔记',
+    'Reset spreadsheet': '重置表格',
+    'Convert to Research': '转为调研',
     'Keep the note file; only remove it from this cell': '保留笔记文件，仅从本单元格取消关联',
     'Keep the scene file; only remove it from this cell': '保留场景文件，仅从本单元格取消关联',
     'Linked Note:': '已链接笔记：',
@@ -518,6 +532,7 @@ export const VIEWS_ZH: Record<string, string> = {
     'Sort': '排序',
     'No matching scenes': '没有匹配的场景',
     'Unpin': '取消置顶',
+    'Always on top': '置顶',
     'Pin to top': '置顶',
     'Open in new tab': '在新标签页中打开',
 

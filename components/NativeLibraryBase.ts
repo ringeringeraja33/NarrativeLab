@@ -23,6 +23,7 @@ import { isExcalidrawFilePath } from '../services/EntityFileCache';
 import {
     buildLibraryPathScopeFilter,
     collectReferencedLibraryCategoryIds,
+    guardLibraryBaseFileFilter,
     type LibraryBaseFilter,
 } from '../utils/libraryCategoryTransactions';
 
@@ -68,7 +69,7 @@ const migrationLocks = new Map<string, Promise<void>>();
 /** Projects whose Library Base migration already completed this session. */
 const migratedLibraryBasePaths = new Set<string>();
 /** Projects whose Base filters were synced this session. */
-const FILTER_STYLE_VERSION = 'single-library-base-v4-ignore-excalidraw';
+const FILTER_STYLE_VERSION = 'single-library-base-v5-null-file-guard';
 const syncedFilterStyleKeys = new Set<string>();
 
 type BaseViewConfig = Record<string, unknown> & {
@@ -473,7 +474,7 @@ function buildRequiredFilters(
             excluded.add(normalizePath(catFolder));
         }
         for (const sub of [...excluded].sort((a, b) => a.localeCompare(b))) {
-            filters.push(`!file.inFolder(${JSON.stringify(sub)})`);
+            filters.push(guardLibraryBaseFileFilter(`!file.inFolder(${JSON.stringify(sub)})`));
         }
         return filters;
     }
@@ -486,8 +487,8 @@ function buildGlobalLibraryFilters(plugin: SceneCardsPlugin): LibraryBaseFilter[
     const roots = getCategoryFolders(plugin, ALL_LIBRARY_CATEGORY_ID);
     return [
         buildLibraryPathScopeFilter(roots),
-        'file.ext == "md"',
-        'file.basename.lower().endsWith(".excalidraw") == false',
+        guardLibraryBaseFileFilter('file.ext == "md"'),
+        guardLibraryBaseFileFilter('file.basename.lower().endsWith(".excalidraw") == false'),
     ];
 }
 

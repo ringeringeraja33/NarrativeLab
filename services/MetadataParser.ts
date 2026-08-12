@@ -14,6 +14,38 @@ import { tokenizeWords, DEFAULT_STORYLINE_LOCALE, resolveLocale, type StoryLineL
 const SCENE_LINK_FIELDS_SCALAR = ['pov', 'location'] as const;
 const SCENE_LINK_FIELDS_ARRAY = ['characters', 'setup_scenes', 'payoff_scenes'] as const;
 
+/** Per-file write chain — concurrent vault.modify on Windows → UNKNOWN open errors. */
+const frontmatterWriteChains = new Map<string, Promise<unknown>>();
+
+function enqueueFrontmatterWrite<T>(filePath: string, task: () => Promise<T>): Promise<T> {
+    const key = filePath.replace(/\\/g, '/');
+    const previous = frontmatterWriteChains.get(key) ?? Promise.resolve();
+    const run = previous
+        .catch(() => undefined)
+        .then(task);
+    frontmatterWriteChains.set(key, run.then(() => undefined, () => undefined));
+    return run;
+}
+
+function isTransientVaultWriteError(error: unknown): boolean {
+    const msg = error instanceof Error ? `${error.message} ${error.name}` : String(error);
+    return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied|sharing violation/i.test(msg);
+}
+
+async function retryVaultWrite<T>(task: () => Promise<T>, attempts = 5): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+        try {
+            return await task();
+        } catch (error) {
+            lastError = error;
+            if (!isTransientVaultWriteError(error) || attempt === attempts - 1) break;
+            await new Promise<void>(resolve => window.setTimeout(resolve, 50 * (attempt + 1) * (attempt + 1)));
+        }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
 /** Wrap a plain entity name in `[[Name]]`, idempotent. */
 export function toWikilink(name: string | undefined | null): string | undefined {
     if (name === undefined || name === null) return undefined;
@@ -232,16 +264,24 @@ export class MetadataParser {
     }
 
     /**
-     * Update frontmatter fields in a file
+     * Update frontmatter fields in a file.
+     * Writes are per-path serialized and retried — open Canvas embeds + plugin
+     * metadata writes otherwise race on Windows ("UNKNOWN: unknown error, open").
      */
     static async updateFrontmatter(
         app: App,
         file: TFile,
         updates: Partial<Scene>
     ): Promise<void> {
-        const content = await app.vault.read(file);
+        await enqueueFrontmatterWrite(file.path, () => retryVaultWrite(async () => {
+        // Re-resolve: rename/move may have happened while queued.
+        const live = app.vault.getAbstractFileByPath(file.path);
+        if (!(live instanceof TFile)) return;
+
+        const content = await app.vault.read(live);
         const frontmatter = this.extractFrontmatter(content) || {};
         const body = this.extractBody(content);
+        const bodyChanging = Object.prototype.hasOwnProperty.call(updates, 'body');
 
         // Apply updates to frontmatter
         for (const [key, value] of Object.entries(updates)) {
@@ -312,19 +352,22 @@ export class MetadataParser {
             }
         }
 
-        // Update modified date
-        frontmatter.modified = new Date().toISOString().split('T')[0];
-
-        // Always recount words from the final body text
-        const finalBody = updates.body ?? body;
-        frontmatter.wordcount = this.countWords(finalBody);
-        frontmatter.charcount = this.countChars(finalBody);
+        const finalBody = bodyChanging ? (updates.body ?? body) : body;
+        // Only bump modified / recount when the body actually changes — otherwise
+        // every metadata touch rewrites the open embed and races Obsidian autosave.
+        if (bodyChanging) {
+            frontmatter.modified = new Date().toISOString().split('T')[0];
+            frontmatter.wordcount = this.countWords(finalBody);
+            frontmatter.charcount = this.countChars(finalBody);
+        }
 
         // Issue #71 — mirror universal fields to top-level YAML keys
         mirrorUniversalFieldsToTopLevel(frontmatter, frontmatter.universalFields as Record<string, unknown> | undefined);
 
         const newContent = `---\n${stringifyYaml(frontmatter)}---\n\n${finalBody}`;
-        await app.vault.modify(file, newContent);
+        if (newContent === content) return;
+        await app.vault.modify(live, newContent);
+        }));
     }
 
     /**

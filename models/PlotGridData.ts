@@ -63,6 +63,8 @@ export interface PlotGridData {
     frozenColumns?: number;
     /** Number of leading worksheet rows frozen (includes the column-label row). */
     frozenRows?: number;
+    /** Text in the sheet corner cell (A1) — row/column header intersection. */
+    cornerLabel?: string;
 }
 
 /** One page inside a multi-page Concept Grid document. */
@@ -94,6 +96,7 @@ export function createEmptyConceptGridPage(title?: string): ConceptGridPage {
         stickyHeaders: true,
         frozenColumns: 1,
         frozenRows: 1,
+        cornerLabel: '',
     };
 }
 
@@ -157,6 +160,7 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             stickyHeaders: typeof page.stickyHeaders === 'boolean' ? page.stickyHeaders : true,
             frozenColumns: Math.max(1, Math.floor(page.frozenColumns ?? 1)),
             frozenRows: Math.max(1, Math.floor(page.frozenRows ?? 1)),
+            cornerLabel: typeof page.cornerLabel === 'string' ? page.cornerLabel : '',
         }));
         const firstPage = pages[0] ?? createEmptyConceptGridPage();
         const activePageId = pages.some(p => p.id === raw.activePageId)
@@ -181,6 +185,9 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             stickyHeaders: typeof raw.stickyHeaders === 'boolean' ? raw.stickyHeaders : true,
             frozenColumns: Math.max(1, Math.floor(raw.frozenColumns ?? 1)),
             frozenRows: Math.max(1, Math.floor(raw.frozenRows ?? 1)),
+            cornerLabel: typeof (raw as { cornerLabel?: unknown }).cornerLabel === 'string'
+                ? (raw as { cornerLabel: string }).cornerLabel
+                : '',
         };
         return {
             version: 2,
@@ -197,8 +204,27 @@ export function getActiveConceptGridPage(doc: ConceptGridDocument): ConceptGridP
     return doc.pages.find(p => p.id === doc.activePageId) ?? doc.pages[0] ?? createEmptyConceptGridPage();
 }
 
+/** Count cells that hold display text or a formula. */
+export function countConceptGridFilledCells(doc: ConceptGridDocument): number {
+    let count = 0;
+    for (const page of doc.pages || []) {
+        for (const cell of Object.values(page.cells || {})) {
+            if (!cell) continue;
+            if ((cell.content || '').trim() || (cell.formula || '').trim()) count += 1;
+        }
+    }
+    return count;
+}
+
+/**
+ * True when the workbook has no real grid body.
+ * Structure-only pages (row/column headers but no filled cells) count as empty
+ * so migration/autosave cannot overwrite a richer datasheet.xlsx.
+ */
 export function isConceptGridDocumentEmpty(doc: ConceptGridDocument): boolean {
-    return !doc.pages.some(page => (page.rows?.length ?? 0) > 0);
+    const hasRows = doc.pages.some(page => (page.rows?.length ?? 0) > 0);
+    if (!hasRows) return true;
+    return countConceptGridFilledCells(doc) === 0;
 }
 
 export function cloneConceptGridPage(page: ConceptGridPage, title?: string): ConceptGridPage {
@@ -216,6 +242,7 @@ export function cloneConceptGridPage(page: ConceptGridPage, title?: string): Con
         stickyHeaders: page.stickyHeaders,
         frozenColumns: page.frozenColumns,
         frozenRows: page.frozenRows,
+        cornerLabel: page.cornerLabel,
     };
 }
 /* eslint-enable @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

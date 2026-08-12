@@ -88,6 +88,12 @@ export class PlotgridView extends ItemView {
     private univerViewStateSig = '';
     /** System/ folder the in-memory document was loaded from — used to block cross-project saves. */
     private loadedSystemFolder: string | null = null;
+    /** Floating cell editors keyed by cell id (multiple may be open at once). */
+    private cellEditorWindows = new Map<string, HTMLElement & {
+        __nlCellEditorCleanup?: () => void;
+        __nlCellEditorFocus?: (opts?: { insertWikilink?: boolean }) => void;
+    }>();
+    private cellEditorZSeq = 10000;
 
     constructor(leaf: WorkspaceLeaf, plugin?: SceneCardsPlugin) {
         super(leaf);
@@ -178,11 +184,13 @@ export class PlotgridView extends ItemView {
     }
 
     /** Tear down Univer so the next render remounts the correct project workbook. */
-    private disposeUniverHost(): void {
+    private disposeUniverHost(options: { persist?: boolean } = {}): void {
         this.lastUniverSel = null;
-        try {
-            this.univerHost?.flush();
-        } catch { /* ignore */ }
+        if (options.persist !== false) {
+            try {
+                this.univerHost?.flush();
+            } catch { /* ignore */ }
+        }
         // Invalidate in-flight mounts only after flush so onDocumentChange still applies.
         this.univerMountGeneration += 1;
         try {
@@ -193,6 +201,23 @@ export class PlotgridView extends ItemView {
         this.univerStructureSig = '';
         this.univerViewStateSig = '';
         this.resetUniverCanvasLayout();
+    }
+
+    /** Flush Univer into memory and write datasheet.xlsx for the bound System folder. */
+    private async persistBoundPlotGrid(): Promise<void> {
+        const folder = this.loadedSystemFolder;
+        try {
+            this.univerHost?.flush();
+        } catch { /* ignore */ }
+        this.cancelPendingSave();
+        if (!folder || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
+        const current = this.getActiveSystemFolder();
+        if (current && current !== folder) return;
+        try {
+            await this.plugin.savePlotGrid(this.document);
+        } catch (error) {
+            console.error('[NarrativeLab] Plot Grid persist failed:', error);
+        }
     }
 
     async onClose(): Promise<void> {
@@ -212,11 +237,40 @@ export class PlotgridView extends ItemView {
                 }
             }
         }
-        this.disposeUniverHost();
+        this.disposeUniverHost({ persist: false });
+        this.closeAllCellEditors();
         // disposeUniverHost performs one last pull; the explicit save above is
         // authoritative, so do not leave a second autosave running after close.
         this.cancelPendingSave();
         this.loadedSystemFolder = null;
+    }
+
+    private closeAllCellEditors(): void {
+        for (const win of [...this.cellEditorWindows.values()]) {
+            try { win.__nlCellEditorCleanup?.(); } catch { /* ignore */ }
+            win.remove();
+        }
+        this.cellEditorWindows.clear();
+    }
+
+    private bringCellEditorToFront(win: HTMLElement, pinned = false): void {
+        this.cellEditorZSeq += 1;
+        win.style.zIndex = String((pinned ? 20000 : 10000) + (this.cellEditorZSeq % 10000));
+    }
+
+    private resolveCellEditorHeading(cell: CellData): string {
+        const key = cell.id;
+        for (const page of this.document.pages) {
+            for (const row of page.rows || []) {
+                for (const col of page.columns || []) {
+                    if (`${row.id}-${col.id}` !== key) continue;
+                    const rowLabel = (row.label || '').trim() || '—';
+                    const colLabel = (col.label || '').trim() || '—';
+                    return `${rowLabel} · ${colLabel}`;
+                }
+            }
+        }
+        return t('Cell editor');
     }
 
     private getActiveSystemFolder(): string {
@@ -273,10 +327,13 @@ export class PlotgridView extends ItemView {
                 && this.loadedSystemFolder !== folder;
             if (projectChanged) {
                 // Never flush the previous project's pending autosave into the new System/ folder.
-                this.cancelPendingSave();
+                // Persist the outgoing workbook first — dispose alone used to cancel the
+                // debounce and drop in-Univer edits that had not pulled yet.
+                await this.persistBoundPlotGrid();
                 this.univerLoadFailed = false;
                 this.univerLoadError = null;
-                this.disposeUniverHost();
+                this.closeAllCellEditors();
+                this.disposeUniverHost({ persist: false });
                 this.hideCellInspector();
                 this.undoStack = [];
             }
@@ -383,12 +440,23 @@ export class PlotgridView extends ItemView {
     private scheduleSave() {
         const plugin = this.plugin;
         if (!plugin) return;
+        // Never autosave while Univer's in-cell editor / IME is live — writing the
+        // vault triggers refreshPlotGridViews and remounts the workbook mid-keystroke.
+        if (this.univerHost?.isEditorBusy()) {
+            if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
+            this.saveDebounce = window.setTimeout(() => this.scheduleSave(), 200);
+            return;
+        }
         // Capture the System/ folder this in-memory document belongs to.
         const folderAtSchedule = this.loadedSystemFolder || this.getActiveSystemFolder();
         if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
         // debounce and call plugin-level save API if available
         const timerId = window.setTimeout(async () => {
             try {
+                if (this.univerHost?.isEditorBusy()) {
+                    this.scheduleSave();
+                    return;
+                }
                 const currentFolder = this.getActiveSystemFolder();
                 if (folderAtSchedule && currentFolder && folderAtSchedule !== currentFolder) {
                     // Active project changed — do not write the previous workbook into the new folder.
@@ -404,7 +472,7 @@ export class PlotgridView extends ItemView {
                 // made refresh logic think a save was still pending forever.
                 if (this.saveDebounce === timerId) this.saveDebounce = null;
             }
-        }, 500);
+        }, 800);
         this.saveDebounce = timerId;
     }
 
@@ -700,6 +768,12 @@ export class PlotgridView extends ItemView {
         // add a small left margin so there's a bit more space between the view switcher and action buttons
         controls.setCssStyles({ marginLeft: '24px' });
 
+        // Plot-grid controls sit before the shared Stats / Converter / Playmode
+        // group. Reappend that group so it is the rightmost toolbar item; its
+        // existing left border becomes the single separator between the groups.
+        const trailingActions = toolbar.querySelector(':scope > .story-line-view-actions');
+        if (trailingActions) toolbar.appendChild(trailingActions);
+
         const left = controls.createDiv('plot-grid-toolbar-left');
         left.setCssStyles({
             display: 'flex',
@@ -716,28 +790,11 @@ export class PlotgridView extends ItemView {
 
         // Toolbar icon styling lives in styles.css under `.plot-grid-toolbar`.
 
-        // Cell Markdown actions. A wikilink lives in the cell source itself;
-        // there is no second, hidden link value for the user to manage.
-        const linkNoteBtn = left.createEl('button', { cls: 'clickable-icon' });
-        obsidian.setIcon(linkNoteBtn, 'link');
-        attachTooltip(linkNoteBtn, () => /\[\[[^\]]+\]\]/.test(this.getActivePlotGridCell()?.content || '')
-            ? t('Remove wikilinks')
-            : t('Insert wikilink'));
-        linkNoteBtn.addEventListener('click', () => { this.toggleWikilinkForActiveCell(); });
-
+        // Cell Markdown and wikilink actions live in one editor window.
         const editCellBtn = left.createEl('button', { cls: 'clickable-icon' });
         obsidian.setIcon(editCellBtn, 'square-pen');
         attachTooltip(editCellBtn, t('Open cell editor'));
         editCellBtn.addEventListener('click', () => { this.openCellEditorForActiveCell(); });
-
-        // Separate note actions from worksheet view controls.
-        const syncSep = left.createDiv();
-        syncSep.setCssStyles({
-            width: '1px',
-            height: '18px',
-            background: 'var(--background-modifier-border)',
-            margin: '0 4px',
-        });
 
         // Sticky headers toggle — pin row/col labels while scrolling the grid
         const selectedFreezeColumns = this.lastUniverSel?.col != null
@@ -950,13 +1007,16 @@ export class PlotgridView extends ItemView {
         const push = !!this.univerHost && (options.forcePush === true || sig !== this.univerStructureSig);
         if (push) this.univerViewStateSig = '';
         void this.ensureUniverHost({ pushDocument: push }).then(() => {
-            if (this.univerHost) {
-                this.univerStructureSig = this.getUniverStructureSig();
+            if (!this.univerHost) return;
+            this.univerStructureSig = this.getUniverStructureSig();
+            // Only re-apply sheet/freeze/zoom when we remounted or view state
+            // actually changed — setActiveSheet on every render jumps the viewport.
+            if (push) {
                 try {
                     this.univerHost.setActiveSheet(this.document.activePageId);
                 } catch { /* ignore */ }
-                this.applyUniverViewState();
             }
+            this.applyUniverViewState();
         });
     }
 
@@ -1031,6 +1091,42 @@ export class PlotgridView extends ItemView {
                         if (mountGen !== this.univerMountGeneration) return;
                         void this.handleUniverContextMenuAction(action);
                     },
+                    onShowConnectedNotes: (position) => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        this.showConnectedNotesMenu(position);
+                    },
+                    onContextMenuRequest: (position) => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        const menu = new Menu();
+                        this.appendConnectedNotesMenuItems(menu);
+                        menu.addSeparator();
+                        const cell = this.getActiveDataCellFromUniver();
+                        const linkedPath = cell?.linkedSceneId || '';
+                        if (linkedPath) {
+                            menu.addItem(item => item
+                                .setTitle(t('Unlink Note'))
+                                .setIcon('unlink')
+                                .onClick(() => void this.handleUniverContextMenuAction('unlink-note')));
+                        } else {
+                            menu.addItem(item => item
+                                .setTitle(t('Link Note…'))
+                                .setIcon('link')
+                                .onClick(() => void this.handleUniverContextMenuAction('link-note')));
+                        }
+                        menu.addSeparator();
+                        const add = (title: string, icon: string, action: PlotGridUniverContextAction) => {
+                            menu.addItem(item => item
+                                .setTitle(t(title))
+                                .setIcon(icon)
+                                .onClick(() => void this.handleUniverContextMenuAction(action)));
+                        };
+                        add('Convert to Notes', 'notebook-pen', 'convert-to-notes');
+                        add('Convert to Scene', 'clapperboard', 'convert-to-scene');
+                        add('Convert to Research', 'search', 'convert-to-research');
+                        menu.addSeparator();
+                        add('Reset spreadsheet', 'rotate-ccw', 'reset-grid');
+                        menu.showAtPosition(position);
+                    },
                     onDocumentChange: (doc) => {
                         if (mountGen !== this.univerMountGeneration) return;
                         this.document = normalizeConceptGridDocument(doc);
@@ -1047,6 +1143,7 @@ export class PlotgridView extends ItemView {
                                 this.document.activePageId = page.id;
                                 this.bindActivePage();
                                 this.renderPageSidebar();
+                                this.scheduleSave();
                             }
                         }
                         this.selectedRow = info.row > 0 ? info.row - 1 : null;
@@ -1161,18 +1258,105 @@ export class PlotgridView extends ItemView {
             return;
         }
         if (action === 'open-linked-note') {
+            const notes = this.collectConnectedNotes(cell);
+            const primary = notes[0]?.path || cell.linkedSceneId;
+            if (!primary) {
+                new Notice(t('No linked note'));
+                return;
+            }
+            this.openConnectedNote(primary);
+            return;
+        }
+        if (action === 'unlink-note') {
             if (!cell.linkedSceneId) {
                 new Notice(t('No linked note'));
                 return;
             }
-            const linkedScene = this.plugin?.sceneManager?.getScene(cell.linkedSceneId);
-            if (linkedScene) this.openScene(linkedScene);
-            else this.openVaultFile(cell.linkedSceneId);
+            this.unlinkCell(cell.id);
+            new Notice(t('Note unlinked from cell'));
+            return;
+        }
+        if (action === 'link-note') {
+            this.openCellMarkdownEditor(cell, { insertWikilink: true });
             return;
         }
         if (action === 'convert-to-notes') await this.convertCellToNotes(cell);
         else if (action === 'convert-to-scene') await this.convertCellToScene(cell);
         else await this.convertCellToResearch(cell);
+    }
+
+    private collectConnectedNotes(cell: CellData | null | undefined): Array<{ path: string; name: string }> {
+        if (!cell) return [];
+        const seen = new Set<string>();
+        const out: Array<{ path: string; name: string }> = [];
+        const sourcePath = this.plugin?.sceneManager?.activeProject?.filePath ?? '';
+        const addPath = (rawPath: string, displayName?: string) => {
+            const path = rawPath.replace(/\\/g, '/').trim();
+            if (!path) return;
+            const key = path.toLowerCase();
+            if (seen.has(key)) return;
+            seen.add(key);
+            const file = this.resolveLinkedVaultFile(path);
+            const name = displayName?.trim()
+                || file?.basename
+                || path.split('/').pop()?.replace(/\.md$/i, '')
+                || path;
+            out.push({ path: file?.path || path, name });
+        };
+        if (cell.linkedSceneId) addPath(cell.linkedSceneId);
+        const re = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g;
+        let match: RegExpExecArray | null;
+        while ((match = re.exec(cell.content || ''))) {
+            const target = match[1]?.trim();
+            if (!target) continue;
+            let file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+            if (!file) {
+                const direct = this.app.vault.getAbstractFileByPath(target)
+                    ?? this.app.vault.getAbstractFileByPath(`${target}.md`);
+                if (direct instanceof TFile) file = direct;
+            }
+            if (file instanceof TFile) addPath(file.path, match[2] || file.basename);
+            else addPath(target.endsWith('.md') ? target : `${target}.md`, match[2] || target.split('/').pop());
+        }
+        return out;
+    }
+
+    private openConnectedNote(path: string): void {
+        const linkedScene = this.plugin?.sceneManager?.getScene(path);
+        if (linkedScene) this.openScene(linkedScene);
+        else this.openVaultFile(path);
+    }
+
+    private appendConnectedNotesMenuItems(menu: Menu): void {
+        const notes = this.collectConnectedNotes(this.getActiveDataCellFromUniver());
+        menu.addItem(item => {
+            item.setTitle(t('Connected notes'));
+            item.setIcon('files');
+            item.setDisabled(true);
+            item.setSection('nl-connected');
+        });
+        if (notes.length === 0) {
+            menu.addItem(item => {
+                item.setTitle(t('No connected notes'));
+                item.setDisabled(true);
+                item.setSection('nl-connected');
+            });
+            return;
+        }
+        for (const note of notes) {
+            menu.addItem(item => {
+                item.setTitle(note.name);
+                item.setIcon('file-text');
+                item.setSection('nl-connected');
+                item.onClick(() => this.openConnectedNote(note.path));
+            });
+        }
+    }
+
+    private showConnectedNotesMenu(position: { x: number; y: number }): void {
+        const menu = new Menu();
+        this.appendConnectedNotesMenuItems(menu);
+        menu.showAtPosition(position);
     }
 
     /** Map Univer sheet coords (including header row/col at 0) → data CellData. */
@@ -1185,15 +1369,12 @@ export class PlotgridView extends ItemView {
         // would mutate the wrong grid at the same coordinates.
         const page = this.document.pages.find(p => p.id === sel.sheetId);
         if (!page) return null;
-        // Univer uses row 0 / column 0 for NarrativeLab's editable labels. When
-        // the sheet is empty they look like ordinary cells, so move a header
-        // selection to the nearest content cell instead of rejecting it.
-        const dataRow = Math.max(1, sel.row);
-        const dataCol = Math.max(1, sel.col);
-        if (dataRow !== sel.row || dataCol !== sel.col) {
-            this.univerHost?.setActiveCell(sel.sheetId, dataRow, dataCol);
-            this.lastUniverSel = { sheetId: sel.sheetId, row: dataRow, col: dataCol };
-        }
+        // Univer uses row 0 / column 0 for NarrativeLab's editable labels (A1 is
+        // the corner). Never steal selection away from those cells — remapping to
+        // B2 aborted in-cell edits and made A1 feel uneditable.
+        if (sel.row < 1 || sel.col < 1) return null;
+        const dataRow = sel.row;
+        const dataCol = sel.col;
         let expanded = false;
         while (page.rows.length < dataRow) {
             const index = page.rows.length + 1;
@@ -1266,28 +1447,15 @@ export class PlotgridView extends ItemView {
         this.openCellMarkdownEditor(cell);
     }
 
-    private toggleWikilinkForActiveCell(): void {
-        const cell = this.getActivePlotGridCell();
-        if (!cell) {
-            new Notice(t('Select a cell first'));
-            return;
-        }
-        const wikilink = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g;
-        if (wikilink.test(cell.content || '')) {
-            wikilink.lastIndex = 0;
-            cell.content = (cell.content || '').replace(wikilink, (_match, target: string, alias?: string) => alias || target);
-            cell.linkedSceneId = undefined;
-            cell.linkedViaWikilink = undefined;
-            cell.manualContent = true;
-            this.univerHost?.syncMeta(this.document);
-            this.scheduleSave();
-            this.renderGrid({ forcePush: true });
-            return;
-        }
-        this.openCellMarkdownEditor(cell, { insertWikilink: true });
-    }
-
     private openCellMarkdownEditor(cell: CellData, options: { insertWikilink?: boolean } = {}): void {
+        const cellKey = cell.id || `${Date.now()}`;
+        const existing = this.cellEditorWindows.get(cellKey);
+        if (existing?.isConnected) {
+            existing.__nlCellEditorFocus?.(options);
+            return;
+        }
+        if (existing) this.cellEditorWindows.delete(cellKey);
+
         const editorApp = this.app;
         const sourcePath = this.plugin?.sceneManager?.activeProject?.filePath || '';
         const commit = (value: string): void => {
@@ -1299,153 +1467,334 @@ export class PlotgridView extends ItemView {
             this.renderGrid({ forcePush: true });
             this.refreshOpenCellInspector();
         };
-        class CellMarkdownEditorModal extends Modal {
-            private textarea: HTMLTextAreaElement | null = null;
-            private previewEl: HTMLDivElement | null = null;
-            private suggest: WikilinkSuggest | null = null;
-            private removeShortcuts: (() => void) | null = null;
-            private renderer = new Component();
-            private previewMode = false;
 
-            onOpen(): void {
-                this.modalEl.addClass('plot-grid-cell-editor-modal');
-                this.renderer.load();
-                this.titleEl.empty();
-                this.titleEl.addClass('plot-grid-cell-editor-title');
-                this.titleEl.createSpan({ cls: 'plot-grid-cell-editor-title-kicker', text: t('Editor') });
-                this.titleEl.createSpan({ cls: 'plot-grid-cell-editor-title-text', text: t('Cell editor') });
-                const { contentEl } = this;
-                contentEl.empty();
+        type EditorWin = HTMLElement & {
+            __nlCellEditorCleanup?: () => void;
+            __nlCellEditorFocus?: (opts?: { insertWikilink?: boolean }) => void;
+        };
+        const win = activeDocument.body.createDiv('plot-grid-cell-editor-window') as EditorWin;
+        win.dataset.cellKey = cellKey;
+        const winWidth = Math.min(720, window.innerWidth - 48);
+        const winHeight = Math.min(480, window.innerHeight - 64);
+        const cascade = (this.cellEditorWindows.size % 8) * 28;
+        const left = Math.max(16, Math.round((window.innerWidth - winWidth) / 2) + cascade);
+        const top = Math.max(16, Math.round((window.innerHeight - winHeight) / 2) + cascade);
+        win.setCssStyles({
+            left: `${left}px`,
+            top: `${top}px`,
+            transform: 'none',
+            width: `${winWidth}px`,
+            height: `${winHeight}px`,
+        });
+        this.cellEditorWindows.set(cellKey, win);
+        this.bringCellEditorToFront(win);
 
-                const meta = contentEl.createDiv('plot-grid-cell-editor-meta');
-                meta.createSpan({ cls: 'plot-grid-cell-editor-kicker', text: t('Markdown and HTML') });
-                meta.createSpan({ cls: 'plot-grid-cell-editor-hint', text: t('Obsidian Markdown shortcuts are available') });
+        let previewMode = !options.insertWikilink;
+        let alwaysOnTop = false;
+        let textarea: HTMLTextAreaElement | null = null;
+        let previewEl: HTMLDivElement | null = null;
+        let suggest: WikilinkSuggest | null = null;
+        let removeShortcuts: (() => void) | null = null;
+        const renderer = new Component();
+        renderer.load();
 
-                const toolbar = contentEl.createDiv({ cls: 'plot-grid-cell-editor-toolbar', attr: { role: 'toolbar' } });
-                const addButton = (label: string, action: MarkdownInputAction, icon?: string): void => {
-                    const button = toolbar.createEl('button', {
-                        cls: 'clickable-icon plot-grid-cell-editor-format',
-                        attr: { type: 'button', title: label, 'aria-label': label },
-                    });
-                    if (icon) obsidian.setIcon(button, icon);
-                    else button.setText(label);
-                    button.addEventListener('mousedown', event => {
-                        event.preventDefault();
-                        if (!this.textarea) return;
-                        applyMarkdownInputAction(this.textarea, action);
-                    });
-                };
-                addButton(t('Bold'), 'bold', 'bold');
-                addButton(t('Italic'), 'italic', 'italic');
-                addButton(t('Strikethrough'), 'strikethrough', 'strikethrough');
-                addButton(t('Inline code'), 'inline-code', 'code');
-                addButton(t('Highlight'), 'highlight', 'highlighter');
-                toolbar.createDiv('plot-grid-cell-editor-separator');
-                addButton('H1', 'heading-1');
-                addButton('H2', 'heading-2');
-                addButton('H3', 'heading-3');
-                addButton(t('Blockquote'), 'blockquote', 'text-quote');
-                addButton(t('Bulleted list'), 'bullet-list', 'list');
-                addButton(t('Numbered list'), 'numbered-list', 'list-ordered');
-                addButton(t('Checklist'), 'task-list', 'list-checks');
-                toolbar.createDiv('plot-grid-cell-editor-separator');
-                addButton(t('Wikilink'), 'wikilink', 'brackets');
+        const titlebar = win.createDiv('plot-grid-cell-editor-titlebar');
+        const titleBlock = titlebar.createDiv('plot-grid-cell-editor-title');
+        titleBlock.createSpan({ cls: 'plot-grid-cell-editor-title-kicker', text: t('Editor') });
+        titleBlock.createSpan({
+            cls: 'plot-grid-cell-editor-title-text',
+            text: this.resolveCellEditorHeading(cell),
+        });
+        const titleActions = titlebar.createDiv('plot-grid-cell-editor-title-actions');
+        const pinBtn = titleActions.createEl('button', {
+            cls: 'clickable-icon plot-grid-cell-editor-pin',
+            attr: { type: 'button', title: t('Always on top'), 'aria-label': t('Always on top') },
+        });
+        obsidian.setIcon(pinBtn, 'pin');
+        const closeBtn = titleActions.createEl('button', {
+            cls: 'clickable-icon plot-grid-cell-editor-close',
+            attr: { type: 'button', title: t('Close'), 'aria-label': t('Close') },
+        });
+        obsidian.setIcon(closeBtn, 'x');
 
-                const modeButton = toolbar.createEl('button', {
-                    cls: 'plot-grid-cell-editor-mode',
-                    text: t('Preview'),
-                    attr: { type: 'button' },
-                });
+        const meta = win.createDiv('plot-grid-cell-editor-meta');
+        meta.createSpan({ cls: 'plot-grid-cell-editor-kicker', text: t('Markdown and HTML') });
+        meta.createSpan({ cls: 'plot-grid-cell-editor-hint', text: t('Obsidian Markdown shortcuts are available') });
 
-                const editorBody = contentEl.createDiv('plot-grid-cell-editor-body');
-                this.textarea = editorBody.createEl('textarea', {
-                    cls: 'plot-grid-cell-editor-input',
-                    attr: {
-                        spellcheck: 'true',
-                        placeholder: t('Write Markdown or HTML…'),
-                        'aria-label': t('Cell Markdown source'),
-                    },
-                });
-                this.textarea.value = cell.content || '';
-                this.previewEl = editorBody.createDiv('plot-grid-cell-editor-preview markdown-rendered');
-                this.previewEl.hidden = true;
+        const toolbar = win.createDiv({ cls: 'plot-grid-cell-editor-toolbar', attr: { role: 'toolbar' } });
+        const addButton = (label: string, action: MarkdownInputAction, icon?: string): void => {
+            const button = toolbar.createEl('button', {
+                cls: 'clickable-icon plot-grid-cell-editor-format',
+                attr: { type: 'button', title: label, 'aria-label': label },
+            });
+            if (icon) obsidian.setIcon(button, icon);
+            else button.setText(label);
+            button.addEventListener('mousedown', event => {
+                event.preventDefault();
+                if (!textarea || previewMode) return;
+                applyMarkdownInputAction(textarea, action);
+            });
+        };
+        addButton(t('Bold'), 'bold', 'bold');
+        addButton(t('Italic'), 'italic', 'italic');
+        addButton(t('Strikethrough'), 'strikethrough', 'strikethrough');
+        addButton(t('Inline code'), 'inline-code', 'code');
+        addButton(t('Highlight'), 'highlight', 'highlighter');
+        toolbar.createDiv('plot-grid-cell-editor-separator');
+        addButton('H1', 'heading-1');
+        addButton('H2', 'heading-2');
+        addButton('H3', 'heading-3');
+        addButton(t('Blockquote'), 'blockquote', 'text-quote');
+        addButton(t('Bulleted list'), 'bullet-list', 'list');
+        addButton(t('Numbered list'), 'numbered-list', 'list-ordered');
+        addButton(t('Checklist'), 'task-list', 'list-checks');
+        toolbar.createDiv('plot-grid-cell-editor-separator');
+        addButton(t('Wikilink'), 'wikilink', 'brackets');
 
-                this.suggest = new WikilinkSuggest({
-                    app: editorApp,
-                    textareaEl: this.textarea,
-                    maxVisible: 10,
+        const modeButton = toolbar.createEl('button', {
+            cls: 'plot-grid-cell-editor-mode',
+            text: t('Preview'),
+            attr: { type: 'button' },
+        });
+
+        const editorBody = win.createDiv('plot-grid-cell-editor-body');
+        textarea = editorBody.createEl('textarea', {
+            cls: 'plot-grid-cell-editor-input',
+            attr: {
+                spellcheck: 'true',
+                placeholder: t('Write Markdown or HTML…'),
+                'aria-label': t('Cell Markdown source'),
+            },
+        });
+        textarea.value = cell.content || '';
+        previewEl = editorBody.createDiv('plot-grid-cell-editor-preview markdown-rendered');
+        previewEl.addEventListener('click', event => {
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            const anchor = target.closest('a.internal-link');
+            if (!(anchor instanceof HTMLAnchorElement) || !previewEl?.contains(anchor)) return;
+            const linkText = anchor.dataset.href || anchor.getAttribute('href') || '';
+            if (!linkText) return;
+            event.preventDefault();
+            event.stopPropagation();
+            void editorApp.workspace.openLinkText(linkText, sourcePath, true);
+        });
+        // Double-click preview surface to edit.
+        previewEl.addEventListener('dblclick', () => { void setPreview(false); });
+
+        suggest = new WikilinkSuggest({
+            app: editorApp,
+            textareaEl: textarea,
+            maxVisible: 10,
+            sourcePath,
+        });
+        removeShortcuts = installObsidianMarkdownShortcuts(editorApp, textarea);
+
+        const setPreview = async (preview: boolean): Promise<void> => {
+            if (!textarea || !previewEl) return;
+            previewMode = preview;
+            textarea.hidden = preview;
+            previewEl.hidden = !preview;
+            modeButton.setText(preview ? t('Edit') : t('Preview'));
+            modeButton.toggleClass('is-active', preview);
+            win.toggleClass('is-preview', preview);
+            if (preview) {
+                previewEl.empty();
+                await MarkdownRenderer.render(
+                    editorApp,
+                    textarea.value,
+                    previewEl,
                     sourcePath,
-                });
-                this.removeShortcuts = installObsidianMarkdownShortcuts(editorApp, this.textarea);
+                    renderer,
+                );
+            } else {
+                textarea.focus();
+            }
+        };
 
-                const setPreview = async (preview: boolean): Promise<void> => {
-                    if (!this.textarea || !this.previewEl) return;
-                    this.previewMode = preview;
-                    this.textarea.hidden = preview;
-                    this.previewEl.hidden = !preview;
-                    modeButton.setText(preview ? t('Edit') : t('Preview'));
-                    modeButton.toggleClass('is-active', preview);
-                    if (preview) {
-                        this.previewEl.empty();
-                        await MarkdownRenderer.render(
-                            editorApp,
-                            this.textarea.value,
-                            this.previewEl,
-                            sourcePath,
-                            this.renderer,
-                        );
-                    } else {
-                        this.textarea.focus();
-                    }
-                };
-                modeButton.addEventListener('click', () => { void setPreview(!this.previewMode); });
+        modeButton.addEventListener('click', () => { void setPreview(!previewMode); });
 
-                const footer = contentEl.createDiv('plot-grid-cell-editor-footer');
-                const shortcutHint = footer.createSpan({ text: t('Type [[ to search vault notes') });
-                shortcutHint.addClass('plot-grid-cell-editor-footer-hint');
-                const actions = footer.createDiv('plot-grid-cell-editor-actions');
-                const cancel = actions.createEl('button', { text: t('Cancel'), attr: { type: 'button' } });
-                cancel.addEventListener('click', () => this.close());
-                const save = actions.createEl('button', { cls: 'mod-cta', text: t('Save'), attr: { type: 'button' } });
-                save.addEventListener('click', () => {
-                    if (!this.textarea) return;
-                    commit(this.textarea.value);
-                    this.close();
-                });
+        // Chrome outside the textarea also switches to preview (title/meta/blank toolbar).
+        const maybePreviewFromChrome = (event: MouseEvent) => {
+            if (previewMode) return;
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            if (target.closest('button, a, textarea, input, .plot-grid-cell-editor-preview, .plot-grid-cell-editor-resize-handle')) {
+                return;
+            }
+            if (target.closest('.plot-grid-cell-editor-titlebar, .plot-grid-cell-editor-meta, .plot-grid-cell-editor-toolbar, .plot-grid-cell-editor-footer')) {
+                void setPreview(true);
+            }
+        };
+        win.addEventListener('mousedown', (event) => {
+            this.bringCellEditorToFront(win, alwaysOnTop);
+            maybePreviewFromChrome(event);
+        });
+        const footer = win.createDiv('plot-grid-cell-editor-footer');
+        const shortcutHint = footer.createSpan({ text: t('Type [[ to search vault notes') });
+        shortcutHint.addClass('plot-grid-cell-editor-footer-hint');
+        const actions = footer.createDiv('plot-grid-cell-editor-actions');
+        const cancel = actions.createEl('button', { text: t('Cancel'), attr: { type: 'button' } });
+        const save = actions.createEl('button', { cls: 'mod-cta', text: t('Save'), attr: { type: 'button' } });
 
-                this.textarea.addEventListener('keydown', event => {
-                    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                        event.preventDefault();
-                        save.click();
-                    }
-                });
+        const resizeHandle = win.createDiv('plot-grid-cell-editor-resize-handle');
 
-                if (options.insertWikilink) {
-                    const current = this.textarea.value;
-                    const prefix = current && !/\s$/.test(current) ? ' ' : '';
-                    this.textarea.value = `${current}${prefix}[[`;
+        const isFrontmostEditor = (): boolean => {
+            let best: HTMLElement | null = null;
+            let bestZ = -1;
+            for (const other of this.cellEditorWindows.values()) {
+                if (!other.isConnected) continue;
+                const z = Number.parseInt(other.style.zIndex || '0', 10) || 0;
+                if (z >= bestZ) {
+                    bestZ = z;
+                    best = other;
                 }
-                window.requestAnimationFrame(() => {
-                    if (!this.textarea) return;
-                    this.textarea.focus();
-                    const end = this.textarea.value.length;
-                    this.textarea.setSelectionRange(end, end);
-                    if (options.insertWikilink) this.textarea.dispatchEvent(new Event('input', { bubbles: true }));
-                });
             }
+            return best === win;
+        };
 
-            onClose(): void {
-                this.suggest?.destroy();
-                this.suggest = null;
-                this.removeShortcuts?.();
-                this.removeShortcuts = null;
-                this.renderer.unload();
-                this.contentEl.empty();
+        const cleanup = (): void => {
+            activeDocument.removeEventListener('keydown', onKey);
+            suggest?.destroy();
+            suggest = null;
+            removeShortcuts?.();
+            removeShortcuts = null;
+            renderer.unload();
+            if (this.cellEditorWindows.get(cellKey) === win) this.cellEditorWindows.delete(cellKey);
+            delete win.__nlCellEditorCleanup;
+            delete win.__nlCellEditorFocus;
+        };
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key !== 'Escape') return;
+            if (!isFrontmostEditor()) return;
+            closeWindow();
+        };
+        const closeWindow = (): void => {
+            cleanup();
+            win.remove();
+        };
+        cancel.addEventListener('click', () => closeWindow());
+        closeBtn.addEventListener('click', () => closeWindow());
+        save.addEventListener('click', () => {
+            if (!textarea) return;
+            commit(textarea.value);
+            closeWindow();
+        });
+        textarea.addEventListener('keydown', event => {
+            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                event.preventDefault();
+                save.click();
             }
-        }
-        new CellMarkdownEditorModal(this.app).open();
+        });
+        activeDocument.addEventListener('keydown', onKey);
+
+        const insertWikilinkToken = (): void => {
+            if (!textarea) return;
+            const current = textarea.value;
+            const prefix = current && !/\s$/.test(current) ? ' ' : '';
+            textarea.value = `${current}${prefix}[[`;
+            const end = textarea.value.length;
+            textarea.setSelectionRange(end, end);
+            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        };
+
+        win.__nlCellEditorCleanup = cleanup;
+        win.__nlCellEditorFocus = (opts) => {
+            this.bringCellEditorToFront(win, alwaysOnTop);
+            void setPreview(false).then(() => {
+                if (!textarea) return;
+                textarea.focus();
+                if (opts?.insertWikilink) insertWikilinkToken();
+            });
+        };
+
+        const applyAlwaysOnTop = (): void => {
+            win.toggleClass('is-always-on-top', alwaysOnTop);
+            pinBtn.setAttribute('title', alwaysOnTop ? t('Unpin') : t('Always on top'));
+            pinBtn.setAttribute('aria-label', alwaysOnTop ? t('Unpin') : t('Always on top'));
+            pinBtn.toggleClass('is-active', alwaysOnTop);
+            this.bringCellEditorToFront(win, alwaysOnTop);
+        };
+        pinBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            alwaysOnTop = !alwaysOnTop;
+            applyAlwaysOnTop();
+        });
+
+        // Drag via titlebar — keep floating size/position (pin no longer docks full-width).
+        let isDragging = false;
+        let dragOffsetX = 0;
+        let dragOffsetY = 0;
+        titlebar.addEventListener('pointerdown', (e: PointerEvent) => {
+            if ((e.target as HTMLElement).closest('button')) return;
+            isDragging = true;
+            this.bringCellEditorToFront(win, alwaysOnTop);
+            const rect = win.getBoundingClientRect();
+            dragOffsetX = e.clientX - rect.left;
+            dragOffsetY = e.clientY - rect.top;
+            win.setCssStyles({
+                left: `${rect.left}px`,
+                top: `${rect.top}px`,
+                transform: 'none',
+            });
+            titlebar.setPointerCapture(e.pointerId);
+            e.preventDefault();
+        });
+        titlebar.addEventListener('pointermove', (e: PointerEvent) => {
+            if (!isDragging) return;
+            win.setCssStyles({
+                left: `${e.clientX - dragOffsetX}px`,
+                top: `${e.clientY - dragOffsetY}px`,
+            });
+        });
+        titlebar.addEventListener('pointerup', () => { isDragging = false; });
+        titlebar.addEventListener('lostpointercapture', () => { isDragging = false; });
+
+        // Resize from bottom-right corner.
+        let isResizing = false;
+        let resizeStartX = 0;
+        let resizeStartY = 0;
+        let startW = 0;
+        let startH = 0;
+        resizeHandle.addEventListener('pointerdown', (e: PointerEvent) => {
+            isResizing = true;
+            this.bringCellEditorToFront(win, alwaysOnTop);
+            resizeStartX = e.clientX;
+            resizeStartY = e.clientY;
+            startW = win.offsetWidth;
+            startH = win.offsetHeight;
+            const rect = win.getBoundingClientRect();
+            win.setCssStyles({
+                left: `${rect.left}px`,
+                top: `${rect.top}px`,
+                transform: 'none',
+            });
+            resizeHandle.setPointerCapture(e.pointerId);
+            e.preventDefault();
+            e.stopPropagation();
+        });
+        resizeHandle.addEventListener('pointermove', (e: PointerEvent) => {
+            if (!isResizing) return;
+            const newW = Math.max(420, startW + (e.clientX - resizeStartX));
+            const newH = Math.max(260, startH + (e.clientY - resizeStartY));
+            win.setCssStyles({
+                width: `${Math.min(newW, window.innerWidth - 16)}px`,
+                height: `${Math.min(newH, window.innerHeight - 16)}px`,
+            });
+        });
+        resizeHandle.addEventListener('pointerup', () => { isResizing = false; });
+        resizeHandle.addEventListener('lostpointercapture', () => { isResizing = false; });
+
+        if (options.insertWikilink && textarea) insertWikilinkToken();
+
+        void setPreview(previewMode).then(() => {
+            if (previewMode || !textarea) return;
+            textarea.focus();
+            const end = textarea.value.length;
+            textarea.setSelectionRange(end, end);
+            if (options.insertWikilink) textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        });
     }
-
     async refresh(): Promise<void> {
         try {
             const folder = this.getActiveSystemFolder();
@@ -1455,28 +1804,49 @@ export class PlotgridView extends ItemView {
 
             if (projectChanged) {
                 // Always reload on project switch — never skip for pending saves / focus.
-                this.cancelPendingSave();
-                this.disposeUniverHost();
+                await this.persistBoundPlotGrid();
+                this.closeAllCellEditors();
+                this.disposeUniverHost({ persist: false });
             } else {
+                // Pull pending Univer edits into memory before deciding whether disk
+                // reload is safe. Otherwise a vault refresh can overwrite the grid
+                // while edits still live only inside Univer (pre-debounce).
+                if (this.univerHost) {
+                    // Never flush/reload while typing — flush blurs the editor and
+                    // load+render remounts the workbook (viewport jump).
+                    if (this.univerHost.isEditorBusy()) return;
+                    try { this.univerHost.flush(); } catch { /* ignore */ }
+                }
                 // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
                 if (this.saveDebounce) return;
+                // Pending sync after flush should have scheduled save; still guard.
+                if (this.univerHost?.hasPendingSync()) return;
                 // If a cell is being edited, skip refresh to avoid destroying the textarea
                 if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
                 // If any input/textarea in the grid or inspector is focused, skip refresh to avoid losing edits
                 if (this.wrapperEl?.querySelector('input:focus, textarea:focus')) return;
+                // Univer in-cell / formula editor or IME — remounting clears composition.
+                if (this.univerHost?.isEditorBusy()) return;
+                if (this.scrollAreaEl?.querySelector('[contenteditable="true"]:focus, textarea:focus, input:focus')) return;
             }
 
-            const beforeFp = this.univerHost
-                ? conceptGridContentFingerprint(this.document)
-                : '';
+            const beforeFp = conceptGridContentFingerprint(this.document);
+            const beforeSig = this.getUniverStructureSig();
             await this.loadData();
             // If the view hasn't been opened yet, `wrapperEl` will be null — skip rendering
             if (!this.wrapperEl) return;
+
+            const afterFp = conceptGridContentFingerprint(this.document);
+            const afterSig = this.getUniverStructureSig();
+            // Own autosave / no-op disk echo — do not rebuild toolbar or touch Univer.
+            if (!projectChanged && beforeFp === afterFp && beforeSig === afterSig && this.univerHost) {
+                return;
+            }
+
             this.renderPageSidebar();
             this.renderToolbar();
             // Content-only disk changes must push into Univer (structure sig alone skips remount).
             if (this.univerHost && !projectChanged) {
-                const afterFp = conceptGridContentFingerprint(this.document);
                 if (afterFp !== beforeFp) {
                     try {
                         this.univerHost.setDocument(this.document);
@@ -1752,6 +2122,10 @@ export class PlotgridView extends ItemView {
 
     private onKeyDown(e: KeyboardEvent) {
         if (!this.wrapperEl) return;
+        // Embedded Univer owns keyboard + IME. Intercepting keys (arrows, type-to-edit,
+        // clipboard shortcuts) steals focus from the sheet editor and makes the
+        // candidate window jump / vanish.
+        if (this.univerHost) return;
         const target = e.target as HTMLElement | null;
         // Inputs/textareas handle their own keys (do not intercept).
         if (target?.closest('input, textarea, [contenteditable="true"]')) {

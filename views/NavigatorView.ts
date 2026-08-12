@@ -706,18 +706,10 @@ export class NavigatorView extends ItemView {
         row.createSpan({ text: note.title || t('Untitled note'), cls: 'sl-nav-title' });
 
         row.addEventListener('dragstart', (event) => {
-            if (!event.dataTransfer) return;
-            this.draggingScenePath = note.filePath;
-            event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData(SCENE_DRAG_MIME, note.filePath);
-            event.dataTransfer.setData('text/plain', note.filePath);
-            row.addClass('is-dragging');
+            this.beginVaultFileDrag(event, note.filePath, row);
         });
         row.addEventListener('dragend', () => {
-            this.draggingScenePath = null;
-            row.removeClass('is-dragging');
-            this.listEl?.querySelectorAll('.is-drag-over')
-                .forEach(element => element.removeClass('is-drag-over'));
+            this.endVaultFileDrag(row);
         });
 
         row.addEventListener('click', () => {
@@ -833,18 +825,10 @@ export class NavigatorView extends ItemView {
 
         if (!post.isLinked) {
             row.addEventListener('dragstart', (event) => {
-                if (!event.dataTransfer) return;
-                this.draggingScenePath = post.filePath;
-                event.dataTransfer.effectAllowed = 'move';
-                event.dataTransfer.setData(SCENE_DRAG_MIME, post.filePath);
-                event.dataTransfer.setData('text/plain', post.filePath);
-                row.addClass('is-dragging');
+                this.beginVaultFileDrag(event, post.filePath, row);
             });
             row.addEventListener('dragend', () => {
-                this.draggingScenePath = null;
-                row.removeClass('is-dragging');
-                this.listEl?.querySelectorAll('.is-drag-over')
-                    .forEach(element => element.removeClass('is-drag-over'));
+                this.endVaultFileDrag(row);
             });
         }
 
@@ -1077,6 +1061,49 @@ export class NavigatorView extends ItemView {
         return event.dataTransfer.getData(SCENE_DRAG_MIME)
             || event.dataTransfer.getData('text/plain')
             || '';
+    }
+
+    /**
+     * Register an Obsidian file drag so native Canvas / whiteboard embeds the
+     * note page (same as dragging from the file explorer). Also keeps the
+     * NarrativeLab binder MIME for in-navigator reorder / convert drops.
+     */
+    private beginVaultFileDrag(event: DragEvent, filePath: string, row: HTMLElement): void {
+        this.draggingScenePath = filePath;
+        row.addClass('is-dragging');
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        const manager = (this.app as unknown as {
+            dragManager?: {
+                dragFile: (evt: DragEvent, f: TFile) => unknown;
+                onDragStart: (evt: DragEvent, data: unknown) => void;
+            };
+        }).dragManager;
+        let usedObsidianDrag = false;
+        if (manager && file instanceof TFile) {
+            try {
+                const dragData = manager.dragFile(event, file);
+                manager.onDragStart(event, dragData);
+                usedObsidianDrag = true;
+            } catch (error) {
+                console.warn('[NarrativeLab] Obsidian dragManager failed; falling back to path drag.', error);
+            }
+        }
+        if (!event.dataTransfer) return;
+        // Binder drops still need our private MIME even when dragManager ran.
+        event.dataTransfer.setData(SCENE_DRAG_MIME, filePath);
+        if (!usedObsidianDrag) {
+            // text/plain alone makes native Canvas create a path text card — only
+            // use it when Obsidian's file drag registration is unavailable.
+            event.dataTransfer.setData('text/plain', filePath);
+            event.dataTransfer.effectAllowed = 'all';
+        }
+    }
+
+    private endVaultFileDrag(row: HTMLElement): void {
+        this.draggingScenePath = null;
+        row.removeClass('is-dragging', 'is-drop-before', 'is-drop-after');
+        this.listEl?.querySelectorAll('.is-drag-over, .is-drop-before, .is-drop-after')
+            .forEach(element => element.removeClass('is-drag-over', 'is-drop-before', 'is-drop-after'));
     }
 
     private isSceneDrag(event: DragEvent): boolean {
@@ -1403,18 +1430,10 @@ export class NavigatorView extends ItemView {
         }
 
         row.addEventListener('dragstart', (event) => {
-            if (!event.dataTransfer) return;
-            this.draggingScenePath = scene.filePath;
-            event.dataTransfer.effectAllowed = 'move';
-            event.dataTransfer.setData(SCENE_DRAG_MIME, scene.filePath);
-            event.dataTransfer.setData('text/plain', scene.filePath);
-            row.addClass('is-dragging');
+            this.beginVaultFileDrag(event, scene.filePath, row);
         });
         row.addEventListener('dragend', () => {
-            this.draggingScenePath = null;
-            row.removeClass('is-dragging', 'is-drop-before', 'is-drop-after');
-            this.listEl?.querySelectorAll('.is-drag-over, .is-drop-before, .is-drop-after')
-                .forEach(element => element.removeClass('is-drag-over', 'is-drop-before', 'is-drop-after'));
+            this.endVaultFileDrag(row);
         });
         row.addEventListener('dragover', (event) => {
             if (!this.isSceneDrag(event) || this.draggingScenePath === scene.filePath) return;

@@ -56,14 +56,14 @@ test('Base folder filters use path boundaries and include shared plus local root
         ]),
         {
             or: [
-                'file.inFolder("Series/Library/Characters")',
-                'file.inFolder("Book/Library/Characters")',
+                'if(file, file.inFolder("Series/Library/Characters"), false)',
+                'if(file, file.inFolder("Book/Library/Characters"), false)',
             ],
         },
     );
     assert.equal(
         buildLibraryPathScopeFilter(['Library/角色']),
-        'file.inFolder("Library/角色")',
+        'if(file, file.inFolder("Library/角色"), false)',
     );
 });
 
