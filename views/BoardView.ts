@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, WorkspaceSplit, Menu, Notice, TFile, TFolder, Modal, Setting, MarkdownRenderer, normalizePath } from 'obsidian';
+import { ItemView, WorkspaceLeaf, WorkspaceSplit, Menu, Notice, TFile, TFolder, Modal, Setting, MarkdownRenderer, normalizePath, type ViewStateResult } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { Scene, SceneFilter, SortConfig, BoardGroupBy, SceneStatus, SceneTemplate, getStatusOrder, getStatusConfig, resolveStatusCfg } from '../models/Scene';
 import { openConfirmModal } from '../components/ConfirmModal';
@@ -17,10 +17,15 @@ import { BOARD_VIEW_TYPE } from '../constants';
 import { cleanStickyNoteColor, resolveStickyNoteColors, resolveStickyNoteFontColor } from '../settings';
 import { attachTooltip } from '../components/Tooltip';
 import { resolveImagePath } from '../components/ImagePicker';
-import { CorkboardCanvasService, type CorkboardPos } from '../services/CorkboardCanvasService';
+import { CorkboardCanvasService, type CorkboardCanvasData, type CorkboardPos } from '../services/CorkboardCanvasService';
 import type SceneCardsPlugin from '../main';
 import { compareActChapter, parseActChapterInput, getActDisplayLabel } from '../utils/actChapter';
+import { deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 import { t } from '../utils/i18n';
+import {
+    NARRATIVE_LAB_PROJECT_FILE_STATE_KEY,
+    narrativeLabLeafState,
+} from '../utils/narrativeLabLeafState';
 
 type BoardMode = 'kanban' | 'corkboard';
 
@@ -30,6 +35,8 @@ type BoardMode = 'kanban' | 'corkboard';
 export class BoardView extends ItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
+    /** Project this leaf is bound to — allows multiple projects open in parallel tabs. */
+    private boundProjectFile: string | null = null;
     private cardComponent: SceneCardComponent;
     private filtersComponent: FiltersComponent | null = null;
     private inspectorComponent: InspectorComponent | null = null;
@@ -113,6 +120,12 @@ export class BoardView extends ItemView {
     }
 
     getDisplayText(): string {
+        if (this.boundProjectFile) {
+            const bound = normalizePath(this.boundProjectFile);
+            const project = this.sceneManager.getProjects()
+                .find(p => normalizePath(p.filePath) === bound);
+            if (project?.title) return project.title;
+        }
         return this.plugin?.getActiveProjectDisplayName() || 'NarrativeLab';
     }
 
@@ -120,10 +133,59 @@ export class BoardView extends ItemView {
         return 'layout-grid';
     }
 
+    /**
+     * Resolve which project this Board leaf owns. Corkboard I/O must never fall
+     * back to a different global activeProject — that overwrites the wrong
+     * corkboard.canvas when multiple projects are open.
+     */
+    private resolveCorkboardProjectFile(): string | null {
+        if (this.boundProjectFile) return normalizePath(this.boundProjectFile);
+        if (this.sceneManager.activeProject?.filePath) {
+            return normalizePath(this.sceneManager.activeProject.filePath);
+        }
+        return null;
+    }
+
+    /** True when this leaf is bound to a project that is not the global active one. */
+    private isForeignActiveProject(): boolean {
+        const bound = this.boundProjectFile ? normalizePath(this.boundProjectFile) : null;
+        const active = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : null;
+        return !!(bound && active && bound !== active);
+    }
+
+    private getBoundCorkboardCanvasPath(): string | null {
+        return this.corkboardCanvasService.getCanvasPath(this.resolveCorkboardProjectFile());
+    }
+
+    private isBoundNlManagedPath(path: string): boolean {
+        return this.corkboardCanvasService.isNlManagedPath(path, this.resolveCorkboardProjectFile());
+    }
+
+    getBoundProjectFile(): string | null {
+        return this.boundProjectFile;
+    }
+
+    getState(): Record<string, unknown> {
+        return narrativeLabLeafState(this.boundProjectFile);
+    }
+
+    async setState(state: Record<string, unknown>, result: ViewStateResult): Promise<void> {
+        await super.setState(state, result);
+        const raw = state?.[NARRATIVE_LAB_PROJECT_FILE_STATE_KEY];
+        if (typeof raw === 'string' && raw.trim()) {
+            this.boundProjectFile = normalizePath(raw);
+        }
+    }
+
     async onOpen(): Promise<void> {
         this.plugin.storyLeaf = this.leaf;
         // Opening the board always starts with parked/inactive content hidden.
         this.currentFilter.activeState = 'active';
+        if (!this.boundProjectFile && this.sceneManager.activeProject?.filePath) {
+            this.boundProjectFile = normalizePath(this.sceneManager.activeProject.filePath);
+        }
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
         container.addClass('story-line-board-container');
@@ -155,9 +217,15 @@ export class BoardView extends ItemView {
             try { this.corkboardGeometryCleanup(); } catch { /* ignore */ }
             this.corkboardGeometryCleanup = null;
         }
-        await this.pullPositionsFromNativeCanvas();
+        // Only flush geometry/layout when this leaf matches the active project —
+        // otherwise we would write FPS positions into Evomon's board.json (or vice versa).
+        if (!this.isForeignActiveProject()) {
+            await this.pullPositionsFromNativeCanvas();
+        }
         this.teardownNativeCorkboardCanvas();
-        await this.persistCorkboardLayout();
+        if (!this.isForeignActiveProject()) {
+            await this.persistCorkboardLayout();
+        }
     }
 
     /**
@@ -419,24 +487,23 @@ export class BoardView extends ItemView {
             });
         }
 
-        // Undo button
+        // Undo / redo — corkboard uses Obsidian Canvas history; kanban uses scene UndoManager.
         const undoBtn = iconGroup.createEl('button', {
             cls: 'clickable-icon',
         });
         obsidian.setIcon(undoBtn, 'undo');
         attachTooltip(undoBtn, t('Undo (Ctrl+Z)'));
-        undoBtn.addEventListener('click', async () => {
-            await this.sceneManager.undoManager.undo();
+        undoBtn.addEventListener('click', () => {
+            void this.handleBoardUndo();
         });
 
-        // Redo button
         const redoBtn = iconGroup.createEl('button', {
             cls: 'clickable-icon',
         });
         obsidian.setIcon(redoBtn, 'redo');
         attachTooltip(redoBtn, t('Redo (Ctrl+Shift+Z)'));
-        redoBtn.addEventListener('click', async () => {
-            await this.sceneManager.undoManager.redo();
+        redoBtn.addEventListener('click', () => {
+            void this.handleBoardRedo();
         });
 
         // Refresh button
@@ -660,7 +727,7 @@ export class BoardView extends ItemView {
     }
 
     private async pullPositionsFromNativeCanvas(): Promise<void> {
-        const path = this.corkboardCanvasService.getCanvasPath();
+        const path = this.getBoundCorkboardCanvasPath();
         if (!path) return;
         try {
             const data = await this.corkboardCanvasService.readCanvas(path);
@@ -679,17 +746,214 @@ export class BoardView extends ItemView {
         }
     }
 
+    /** True when Board is hosting (or should defer to) corkboard Canvas undo. */
+    isCorkboardUndoContext(): boolean {
+        return this.boardMode === 'corkboard' && !this.corkboardNativeFailed;
+    }
+
+    /**
+     * Obsidian routes window copy/cut/paste to `activeLeaf.view.handle*`.
+     * The corkboard Canvas is a nested leaf, so Board must forward clipboard
+     * events — otherwise Ctrl+C never writes `obsidian/canvas` and paste into
+     * other Canvas tabs fails.
+     */
+    handleCopy(evt: ClipboardEvent): void {
+        this.forwardCorkboardClipboard('copy', evt);
+    }
+
+    handleCut(evt: ClipboardEvent): void {
+        this.forwardCorkboardClipboard('cut', evt);
+    }
+
+    handlePaste(evt: ClipboardEvent): void {
+        this.forwardCorkboardClipboard('paste', evt);
+    }
+
+    private getHostedCorkboardCanvas(): {
+        handleCopy?: (e: ClipboardEvent) => void;
+        handleCut?: (e: ClipboardEvent) => void;
+        handlePaste?: (e: ClipboardEvent) => void;
+        wrapperEl?: HTMLElement;
+        selection?: Set<unknown> | unknown[];
+        readonly?: boolean;
+    } | null {
+        const view = this.corkboardCanvasLeaf?.view as { canvas?: unknown } | null;
+        const canvas = view?.canvas;
+        if (!canvas || typeof canvas !== 'object') return null;
+        return canvas as {
+            handleCopy?: (e: ClipboardEvent) => void;
+            handleCut?: (e: ClipboardEvent) => void;
+            handlePaste?: (e: ClipboardEvent) => void;
+            wrapperEl?: HTMLElement;
+            selection?: Set<unknown> | unknown[];
+            readonly?: boolean;
+        };
+    }
+
+    private isCorkboardTextEditingTarget(el: Element | null): boolean {
+        if (!el || !(el instanceof HTMLElement)) return false;
+        if (!this.corkboardCanvasHostEl?.contains(el)) return false;
+        return !!el.closest(
+            'input, textarea, [contenteditable="true"], .cm-editor, .cm-content, .markdown-source-view',
+        );
+    }
+
+    private focusCorkboardCanvasWrapper(canvas: { wrapperEl?: HTMLElement }): boolean {
+        const wrapper = canvas.wrapperEl;
+        if (!wrapper) return false;
+        const doc = wrapper.ownerDocument;
+        if (doc.activeElement === wrapper) return true;
+        try {
+            if (!wrapper.hasAttribute('tabindex')) wrapper.tabIndex = -1;
+            wrapper.focus({ preventScroll: true });
+        } catch { /* ignore */ }
+        return doc.activeElement === wrapper;
+    }
+
+    private forwardCorkboardClipboard(
+        action: 'copy' | 'cut' | 'paste',
+        evt: ClipboardEvent,
+    ): boolean {
+        if (!this.isCorkboardUndoContext() || evt.defaultPrevented) return false;
+        const canvas = this.getHostedCorkboardCanvas();
+        if (!canvas) return false;
+
+        const active = activeDocument.activeElement;
+        // Let CodeMirror / inputs keep native text clipboard behavior.
+        if (this.isCorkboardTextEditingTarget(active)) return false;
+
+        // Canvas only accepts clipboard ops while wrapperEl is focused.
+        this.focusCorkboardCanvasWrapper(canvas);
+        this.corkboardLastInteractAt = Date.now();
+
+        try {
+            if (action === 'copy') {
+                canvas.handleCopy?.(evt);
+            } else if (action === 'cut') {
+                canvas.handleCut?.(evt);
+            } else {
+                canvas.handlePaste?.(evt);
+            }
+        } catch (e) {
+            console.warn('[NarrativeLab] corkboard clipboard forward failed:', e);
+            return false;
+        }
+        return evt.defaultPrevented;
+    }
+
+    /**
+     * Undo for Board: corkboard uses Obsidian Canvas history only (never the
+     * scene UndoManager — that stack is empty during whiteboard edits and only
+     * produces "Nothing to undo"). Kanban still uses scene UndoManager.
+     */
+    async handleBoardUndo(): Promise<boolean> {
+        if (this.isCorkboardUndoContext()) {
+            if (this.runCorkboardCanvasHistory('undo')) return true;
+            new Notice(t('Nothing to undo'));
+            return false;
+        }
+        return this.sceneManager.undoManager.undo();
+    }
+
+    async handleBoardRedo(): Promise<boolean> {
+        if (this.isCorkboardUndoContext()) {
+            if (this.runCorkboardCanvasHistory('redo')) return true;
+            new Notice(t('Nothing to redo'));
+            return false;
+        }
+        return this.sceneManager.undoManager.redo();
+    }
+
+    /** Invoke undo/redo on the hosted corkboard Canvas, or any open corkboard.canvas tab. */
+    private runCorkboardCanvasHistory(action: 'undo' | 'redo'): boolean {
+        const candidates: Array<{ canvas?: unknown } | null | undefined> = [
+            this.corkboardCanvasLeaf?.view as { canvas?: unknown } | null,
+        ];
+        const path = this.getBoundCorkboardCanvasPath();
+        if (path) {
+            this.app.workspace.iterateAllLeaves((leaf) => {
+                const view = leaf.view as {
+                    getViewType?: () => string;
+                    file?: TFile | null;
+                    canvas?: unknown;
+                } | null;
+                if (view?.getViewType?.() !== 'canvas') return;
+                if (normalizePath(view.file?.path || '') !== normalizePath(path)) return;
+                candidates.push(view);
+            });
+        }
+        for (const view of candidates) {
+            if (this.invokeCanvasHistory(view?.canvas, action)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Obsidian Canvas stores snapshots on `canvas.history`, but applying them
+     * requires `canvas.undo()` / `canvas.redo()` (history.undo() only returns
+     * data). Pending edits are debounced via requestPushHistory — flush first.
+     */
+    private invokeCanvasHistory(canvas: unknown, action: 'undo' | 'redo'): boolean {
+        if (!canvas || typeof canvas !== 'object') return false;
+        const c = canvas as {
+            undo?: () => unknown;
+            redo?: () => unknown;
+            applyHistory?: (data: unknown) => void;
+            requestPushHistory?: { run?: () => void };
+            history?: {
+                undo?: () => unknown;
+                redo?: () => unknown;
+                canUndo?: () => boolean;
+                canRedo?: () => boolean;
+            };
+        };
+        try {
+            try { c.requestPushHistory?.run?.(); } catch { /* ignore */ }
+
+            if (action === 'undo') {
+                if (typeof c.history?.canUndo === 'function' && !c.history.canUndo()) return false;
+                if (typeof c.undo === 'function') {
+                    c.undo();
+                    return true;
+                }
+                if (typeof c.applyHistory === 'function' && typeof c.history?.undo === 'function') {
+                    const snap = c.history.undo();
+                    if (snap == null) return false;
+                    c.applyHistory(snap);
+                    return true;
+                }
+            } else {
+                if (typeof c.history?.canRedo === 'function' && !c.history.canRedo()) return false;
+                if (typeof c.redo === 'function') {
+                    c.redo();
+                    return true;
+                }
+                if (typeof c.applyHistory === 'function' && typeof c.history?.redo === 'function') {
+                    const snap = c.history.redo();
+                    if (snap == null) return false;
+                    c.applyHistory(snap);
+                    return true;
+                }
+            }
+        } catch (e) {
+            console.warn('[NarrativeLab] corkboard Canvas history failed:', e);
+        }
+        return false;
+    }
+
     /**
      * True while the user is typing inside a native Canvas file-card embed.
      * Remounting or rewriting membership mid-edit races Obsidian's autosave and
      * surfaces "UNKNOWN: unknown error, open" on Windows.
      */
+    private corkboardLastInteractAt = 0;
+
     private isNativeCorkboardEditorFocused(): boolean {
         const host = this.corkboardCanvasHostEl;
         if (!host) return false;
         const active = host.ownerDocument?.activeElement as HTMLElement | null;
         if (!active || !host.contains(active)) return false;
-        if (active.closest('textarea, input, [contenteditable="true"], .cm-editor, .cm-content, .markdown-source-view, .markdown-preview-view')) {
+        if (active.closest('textarea, input, [contenteditable="true"], .cm-editor, .cm-content, .markdown-source-view, .markdown-preview-view, .canvas-node')) {
             return true;
         }
         return active.isContentEditable
@@ -697,14 +961,110 @@ export class BoardView extends ItemView {
             || active.tagName === 'INPUT';
     }
 
+    /** True when rewriting corkboard.canvas would race Obsidian Canvas autosave. */
+    private isCorkboardCanvasBusy(): boolean {
+        if (this.isNativeCorkboardEditorFocused()) return true;
+        // Windows file locks linger after Canvas autosave / pointer gestures.
+        if (Date.now() - this.corkboardLastInteractAt < 4000) return true;
+        const path = this.getBoundCorkboardCanvasPath();
+        if (!path) return false;
+        let busyElsewhere = false;
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            if (busyElsewhere) return;
+            if (leaf === this.corkboardCanvasLeaf) return;
+            const view = leaf.view as {
+                getViewType?: () => string;
+                file?: TFile | null;
+                containerEl?: HTMLElement;
+            } | null;
+            if (view?.getViewType?.() !== 'canvas') return;
+            if (normalizePath(view.file?.path || '') !== normalizePath(path)) return;
+            // Another tab has the same corkboard.canvas open — always defer NL rewrites.
+            busyElsewhere = true;
+        });
+        return busyElsewhere;
+    }
+
+    /**
+     * Snapshot live Canvas JSON, cancel Obsidian's debounced autosave, and mark
+     * the view clean so detach cannot race NL's membership write on Windows.
+     */
+    private async prepareCorkboardCanvasDetach(): Promise<CorkboardCanvasData | null> {
+        const view = this.corkboardCanvasLeaf?.view as {
+            requestSave?: (() => void) & { cancel?: () => void };
+            save?: (arg?: boolean) => Promise<void> | void;
+            getViewData?: () => string;
+            dirty?: boolean;
+            lastSavedData?: string | null;
+            canvas?: {
+                getData?: () => { nodes?: unknown[]; edges?: unknown[] };
+                requestSave?: (() => void) & { cancel?: () => void };
+                requestPushHistory?: { cancel?: () => void; run?: () => void };
+            };
+        } | null;
+
+        let snapshot: CorkboardCanvasData | null = null;
+        try {
+            const raw = view?.canvas?.getData?.();
+            if (raw && Array.isArray(raw.nodes) && Array.isArray(raw.edges)) {
+                snapshot = {
+                    nodes: raw.nodes as CorkboardCanvasData['nodes'],
+                    edges: raw.edges as CorkboardCanvasData['edges'],
+                };
+            }
+        } catch { /* best effort */ }
+
+        // Cancel debounced autosave — do NOT kick requestSave() here (that was
+        // racing NL vault.modify and surfacing Obsidian's UNKNOWN open notices).
+        try {
+            const crs = view?.canvas?.requestSave;
+            if (crs && typeof crs === 'object' && typeof crs.cancel === 'function') crs.cancel();
+            view?.canvas?.requestPushHistory?.cancel?.();
+            const vrs = view?.requestSave;
+            if (vrs && typeof vrs === 'object' && typeof vrs.cancel === 'function') vrs.cancel();
+        } catch { /* best effort */ }
+
+        // Mark clean so EditableFileView unload won't flush a stale write.
+        try {
+            if (view) {
+                const data = typeof view.getViewData === 'function' ? view.getViewData() : null;
+                if (typeof data === 'string') view.lastSavedData = data;
+                view.dirty = false;
+            }
+        } catch { /* best effort */ }
+
+        this.corkboardLastInteractAt = Date.now();
+        await new Promise<void>(resolve => window.setTimeout(resolve, 80));
+        return snapshot;
+    }
+
+    /** @deprecated use prepareCorkboardCanvasDetach — kept name for call sites / tests */
+    private async flushCorkboardCanvasSave(): Promise<void> {
+        await this.prepareCorkboardCanvasDetach();
+    }
+
     private async syncNativeCorkboardFile(
         opts?: { force?: boolean },
     ): Promise<{ file: TFile | null; membershipChanged: boolean; visible: string[] }> {
         this.ensureCorkboardLayoutLoaded();
-        const canvasPath = this.corkboardCanvasService.getCanvasPath();
-        if (!canvasPath) return { file: null, membershipChanged: false, visible: [] };
+        const projectFile = this.resolveCorkboardProjectFile();
+        const canvasPath = this.corkboardCanvasService.getCanvasPath(projectFile);
+        if (!canvasPath || !projectFile) return { file: null, membershipChanged: false, visible: [] };
 
-        const visible = this.getVisibleCorkboardPaths();
+        // Never rewrite while another project is globally active — scene queries
+        // and board.json I/O still follow activeProject, and writing those into
+        // this leaf's corkboard.canvas is what overwrote FPS with Evomon.
+        if (!opts?.force && this.isForeignActiveProject()) {
+            const existingForeign = this.app.vault.getAbstractFileByPath(canvasPath);
+            return {
+                file: existingForeign instanceof TFile ? existingForeign : null,
+                membershipChanged: false,
+                visible: [],
+            };
+        }
+
+        const visible = this.getVisibleCorkboardPaths()
+            .filter(path => this.isBoundNlManagedPath(path));
         // Auto-layout missing positions so new notes land on-canvas
         visible.forEach((path, index) => {
             if (this.corkboardPositions.has(path)) return;
@@ -721,6 +1081,7 @@ export class BoardView extends ItemView {
         // Include display toggles in the fingerprint so Scenes on/off always remounts
         // even when the visible path set happens to look identical.
         const visibilityKey = [
+            projectFile,
             this.plugin.settings.showScenesInCorkboard ? 'scenes:1' : 'scenes:0',
             this.currentFilter.activeState ?? 'active',
             ...visible.slice().sort(),
@@ -732,21 +1093,19 @@ export class BoardView extends ItemView {
         }
 
         const existing = this.app.vault.getAbstractFileByPath(canvasPath);
-        // Fast path: already hosting this canvas and membership unchanged — do not
-        // rewrite the corkboard .canvas (that remounts every file-card preview).
-        if (!opts?.force
-            && !visibilityChanged
-            && existing instanceof TFile
-            && this.corkboardCanvasLeaf
-            && this.corkboardCanvasFilePath === existing.path) {
-            // Live Canvas can still drift from disk (unsaved in-memory nodes).
-            this.pruneLiveCorkboardToVisible(visible);
+        // Fast path: membership unchanged — never rewrite corkboard.canvas.
+        // (Previously required an embedded leaf, so "Open in tab" / background
+        // sync kept rewriting while the user edited and Obsidian autosaved.)
+        if (!opts?.force && !visibilityChanged && existing instanceof TFile) {
+            if (this.corkboardCanvasLeaf && this.corkboardCanvasFilePath === existing.path) {
+                this.pruneLiveCorkboardToVisible(visible);
+            }
             return { file: existing, membershipChanged: false, visible };
         }
 
-        // Defer membership rewrite/remount while an embed editor is focused —
-        // tearing down Canvas mid-keystroke locks the note on Windows.
-        if (!opts?.force && this.isNativeCorkboardEditorFocused()) {
+        // Defer membership rewrite/remount while Canvas is busy — tearing down
+        // or rewriting mid-keystroke locks the note on Windows.
+        if (!opts?.force && this.isCorkboardCanvasBusy()) {
             return {
                 file: existing instanceof TFile ? existing : null,
                 membershipChanged: false,
@@ -754,17 +1113,34 @@ export class BoardView extends ItemView {
             };
         }
 
-        // Capture live geometry, then detach BEFORE rewriting membership so a
-        // dirty CanvasView cannot autosave stale nodes over the filtered file.
+        // Capture live geometry + full Canvas JSON, cancel Obsidian autosave,
+        // then detach BEFORE rewriting so a dirty CanvasView cannot race NL.
         this.captureLiveCorkboardPositions();
+        let liveBase: CorkboardCanvasData | null = null;
+        const liveFilePath = normalizePath(
+            (this.corkboardCanvasLeaf?.view as { file?: TFile | null } | null)?.file?.path || '',
+        );
         if (this.corkboardCanvasLeaf) {
+            liveBase = await this.prepareCorkboardCanvasDetach();
+            // Refuse to persist a foreign canvas snapshot into this project's file.
+            if (liveFilePath && liveFilePath !== normalizePath(canvasPath)) {
+                console.error(
+                    '[NarrativeLab] Refusing to write foreign corkboard snapshot:',
+                    liveFilePath,
+                    '→',
+                    canvasPath,
+                );
+                liveBase = null;
+            }
             this.teardownNativeCorkboardCanvas();
         } else {
             await this.pullPositionsFromNativeCanvas();
         }
         const file = await this.corkboardCanvasService.ensureCanvasFile(
             visible,
-            this.positionsRecordFromMap()
+            this.positionsRecordFromMap(),
+            liveBase,
+            projectFile,
         );
         // Always remount after a membership rewrite — vault.modify is suppressed for
         // open-view refresh, so Obsidian's embedded Canvas will not reload on its own.
@@ -829,7 +1205,7 @@ export class BoardView extends ItemView {
             const path = this.getCanvasNodeFilePath(node);
             if (!path) continue;
             const normalized = normalizePath(path);
-            if (!this.corkboardCanvasService.isNlManagedPath(normalized)) continue;
+            if (!this.isBoundNlManagedPath(normalized)) continue;
             if (visibleSet.has(normalized)) continue;
             try {
                 if (typeof canvas.removeNode === 'function') {
@@ -1275,7 +1651,7 @@ export class BoardView extends ItemView {
                 continue;
             }
             const path = this.getCanvasNodeFilePath(node);
-            if (path && this.corkboardCanvasService.isNlManagedPath(path)) {
+            if (path && this.isBoundNlManagedPath(path)) {
                 managedPaths.push(path);
                 continue;
             }
@@ -1297,7 +1673,7 @@ export class BoardView extends ItemView {
                     ?? (node as { containerEl?: HTMLElement }).containerEl;
                 if (!nodeEl?.matches?.('.is-selected, .is-focused, .mod-active')) continue;
                 const path = this.getCanvasNodeFilePath(node);
-                if (path && this.corkboardCanvasService.isNlManagedPath(path)) {
+                if (path && this.isBoundNlManagedPath(path)) {
                     managedPaths.push(path);
                 } else {
                     hasNonManaged = true;
@@ -1353,19 +1729,25 @@ export class BoardView extends ItemView {
     private ensureCorkboardGeometryListeners(): void {
         if (this.corkboardGeometryCleanup || !this.corkboardCanvasHostEl) return;
         const host = this.corkboardCanvasHostEl;
+        const markInteract = () => { this.corkboardLastInteractAt = Date.now(); };
         const pull = () => {
             if (!this.corkboardCanvasLeaf || this.boardMode !== 'corkboard') return;
-            if (this.isNativeCorkboardEditorFocused()) return;
+            if (this.isForeignActiveProject()) return;
+            if (this.isCorkboardCanvasBusy()) return;
             void (async () => {
                 await this.pullPositionsFromNativeCanvas();
                 await this.persistCorkboardLayout();
             })();
         };
-        const onPointerUp = () => { pull(); };
+        const onPointerUp = () => { markInteract(); pull(); };
+        host.addEventListener('pointerdown', markInteract, true);
+        host.addEventListener('keydown', markInteract, true);
         host.addEventListener('pointerup', onPointerUp, true);
         // Slow safety net while the tab is visible (was 2s; now 15s).
         this.corkboardCanvasSyncTimer = window.setInterval(pull, 15000);
         this.corkboardGeometryCleanup = () => {
+            host.removeEventListener('pointerdown', markInteract, true);
+            host.removeEventListener('keydown', markInteract, true);
             host.removeEventListener('pointerup', onPointerUp, true);
             if (this.corkboardCanvasSyncTimer) {
                 window.clearInterval(this.corkboardCanvasSyncTimer);
@@ -1591,7 +1973,12 @@ export class BoardView extends ItemView {
     }
 
     private getCorkboardResearchFiles(): Array<{ file: TFile; title: string }> {
-        const folder = this.sceneManager.activeProject?.researchFolder;
+        const projectFile = this.resolveCorkboardProjectFile();
+        const project = projectFile
+            ? this.sceneManager.getProjects().find(p => normalizePath(p.filePath) === projectFile)
+            : this.sceneManager.activeProject;
+        const folder = project?.researchFolder
+            || (projectFile ? deriveProjectFoldersFromFilePath(projectFile).researchFolder : null);
         if (!folder) return [];
 
         const normalizedFolder = normalizePath(folder).replace(/\/+$/, '');
@@ -2533,7 +2920,7 @@ export class BoardView extends ItemView {
     }
 
     private ensureCorkboardLayoutLoaded(): void {
-        const projectPath = this.sceneManager.activeProject?.filePath ?? null;
+        const projectPath = this.resolveCorkboardProjectFile();
         if (projectPath === this.corkboardLoadedProjectFile) return;
 
         // Cancel pending persist from a prior render to prevent auto-layout
@@ -2546,6 +2933,9 @@ export class BoardView extends ItemView {
         this.corkboardLoadedProjectFile = projectPath;
         this.corkboardPositions.clear();
         this._corkboardProjectLoaded = !!projectPath;
+
+        // board.json cache lives on the active project — only hydrate when bound.
+        if (this.isForeignActiveProject()) return;
 
         const saved = this.sceneManager.getCorkboardPositions();
         for (const [path, pos] of Object.entries(saved)) {
@@ -2566,6 +2956,7 @@ export class BoardView extends ItemView {
     }
 
     private schedulePersistCorkboardLayout(): void {
+        if (this.isForeignActiveProject()) return;
         if (this.corkboardPersistTimer) {
             window.clearTimeout(this.corkboardPersistTimer);
         }
@@ -2576,6 +2967,7 @@ export class BoardView extends ItemView {
     }
 
     private async persistCorkboardLayout(): Promise<void> {
+        if (this.isForeignActiveProject()) return;
         const payload: Record<string, { x: number; y: number; z?: number; w?: number; h?: number }> = {};
         for (const [path, pos] of this.corkboardPositions.entries()) {
             payload[path] = {
@@ -4260,10 +4652,21 @@ export class BoardView extends ItemView {
      */
     refresh(): void {
         if (!this.rootContainer) return;
+        // Another project's board leaf must keep its own canvas/content while
+        // the global active project points elsewhere.
+        const activePath = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : null;
+        if (this.boundProjectFile && activePath && this.boundProjectFile !== activePath) {
+            return;
+        }
+        if (!this.boundProjectFile && activePath) {
+            this.boundProjectFile = activePath;
+        }
         // Always sync the toolbar project label — refreshBoard() does not
         // rebuild the toolbar, so a stale "NarrativeLab" fallback would stick.
         this.rootContainer.querySelectorAll('.story-line-view-title').forEach(el => {
-            el.textContent = this.plugin.getActiveProjectDisplayName();
+            el.textContent = this.getDisplayText();
         });
         // If a corkboard note editor is focused, skip the rebuild — tearing
         // down the textarea mid-edit loses focus and hides the text being
@@ -4281,7 +4684,7 @@ export class BoardView extends ItemView {
 
             // Re-sync after rAF in case the project finished loading mid-frame.
             this.rootContainer.querySelectorAll('.story-line-view-title').forEach(el => {
-                el.textContent = this.plugin.getActiveProjectDisplayName();
+                el.textContent = this.getDisplayText();
             });
 
             if (this.boardEl) {

@@ -24,6 +24,12 @@ import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
 import { t } from '../utils/i18n';
+import {
+    attachBuiltinFieldVisibilityControls,
+    filterRemovedBuiltinFields,
+    getHiddenFieldKeys,
+    renderRemovedBuiltinFieldsToggle,
+} from '../utils/libraryProfileLayout';
 
 import type SceneCardsPlugin from '../main';
 import { CharacterManager } from '../services/CharacterManager';
@@ -35,12 +41,15 @@ import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardA
 import { renderNativeLibraryBase, disposeNativeLibraryBase } from '../components/NativeLibraryBase';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import {
-    collectDelimitedTags,
-    collectHashtagsFromText,
-    renderLibraryFilterChips,
+    ARCHIVE_FILTER_HASHTAGS_KEY,
+    buildArchiveFilterFieldOptions,
+    collectArchiveFilterLabels,
+    collectEntityFilterKeys,
+    renderLibraryArchiveFilterBar,
 } from '../components/LibraryFilterChips';
 import {
     getLibraryContentMode,
+    rememberLibraryCategory,
     setLibraryContentMode,
     renderLibraryStoryGraph,
 } from '../components/LibraryModeBar';
@@ -129,6 +138,7 @@ export class LocationView extends ItemView {
 
     async onOpen(): Promise<void> {
         this.plugin.storyLeaf = this.leaf;
+        rememberLibraryCategory(this.plugin, 'locations');
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
         container.addClass('story-line-location-container');
@@ -219,30 +229,28 @@ export class LocationView extends ItemView {
                 this.locationOverviewMode = mode.id;
                 setLibraryContentMode(
                     this.plugin,
-                    mode.id === 'story-graph' ? 'story-graph' : 'browse',
+                    mode.id === 'story-graph'
+                        ? 'story-graph'
+                        : mode.id === 'base'
+                            ? 'browse'
+                            : 'profile',
                 );
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
         }
     }
 
+    /** Fields currently feeding the archive filter chips. */
+    private archiveFilterFields: string[] = ['locationType', ARCHIVE_FILTER_HASHTAGS_KEY];
+
     /** True when item matches any active type/#tag filter (OR). */
     private itemMatchesTagFilters(item: WorldOrLocation): boolean {
         if (this.activeTagFilters.size === 0) return true;
-        if (item.type === 'location' && item.locationType) {
-            for (const part of String(item.locationType).split(',').map(s => s.trim().toLowerCase()).filter(Boolean)) {
-                if (this.activeTagFilters.has(part)) return true;
-            }
-        }
-        const rec = item as unknown as Record<string, unknown>;
-        for (const val of Object.values(rec)) {
-            if (typeof val !== 'string' || !val.includes('#')) continue;
-            const lower = val.toLowerCase();
-            for (const key of this.activeTagFilters) {
-                if (lower.includes(`#${key}`)) return true;
-            }
-        }
-        return false;
+        const keys = collectEntityFilterKeys(
+            item as unknown as Record<string, unknown>,
+            this.archiveFilterFields,
+        );
+        return keys.some(k => this.activeTagFilters.has(k));
     }
 
     // ── Overview: tree hierarchy ───────────────────────
@@ -321,25 +329,35 @@ export class LocationView extends ItemView {
             }, 0);
         }
 
-        // Collect locationType + #hashtag labels for chip filter
+        // Collect filter chips from user-selected profile fields (default: Type + #hashtags).
         const allWorldsForTags = this.locationManager.getAllWorlds();
         const allOrphansForTags = this.locationManager.getOrphanLocations();
-        const tagLabels = new Map<string, string>();
-        const collectItemTags = (item: WorldOrLocation) => {
-            if (item.type === 'location') collectDelimitedTags(tagLabels, item.locationType);
-            const rec = item as unknown as Record<string, unknown>;
-            for (const val of Object.values(rec)) {
-                if (typeof val === 'string' && val.includes('#')) collectHashtagsFromText(tagLabels, val);
-            }
-        };
+        const allItemsForTags: WorldOrLocation[] = [];
         for (const w of allWorldsForTags) {
-            collectItemTags(w);
-            for (const loc of this.locationManager.getLocationsForWorld(w.name)) collectItemTags(loc);
+            allItemsForTags.push(w);
+            for (const loc of this.locationManager.getLocationsForWorld(w.name)) allItemsForTags.push(loc);
         }
-        for (const loc of allOrphansForTags) collectItemTags(loc);
-        renderLibraryFilterChips(chipHost, tagLabels, this.activeTagFilters, () => {
-            if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
-            this.renderOverview(container);
+        for (const loc of allOrphansForTags) allItemsForTags.push(loc);
+
+        const availableFilterFields = buildArchiveFilterFieldOptions(
+            [...LOCATION_CATEGORIES, ...WORLD_CATEGORIES],
+            this.plugin.settings.locationCustomSections as Array<{ fields?: Array<string | { name: string; label?: string }> }> | undefined,
+        );
+
+        this.archiveFilterFields = renderLibraryArchiveFilterBar(chipHost, {
+            plugin: this.plugin,
+            categoryId: 'locations',
+            availableFields: availableFilterFields,
+            defaultFields: ['locationType', ARCHIVE_FILTER_HASHTAGS_KEY],
+            collectLabels: (fields) => collectArchiveFilterLabels(
+                allItemsForTags as unknown as Record<string, unknown>[],
+                fields,
+            ),
+            active: this.activeTagFilters,
+            onChange: () => {
+                if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
+                this.renderOverview(container);
+            },
         });
 
         const q = this.searchText.toLowerCase();
@@ -854,8 +872,12 @@ export class LocationView extends ItemView {
                 .map(t => ({ id: t.id, label: t.label }));
             // Snapshot the current built-in keys so moveAfter can resolve the
             // merged order even before the new field is rendered (issue #197).
-            const builtInKeysForAdd = category.fields
-                .filter(f => !(this.plugin.settings.hiddenFields['location'] ?? []).includes(f.key))
+            const builtInKeysForAdd = filterRemovedBuiltinFields(
+                category.fields,
+                this.plugin.settings,
+                'location',
+            )
+                .filter(f => !getHiddenFieldKeys(this.plugin.settings, 'location').includes(f.key))
                 .map(f => f.key);
             const modal = new AddFieldModal(
                 this.app,
@@ -897,10 +919,11 @@ export class LocationView extends ItemView {
             }
         });
 
-        // Built-in fields (skip hidden ones)
-        const hiddenKeys = this.plugin.settings.hiddenFields['location'] ?? [];
-        const visibleFields = category.fields.filter(f => !hiddenKeys.includes(f.key));
-        const hiddenFieldsInCat = category.fields.filter(f => hiddenKeys.includes(f.key));
+        // Built-in fields (skip removed + hidden ones)
+        const sectionFields = filterRemovedBuiltinFields(category.fields, this.plugin.settings, 'location');
+        const hiddenKeys = getHiddenFieldKeys(this.plugin.settings, 'location');
+        const visibleFields = sectionFields.filter(f => !hiddenKeys.includes(f.key));
+        const hiddenFieldsInCat = sectionFields.filter(f => hiddenKeys.includes(f.key));
 
         // Render in user-defined merged order (built-in + universal).
         const universalFields = this.plugin.fieldTemplates.getBySection(category.title, 'location');
@@ -939,6 +962,16 @@ export class LocationView extends ItemView {
                     : t('Show {n} hidden field(s)', { n: hiddenFieldsInCat.length });
             });
         }
+
+        renderRemovedBuiltinFieldsToggle(sectionBody, {
+            settings: this.plugin.settings,
+            categoryKey: 'location',
+            sectionFields: category.fields,
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
     }
 
     private renderField(parent: HTMLElement, field: LocationFieldDef, draft: WorldOrLocation, sectionTitle?: string, builtInKeys?: string[]): void {
@@ -950,30 +983,18 @@ export class LocationView extends ItemView {
             this.addBuiltInMoveChevrons(labelEl, sectionTitle, 'location', builtInKeys, field.key);
         }
 
-        // Hide/unhide toggle (skip 'name')
-        if (field.key !== 'name') {
-            const hiddenKeys = this.plugin.settings.hiddenFields['location'] ?? [];
-            const isHidden = hiddenKeys.includes(field.key);
-            const hideBtn = labelEl.createEl('span', {
-                cls: 'field-hide-btn',
-                attr: { 'aria-label': isHidden ? t('Show this field') : t('Hide this field') },
-            });
-            obsidian.setIcon(hideBtn, isHidden ? 'eye' : 'eye-off');
-            hideBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const settings = this.plugin.settings;
-                if (!settings.hiddenFields['location']) settings.hiddenFields['location'] = [];
-                const list = settings.hiddenFields['location'];
-                const idx = list.indexOf(field.key);
-                if (idx >= 0) {
-                    list.splice(idx, 1);
-                } else {
-                    list.push(field.key);
-                }
-                await this.plugin.saveSettings();
+        // Hide / remove controls (name is always visible + undeletable)
+        attachBuiltinFieldVisibilityControls(labelEl, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: 'location',
+            fieldKey: field.key,
+            fieldLabel: field.label,
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
                 if (this.rootContainer) this.renderDetail(this.rootContainer);
-            });
-        }
+            },
+        });
 
         const value = coerceString((draft as unknown as Record<string, unknown>)[field.key]);
 

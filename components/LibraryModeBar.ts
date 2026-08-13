@@ -46,6 +46,7 @@ import {
     openStoryGraphRelationFocus,
     type StoryGraphFocusEdge,
 } from './StoryGraphFocusView';
+import { CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE } from '../constants';
 import { isMobile } from './MobileAdapter';
 import { pickImage, resolveImagePath } from './ImagePicker';
 import { ensureWikilink, waitForResolvedWikilink } from '../utils/perceptions';
@@ -77,7 +78,7 @@ import {
 import { localizeForLanguage, seedUiLanguage, t } from '../utils/i18n';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 
-export type LibraryContentMode = 'browse' | 'story-graph';
+export type LibraryContentMode = 'profile' | 'browse' | 'story-graph';
 
 export interface LibraryProfileModeAction {
     label: string;
@@ -95,15 +96,49 @@ const DEFAULT_FILTERS: StoryGraphFilterState = {
     showOther: true,
 };
 
-/** Session state living on the plugin instance. */
+function normalizeLibraryContentMode(value: unknown): LibraryContentMode | null {
+    if (value === 'profile' || value === 'browse' || value === 'story-graph') return value;
+    return null;
+}
+
+/** Session + persisted Library Profiles / Browse / Story Graph tab. */
 export function getLibraryContentMode(plugin: SceneCardsPlugin): LibraryContentMode {
     const p = plugin as SceneCardsPlugin & { libraryContentMode?: LibraryContentMode };
-    if (isMobile) return 'browse';
-    return p.libraryContentMode === 'story-graph' ? 'story-graph' : 'browse';
+    const fromMemory = normalizeLibraryContentMode(p.libraryContentMode);
+    const fromSettings = normalizeLibraryContentMode(plugin.settings?.lastLibraryContentMode);
+    const mode = fromMemory || fromSettings || 'profile';
+    // Story Graph stays desktop-only; Profiles / Browse still restore on mobile.
+    if (isMobile && mode === 'story-graph') return 'browse';
+    return mode;
 }
 
 export function setLibraryContentMode(plugin: SceneCardsPlugin, mode: LibraryContentMode): void {
-    (plugin as SceneCardsPlugin & { libraryContentMode?: LibraryContentMode }).libraryContentMode = mode;
+    const next = normalizeLibraryContentMode(mode) || 'browse';
+    (plugin as SceneCardsPlugin & { libraryContentMode?: LibraryContentMode }).libraryContentMode = next;
+    if (plugin.settings.lastLibraryContentMode !== next) {
+        plugin.settings.lastLibraryContentMode = next;
+        void plugin.saveSettings();
+    }
+}
+
+/** Persist which Library category tab was last active (characters / locations / codex id). */
+export function rememberLibraryCategory(plugin: SceneCardsPlugin, categoryId: string): void {
+    const id = (categoryId || '').trim();
+    if (!id || plugin.settings.lastLibraryCategoryId === id) return;
+    plugin.settings.lastLibraryCategoryId = id;
+    void plugin.saveSettings();
+}
+
+export function getRememberedLibraryCategory(plugin: SceneCardsPlugin): string {
+    return (plugin.settings.lastLibraryCategoryId || 'characters').trim() || 'characters';
+}
+
+/** Resolve which NarrativeLab view hosts the remembered Library category. */
+export function resolveLibraryViewType(plugin: SceneCardsPlugin): string {
+    const id = getRememberedLibraryCategory(plugin);
+    if (id === 'characters') return CHARACTER_VIEW_TYPE;
+    if (id === 'locations') return LOCATION_VIEW_TYPE;
+    return CODEX_VIEW_TYPE;
 }
 
 export function getStoryGraphFilters(plugin: SceneCardsPlugin): StoryGraphFilterState {
@@ -144,7 +179,7 @@ export function renderLibraryModeToggle(
     }
 
     const browseBtn = toggle.createEl('button', {
-        cls: `character-mode-btn ${mode === 'browse' && !profileMode?.active ? 'active' : ''}`,
+        cls: `character-mode-btn ${mode === 'browse' ? 'active' : ''}`,
         attr: { 'data-mode': 'browse', 'aria-label': t('Browse') },
     });
     const browseIcon = browseBtn.createSpan();

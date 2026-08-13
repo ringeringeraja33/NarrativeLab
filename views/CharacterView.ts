@@ -7,6 +7,7 @@ import { pickImage as pickImageModal, resolveImagePath } from '../components/Ima
 import { isMobile, applyMobileClass } from '../components/MobileAdapter';
 import {
     getLibraryContentMode,
+    rememberLibraryCategory,
     renderLibraryStoryGraph,
     setLibraryContentMode,
 } from '../components/LibraryModeBar';
@@ -28,7 +29,7 @@ import type SceneCardsPlugin from '../main';
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
-import { renderLibraryFilterChips } from '../components/LibraryFilterChips';
+import { renderLibraryArchiveFilterBar, collectEntityFilterKeys, collectArchiveFilterLabels, ARCHIVE_FILTER_HASHTAGS_KEY, buildArchiveFilterFieldOptions } from '../components/LibraryFilterChips';
 import { disposeNativeLibraryBase, renderNativeLibraryBase } from '../components/NativeLibraryBase';
 import {
     renderLibraryBrowseToolbar,
@@ -39,6 +40,12 @@ import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { seedUiLanguage, t } from '../utils/i18n';
+import {
+    attachBuiltinFieldVisibilityControls,
+    filterRemovedBuiltinFields,
+    getHiddenFieldKeys,
+    renderRemovedBuiltinFieldsToggle,
+} from '../utils/libraryProfileLayout';
 import {
     ensureSeededCharacterRelationTypes,
     listCustomCharacterRelationTypes,
@@ -164,6 +171,7 @@ export class CharacterView extends ItemView {
 
     async onOpen(): Promise<void> {
         this.plugin.storyLeaf = this.leaf;
+        rememberLibraryCategory(this.plugin, 'characters');
         const container = this.getViewRoot();
         container.empty();
         container.addClass('story-line-character-container');
@@ -336,7 +344,11 @@ export class CharacterView extends ItemView {
                 this.characterOverviewMode = mode.id;
                 setLibraryContentMode(
                     this.plugin,
-                    mode.id === 'story-graph' ? 'story-graph' : 'browse',
+                    mode.id === 'story-graph'
+                        ? 'story-graph'
+                        : mode.id === 'base'
+                            ? 'browse'
+                            : 'profile',
                 );
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -436,37 +448,57 @@ export class CharacterView extends ItemView {
             }).catch(() => { /* non-fatal */ });
         }
 
-        // Collect role + #prop + location tags once (also used for filtering / search).
-        // One extractAllCharacterTags pass per character — avoid props+locations double scan.
+        // Collect filter chips from user-selected profile fields (default: Role + #hashtags).
         const overrides = this.plugin.settings.tagTypeOverrides;
-        const tagLabels = new Map<string, string>();
-        const charFilterKeys = new Map<string, string[]>();
+        const availableFilterFields = buildArchiveFilterFieldOptions(
+            CHARACTER_CATEGORIES,
+            this.plugin.settings.characterCustomSections as Array<{ fields?: Array<string | { name: string; label?: string }> }> | undefined,
+        );
         const tagsByPath = new Map<string, { props: string[]; locations: string[] }>();
         for (const c of fileCharacters) {
-            const keys: string[] = [];
-            const add = (label: string) => {
-                const trimmed = label.trim();
-                if (!trimmed) return;
-                const key = trimmed.toLowerCase();
-                keys.push(key);
-                if (!tagLabels.has(key)) tagLabels.set(key, trimmed);
-            };
-            for (const role of getRoleList(c)) add(role);
             const allTags = extractAllCharacterTags(c, overrides);
             const props: string[] = [];
             const locations: string[] = [];
             for (const tag of allTags) {
-                add(tag.name);
                 if (tag.type === 'location') locations.push(tag.name);
                 else props.push(tag.name);
             }
-            charFilterKeys.set(c.filePath, keys);
             tagsByPath.set(c.filePath, { props, locations });
         }
-        renderLibraryFilterChips(chipHost, tagLabels, this.activeTagFilters, () => {
-            if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
-            this.renderCharacterOverview(container);
+
+        const selectedFilterFields = renderLibraryArchiveFilterBar(chipHost, {
+            plugin: this.plugin,
+            categoryId: 'characters',
+            availableFields: availableFilterFields,
+            defaultFields: ['role', ARCHIVE_FILTER_HASHTAGS_KEY],
+            collectLabels: (fields) => collectArchiveFilterLabels(
+                fileCharacters as unknown as Record<string, unknown>[],
+                fields,
+                (entity) => getRoleList(entity as unknown as Character),
+            ),
+            active: this.activeTagFilters,
+            onChange: () => {
+                if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
+                this.renderCharacterOverview(container);
+            },
         });
+
+        const charFilterKeys = new Map<string, string[]>();
+        const tagLabels = collectArchiveFilterLabels(
+            fileCharacters as unknown as Record<string, unknown>[],
+            selectedFilterFields,
+            (entity) => getRoleList(entity as unknown as Character),
+        );
+        for (const c of fileCharacters) {
+            charFilterKeys.set(
+                c.filePath,
+                collectEntityFilterKeys(
+                    c as unknown as Record<string, unknown>,
+                    selectedFilterFields,
+                    getRoleList(c),
+                ),
+            );
+        }
 
         // Apply search filter to file-backed characters (name + tags)
         if (q) {
@@ -1341,8 +1373,12 @@ export class CharacterView extends ItemView {
                 .map(t => ({ id: t.id, label: t.label }));
             // Snapshot the current built-in keys so moveAfter can resolve the
             // merged order even before the new field is rendered (issue #197).
-            const builtInKeysForAdd = category.fields
-                .filter(f => !(this.plugin.settings.hiddenFields['character'] ?? []).includes(f.key))
+            const builtInKeysForAdd = filterRemovedBuiltinFields(
+                category.fields,
+                this.plugin.settings,
+                'character',
+            )
+                .filter(f => !getHiddenFieldKeys(this.plugin.settings, 'character').includes(f.key))
                 .map(f => f.key);
             const modal = new AddFieldModal(
                 this.app,
@@ -1376,10 +1412,11 @@ export class CharacterView extends ItemView {
             if (bodyBuilt) return;
             bodyBuilt = true;
 
-            // Built-in fields (skip hidden ones)
-            const hiddenKeys = this.plugin.settings.hiddenFields['character'] ?? [];
-            const visibleFields = category.fields.filter(f => !hiddenKeys.includes(f.key));
-            const hiddenFieldsInCat = category.fields.filter(f => hiddenKeys.includes(f.key));
+            // Built-in fields (skip removed + hidden ones)
+            const sectionFields = filterRemovedBuiltinFields(category.fields, this.plugin.settings, 'character');
+            const hiddenKeys = getHiddenFieldKeys(this.plugin.settings, 'character');
+            const visibleFields = sectionFields.filter(f => !hiddenKeys.includes(f.key));
+            const hiddenFieldsInCat = sectionFields.filter(f => hiddenKeys.includes(f.key));
 
             // Render fields in user-defined merged order (built-in + universal).
             const universalFields = this.plugin.fieldTemplates.getBySection(category.title, 'character');
@@ -1424,6 +1461,16 @@ export class CharacterView extends ItemView {
                             : t('Show {count} hidden field', { count: hiddenFieldsInCat.length }));
                 });
             }
+
+            renderRemovedBuiltinFieldsToggle(sectionBody, {
+                settings: this.plugin.settings,
+                categoryKey: 'character',
+                sectionFields: category.fields,
+                save: () => this.plugin.saveSettings(),
+                onChanged: () => {
+                    if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
+                },
+            });
         };
 
         if (!board) {
@@ -1496,32 +1543,18 @@ export class CharacterView extends ItemView {
             this.addBuiltInMoveChevrons(labelEl, sectionTitle, 'character', builtInKeys, field.key);
         }
 
-        // Hide/unhide field button (skip for 'name' — always visible)
-        if (field.key !== 'name') {
-            const hiddenKeys = this.plugin.settings.hiddenFields['character'] ?? [];
-            const isHidden = hiddenKeys.includes(field.key);
-            const hideBtn = labelEl.createEl('span', {
-                cls: 'field-hide-btn',
-                attr: { 'aria-label': isHidden ? t('Show this field') : t('Hide this field') },
-            });
-            obsidian.setIcon(hideBtn, isHidden ? 'eye' : 'eye-off');
-            hideBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const settings = this.plugin.settings;
-                if (!settings.hiddenFields['character']) settings.hiddenFields['character'] = [];
-                const list = settings.hiddenFields['character'];
-                const idx = list.indexOf(field.key);
-                if (idx >= 0) {
-                    list.splice(idx, 1);
-                } else {
-                    list.push(field.key);
-                }
-                await this.plugin.saveSettings();
-                if (this.selectedCharacter && this.rootContainer) {
-                    this.rerenderCharacterDetail();
-                }
-            });
-        }
+        // Hide / remove controls for built-in fields (name is always visible + undeletable)
+        attachBuiltinFieldVisibilityControls(labelEl, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            fieldKey: field.key,
+            fieldLabel: field.label,
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
+                if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
+            },
+        });
 
         // Coerce array shapes (e.g. role: string[]) to a comma-separated string
         // for input rendering. Issue #72 Tier 1.

@@ -20,6 +20,10 @@ import {
 import { getBuiltinCodexCategory, makeCustomCodexCategory, makeProfileCodexCategory } from '../models/Codex';
 import { resolveLibraryCategoryLabel } from '../services/LibraryCategorySync';
 import { t } from '../utils/i18n';
+import {
+    preservedNarrativeLabLeafState,
+} from '../utils/narrativeLabLeafState';
+import { resolveLibraryViewType } from './LibraryModeBar';
 
 export interface ViewSwitcherEntry {
     type: string;
@@ -99,12 +103,22 @@ export function renderViewSwitcher(
                     showCodexDropdown(tab, plugin, leaf, activeViewType);
                     return;
                 }
+                const targetType = resolveLibraryViewType(plugin);
                 void leaf.setViewState({
-                    type: CODEX_VIEW_TYPE,
+                    type: targetType,
                     active: true,
-                    state: {},
-                }).then(() => plugin.app.workspace.revealLeaf(leaf))
-                    .catch(() => plugin.activateView(CODEX_VIEW_TYPE));
+                    state: preservedNarrativeLabLeafState(leaf),
+                }).then(() => {
+                    plugin.app.workspace.revealLeaf(leaf);
+                    if (targetType === CODEX_VIEW_TYPE) {
+                        window.setTimeout(() => {
+                            const remembered = plugin.settings.lastLibraryCategoryId || '';
+                            if (!remembered || remembered === 'characters' || remembered === 'locations') return;
+                            const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
+                            view.setActiveCategory?.(remembered);
+                        }, 50);
+                    }
+                }).catch(() => plugin.activateView(targetType));
             });
         } else if (entry.type !== activeViewType) {
             tab.addEventListener('click', async (e) => {
@@ -113,7 +127,7 @@ export function renderViewSwitcher(
                     await leaf.setViewState({
                         type: entry.type,
                         active: true,
-                        state: {},
+                        state: preservedNarrativeLabLeafState(leaf),
                     });
                     plugin.app.workspace.revealLeaf(leaf);
                 } catch (err) {
@@ -148,7 +162,11 @@ export function renderViewSwitcher(
         statsTab.addEventListener('click', async (e) => {
             e.preventDefault();
             try {
-                await leaf.setViewState({ type: STATS_VIEW_TYPE, active: true, state: {} });
+                await leaf.setViewState({
+                    type: STATS_VIEW_TYPE,
+                    active: true,
+                    state: preservedNarrativeLabLeafState(leaf),
+                });
                 plugin.app.workspace.revealLeaf(leaf);
             } catch {
                 plugin.activateView(STATS_VIEW_TYPE);
@@ -268,7 +286,11 @@ function showCodexDropdown(
         menu.remove();
         removeClickOutside();
         try {
-            await leaf.setViewState({ type: viewType, active: true, state: {} });
+            await leaf.setViewState({
+                type: viewType,
+                active: true,
+                state: preservedNarrativeLabLeafState(leaf),
+            });
             plugin.app.workspace.revealLeaf(leaf);
         } catch { plugin.activateView(viewType); }
     };
@@ -303,7 +325,11 @@ function showCodexDropdown(
                 removeClickOutside();
                 // Switch to CodexView, then set active category via the view instance
                 try {
-                    await leaf.setViewState({ type: CODEX_VIEW_TYPE, active: true, state: {} });
+                    await leaf.setViewState({
+                        type: CODEX_VIEW_TYPE,
+                        active: true,
+                        state: preservedNarrativeLabLeafState(leaf),
+                    });
                     plugin.app.workspace.revealLeaf(leaf);
                     // Find the CodexView instance and set its category
                     const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };

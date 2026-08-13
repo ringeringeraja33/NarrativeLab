@@ -505,7 +505,7 @@ export class PlotgridView extends ItemView {
             } finally {
                 // Also clear on project-switch early returns. A stale timer id
                 // made refresh logic think a save was still pending forever.
-                if (this.saveDebounce === timerId) this.saveDebounce = null;
+            if (this.saveDebounce === timerId) this.saveDebounce = null;
             }
         }, 800);
         this.saveDebounce = timerId;
@@ -1382,8 +1382,8 @@ export class PlotgridView extends ItemView {
                     this.renderGrid({ forcePush: true });
                 },
             });
-            return;
-        }
+                    return;
+                }
         const cell = this.getActiveDataCellFromUniver();
         if (!cell) {
             new Notice(t('Select a cell first'));
@@ -1473,8 +1473,8 @@ export class PlotgridView extends ItemView {
                 item.setDisabled(true);
                 item.setSection('nl-connected');
             });
-            return;
-        }
+                    return;
+                }
         for (const note of notes) {
             menu.addItem(item => {
                 item.setTitle(note.name);
@@ -1552,15 +1552,15 @@ export class PlotgridView extends ItemView {
         const row = livePage.rows[dataRow - 1];
         const col = livePage.columns[dataCol - 1];
         if (!row || !col) return null;
-        const key = `${row.id}-${col.id}`;
+                const key = `${row.id}-${col.id}`;
         if (!livePage.cells[key]) {
             livePage.cells[key] = {
-                id: key,
-                content: '',
-                bgColor: '',
-                textColor: '',
-                bold: false,
-                italic: false,
+                            id: key,
+                            content: '',
+                            bgColor: '',
+                            textColor: '',
+                            bold: false,
+                            italic: false,
                 align: 'left',
             };
         }
@@ -1620,7 +1620,7 @@ export class PlotgridView extends ItemView {
             this.scheduleSave();
             if (opts.pushGrid) {
                 this.renderGrid({ forcePush: true });
-            } else {
+                            } else {
                 try { this.univerHost?.refreshLinkMarkers(); } catch { /* ignore */ }
             }
             this.refreshOpenCellInspector();
@@ -1802,7 +1802,7 @@ export class PlotgridView extends ItemView {
                     sourcePath,
                     renderer,
                 );
-            } else {
+                        } else {
                 textarea.focus();
             }
         };
@@ -1908,8 +1908,8 @@ export class PlotgridView extends ItemView {
                             type: 'button',
                             title: t('Unlink Note'),
                             'aria-label': t('Unlink Note'),
-                        },
-                    });
+                                },
+                            });
                     obsidian.setIcon(removeBtn, 'x');
                     removeBtn.addEventListener('click', (event) => {
                         event.preventDefault();
@@ -1924,8 +1924,8 @@ export class PlotgridView extends ItemView {
                     type: 'button',
                     title: t('Link Note…'),
                     'aria-label': t('Link Note…'),
-                },
-            });
+                                },
+                            });
             obsidian.setIcon(addBtn, 'plus');
             addBtn.addEventListener('click', (event) => {
                 event.preventDefault();
@@ -2125,18 +2125,18 @@ export class PlotgridView extends ItemView {
                     if (this.univerHost.isEditorBusy()) return;
                     try { this.univerHost.flush(); } catch { /* ignore */ }
                 }
-                // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
-                if (this.saveDebounce) return;
+            // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
+            if (this.saveDebounce) return;
                 // Pending sync after flush should have scheduled save; still guard.
                 if (this.univerHost?.hasPendingSync()) return;
                 // Floating Markdown editors mount on <body> — vault refresh must not wipe them.
                 for (const win of this.cellEditorWindows.values()) {
                     if (win.isConnected) return;
                 }
-                // If a cell is being edited, skip refresh to avoid destroying the textarea
-                if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
-                // If any input/textarea in the grid or inspector is focused, skip refresh to avoid losing edits
-                if (this.wrapperEl?.querySelector('input:focus, textarea:focus')) return;
+            // If a cell is being edited, skip refresh to avoid destroying the textarea
+            if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
+            // If any input/textarea in the grid or inspector is focused, skip refresh to avoid losing edits
+            if (this.wrapperEl?.querySelector('input:focus, textarea:focus')) return;
                 // Univer in-cell / formula editor or IME — remounting clears composition.
                 if (this.univerHost?.isEditorBusy()) return;
                 if (this.scrollAreaEl?.querySelector('[contenteditable="true"]:focus, textarea:focus, input:focus')) return;
@@ -2795,8 +2795,8 @@ export class PlotgridView extends ItemView {
             cell.content = ta.value;
             // Mark as manually edited so sync won't overwrite
             cell.manualContent = true;
-            this.scheduleSave();
-            this.renderGrid();
+                this.scheduleSave();
+                this.renderGrid();
         };
         const cancel = () => {
             if (committed) return;
@@ -3418,7 +3418,7 @@ export class PlotgridView extends ItemView {
             cell.manualContent = true;
             syncCellMarkdownPreview();
             this.updateCellInspectorScan(scanContainer, liveCell);
-            this.scheduleSave();
+                this.scheduleSave();
         });
 
         // ── Linked note / scene + actions ──
@@ -3496,7 +3496,7 @@ export class PlotgridView extends ItemView {
             const linkRow = actions.createDiv('pg-cell-link-row');
             makeAccentBtn(linkRow, t('Open cell editor'), t('Type [[ to search vault notes'), () => {
                 syncTextarea();
-                const c = this.ensureCellInData(this.data.cells[cellKey] ?? cell);
+                    const c = this.ensureCellInData(this.data.cells[cellKey] ?? cell);
                 this.openCellMarkdownEditor(c, { insertWikilink: true });
             });
         }

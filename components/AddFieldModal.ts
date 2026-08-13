@@ -82,10 +82,12 @@ export class AddFieldModal extends Modal {
             text: this.existing ? t('Edit Universal Field') : t('Add Universal Field'),
         });
 
-        const sheetLabel = this.customSectionNames ? 'entry' : 'character sheet';
+        const sheetLabel = this.customSectionNames ? t('entry') : t('character sheet');
         contentEl.createEl('p', {
             cls: 'storyline-add-field-desc',
-            text: t('This field will appear on every {sheet} in the chosen section.', { sheet: sheetLabel }),
+            text: this.customSectionNames
+                ? t('This field will appear on every entry in the chosen section.')
+                : t('This field will appear on every character sheet in the chosen section.'),
         });
 
         // ── Label ──
@@ -108,13 +110,14 @@ export class AddFieldModal extends Modal {
             });
 
         // ── Section ──
+        // Values stay English (canonical section titles in data); labels are localized.
         const sectionNames = this.customSectionNames || CHARACTER_CATEGORIES.map(c => c.title);
         new Setting(contentEl)
             .setName(t('Section'))
             .setDesc(t('Where this field appears on the {sheet}', { sheet: sheetLabel }))
             .addDropdown(dd => {
                 for (const name of sectionNames) {
-                    dd.addOption(name, name);
+                    dd.addOption(name, t(name));
                 }
                 dd.setValue(this.section || sectionNames[0]);
                 dd.onChange(v => { this.section = v; });
@@ -126,11 +129,11 @@ export class AddFieldModal extends Modal {
         new Setting(contentEl)
             .setName(t('Input type'))
             .addDropdown(dd => {
-                dd.addOption('text', 'Text (single line)');
-                dd.addOption('textarea', 'Text block (multi-line)');
-                dd.addOption('dropdown', 'Dropdown menu');
-                dd.addOption('multi-select', 'Multi-select (tags)');
-                dd.addOption('checkbox', 'Checkbox (yes/no)');
+                dd.addOption('text', t('Text (single line)'));
+                dd.addOption('textarea', t('Text block (multi-line)'));
+                dd.addOption('dropdown', t('Dropdown menu'));
+                dd.addOption('multi-select', t('Multi-select (tags)'));
+                dd.addOption('checkbox', t('Checkbox (yes/no)'));
                 dd.setValue(this.type);
                 dd.onChange(v => {
                     this.type = v as UniversalFieldType;
@@ -247,10 +250,10 @@ export class AddFieldModal extends Modal {
                 .setName(t('Position'))
                 .setDesc(t('Where the field appears in the section'))
                 .addDropdown(dd => {
-                    dd.addOption('__end__', 'At end (default)');
-                    dd.addOption('__top__', 'At top');
+                    dd.addOption('__end__', t('At end (default)'));
+                    dd.addOption('__top__', t('At top'));
                     for (const s of this.siblings) {
-                        dd.addOption(s.id, `After: ${s.label}`);
+                        dd.addOption(s.id, t('After: {label}', { label: s.label }));
                     }
                     dd.setValue('__end__');
                     dd.onChange(v => {

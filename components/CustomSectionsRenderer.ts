@@ -956,11 +956,11 @@ export class AddSectionFieldModal extends Modal {
             .setName(t('Type'))
             .setDesc(t('Pick the input type for this field.'))
             .addDropdown(dd => {
-                dd.addOption('text', 'Text');
-                dd.addOption('textarea', 'Text block');
-                dd.addOption('dropdown', 'Dropdown');
-                dd.addOption('multi-select', 'Multi-select (tags)');
-                dd.addOption('checkbox', 'Checkbox (yes/no)');
+                dd.addOption('text', t('Text'));
+                dd.addOption('textarea', t('Text block'));
+                dd.addOption('dropdown', t('Dropdown'));
+                dd.addOption('multi-select', t('Multi-select (tags)'));
+                dd.addOption('checkbox', t('Checkbox (yes/no)'));
                 dd.setValue(type);
                 dd.onChange(v => {
                     type = v as CustomFieldType;

@@ -9,7 +9,8 @@
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE } from '../constants';
-import { renderLibraryModeToggle, type LibraryProfileModeAction } from './LibraryModeBar';
+import { renderLibraryModeToggle, rememberLibraryCategory, type LibraryProfileModeAction } from './LibraryModeBar';
+import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import {
     applyCategoryFolderLabels,
     deleteLibraryCategory,
@@ -87,7 +88,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         obsidian.setIcon(charIcon, overrideFor('characters')?.icon || 'users');
         charTab.createSpan({ cls: 'codex-tab-label', text: charName });
         if (activeId !== 'characters-pseudo') {
-            charTab.addEventListener('click', () => switchTo(leaf, plugin, CHARACTER_VIEW_TYPE));
+            charTab.addEventListener('click', () => switchTo(leaf, plugin, CHARACTER_VIEW_TYPE, 'characters'));
         }
         attachRenameMenu(charTab, plugin, 'characters', onCategoriesChanged);
         renderedTabs.push({ id: 'characters', el: charTab });
@@ -103,7 +104,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         obsidian.setIcon(locIcon, overrideFor('locations')?.icon || 'map-pin');
         locTab.createSpan({ cls: 'codex-tab-label', text: locName });
         if (activeId !== 'locations-pseudo') {
-            locTab.addEventListener('click', () => switchTo(leaf, plugin, LOCATION_VIEW_TYPE));
+            locTab.addEventListener('click', () => switchTo(leaf, plugin, LOCATION_VIEW_TYPE, 'locations'));
         }
         attachRenameMenu(locTab, plugin, 'locations', onCategoriesChanged);
         renderedTabs.push({ id: 'locations', el: locTab });
@@ -141,6 +142,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
 
         if (!isActive) {
             tab.addEventListener('click', () => {
+                rememberLibraryCategory(plugin, cat.id);
                 // Already on CodexView — switch category without remounting the leaf
                 if (leaf.view?.getViewType?.() === CODEX_VIEW_TYPE) {
                     const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
@@ -149,7 +151,11 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
                 }
                 // Navigate to CodexView with this category active
                 try {
-                    void leaf.setViewState({ type: CODEX_VIEW_TYPE, active: true, state: {} });
+                    void leaf.setViewState({
+                        type: CODEX_VIEW_TYPE,
+                        active: true,
+                        state: preservedNarrativeLabLeafState(leaf),
+                    });
                     plugin.app.workspace.revealLeaf(leaf);
                     // After view is set, tell the CodexView which category to show
                     window.setTimeout(() => {
@@ -550,9 +556,19 @@ function promptRenameCategory(
     modal.open();
 }
 
-function switchTo(leaf: obsidian.WorkspaceLeaf, plugin: SceneCardsPlugin, viewType: string): void {
+function switchTo(
+    leaf: obsidian.WorkspaceLeaf,
+    plugin: SceneCardsPlugin,
+    viewType: string,
+    categoryId?: string,
+): void {
+    if (categoryId) rememberLibraryCategory(plugin, categoryId);
     try {
-        leaf.setViewState({ type: viewType, active: true, state: {} });
+        leaf.setViewState({
+            type: viewType,
+            active: true,
+            state: preservedNarrativeLabLeafState(leaf),
+        });
         plugin.app.workspace.revealLeaf(leaf);
     } catch {
         plugin.activateView(viewType);

@@ -13,6 +13,8 @@ import { promptDeleteCategory, renderCodexCategoryTabs } from '../components/Cod
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import {
     getLibraryContentMode,
+    getRememberedLibraryCategory,
+    rememberLibraryCategory,
     renderLibraryStoryGraph,
     setLibraryContentMode,
     syncStoryGraphLibraryNodeTypes,
@@ -25,9 +27,13 @@ import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { openConfirmModal } from '../components/ConfirmModal';
 import {
+    ARCHIVE_FILTER_HASHTAGS_KEY,
+    buildArchiveFilterFieldOptions,
     collectDelimitedTags,
     collectHashtagsFromText,
-    renderLibraryFilterChips,
+    collectValuesFromField,
+    readEntityFilterValue,
+    renderLibraryArchiveFilterBar,
 } from '../components/LibraryFilterChips';
 import {
     CUSTOM_SECTION_KEY_SEP,
@@ -37,6 +43,13 @@ import {
 } from '../components/CustomSectionsRenderer';
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { t } from '../utils/i18n';
+import {
+    attachBuiltinFieldVisibilityControls,
+    filterRemovedBuiltinFields,
+    getHiddenFieldKeys,
+    isCoreProfileField,
+    renderRemovedBuiltinFieldsToggle,
+} from '../utils/libraryProfileLayout';
 import { coerceString } from '../utils/narrow';
 import { setLibraryCategoryProfileSetting } from '../utils/libraryCategoryTransactions';
 import {
@@ -152,6 +165,8 @@ export class CodexView extends ItemView {
     private sortBy: 'name' | 'modified' | 'created' | 'type' = 'name';
     /** Active type/tag filters (lowercased). Empty = no filter. */
     private activeTagFilters: Set<string> = new Set();
+    /** Fields currently feeding archive filter chips for the active category. */
+    private archiveFilterFields: string[] = [ARCHIVE_FILTER_HASHTAGS_KEY];
     /** Sections collapsed in detail view */
     private collapsedSections: Set<string> = new Set();
     /** Search filter text */
@@ -217,10 +232,28 @@ export class CodexView extends ItemView {
             await this.plugin.reloadEntities();
         }
 
-        // Reset to hub state — no category pre-selected
-        this.activeCategory = '';
-        this.selectedEntry = null;
-        this.profileOverviewCategoryId = null;
+        // Restore the last Library category when it belongs to CodexView.
+        const remembered = getRememberedLibraryCategory(this.plugin);
+        if (
+            remembered
+            && remembered !== 'characters'
+            && remembered !== 'locations'
+            && (
+                remembered === UNCATEGORIZED_CATEGORY_ID
+                || this.codexManager.getCategoryDef(remembered)
+                || (this.plugin.settings.codexEnabledCategories || []).includes(remembered)
+            )
+        ) {
+            this.activeCategory = remembered;
+            this.selectedEntry = null;
+            this.profileOverviewCategoryId = getLibraryContentMode(this.plugin) === 'profile'
+                ? remembered
+                : null;
+        } else {
+            this.activeCategory = '';
+            this.selectedEntry = null;
+            this.profileOverviewCategoryId = null;
+        }
 
         this.renderView(container);
     }
@@ -248,9 +281,12 @@ export class CodexView extends ItemView {
     setActiveCategory(categoryId: string): void {
         this.activeCategory = categoryId;
         this.selectedEntry = null;
-        this.profileOverviewCategoryId = null;
+        this.profileOverviewCategoryId = getLibraryContentMode(this.plugin) === 'profile'
+            ? categoryId
+            : null;
         this.activeTagFilters.clear();
         this.browseShown = LIBRARY_BROWSE_PAGE_SIZE;
+        rememberLibraryCategory(this.plugin, categoryId || UNCATEGORIZED_CATEGORY_ID);
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 
@@ -360,7 +396,7 @@ export class CodexView extends ItemView {
                     active: profileActive,
                     onClick: () => {
                         this.profileOverviewCategoryId = this.activeCategory;
-                        setLibraryContentMode(this.plugin, 'browse');
+                        setLibraryContentMode(this.plugin, 'profile');
                         if (this.rootContainer) this.renderView(this.rootContainer);
                     },
                 }
@@ -516,63 +552,114 @@ export class CodexView extends ItemView {
             }
         }
 
-        renderLibraryFilterChips(
-            chipHost,
-            this.collectTypeTagsForFilter(),
-            this.activeTagFilters,
-            () => {
+        this.archiveFilterFields = renderLibraryArchiveFilterBar(chipHost, {
+            plugin: this.plugin,
+            categoryId: layoutKey,
+            availableFields: this.getArchiveFilterFieldOptions(),
+            defaultFields: this.getDefaultArchiveFilterFields(),
+            collectLabels: (fields) => this.collectTypeTagsForFilter(fields),
+            active: this.activeTagFilters,
+            onChange: () => {
                 if (this.activeTagFilters.size > 0) this.browseFilterOpen = true;
                 this.renderList(listContainer);
             },
-        );
+        });
 
         this.renderList(listContainer);
     }
 
-    /** Type field values + #hashtags from entry text fields. */
-    private collectTypeTagsForFilter(): Map<string, string> {
+    private getDefaultArchiveFilterFields(): string[] {
+        return ['entryType', ARCHIVE_FILTER_HASHTAGS_KEY];
+    }
+
+    private getArchiveFilterFieldOptions(): Array<{ key: string; label: string }> {
+        const isHub = !this.activeCategory;
+        const cats = isHub
+            ? this.codexManager.getCategories()
+            : (() => {
+                const def = this.codexManager.getCategoryDef(this.activeCategory);
+                return def ? [def] : [];
+            })();
+        const fieldCats = cats.flatMap(def => def.categories || []);
+        const options = buildArchiveFilterFieldOptions(fieldCats);
+        // Ensure entryType / *Type fields are always offered.
+        const seen = new Set(options.map(o => o.key));
+        if (!seen.has('entryType')) {
+            options.splice(1, 0, { key: 'entryType', label: 'Type' });
+            seen.add('entryType');
+        }
+        for (const def of cats) {
+            for (const key of def.fieldKeys || []) {
+                if (seen.has(key) || key === 'name' || key === 'image' || key === 'gallery') continue;
+                if (key.endsWith('Type') || key === 'entryType') {
+                    options.splice(1, 0, { key, label: key === 'entryType' ? 'Type' : key });
+                    seen.add(key);
+                }
+            }
+            const custom = this.plugin.settings.codexCategoryCustomSections?.[def.id];
+            if (custom) {
+                for (const section of custom) {
+                    for (const raw of section.fields || []) {
+                        const name = typeof raw === 'string' ? raw : raw.name;
+                        if (!name || seen.has(name)) continue;
+                        seen.add(name);
+                        const label = typeof raw === 'string' ? raw : (raw.name);
+                        options.push({ key: name, label });
+                    }
+                }
+            }
+        }
+        return options;
+    }
+
+    /** Values from the selected filter fields (default: Type + #hashtags). */
+    private collectTypeTagsForFilter(fieldKeys?: string[]): Map<string, string> {
         const isHub = !this.activeCategory;
         const catDef = isHub ? undefined : this.codexManager.getCategoryDef(this.activeCategory);
         const entries: CodexEntry[] = isHub
             ? this.codexManager.getAllEntries()
             : (catDef ? this.codexManager.getEntries(this.activeCategory) : []);
+        const fields = fieldKeys && fieldKeys.length > 0
+            ? fieldKeys
+            : this.archiveFilterFields;
         const tags = new Map<string, string>();
         for (const entry of entries) {
             const def = isHub ? this.codexManager.getCategoryDef(entry.type) : catDef;
-            if (!def) continue;
-            collectDelimitedTags(tags, this.getTypeField(entry, def));
-            for (const fieldKey of def.fieldKeys) {
-                const val = entry[fieldKey];
-                if (typeof val === 'string') collectHashtagsFromText(tags, val);
-            }
-            if (typeof entry.description === 'string') collectHashtagsFromText(tags, entry.description);
-            if (typeof entry.notes === 'string') collectHashtagsFromText(tags, entry.notes);
+            this.collectEntryFilterLabelsInto(tags, entry, def, fields);
         }
         return tags;
     }
 
-    private collectEntryFilterKeys(entry: CodexEntry, def: CodexCategoryDef | undefined): string[] {
-        const keys: string[] = [];
-        const pushHashtags = (text: string) => {
-            const re = /#([A-Za-z\u00C0-\u024F\u0400-\u04FF\u4E00-\u9FFF][\w\u00C0-\u024F\u0400-\u04FF\u4E00-\u9FFF-]*)/g;
-            let m: RegExpExecArray | null;
-            while ((m = re.exec(text)) !== null) keys.push(m[1].toLowerCase());
-        };
-        if (def) {
-            const typeVal = this.getTypeField(entry, def);
-            if (typeVal) {
-                for (const part of String(typeVal).split(',').map(s => s.trim()).filter(Boolean)) {
-                    keys.push(part.toLowerCase());
+    private collectEntryFilterLabelsInto(
+        into: Map<string, string>,
+        entry: CodexEntry,
+        def: CodexCategoryDef | undefined,
+        fields: string[],
+    ): void {
+        for (const key of fields) {
+            if (key === ARCHIVE_FILTER_HASHTAGS_KEY) {
+                if (def) {
+                    for (const fieldKey of def.fieldKeys) {
+                        const val = entry[fieldKey];
+                        if (typeof val === 'string') collectHashtagsFromText(into, val);
+                    }
                 }
+                if (typeof entry.description === 'string') collectHashtagsFromText(into, entry.description);
+                if (typeof entry.notes === 'string') collectHashtagsFromText(into, entry.notes);
+                continue;
             }
-            for (const fieldKey of def.fieldKeys) {
-                const val = entry[fieldKey];
-                if (typeof val === 'string' && val.includes('#')) pushHashtags(val);
+            if (key === 'entryType') {
+                collectDelimitedTags(into, def ? this.getTypeField(entry, def) : String(entry.entryType || ''));
+                continue;
             }
+            collectValuesFromField(into, readEntityFilterValue(entry as unknown as Record<string, unknown>, key), { hashtags: false });
         }
-        if (typeof entry.description === 'string') pushHashtags(entry.description);
-        if (typeof entry.notes === 'string') pushHashtags(entry.notes);
-        return keys;
+    }
+
+    private collectEntryFilterKeys(entry: CodexEntry, def: CodexCategoryDef | undefined): string[] {
+        const into = new Map<string, string>();
+        this.collectEntryFilterLabelsInto(into, entry, def, this.archiveFilterFields);
+        return [...into.keys()];
     }
 
     private renderList(container: HTMLElement): void {
@@ -767,8 +854,7 @@ export class CodexView extends ItemView {
     }
 
     private isProfileOverviewMode(): boolean {
-        return getLibraryContentMode(this.plugin) === 'browse'
-            && this.profileOverviewCategoryId === this.activeCategory
+        return getLibraryContentMode(this.plugin) === 'profile'
             && this.activeCategoryHasProfilePage();
     }
 
@@ -1185,8 +1271,12 @@ export class CodexView extends ItemView {
                 .map(t => ({ id: t.id, label: t.label }));
             // Snapshot the current built-in keys so moveAfter can resolve the
             // merged order even before the new field is rendered (issue #197).
-            const builtInKeysForAdd = cat.fields
-                .filter(f => !(this.plugin.settings.hiddenFields[catDef.id] ?? []).includes(f.key))
+            const builtInKeysForAdd = filterRemovedBuiltinFields(
+                cat.fields,
+                this.plugin.settings,
+                catDef.id,
+            )
+                .filter(f => !getHiddenFieldKeys(this.plugin.settings, catDef.id).includes(f.key))
                 .map(f => f.key);
             const modal = new AddFieldModal(
                 this.app,
@@ -1213,10 +1303,11 @@ export class CodexView extends ItemView {
         if (!isCollapsed) {
             const body = section.createDiv('codex-section-body');
 
-            // Filter hidden fields
-            const hiddenKeys = this.plugin.settings.hiddenFields[catDef.id] ?? [];
-            const visibleFields = cat.fields.filter(f => !hiddenKeys.includes(f.key));
-            const hiddenFieldsInCat = cat.fields.filter(f => hiddenKeys.includes(f.key));
+            // Filter removed + hidden fields
+            const sectionFields = filterRemovedBuiltinFields(cat.fields, this.plugin.settings, catDef.id);
+            const hiddenKeys = getHiddenFieldKeys(this.plugin.settings, catDef.id);
+            const visibleFields = sectionFields.filter(f => !hiddenKeys.includes(f.key));
+            const hiddenFieldsInCat = sectionFields.filter(f => hiddenKeys.includes(f.key));
 
             // Render fields in user-defined merged order (built-in + universal).
             // Issue #92 follow-up — universal fields can be moved past built-ins
@@ -1258,6 +1349,16 @@ export class CodexView extends ItemView {
                         : t('Show {n} hidden field(s)', { n: hiddenFieldsInCat.length });
                 });
             }
+
+            renderRemovedBuiltinFieldsToggle(body, {
+                settings: this.plugin.settings,
+                categoryKey: catDef.id,
+                sectionFields: cat.fields,
+                save: () => this.plugin.saveSettings(),
+                onChanged: () => {
+                    if (this.rootContainer) this.renderView(this.rootContainer);
+                },
+            });
         }
     }
 
@@ -1284,30 +1385,18 @@ export class CodexView extends ItemView {
             this.addBuiltInMoveChevrons(labelEl, sectionTitle, catDef.id, builtInKeys, key);
         }
 
-        // Hide/unhide toggle (skip 'name')
-        if (key !== 'name') {
-            const hiddenKeys = this.plugin.settings.hiddenFields[catDef.id] ?? [];
-            const isHidden = hiddenKeys.includes(key);
-            const hideBtn = labelEl.createEl('span', {
-                cls: 'field-hide-btn',
-                attr: { 'aria-label': isHidden ? t('Show this field') : t('Hide this field') },
-            });
-            obsidian.setIcon(hideBtn, isHidden ? 'eye' : 'eye-off');
-            hideBtn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const settings = this.plugin.settings;
-                if (!settings.hiddenFields[catDef.id]) settings.hiddenFields[catDef.id] = [];
-                const list = settings.hiddenFields[catDef.id];
-                const idx = list.indexOf(key);
-                if (idx >= 0) {
-                    list.splice(idx, 1);
-                } else {
-                    list.push(key);
-                }
-                await this.plugin.saveSettings();
+        // Hide / remove controls (name is always visible + undeletable)
+        attachBuiltinFieldVisibilityControls(labelEl, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: catDef.id,
+            fieldKey: key,
+            fieldLabel: label,
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
-            });
-        }
+            },
+        });
 
         const currentValue = draft[key] != null ? String(draft[key]) : '';
 
@@ -2875,6 +2964,7 @@ export class CodexView extends ItemView {
     }
 
     private openCategoryFieldsModal(category: CodexCategoryDef, categoryLabel: string): void {
+        const layoutKey = category.id;
         const modal = new Modal(this.app);
         modal.titleEl.setText(t('{name} fields', { name: categoryLabel }));
         const content = modal.contentEl;
@@ -2882,29 +2972,111 @@ export class CodexView extends ItemView {
 
         content.createEl('p', {
             cls: 'setting-item-description',
-            text: t('Choose which preset fields are visible, and add default custom fields for every entry in this category.'),
+            text: t('Show, hide, or remove preset fields for this archive page in the current project. Removed fields keep existing note data and can be restored.'),
         });
 
-        const hidden = new Set(this.plugin.settings.hiddenFields?.[category.id] || []);
+        const hidden = new Set(this.plugin.settings.hiddenFields?.[layoutKey] || []);
+        const removed = new Set(this.plugin.settings.removedBuiltinFields?.[layoutKey] || []);
+
+        const allFields: Array<{ key: string; label: string; section: string }> = [];
         const seen = new Set<string>();
         for (const section of category.categories) {
-            const fields = section.fields.filter(field => field.key !== 'name' && !seen.has(field.key));
-            if (fields.length === 0) continue;
-            content.createEl('h5', { text: t(section.title) });
-            for (const field of fields) {
+            for (const field of section.fields) {
+                if (field.key === 'name' || seen.has(field.key)) continue;
                 seen.add(field.key);
-                const row = content.createDiv('codex-category-field-row');
-                const toggle = row.createEl('input', {
-                    attr: { type: 'checkbox' },
-                }) as HTMLInputElement;
-                toggle.checked = !hidden.has(field.key);
-                row.createSpan({ text: t(field.label) });
-                toggle.addEventListener('change', () => {
-                    if (toggle.checked) hidden.delete(field.key);
-                    else hidden.add(field.key);
-                });
+                allFields.push({ key: field.key, label: field.label, section: section.title });
             }
         }
+
+        const fieldsHost = content.createDiv('codex-category-fields-host');
+        const renderFieldLists = () => {
+            fieldsHost.empty();
+            const activeBySection = new Map<string, Array<{ key: string; label: string }>>();
+            const removedFields: Array<{ key: string; label: string }> = [];
+            for (const field of allFields) {
+                if (removed.has(field.key)) {
+                    removedFields.push(field);
+                    continue;
+                }
+                const list = activeBySection.get(field.section) || [];
+                list.push(field);
+                activeBySection.set(field.section, list);
+            }
+
+            for (const [sectionTitle, fields] of activeBySection) {
+                if (fields.length === 0) continue;
+                fieldsHost.createEl('h5', { text: t(sectionTitle) });
+                for (const field of fields) {
+                    const row = fieldsHost.createDiv('codex-category-field-row');
+                    const toggle = row.createEl('input', {
+                        attr: {
+                            type: 'checkbox',
+                            'aria-label': t('Show this field'),
+                        },
+                    }) as HTMLInputElement;
+                    toggle.checked = !hidden.has(field.key);
+                    toggle.title = toggle.checked ? t('Hide this field') : t('Show this field');
+                    toggle.addEventListener('change', () => {
+                        if (toggle.checked) hidden.delete(field.key);
+                        else hidden.add(field.key);
+                        toggle.title = toggle.checked ? t('Hide this field') : t('Show this field');
+                    });
+                    row.createSpan({ text: t(field.label), cls: 'codex-category-field-label' });
+
+                    if (!isCoreProfileField(field.key)) {
+                        const removeBtn = row.createEl('button', {
+                            cls: 'codex-category-field-remove',
+                            attr: {
+                                type: 'button',
+                                'aria-label': t('Remove field'),
+                                title: t('Remove this default field from this archive page'),
+                            },
+                        });
+                        obsidian.setIcon(removeBtn, 'x');
+                        removeBtn.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            openConfirmModal(this.app, {
+                                title: t('Remove Field'),
+                                message: t(
+                                    'Remove “{field}” from this archive page in the current project? Existing note data is kept; you can restore the field later.',
+                                    { field: t(field.label) },
+                                ),
+                                confirmLabel: t('Remove field'),
+                                confirmClass: 'mod-warning',
+                                onConfirm: () => {
+                                    removed.add(field.key);
+                                    hidden.delete(field.key);
+                                    renderFieldLists();
+                                },
+                            });
+                        });
+                    }
+                }
+            }
+
+            if (removedFields.length > 0) {
+                fieldsHost.createEl('h5', { text: t('Removed fields') });
+                fieldsHost.createEl('p', {
+                    cls: 'setting-item-description',
+                    text: t('These default fields are hidden from the form. Restore them anytime.'),
+                });
+                for (const field of removedFields) {
+                    const row = fieldsHost.createDiv('codex-category-field-row codex-category-field-row-removed');
+                    row.createSpan({ text: t(field.label), cls: 'codex-category-field-label' });
+                    const restoreBtn = row.createEl('button', {
+                        cls: 'codex-category-field-restore',
+                        text: t('Restore'),
+                        attr: { type: 'button' },
+                    });
+                    restoreBtn.addEventListener('click', () => {
+                        removed.delete(field.key);
+                        renderFieldLists();
+                    });
+                }
+            }
+        };
+        renderFieldLists();
 
         content.createEl('h5', { text: t('Additional fields') });
         content.createEl('p', {
@@ -2914,7 +3086,7 @@ export class CodexView extends ItemView {
         const textarea = content.createEl('textarea', {
             cls: 'codex-category-fields-textarea',
         });
-        textarea.value = (this.plugin.settings.codexCategoryFieldTemplates?.[category.id] || []).join('\n');
+        textarea.value = (this.plugin.settings.codexCategoryFieldTemplates?.[layoutKey] || []).join('\n');
 
         new Setting(content)
             .addButton(button => button
@@ -2922,11 +3094,13 @@ export class CodexView extends ItemView {
                 .setCta()
                 .onClick(async () => {
                     if (!this.plugin.settings.hiddenFields) this.plugin.settings.hiddenFields = {};
-                    this.plugin.settings.hiddenFields[category.id] = Array.from(hidden);
+                    if (!this.plugin.settings.removedBuiltinFields) this.plugin.settings.removedBuiltinFields = {};
+                    this.plugin.settings.hiddenFields[layoutKey] = Array.from(hidden);
+                    this.plugin.settings.removedBuiltinFields[layoutKey] = Array.from(removed);
                     if (!this.plugin.settings.codexCategoryFieldTemplates) {
                         this.plugin.settings.codexCategoryFieldTemplates = {};
                     }
-                    this.plugin.settings.codexCategoryFieldTemplates[category.id] = Array.from(new Set(
+                    this.plugin.settings.codexCategoryFieldTemplates[layoutKey] = Array.from(new Set(
                         textarea.value
                             .split(/\r?\n/)
                             .map(name => name.trim())

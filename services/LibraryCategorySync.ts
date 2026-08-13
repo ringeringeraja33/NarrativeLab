@@ -272,7 +272,9 @@ function removeLibraryCategoryState(
     delete plugin.settings.libraryTableColumns?.[categoryId];
     delete plugin.settings.libraryTableSort?.[categoryId];
     delete plugin.settings.libraryTableFormulas?.[categoryId];
+    delete plugin.settings.libraryArchiveFilterFields?.[categoryId];
     delete plugin.settings.hiddenFields?.[categoryId];
+    delete plugin.settings.removedBuiltinFields?.[categoryId];
     if (project.libraryFolders) delete project.libraryFolders[categoryId];
 }
 

@@ -8,7 +8,7 @@ import { SceneCardComponent } from '../components/SceneCard';
 import { QuickAddModal } from '../components/QuickAddModal';
 import { compareActChapter, getActDisplayLabel } from '../utils/actChapter';
 import { SceneManager } from '../services/SceneManager';
-import { MANUSCRIPT_VIEW_TYPE, NAVIGATOR_VIEW_TYPE, BOARD_VIEW_TYPE } from '../constants';
+import { MANUSCRIPT_VIEW_TYPE, NAVIGATOR_VIEW_TYPE } from '../constants';
 import { Scene, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import type { ProjectDraft, StoryLineProject } from '../models/StoryLineProject';
 import { RESEARCH_TYPE_CONFIG, type ResearchPost } from '../models/Research';
@@ -193,16 +193,12 @@ export class NavigatorView extends ItemView {
     /** Explicit open action from the project-row trailing button (always opens Board). */
     private async openProjectFromNavigator(project: StoryLineProject): Promise<void> {
         try {
-            const current = this.sceneManager.activeProject;
-            if (current?.filePath !== project.filePath) {
-                this.plotlineFilter = null;
-                this.selectedScenePath = null;
-                await this.sceneManager.setActiveProject(project);
-            }
+            this.plotlineFilter = null;
+            this.selectedScenePath = null;
             this.collapsedNodes.delete(`project:${project.filePath}`);
-            await this.plugin.refreshOpenViews();
             if (this.plugin.settings.autoOpenNavigator) this.plugin.openNavigator();
-            await this.plugin.activateView(BOARD_VIEW_TYPE);
+            await this.plugin.openBoardForProject(project);
+            this.renderList();
         } catch (err) {
             new Notice(t('Failed to open project: ') + String(err));
         }

@@ -583,16 +583,6 @@ export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
         ],
     },
     {
-        title: 'Physical Characteristics',
-        icon: 'scan-face',
-        fields: [
-            { key: 'appearance', label: 'Appearance', placeholder: 'Height, weight, body type, hair, eye color, skin tone', multiline: true },
-            { key: 'distinguishingFeatures', label: 'Distinguishing Features', placeholder: 'Scars, tattoos, birthmarks, or unique marks', multiline: true },
-            { key: 'style', label: 'Style', placeholder: 'Clothing style, accessories, posture', multiline: true },
-            { key: 'quirks', label: 'Quirks', placeholder: 'Specific habits like tapping fingers, stuttering when nervous…', multiline: true },
-        ],
-    },
-    {
         title: 'Personality',
         icon: 'brain',
         fields: [
@@ -604,6 +594,16 @@ export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
             { key: 'fears', label: 'Fears', placeholder: 'What they are most afraid of — the thing stopping them from going after their desire', multiline: true },
             { key: 'belief', label: 'Belief', placeholder: 'What they believe about themselves and their identity', multiline: true },
             { key: 'misbelief', label: 'Misbelief', placeholder: 'The thing they believe is true about the world (but isn\'t)', multiline: true },
+        ],
+    },
+    {
+        title: 'Physical Characteristics',
+        icon: 'scan-face',
+        fields: [
+            { key: 'appearance', label: 'Appearance', placeholder: 'Height, weight, body type, hair, eye color, skin tone', multiline: true },
+            { key: 'distinguishingFeatures', label: 'Distinguishing Features', placeholder: 'Scars, tattoos, birthmarks, or unique marks', multiline: true },
+            { key: 'style', label: 'Style', placeholder: 'Clothing style, accessories, posture', multiline: true },
+            { key: 'quirks', label: 'Quirks', placeholder: 'Specific habits like tapping fingers, stuttering when nervous…', multiline: true },
         ],
     },
     {

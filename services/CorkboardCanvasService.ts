@@ -99,35 +99,57 @@ function canonicalizeCanvasPayload(data: CorkboardCanvasData): string {
 export class CorkboardCanvasService {
     constructor(private app: App, private plugin: SceneCardsPlugin) {}
 
+    /** Serialize writes per path so NL ↔ Obsidian autosave don't interleave. */
+    private writeQueues = new Map<string, Promise<unknown>>();
+
+    private enqueueWrite<T>(path: string, task: () => Promise<T>): Promise<T> {
+        const key = normalizePath(path);
+        const previous = this.writeQueues.get(key) ?? Promise.resolve();
+        const next = previous
+            .catch(() => undefined)
+            .then(task);
+        this.writeQueues.set(key, next.then(() => undefined, () => undefined));
+        return next;
+    }
+
     /** Filename for the tiled corkboard canvas: always `corkboard.canvas`. */
     getCanvasFileName(_projectFilePath?: string, _title?: string): string {
         return CORKBOARD_CANVAS_NAME;
     }
 
     /** Canonical corkboard canvas: `{project}/Canvas/corkboard.canvas`. */
-    getCanvasPath(): string | null {
-        const project = this.plugin.sceneManager?.activeProject;
-        if (!project?.filePath) return null;
-        return corkboardCanvasPathForProject(project.filePath);
+    getCanvasPath(projectFilePath?: string | null): string | null {
+        const filePath = (projectFilePath && projectFilePath.trim())
+            ? projectFilePath
+            : this.plugin.sceneManager?.activeProject?.filePath;
+        if (!filePath) return null;
+        return corkboardCanvasPathForProject(filePath);
     }
 
     /**
      * Older locations still migrated into Canvas/corkboard.canvas:
      * System/corkboard.canvas and the short-lived `{project name}.canvas`.
      */
-    getLegacyCanvasPaths(): string[] {
-        const project = this.plugin.sceneManager?.activeProject;
-        if (!project?.filePath) return [];
-        const { canvasFolder } = deriveProjectFoldersFromFilePath(project.filePath);
+    getLegacyCanvasPaths(projectFilePath?: string | null): string[] {
+        const filePath = (projectFilePath && projectFilePath.trim())
+            ? projectFilePath
+            : this.plugin.sceneManager?.activeProject?.filePath;
+        if (!filePath) return [];
+        const project = this.plugin.sceneManager?.getProjects?.()
+            ?.find(p => normalizePath(p.filePath) === normalizePath(filePath))
+            ?? (this.plugin.sceneManager?.activeProject
+                && normalizePath(this.plugin.sceneManager.activeProject.filePath) === normalizePath(filePath)
+                ? this.plugin.sceneManager.activeProject
+                : null);
+        const derived = deriveProjectFoldersFromFilePath(filePath);
         const paths: string[] = [];
-        const sys = this.plugin.getProjectSystemFolder?.();
-        if (sys) paths.push(normalizePath(`${sys}/${CORKBOARD_CANVAS_NAME}`));
+        paths.push(normalizePath(`${derived.baseFolder}/System/${CORKBOARD_CANVAS_NAME}`));
 
-        const leaf = project.filePath.split('/').pop()?.replace(/\.md$/i, '')?.trim() || '';
-        const title = String(project.title ?? '').trim();
+        const leaf = filePath.split('/').pop()?.replace(/\.md$/i, '')?.trim() || '';
+        const title = String(project?.title ?? '').trim();
         for (const base of [leaf, title]) {
             if (!base) continue;
-            const named = normalizePath(`${canvasFolder}/${sanitizeCanvasFileBase(base)}.canvas`);
+            const named = normalizePath(`${derived.canvasFolder}/${sanitizeCanvasFileBase(base)}.canvas`);
             if (named.endsWith(`/${CORKBOARD_CANVAS_NAME}`)) continue;
             paths.push(named);
         }
@@ -135,9 +157,33 @@ export class CorkboardCanvasService {
     }
 
     /** Paths NL may sync onto the corkboard (Scenes / Notes / Research / …). */
-    isNlManagedPath(path: string): boolean {
-        const project = this.plugin.sceneManager?.activeProject;
-        if (!project?.filePath) return false;
+    isNlManagedPath(path: string, projectFilePath?: string | null): boolean {
+        const filePath = (projectFilePath && projectFilePath.trim())
+            ? projectFilePath
+            : this.plugin.sceneManager?.activeProject?.filePath;
+        if (!filePath) return false;
+        const project = this.plugin.sceneManager?.getProjects?.()
+            ?.find(p => normalizePath(p.filePath) === normalizePath(filePath))
+            ?? (this.plugin.sceneManager?.activeProject
+                && normalizePath(this.plugin.sceneManager.activeProject.filePath) === normalizePath(filePath)
+                ? this.plugin.sceneManager.activeProject
+                : null);
+        if (!project?.filePath) {
+            // Fall back to derived folders from the project manifest path alone.
+            const p = normalizePath(path);
+            const derived = deriveProjectFoldersFromFilePath(filePath);
+            const prefixes = [
+                derived.sceneFolder,
+                derived.notesFolder,
+                derived.researchFolder,
+                derived.archiveFolder,
+                derived.sceneNotesFolder,
+            ].filter((prefix): prefix is string => typeof prefix === 'string' && prefix.length > 0);
+            return prefixes.some(prefix => {
+                const root = normalizePath(prefix);
+                return p === root || p.startsWith(`${root}/`);
+            });
+        }
         const p = normalizePath(path);
         const derived = deriveProjectFoldersFromFilePath(project.filePath);
         const prefixes = [
@@ -195,39 +241,41 @@ export class CorkboardCanvasService {
     }
 
     async writeCanvas(path: string, data: CorkboardCanvasData): Promise<TFile> {
-        await this.ensureFolderFor(path);
-        const payload = canonicalizeCanvasPayload(data);
-        const existing = this.app.vault.getAbstractFileByPath(path);
-        if (existing instanceof TFile) {
-            try {
-                const current = await this.app.vault.read(existing);
-                if (current === payload) return existing;
-                const parsed = JSON.parse(current) as CorkboardCanvasData;
-                if (canonicalizeCanvasPayload({
-                    nodes: Array.isArray(parsed?.nodes) ? parsed.nodes : [],
-                    edges: Array.isArray(parsed?.edges) ? parsed.edges : [],
-                }) === payload) {
-                    return existing;
+        return this.enqueueWrite(path, async () => {
+            await this.ensureFolderFor(path);
+            const payload = canonicalizeCanvasPayload(data);
+            const existing = this.app.vault.getAbstractFileByPath(path);
+            if (existing instanceof TFile) {
+                try {
+                    const current = await this.app.vault.read(existing);
+                    if (current === payload) return existing;
+                    const parsed = JSON.parse(current) as CorkboardCanvasData;
+                    if (canonicalizeCanvasPayload({
+                        nodes: Array.isArray(parsed?.nodes) ? parsed.nodes : [],
+                        edges: Array.isArray(parsed?.edges) ? parsed.edges : [],
+                    }) === payload) {
+                        return existing;
+                    }
+                } catch (error) {
+                    const wrapped = new Error(`Could not verify corkboard Canvas "${path}". The original file was not changed.`);
+                    (wrapped as Error & { cause?: unknown }).cause = error;
+                    throw wrapped;
                 }
-            } catch (error) {
-                const wrapped = new Error(`Could not verify corkboard Canvas "${path}". The original file was not changed.`);
-                (wrapped as Error & { cause?: unknown }).cause = error;
-                throw wrapped;
+                const suppress = this.plugin.beginSuppressVaultRefresh?.(path, 2000);
+                try {
+                    await this.modifyWithRetry(existing, payload);
+                } finally {
+                    suppress?.();
+                }
+                return existing;
             }
-            const suppress = this.plugin.beginSuppressVaultRefresh?.(path);
+            const suppress = this.plugin.beginSuppressVaultRefresh?.(path, 2000);
             try {
-                await this.modifyWithRetry(existing, payload);
+                return await this.app.vault.create(path, payload);
             } finally {
                 suppress?.();
             }
-            return existing;
-        }
-        const suppress = this.plugin.beginSuppressVaultRefresh?.(path);
-        try {
-            return await this.app.vault.create(path, payload);
-        } finally {
-            suppress?.();
-        }
+        });
     }
 
     /** Retry vault.modify on Windows sharing violations while Canvas embeds are open. */
@@ -237,14 +285,16 @@ export class CorkboardCanvasService {
             return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied|sharing violation/i.test(msg);
         };
         let lastError: unknown;
-        for (let attempt = 0; attempt < 5; attempt++) {
+        // Up to ~8s of backoff — Canvas autosave often holds the handle briefly on Windows.
+        for (let attempt = 0; attempt < 8; attempt++) {
             try {
                 await this.app.vault.modify(file, payload);
                 return;
             } catch (error) {
                 lastError = error;
-                if (!isTransient(error) || attempt === 4) break;
-                await new Promise<void>(resolve => window.setTimeout(resolve, 50 * (attempt + 1) * (attempt + 1)));
+                if (!isTransient(error) || attempt === 7) break;
+                await new Promise<void>(resolve =>
+                    window.setTimeout(resolve, Math.min(1200, 60 * (attempt + 1) * (attempt + 1))));
             }
         }
         throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -276,14 +326,19 @@ export class CorkboardCanvasService {
     /**
      * Rebuild NL-managed file nodes for `visiblePaths` while preserving
      * user-added cards/groups/media and edges between surviving ids.
+     * Pass `base` (e.g. live Canvas getData) to avoid a disk read that races
+     * Obsidian autosave on Windows.
      */
     async syncVisibleFiles(
         canvasPath: string,
         visiblePaths: string[],
-        positions: Record<string, CorkboardPos>
+        positions: Record<string, CorkboardPos>,
+        base?: CorkboardCanvasData | null,
+        projectFilePath?: string | null,
     ): Promise<TFile> {
-        const existing = await this.readCanvas(canvasPath);
+        const existing = base ?? await this.readCanvas(canvasPath);
         const visibleSet = new Set(visiblePaths.map(p => normalizePath(p)));
+        const projectFile = projectFilePath ?? null;
 
         // Prefer live Canvas geometry so remounts don't snap nodes back.
         const existingFileNodes = new Map<string, CorkboardCanvasNode>();
@@ -299,7 +354,7 @@ export class CorkboardCanvasService {
             if (!n) return false;
             if (n.type !== 'file') return true;
             if (!n.file) return false;
-            return !this.isNlManagedPath(normalizePath(String(n.file)));
+            return !this.isNlManagedPath(normalizePath(String(n.file)), projectFile);
         });
 
         const fileNodes: CorkboardCanvasNode[] = [];
@@ -346,14 +401,16 @@ export class CorkboardCanvasService {
     /** Ensure Canvas/corkboard.canvas exists; migrate renamed/legacy copies if needed. */
     async ensureCanvasFile(
         visiblePaths: string[],
-        positions: Record<string, CorkboardPos>
+        positions: Record<string, CorkboardPos>,
+        base?: CorkboardCanvasData | null,
+        projectFilePath?: string | null,
     ): Promise<TFile | null> {
-        const path = this.getCanvasPath();
+        const path = this.getCanvasPath(projectFilePath);
         if (!path) return null;
 
-        await this.migrateLegacyCanvasIfNeeded(path);
+        await this.migrateLegacyCanvasIfNeeded(path, projectFilePath);
 
-        return await this.syncVisibleFiles(path, visiblePaths, positions);
+        return await this.syncVisibleFiles(path, visiblePaths, positions, base, projectFilePath);
     }
 
     /**
@@ -361,11 +418,14 @@ export class CorkboardCanvasService {
      * when missing. Never adopt an arbitrary lone .canvas: it may be a narrative
      * projection or a user-authored Obsidian Canvas.
      */
-    private async migrateLegacyCanvasIfNeeded(targetPath: string): Promise<void> {
+    private async migrateLegacyCanvasIfNeeded(
+        targetPath: string,
+        projectFilePath?: string | null,
+    ): Promise<void> {
         const existing = this.app.vault.getAbstractFileByPath(targetPath);
         if (existing instanceof TFile) return;
 
-        const candidates: string[] = [...this.getLegacyCanvasPaths()];
+        const candidates: string[] = [...this.getLegacyCanvasPaths(projectFilePath)];
 
         for (const legacy of candidates) {
             if (!legacy || legacy === targetPath) continue;

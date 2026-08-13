@@ -2,6 +2,10 @@
 import { AbstractInputSuggest, App, ButtonComponent, DropdownComponent, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
 import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './settings';
 import { asRecord, isRecord } from './utils/narrow';
+import {
+    getLeafNarrativeLabProjectFile,
+    narrativeLabLeafState,
+} from './utils/narrativeLabLeafState';
 import type { FilterPreset } from './models/Scene';
 import { SceneManager } from './services/SceneManager';
 import { registerCustomStatuses } from './models/Scene';
@@ -111,6 +115,13 @@ import {
     readLibraryCategorySettings,
     reconcileLibraryCategoriesForActiveProject,
 } from './services/LibraryCategorySync';
+import {
+    applyLibraryProfileLayout,
+    emptyLibraryProfileLayout,
+    LIBRARY_PROFILE_LAYOUT_FILENAME,
+    libraryProfileLayoutFromUnknown,
+    readLibraryProfileLayout,
+} from './utils/libraryProfileLayout';
 import { QuickAddModal } from './components/QuickAddModal';
 import { ConverterModal, type ConverterTab } from './components/ConverterModal';
 import { syncAllNativeLibraryBases } from './components/NativeLibraryBase';
@@ -240,6 +251,8 @@ export default class SceneCardsPlugin extends Plugin {
      * Captured at load; each project gets its own System/library-categories.json.
      */
     private _legacyLibraryCategoryDefaults = emptyLibraryCategorySettings();
+    /** One-time seed when migrating profile field layout out of global data.json. */
+    private _legacyLibraryProfileLayoutDefaults = emptyLibraryProfileLayout();
     locationManager!: LocationManager;
     characterManager!: CharacterManager;
     codexManager!: CodexManager;
@@ -659,6 +672,11 @@ export default class SceneCardsPlugin extends Plugin {
             id: 'undo',
             name: t('Undo last scene change'),
             callback: async () => {
+                const board = this.app.workspace.getActiveViewOfType(BoardView);
+                if (board) {
+                    await board.handleBoardUndo();
+                    return;
+                }
                 await this.sceneManager.undoManager.undo();
             },
         });
@@ -667,6 +685,11 @@ export default class SceneCardsPlugin extends Plugin {
             id: 'redo',
             name: t('Redo last scene change'),
             callback: async () => {
+                const board = this.app.workspace.getActiveViewOfType(BoardView);
+                if (board) {
+                    await board.handleBoardRedo();
+                    return;
+                }
                 await this.sceneManager.undoManager.redo();
             },
         });
@@ -702,6 +725,16 @@ export default class SceneCardsPlugin extends Plugin {
                 NAVIGATOR_VIEW_TYPE,
             ];
             if (!slViewTypes.includes(viewType)) return;
+
+            // Board corkboard: route to Canvas history (do not steal with empty scene UndoManager).
+            if (viewType === BOARD_VIEW_TYPE) {
+                const board = view as BoardView;
+                evt.preventDefault();
+                evt.stopPropagation();
+                if (isUndo) void board.handleBoardUndo();
+                else void board.handleBoardRedo();
+                return;
+            }
 
             evt.preventDefault();
             evt.stopPropagation();
@@ -1103,6 +1136,7 @@ export default class SceneCardsPlugin extends Plugin {
             this.app.workspace.on('active-leaf-change', (leaf) => {
                 this.injectFormattingToolbar(leaf);
                 this.updateFrontmatterVisibility();
+                void this.syncActiveProjectFromLeaf(leaf);
             })
         );
 
@@ -1799,6 +1833,7 @@ export default class SceneCardsPlugin extends Plugin {
         // Library categories used to live in global data.json and leaked across
         // projects. Keep one seed for first-time per-project migration.
         this._legacyLibraryCategoryDefaults = readLibraryCategorySettings(this.settings);
+        this._legacyLibraryProfileLayoutDefaults = readLibraryProfileLayout(this.settings);
     }
 
     /** Per-project field keys that live in System/ files, not data.json */
@@ -1812,6 +1847,10 @@ export default class SceneCardsPlugin extends Plugin {
         // Library categories are one-config-per-project (System/library-categories.json)
         'codexEnabledCategories', 'codexCustomCategories', 'libraryCategoryOrder',
         'libraryHiddenFixedCategories', 'codexDeletedPresetCategories',
+        // Archive profile field layout (System/library-profile-layout.json)
+        'hiddenFields', 'removedBuiltinFields',
+        'characterCustomSections', 'locationCustomSections', 'codexCategoryCustomSections',
+        'codexCategoryFieldTemplates',
     ];
 
     /** Obsidian appearance → NL/ncanvas light|dark. */
@@ -1905,6 +1944,15 @@ export default class SceneCardsPlugin extends Plugin {
             toSave.libraryCategoryOrder = emptyCats.categoryOrder;
             toSave.libraryHiddenFixedCategories = emptyCats.hiddenFixedCategories;
             toSave.codexDeletedPresetCategories = emptyCats.deletedPresetCategories;
+            // Keep empty profile-layout defaults in data.json so projects do not
+            // inherit the active project's working copy of hidden/removed fields.
+            const emptyProfile = emptyLibraryProfileLayout();
+            toSave.hiddenFields = emptyProfile.hiddenFields;
+            toSave.removedBuiltinFields = emptyProfile.removedBuiltinFields;
+            toSave.characterCustomSections = emptyProfile.characterCustomSections;
+            toSave.locationCustomSections = emptyProfile.locationCustomSections;
+            toSave.codexCategoryCustomSections = emptyProfile.codexCategoryCustomSections;
+            toSave.codexCategoryFieldTemplates = emptyProfile.codexCategoryFieldTemplates;
             // When using per-project colours, restore global defaults into
             // data.json so the global values are not overwritten by the
             // project-specific ones currently in memory.
@@ -2389,6 +2437,24 @@ export default class SceneCardsPlugin extends Plugin {
             libraryCategoriesDirty = true;
         }
 
+        // Overlay per-project archive profile field layout (hide / remove / custom sections).
+        const profileLayoutRaw = await this.readSystemJson(LIBRARY_PROFILE_LAYOUT_FILENAME);
+        const storedProfileLayout = libraryProfileLayoutFromUnknown(profileLayoutRaw);
+        let profileLayoutDirty = !storedProfileLayout;
+        if (storedProfileLayout) {
+            applyLibraryProfileLayout(this.settings, storedProfileLayout);
+        } else {
+            applyLibraryProfileLayout(this.settings, {
+                hiddenFields: { ...this._legacyLibraryProfileLayoutDefaults.hiddenFields },
+                removedBuiltinFields: { ...this._legacyLibraryProfileLayoutDefaults.removedBuiltinFields },
+                characterCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.characterCustomSections)) as unknown[],
+                locationCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.locationCustomSections)) as unknown[],
+                codexCategoryCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.codexCategoryCustomSections)) as Record<string, unknown[]>,
+                codexCategoryFieldTemplates: { ...this._legacyLibraryProfileLayoutDefaults.codexCategoryFieldTemplates },
+            });
+            profileLayoutDirty = true;
+        }
+
         // Overlay per-project data onto settings (used as working copy)
         this.settings.tagColors = isRecord(plotlines.tagColors)
             ? (plotlines.tagColors as Record<string, string>)
@@ -2492,6 +2558,15 @@ export default class SceneCardsPlugin extends Plugin {
             if (activeProject.libraryFolders) {
                 await this.sceneManager.saveProjectFrontmatter(activeProject).catch(() => undefined);
             }
+        }
+        if (profileLayoutDirty && activeProject) {
+            await this.writeSystemJson(
+                LIBRARY_PROFILE_LAYOUT_FILENAME,
+                {
+                    version: 1,
+                    ...readLibraryProfileLayout(this.settings),
+                } as unknown as Record<string, unknown>,
+            );
         }
 
         // System files are now the source of truth
@@ -2617,6 +2692,14 @@ export default class SceneCardsPlugin extends Plugin {
         await this.writeSystemJson(
             LIBRARY_CATEGORIES_FILENAME,
             readLibraryCategorySettings(this.settings) as unknown as Record<string, unknown>,
+        );
+
+        await this.writeSystemJson(
+            LIBRARY_PROFILE_LAYOUT_FILENAME,
+            {
+                version: 1,
+                ...readLibraryProfileLayout(this.settings),
+            } as unknown as Record<string, unknown>,
         );
     }
 
@@ -3056,12 +3139,78 @@ export default class SceneCardsPlugin extends Plugin {
             // Create new leaf
             leaf = workspace.getLeaf(false);
             if (leaf) {
-                await leaf.setViewState({ type: viewType, active: true });
+                const projectFile = this.sceneManager.activeProject?.filePath ?? null;
+                await leaf.setViewState({
+                    type: viewType,
+                    active: true,
+                    state: narrativeLabLeafState(projectFile),
+                });
             }
         }
 
         if (leaf) {
             workspace.revealLeaf(leaf);
+        }
+    }
+
+    /**
+     * Open (or focus) a Board tab bound to a specific project.
+     * Other project-bound Board tabs stay open and are not remounted.
+     */
+    async openBoardForProject(project: StoryLineProject): Promise<void> {
+        const projectFile = normalizePath(project.filePath);
+        const { workspace } = this.app;
+        const boards = workspace.getLeavesOfType(BOARD_VIEW_TYPE);
+        let leaf = boards.find(item => getLeafNarrativeLabProjectFile(item) === projectFile) ?? null;
+
+        if (!leaf) {
+            // Prefer a brand-new tab when another Board is already open so both
+            // projects can stay visible side-by-side / in the tab bar.
+            leaf = boards.length > 0 ? workspace.getLeaf('tab') : workspace.getLeaf(false);
+            await leaf.setViewState({
+                type: BOARD_VIEW_TYPE,
+                active: true,
+                state: narrativeLabLeafState(projectFile),
+            });
+        } else {
+            const prev = (leaf.getViewState()?.state || {}) as Record<string, unknown>;
+            await leaf.setViewState({
+                type: BOARD_VIEW_TYPE,
+                active: true,
+                state: narrativeLabLeafState(projectFile, prev),
+            });
+        }
+
+        const current = this.sceneManager.activeProject;
+        if (!current || normalizePath(current.filePath) !== projectFile) {
+            await this.sceneManager.setActiveProject(project);
+        } else {
+            await this.refreshOpenViews();
+        }
+        workspace.revealLeaf(leaf);
+        this.storyLeaf = leaf;
+    }
+
+    /** If the focused leaf is bound to another project, switch the active project. */
+    private _syncingProjectFromLeaf = false;
+    private async syncActiveProjectFromLeaf(leaf: WorkspaceLeaf | null): Promise<void> {
+        if (!leaf || this._syncingProjectFromLeaf) return;
+        const bound = getLeafNarrativeLabProjectFile(leaf);
+        if (!bound) return;
+        const activePath = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : null;
+        if (activePath === bound) return;
+        const project = this.sceneManager.getProjects()
+            .find(p => normalizePath(p.filePath) === bound);
+        if (!project) return;
+        this._syncingProjectFromLeaf = true;
+        try {
+            await this.sceneManager.setActiveProject(project);
+        } catch (err) {
+            console.warn('[NarrativeLab] Failed to sync active project from leaf:', err);
+        } finally {
+            this._syncingProjectFromLeaf = false;
         }
     }
 
@@ -4163,9 +4312,17 @@ export default class SceneCardsPlugin extends Plugin {
         ];
 
         const projectLabel = this.getActiveProjectDisplayName();
+        const activePath = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : null;
         for (const viewType of viewTypes) {
             const leaves = this.app.workspace.getLeavesOfType(viewType);
             for (const leaf of leaves) {
+                const bound = getLeafNarrativeLabProjectFile(leaf);
+                // Keep other projects' open tabs intact while this project is active.
+                if (bound && activePath && bound !== activePath) {
+                    continue;
+                }
                 const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
                 if (view && typeof view.refresh === 'function') {
                     try {
@@ -4185,8 +4342,13 @@ export default class SceneCardsPlugin extends Plugin {
 
     /** Refresh only open Plot Grid leaves (external datasheet.xlsx edits). */
     private async refreshPlotGridViews(): Promise<void> {
+        const activePath = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : null;
         const leaves = this.app.workspace.getLeavesOfType(PLOTGRID_VIEW_TYPE);
         for (const leaf of leaves) {
+            const bound = getLeafNarrativeLabProjectFile(leaf);
+            if (bound && activePath && bound !== activePath) continue;
             const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
             if (view && typeof view.refresh === 'function') {
                 try {
@@ -5066,15 +5228,15 @@ class ProjectSelectModal extends Modal {
                 return;
             }
             try {
-                await this.plugin.sceneManager.setActiveProject(selected);
-                this.plugin.refreshOpenViews();
                 if (this.plugin.settings.autoOpenNavigator) this.plugin.openNavigator();
                 if (destination === 'canvas') {
+                    await this.plugin.sceneManager.setActiveProject(selected);
+                    this.plugin.refreshOpenViews();
                     this.close();
                     this.plugin.openNCanvasManager();
                     return;
                 }
-                await this.plugin.activateView(BOARD_VIEW_TYPE);
+                await this.plugin.openBoardForProject(selected);
                 this.close();
             } catch (err) {
                 new Notice(t('Failed to open project: ') + String(err));
@@ -5207,10 +5369,8 @@ class ProjectSelectModal extends Modal {
                             }
                         }
                         if (project) {
-                            await this.plugin.sceneManager.setActiveProject(project);
-                            this.plugin.refreshOpenViews();
                             if (this.plugin.settings.autoOpenNavigator) this.plugin.openNavigator();
-                            try { await this.plugin.activateView(BOARD_VIEW_TYPE); } catch { /* */ }
+                            try { await this.plugin.openBoardForProject(project); } catch { /* */ }
                             browseModal.close();
                             this.close();
                         } else {

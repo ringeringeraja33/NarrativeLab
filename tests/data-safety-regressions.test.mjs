@@ -103,8 +103,19 @@ test('corkboard membership changes force remount instead of stale live Canvas', 
     assert.match(boardView, /captureLiveCorkboardPositions/);
     assert.match(boardView, /teardownNativeCorkboardCanvas\(\)/);
     assert.match(boardView, /showScenesInCorkboard \? 'scenes:1' : 'scenes:0'/);
+    // Skip disk rewrite when membership fingerprint is unchanged (even without a live leaf).
+    assert.match(boardView, /Fast path: membership unchanged/);
+    assert.match(boardView, /isCorkboardCanvasBusy/);
+    assert.match(boardView, /prepareCorkboardCanvasDetach/);
+    assert.match(boardView, /requestSave[\s\S]*cancel/);
     // Do not assume vault.modify reloads an already-hosted Canvas view.
     assert.doesNotMatch(boardView, /Obsidian reloads file nodes/);
+});
+
+test('corkboard canvas writes are queued and retried on Windows locks', () => {
+    assert.match(corkboard, /enqueueWrite/);
+    assert.match(corkboard, /modifyWithRetry/);
+    assert.match(corkboard, /attempt < 8/);
 });
 
 test('series migrations journal transfers and roll back every move path', () => {

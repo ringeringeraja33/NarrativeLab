@@ -622,6 +622,10 @@ export interface SceneCardsSettings {
     lastBoardMode: 'corkboard' | 'kanban';
     /** Remembered kanban groupBy from last session */
     lastBoardGroupBy: string;
+    /** Remembered Library content tab: Profiles / Browse / Story Graph */
+    lastLibraryContentMode: 'profile' | 'browse' | 'story-graph';
+    /** Remembered Library category tab (characters, locations, or a codex id) */
+    lastLibraryCategoryId: string;
     /** Remembered Storyline (Plotlines) view mode from last session */
     lastStorylineViewMode: 'list' | 'subway';
     /** Remembered Storyline view sort mode from last session */
@@ -865,6 +869,12 @@ export interface SceneCardsSettings {
     libraryTableSort?: Record<string, { key: string; direction: 'asc' | 'desc' }>;
     /** Bases-style computed columns per Library category. */
     libraryTableFormulas?: Record<string, Array<{ id: string; name: string; expression: string }>>;
+    /**
+     * Which profile fields feed archive filter chips (Characters / Locations / Codex).
+     * Keyed by category id (`characters`, `locations`, or a codex category id).
+     * Use `__hashtags__` to include #tags scanned from text fields.
+     */
+    libraryArchiveFilterFields?: Record<string, string[]>;
 
     // Per-category default custom field templates (#115). When a new entry is created
     // in this category, the listed field names are pre-populated with empty values.
@@ -884,10 +894,16 @@ export interface SceneCardsSettings {
     // Field values still live in `<entity>.custom` keyed by the composite
     // `${sectionTitle} :: ${fieldName}` so existing data round-trips cleanly.
     codexCategoryCustomSections?: Record<string, CustomSection[]>;
-    /** User-defined custom sections shared across all characters (#120 / v1.10.17). */
+    /** User-defined custom sections for Characters (per project; System/library-profile-layout.json). */
     characterCustomSections?: CustomSection[];
-    /** User-defined custom sections shared across all locations / worlds (#120 / v1.10.17). */
+    /** User-defined custom sections for Locations / Worlds (per project). */
     locationCustomSections?: CustomSection[];
+    /**
+     * Built-in profile fields removed from the form for this project + archive page.
+     * Keyed like `hiddenFields` (`character`, `location`, or a Codex category id).
+     * Note data is kept; fields can be restored from the archive UI.
+     */
+    removedBuiltinFields?: Record<string, string[]>;
     /** Which codex category IDs should appear in the Scene Inspector sidebar */
     codexSidebarCategories: string[];
     /** Series name — groups projects that share a common universe / codex */
@@ -897,7 +913,7 @@ export interface SceneCardsSettings {
     /** Extra vault-relative folder paths to scan for NarrativeLab entities */
     extraFolders: string[];
 
-    /** Hidden built-in field keys per view/category (e.g. { character: ['fears','belief'], items: ['previousOwners'] }) */
+    /** Hidden built-in field keys per archive page (per project; e.g. { character: ['fears'], items: ['previousOwners'] }) */
     hiddenFields: Record<string, string[]>;
 
     /** Show the built-in formatting toolbar in scene editors when Editing Toolbar plugin is not installed */
@@ -997,6 +1013,8 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     defaultBoardMode: 'corkboard',
     lastBoardMode: 'corkboard',
     lastBoardGroupBy: 'act',
+    lastLibraryContentMode: 'profile',
+    lastLibraryCategoryId: 'characters',
     lastStorylineViewMode: 'subway',
     lastStorylineSortMode: 'reading-order',
     lastStorylineArcFilter: 'all',
@@ -1086,10 +1104,12 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     libraryTableColumns: {},
     libraryTableSort: {},
     libraryTableFormulas: {},
+    libraryArchiveFilterFields: {},
     codexCategoryFieldTemplates: {},
     codexCategoryCustomSections: {},
     characterCustomSections: [],
     locationCustomSections: [],
+    removedBuiltinFields: {},
     /** Which codex category IDs should appear in the Scene Inspector sidebar */
     codexSidebarCategories: [] as string[],
     series: '',

@@ -1197,6 +1197,44 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     flex-shrink: 0;
 }
 
+.library-archive-filter-bar {
+    max-height: none;
+    overflow: visible;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: stretch;
+}
+
+.library-archive-filter-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.library-archive-filter-field-btn {
+    flex: 0 1 auto;
+    max-width: 100%;
+}
+
+.library-archive-filter-field-btn .library-browse-action-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: min(420px, 70vw);
+}
+
+.library-archive-filter-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    max-height: 88px;
+    overflow-x: hidden;
+    overflow-y: auto;
+    align-content: flex-start;
+}
+
 .library-filter-empty-hint {
     font-size: 0.78em;
     color: var(--text-faint);
@@ -13935,6 +13973,33 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
 .codex-category-field-row input[type="checkbox"] {
     margin: 0;
 }
+.codex-category-field-label {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+.codex-category-field-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-radius: var(--radius-s);
+}
+.codex-category-field-remove:hover {
+    color: var(--text-error, var(--color-red));
+    background: var(--background-modifier-hover);
+}
+.codex-category-field-row-removed .codex-category-field-label {
+    color: var(--text-muted);
+}
+.codex-category-field-restore {
+    font-size: 0.8em;
+}
 .codex-category-fields-textarea {
     width: 100%;
     min-height: 120px;
@@ -15005,6 +15070,63 @@ body.narrative-lab-theme-dark .codex-stale-header {
 .field-hide-btn.field-hide-btn:hover {
     opacity: 1;
     color: var(--text-accent);
+}
+
+.field-remove-btn {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 4px;
+    opacity: 0;
+    cursor: pointer;
+    color: var(--text-muted);
+    transition: opacity 0.15s;
+    vertical-align: middle;
+}
+
+.field-remove-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+.character-field-row:hover .field-remove-btn,
+.codex-field-row:hover .field-remove-btn,
+.location-field-row:hover .field-remove-btn {
+    opacity: 0.6;
+}
+
+.field-remove-btn:hover {
+    opacity: 1;
+    color: var(--text-error, var(--color-red));
+}
+
+.removed-fields-toggle {
+    margin-top: 8px;
+}
+
+.removed-fields-toggle-link {
+    font-size: 0.8em;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.removed-fields-container {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.removed-field-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
+.removed-field-restore-btn {
+    font-size: 0.8em;
 }
 
 /* ?? Move-up / move-down chevrons (built-in field rows) ? */

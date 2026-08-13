@@ -1,0 +1,306 @@
+import * as obsidian from 'obsidian';
+import type { App } from 'obsidian';
+import type { SceneCardsSettings } from '../settings';
+import { openConfirmModal } from '../components/ConfirmModal';
+import { t } from './i18n';
+
+/** Per-project System/ filename for archive profile field layout. */
+export const LIBRARY_PROFILE_LAYOUT_FILENAME = 'library-profile-layout.json';
+
+/**
+ * Built-in fields that cannot be deleted (basic identity / navigation).
+ * They may still be hidden except `name`, which stays always visible in the UI.
+ */
+const CORE_UNDELETABLE = new Set(['name']);
+
+export interface LibraryProfileLayoutSettings {
+    hiddenFields: Record<string, string[]>;
+    /** Built-in field keys removed from the form for this project + archive page. */
+    removedBuiltinFields: Record<string, string[]>;
+    characterCustomSections: unknown[];
+    locationCustomSections: unknown[];
+    codexCategoryCustomSections: Record<string, unknown[]>;
+    /** Default custom field names seeded onto new Codex entries (per category). */
+    codexCategoryFieldTemplates: Record<string, string[]>;
+}
+
+export function emptyLibraryProfileLayout(): LibraryProfileLayoutSettings {
+    return {
+        hiddenFields: {},
+        removedBuiltinFields: {},
+        characterCustomSections: [],
+        locationCustomSections: [],
+        codexCategoryCustomSections: {},
+        codexCategoryFieldTemplates: {},
+    };
+}
+
+export function readLibraryProfileLayout(settings: SceneCardsSettings): LibraryProfileLayoutSettings {
+    return {
+        hiddenFields: { ...(settings.hiddenFields || {}) },
+        removedBuiltinFields: { ...(settings.removedBuiltinFields || {}) },
+        characterCustomSections: Array.isArray(settings.characterCustomSections)
+            ? JSON.parse(JSON.stringify(settings.characterCustomSections)) as unknown[]
+            : [],
+        locationCustomSections: Array.isArray(settings.locationCustomSections)
+            ? JSON.parse(JSON.stringify(settings.locationCustomSections)) as unknown[]
+            : [],
+        codexCategoryCustomSections: JSON.parse(JSON.stringify(settings.codexCategoryCustomSections || {})) as Record<string, unknown[]>,
+        codexCategoryFieldTemplates: { ...(settings.codexCategoryFieldTemplates || {}) },
+    };
+}
+
+export function applyLibraryProfileLayout(
+    settings: SceneCardsSettings,
+    layout: LibraryProfileLayoutSettings,
+): void {
+    settings.hiddenFields = { ...(layout.hiddenFields || {}) };
+    settings.removedBuiltinFields = { ...(layout.removedBuiltinFields || {}) };
+    settings.characterCustomSections = Array.isArray(layout.characterCustomSections)
+        ? (layout.characterCustomSections as SceneCardsSettings['characterCustomSections'])
+        : [];
+    settings.locationCustomSections = Array.isArray(layout.locationCustomSections)
+        ? (layout.locationCustomSections as SceneCardsSettings['locationCustomSections'])
+        : [];
+    settings.codexCategoryCustomSections = { ...(layout.codexCategoryCustomSections || {}) } as SceneCardsSettings['codexCategoryCustomSections'];
+    settings.codexCategoryFieldTemplates = { ...(layout.codexCategoryFieldTemplates || {}) };
+}
+
+export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLayoutSettings | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const rec = raw as Record<string, unknown>;
+    // Treat an empty/missing file as "not stored yet" only when nothing useful is present.
+    const hasAny =
+        isRecord(rec.hiddenFields)
+        || isRecord(rec.removedBuiltinFields)
+        || Array.isArray(rec.characterCustomSections)
+        || Array.isArray(rec.locationCustomSections)
+        || isRecord(rec.codexCategoryCustomSections)
+        || isRecord(rec.codexCategoryFieldTemplates);
+    if (!hasAny && !('version' in rec)) return null;
+
+    return {
+        hiddenFields: isRecord(rec.hiddenFields)
+            ? sanitizeStringListMap(rec.hiddenFields)
+            : {},
+        removedBuiltinFields: isRecord(rec.removedBuiltinFields)
+            ? sanitizeStringListMap(rec.removedBuiltinFields)
+            : {},
+        characterCustomSections: Array.isArray(rec.characterCustomSections) ? rec.characterCustomSections : [],
+        locationCustomSections: Array.isArray(rec.locationCustomSections) ? rec.locationCustomSections : [],
+        codexCategoryCustomSections: isRecord(rec.codexCategoryCustomSections)
+            ? Object.fromEntries(
+                Object.entries(rec.codexCategoryCustomSections).map(([k, v]) => [
+                    k,
+                    Array.isArray(v) ? v : [],
+                ]),
+            )
+            : {},
+        codexCategoryFieldTemplates: isRecord(rec.codexCategoryFieldTemplates)
+            ? sanitizeStringListMap(rec.codexCategoryFieldTemplates)
+            : {},
+    };
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+    return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+function sanitizeStringListMap(raw: Record<string, unknown>): Record<string, string[]> {
+    const out: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(raw)) {
+        if (!Array.isArray(v)) continue;
+        out[k] = v.map(x => String(x)).filter(Boolean);
+    }
+    return out;
+}
+
+export function isCoreProfileField(fieldKey: string): boolean {
+    return CORE_UNDELETABLE.has(fieldKey);
+}
+
+export function getHiddenFieldKeys(settings: SceneCardsSettings, categoryKey: string): string[] {
+    return settings.hiddenFields?.[categoryKey] ?? [];
+}
+
+export function getRemovedBuiltinFieldKeys(settings: SceneCardsSettings, categoryKey: string): string[] {
+    return settings.removedBuiltinFields?.[categoryKey] ?? [];
+}
+
+/** Drop permanently removed built-ins from a category field list. */
+export function filterRemovedBuiltinFields<T extends { key: string }>(
+    fields: T[],
+    settings: SceneCardsSettings,
+    categoryKey: string,
+): T[] {
+    const removed = new Set(getRemovedBuiltinFieldKeys(settings, categoryKey));
+    if (removed.size === 0) return fields;
+    return fields.filter(f => !removed.has(f.key));
+}
+
+export async function toggleHiddenProfileField(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    fieldKey: string,
+    save: () => Promise<void>,
+): Promise<void> {
+    if (!settings.hiddenFields) settings.hiddenFields = {};
+    if (!settings.hiddenFields[categoryKey]) settings.hiddenFields[categoryKey] = [];
+    const list = settings.hiddenFields[categoryKey];
+    const idx = list.indexOf(fieldKey);
+    if (idx >= 0) list.splice(idx, 1);
+    else list.push(fieldKey);
+    await save();
+}
+
+export async function removeBuiltinProfileField(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    fieldKey: string,
+    save: () => Promise<void>,
+): Promise<void> {
+    if (isCoreProfileField(fieldKey)) return;
+    if (!settings.removedBuiltinFields) settings.removedBuiltinFields = {};
+    if (!settings.removedBuiltinFields[categoryKey]) settings.removedBuiltinFields[categoryKey] = [];
+    const list = settings.removedBuiltinFields[categoryKey];
+    if (!list.includes(fieldKey)) list.push(fieldKey);
+    // Also drop from hidden list if present.
+    const hidden = settings.hiddenFields?.[categoryKey];
+    if (hidden) {
+        const i = hidden.indexOf(fieldKey);
+        if (i >= 0) hidden.splice(i, 1);
+    }
+    await save();
+}
+
+export async function restoreBuiltinProfileField(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    fieldKey: string,
+    save: () => Promise<void>,
+): Promise<void> {
+    const list = settings.removedBuiltinFields?.[categoryKey];
+    if (!list) return;
+    const i = list.indexOf(fieldKey);
+    if (i >= 0) list.splice(i, 1);
+    await save();
+}
+
+/**
+ * Hide + delete controls for built-in archive fields.
+ * Core fields (`name`) cannot be deleted; `name` also cannot be hidden.
+ */
+export function attachBuiltinFieldVisibilityControls(
+    labelEl: HTMLElement,
+    opts: {
+        app: App;
+        settings: SceneCardsSettings;
+        categoryKey: string;
+        fieldKey: string;
+        fieldLabel: string;
+        save: () => Promise<void>;
+        onChanged: () => void;
+    },
+): void {
+    const { settings, categoryKey, fieldKey } = opts;
+    const canHide = fieldKey !== 'name';
+    const canDelete = !isCoreProfileField(fieldKey);
+
+    if (canHide) {
+        const hiddenKeys = getHiddenFieldKeys(settings, categoryKey);
+        const isHidden = hiddenKeys.includes(fieldKey);
+        const hideBtn = labelEl.createEl('span', {
+            cls: 'field-hide-btn',
+            attr: { 'aria-label': isHidden ? t('Show this field') : t('Hide this field') },
+        });
+        obsidian.setIcon(hideBtn, isHidden ? 'eye' : 'eye-off');
+        hideBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            await toggleHiddenProfileField(settings, categoryKey, fieldKey, opts.save);
+            opts.onChanged();
+        });
+    }
+
+    if (canDelete) {
+        const removeBtn = labelEl.createEl('span', {
+            cls: 'field-remove-btn',
+            attr: {
+                'aria-label': t('Remove field'),
+                title: t('Remove this default field from this archive page'),
+            },
+        });
+        obsidian.setIcon(removeBtn, 'x');
+        removeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openConfirmModal(opts.app, {
+                title: t('Remove Field'),
+                message: t(
+                    'Remove “{field}” from this archive page in the current project? Existing note data is kept; you can restore the field later.',
+                    { field: t(opts.fieldLabel) },
+                ),
+                confirmLabel: t('Remove field'),
+                confirmClass: 'mod-warning',
+                onConfirm: async () => {
+                    await removeBuiltinProfileField(settings, categoryKey, fieldKey, opts.save);
+                    opts.onChanged();
+                },
+            });
+        });
+    }
+}
+
+/** Collapsible list of removed default fields with Restore actions. */
+export function renderRemovedBuiltinFieldsToggle(
+    parent: HTMLElement,
+    opts: {
+        settings: SceneCardsSettings;
+        categoryKey: string;
+        /** All built-in fields that belong to this section (before removal filter). */
+        sectionFields: Array<{ key: string; label: string }>;
+        save: () => Promise<void>;
+        onChanged: () => void;
+    },
+): void {
+    const removedKeys = new Set(getRemovedBuiltinFieldKeys(opts.settings, opts.categoryKey));
+    const removedInSection = opts.sectionFields.filter(f => removedKeys.has(f.key));
+    if (removedInSection.length === 0) return;
+
+    const toggleEl = parent.createDiv('removed-fields-toggle');
+    toggleEl.createEl('a', {
+        text: removedInSection.length > 1
+            ? t('Show {count} removed fields', { count: removedInSection.length })
+            : t('Show {count} removed field', { count: removedInSection.length }),
+        cls: 'removed-fields-toggle-link',
+    });
+    const listEl = parent.createDiv('removed-fields-container');
+    listEl.setCssStyles({ display: 'none' });
+    for (const field of removedInSection) {
+        const row = listEl.createDiv('removed-field-row');
+        row.createSpan({ text: t(field.label), cls: 'removed-field-label' });
+        const restoreBtn = row.createEl('button', {
+            cls: 'removed-field-restore-btn',
+            text: t('Restore'),
+            attr: { type: 'button' },
+        });
+        restoreBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            await restoreBuiltinProfileField(opts.settings, opts.categoryKey, field.key, opts.save);
+            opts.onChanged();
+        });
+    }
+    let showing = false;
+    toggleEl.addEventListener('click', () => {
+        showing = !showing;
+        listEl.setCssStyles({ display: showing ? '' : 'none' });
+        const a = toggleEl.querySelector('a');
+        if (!a) return;
+        a.textContent = showing
+            ? (removedInSection.length > 1
+                ? t('Hide {count} removed fields', { count: removedInSection.length })
+                : t('Hide {count} removed field', { count: removedInSection.length }))
+            : (removedInSection.length > 1
+                ? t('Show {count} removed fields', { count: removedInSection.length })
+                : t('Show {count} removed field', { count: removedInSection.length }));
+    });
+}
