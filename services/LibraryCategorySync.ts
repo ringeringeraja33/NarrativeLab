@@ -120,7 +120,7 @@ export function resolveLibraryCategoryLabel(
     }
     const english = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId] || fallback;
     if (!english) return fallback || categoryId;
-    return english;
+    return t(english);
 }
 
 function setLibraryCategoryDisplayMetadata(

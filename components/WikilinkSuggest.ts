@@ -11,6 +11,7 @@
  */
 
 import { App, FuzzySuggestModal, TFile } from 'obsidian';
+import { t } from '../utils/i18n';
 
 export interface WikilinkSuggestOptions {
     app: App;
@@ -47,18 +48,18 @@ class WikilinkNotePickerModal extends FuzzySuggestModal<TFile> {
         this.onPick = onPick;
         this.onCancelPick = onCancelPick;
         this.initialQuery = query;
-        this.setPlaceholder('Search notes…');
+        this.setPlaceholder(t('Search notes…'));
         this.modalEl.addClass('nl-wikilink-suggest-modal');
     }
 
     onOpen(): void {
-        super.onOpen();
+        void super.onOpen();
         // Floating cell editors used to sit at z-index 10000+ and covered Obsidian modals.
         const ownerDocument = this.containerEl.ownerDocument;
         ownerDocument.body.addClass('nl-wikilink-picker-open');
-        const shell = this.containerEl.closest('.modal-container') as HTMLElement | null;
-        if (shell) shell.style.zIndex = '100000';
-        this.containerEl.style.zIndex = '100001';
+        const shell = this.containerEl.closest<HTMLElement>('.modal-container');
+        shell?.addClass('nl-wikilink-suggest-shell');
+        this.containerEl.addClass('nl-wikilink-suggest-container');
         if (!this.initialQuery) return;
         this.inputEl.value = this.initialQuery;
         this.inputEl.dispatchEvent(new Event('input'));
@@ -109,18 +110,20 @@ function getTextareaCaretRect(textarea: HTMLTextAreaElement): CaretRect | null {
     for (const property of copiedProperties) {
         mirror.style.setProperty(property, style.getPropertyValue(property));
     }
-    mirror.style.position = 'fixed';
-    mirror.style.left = `${rect.left}px`;
-    mirror.style.top = `${rect.top}px`;
-    mirror.style.width = `${rect.width}px`;
-    mirror.style.height = `${rect.height}px`;
-    mirror.style.whiteSpace = 'pre-wrap';
-    mirror.style.overflow = 'auto';
-    mirror.style.overflowWrap = 'break-word';
-    mirror.style.wordBreak = 'break-word';
-    mirror.style.visibility = 'hidden';
-    mirror.style.pointerEvents = 'none';
-    mirror.style.zIndex = '-1';
+    mirror.setCssProps({
+        position: 'fixed',
+        left: `${rect.left}px`,
+        top: `${rect.top}px`,
+        width: `${rect.width}px`,
+        height: `${rect.height}px`,
+        whiteSpace: 'pre-wrap',
+        overflow: 'auto',
+        overflowWrap: 'break-word',
+        wordBreak: 'break-word',
+        visibility: 'hidden',
+        pointerEvents: 'none',
+        zIndex: '-1',
+    });
 
     const caret = textarea.selectionStart ?? textarea.value.length;
     mirror.appendChild(ownerDocument.createTextNode(textarea.value.slice(0, caret)));
@@ -408,7 +411,10 @@ export class WikilinkSuggest {
             const item = this.dropdown.createDiv('sl-suggest-item');
             item.createDiv({ cls: 'sl-suggest-title', text: candidate.name });
             item.createDiv({ cls: 'sl-suggest-note', text: candidate.path });
-            if (i === 0) item.addClass('is-active').addClass('sl-suggest-active');
+            if (i === 0) {
+                item.addClass('is-active');
+                item.addClass('sl-suggest-active');
+            }
             item.addEventListener('mousedown', (ev) => {
                 // mousedown (not click) so we run before blur removes the dropdown.
                 ev.preventDefault();
@@ -422,9 +428,9 @@ export class WikilinkSuggest {
 
     /** Floating hosts that sit above Obsidian chrome. */
     private resolveStackingHost(): HTMLElement | null {
-        return this.textareaEl.closest(
+        return this.textareaEl.closest<HTMLElement>(
             '.plot-grid-cell-editor-window, .modal, .vertical-tab-content',
-        ) as HTMLElement | null;
+        );
     }
 
     private resolveDropdownZIndex(): number {
@@ -482,7 +488,7 @@ export class WikilinkSuggest {
         // Modals: keep the menu inside the dialog. Floating cell editors: use the
         // viewport — the window is overflow:hidden and clamping to it hides the menu.
         const useHostBoundary = !!host && host.classList.contains('modal');
-        const hostRect = useHostBoundary ? host!.getBoundingClientRect() : null;
+        const hostRect = useHostBoundary ? host?.getBoundingClientRect() ?? null : null;
         const boundary = hostRect || {
             left: 0,
             top: 0,
@@ -502,21 +508,23 @@ export class WikilinkSuggest {
             boundary.left + margin,
             Math.min(caret.left, boundary.right - width - margin),
         );
-        this.dropdown.style.position = 'fixed';
-        this.dropdown.style.left = `${Math.round(left)}px`;
-        this.dropdown.style.top = `${Math.round(caret.bottom + 4)}px`;
-        this.dropdown.style.width = `${Math.round(width)}px`;
-        this.dropdown.style.minWidth = '180px';
-        this.dropdown.style.maxWidth = `${Math.round(availableWidth)}px`;
-        this.dropdown.style.maxHeight = '240px';
-        this.dropdown.style.overflowY = 'auto';
-        this.dropdown.style.zIndex = String(this.resolveDropdownZIndex());
-        this.dropdown.style.background = 'var(--background-primary)';
-        this.dropdown.style.border = '1px solid var(--background-modifier-border)';
-        this.dropdown.style.borderRadius = '6px';
-        this.dropdown.style.boxShadow = '0 4px 16px rgba(0,0,0,0.18)';
-        this.dropdown.style.padding = '4px 0';
-        this.dropdown.style.visibility = 'hidden';
+        this.dropdown.setCssProps({
+            position: 'fixed',
+            left: `${Math.round(left)}px`,
+            top: `${Math.round(caret.bottom + 4)}px`,
+            width: `${Math.round(width)}px`,
+            minWidth: '180px',
+            maxWidth: `${Math.round(availableWidth)}px`,
+            maxHeight: '240px',
+            overflowY: 'auto',
+            zIndex: String(this.resolveDropdownZIndex()),
+            background: 'var(--background-primary)',
+            border: '1px solid var(--background-modifier-border)',
+            borderRadius: '6px',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+            padding: '4px 0',
+            visibility: 'hidden',
+        });
 
         const dropdownRect = this.dropdown.getBoundingClientRect();
         const spaceBelow = boundary.bottom - caret.bottom - margin;
@@ -525,8 +533,10 @@ export class WikilinkSuggest {
         const top = openAbove
             ? Math.max(boundary.top + margin, caret.top - dropdownRect.height - 4)
             : Math.min(caret.bottom + 4, Math.max(boundary.top + margin, boundary.bottom - dropdownRect.height - margin));
-        this.dropdown.style.top = `${Math.round(top)}px`;
-        this.dropdown.style.visibility = 'visible';
+        this.dropdown.setCssProps({
+            top: `${Math.round(top)}px`,
+            visibility: 'visible',
+        });
     }
 
     // ─── Commit ───────────────────────────────────────────────

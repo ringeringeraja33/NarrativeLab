@@ -3,8 +3,39 @@ import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { STORYLINE_VIEW_TYPE, TIMELINE_VIEW_TYPE } from '../constants';
 import { t } from '../utils/i18n';
+import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 
 export type StructureMode = 'timeline' | 'tracks' | 'plot-list' | 'subway';
+
+const STRUCTURE_MODES = new Set<StructureMode>(['timeline', 'tracks', 'plot-list', 'subway']);
+
+/** Last remembered Structure sub-tab (persisted in settings). */
+export function getRememberedStructureMode(plugin: SceneCardsPlugin): StructureMode {
+    const raw = plugin.settings.lastStructureMode;
+    if (typeof raw === 'string' && STRUCTURE_MODES.has(raw)) {
+        return raw;
+    }
+    // Migrate from older split flags when lastStructureMode is missing.
+    return plugin.settings.timelineSwimlaneMode ? 'tracks' : 'timeline';
+}
+
+/** Persist Structure sub-tab + keep legacy flags in sync. */
+export function rememberStructureMode(plugin: SceneCardsPlugin, mode: StructureMode): void {
+    plugin.settings.lastStructureMode = mode;
+    if (mode === 'timeline') plugin.settings.timelineSwimlaneMode = false;
+    else if (mode === 'tracks') plugin.settings.timelineSwimlaneMode = true;
+    else if (mode === 'plot-list') plugin.settings.lastStorylineViewMode = 'list';
+    else if (mode === 'subway') plugin.settings.lastStorylineViewMode = 'subway';
+    void plugin.saveSettings();
+}
+
+/** View type to open when the top-level Structure tab is clicked. */
+export function resolveStructureViewType(plugin: SceneCardsPlugin): string {
+    const mode = getRememberedStructureMode(plugin);
+    return mode === 'plot-list' || mode === 'subway'
+        ? STORYLINE_VIEW_TYPE
+        : TIMELINE_VIEW_TYPE;
+}
 
 interface StructureModeSwitcherOptions {
     onTimeline?: () => void;
@@ -27,7 +58,11 @@ export function renderStructureModeSwitcher(
         if (switching) return;
         switching = true;
         try {
-            await leaf.setViewState({ type, active: true, state: {} });
+            await leaf.setViewState({
+                type,
+                active: true,
+                state: preservedNarrativeLabLeafState(leaf),
+            });
             void plugin.app.workspace.revealLeaf(leaf);
             after?.();
         } finally {
@@ -37,46 +72,34 @@ export function renderStructureModeSwitcher(
     const useLocalModeOrSwitch = (
         localAction: (() => void) | undefined,
         targetViewType: string,
-        prepareSwitch?: () => void,
+        mode: StructureMode,
     ): void => {
+        rememberStructureMode(plugin, mode);
         if (localAction) {
             localAction();
             return;
         }
-        prepareSwitch?.();
         void switchView(targetViewType);
     };
     const items: Array<{ id: StructureMode | 'templates'; label: string; icon: string; action: () => void }> = [
         {
             id: 'timeline', label: 'Timeline', icon: 'list-ordered', action: () => {
-                useLocalModeOrSwitch(options.onTimeline, TIMELINE_VIEW_TYPE, () => {
-                    plugin.settings.timelineSwimlaneMode = false;
-                    void plugin.saveSettings();
-                });
+                useLocalModeOrSwitch(options.onTimeline, TIMELINE_VIEW_TYPE, 'timeline');
             },
         },
         {
             id: 'tracks', label: 'Track comparison', icon: 'columns-2', action: () => {
-                useLocalModeOrSwitch(options.onTracks, TIMELINE_VIEW_TYPE, () => {
-                    plugin.settings.timelineSwimlaneMode = true;
-                    void plugin.saveSettings();
-                });
+                useLocalModeOrSwitch(options.onTracks, TIMELINE_VIEW_TYPE, 'tracks');
             },
         },
         {
             id: 'plot-list', label: 'Plot list', icon: 'list', action: () => {
-                useLocalModeOrSwitch(options.onPlotList, STORYLINE_VIEW_TYPE, () => {
-                    plugin.settings.lastStorylineViewMode = 'list';
-                    void plugin.saveSettings();
-                });
+                useLocalModeOrSwitch(options.onPlotList, STORYLINE_VIEW_TYPE, 'plot-list');
             },
         },
         {
             id: 'subway', label: 'Subway map', icon: 'chart-gantt', action: () => {
-                useLocalModeOrSwitch(options.onSubway, STORYLINE_VIEW_TYPE, () => {
-                    plugin.settings.lastStorylineViewMode = 'subway';
-                    void plugin.saveSettings();
-                });
+                useLocalModeOrSwitch(options.onSubway, STORYLINE_VIEW_TYPE, 'subway');
             },
         },
         {

@@ -626,6 +626,11 @@ export interface SceneCardsSettings {
     lastLibraryContentMode: 'profile' | 'browse' | 'story-graph';
     /** Remembered Library category tab (characters, locations, or a codex id) */
     lastLibraryCategoryId: string;
+    /**
+     * Remembered Structure sub-tab:
+     * timeline / tracks (Timeline view) or plot-list / subway (Storyline view).
+     */
+    lastStructureMode: 'timeline' | 'tracks' | 'plot-list' | 'subway';
     /** Remembered Storyline (Plotlines) view mode from last session */
     lastStorylineViewMode: 'list' | 'subway';
     /** Remembered Storyline view sort mode from last session */
@@ -906,6 +911,8 @@ export interface SceneCardsSettings {
     removedBuiltinFields?: Record<string, string[]>;
     /** Built-in section titles removed as whole columns (per archive category key). */
     removedBuiltinSections?: Record<string, string[]>;
+    /** Horizontal/vertical detail layout per Library profile category. */
+    profileOrientations?: Record<string, 'horizontal' | 'vertical'>;
     /** Which codex category IDs should appear in the Scene Inspector sidebar */
     codexSidebarCategories: string[];
     /** Series name — groups projects that share a common universe / codex */
@@ -1017,6 +1024,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     lastBoardGroupBy: 'act',
     lastLibraryContentMode: 'profile',
     lastLibraryCategoryId: 'characters',
+    lastStructureMode: 'timeline',
     lastStorylineViewMode: 'subway',
     lastStorylineSortMode: 'reading-order',
     lastStorylineArcFilter: 'all',
@@ -1113,6 +1121,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     locationCustomSections: [],
     removedBuiltinFields: {},
     removedBuiltinSections: {},
+    profileOrientations: {},
     /** Which codex category IDs should appear in the Scene Inspector sidebar */
     codexSidebarCategories: [] as string[],
     series: '',

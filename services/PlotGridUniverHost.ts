@@ -1,6 +1,6 @@
 /**
- * Lazy-loaded Univer Sheets host for the Concept Grid (Plot Grid) view.
- * Bundled separately as plotgrid-univer.js to keep main.js lean.
+ * Univer Sheets host for the Concept Grid (Plot Grid) view.
+ * Instantiated on demand and bundled into the community-distributed main.js.
  */
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
 import type { Univer } from '@univerjs/core';
@@ -44,8 +44,8 @@ function withNarrativeLabZhTerminology(base: unknown): Record<string, unknown> {
 function injectUniverCss(activeDocument: Document): void {
     const id = 'narrativelab-univer-sheets-css';
     if (activeDocument.getElementById(id)) return;
-    // Univer's lazy bundle exports its stylesheet as text, so it is attached
-    // when the sheet host is first mounted.
+    // The stylesheet is bundled as text and attached when the sheet host is
+    // first mounted, avoiding global Univer CSS before the table is opened.
     const style = activeDocument.createElement('style');
     style.id = id;
     style.textContent = typeof sheetsCoreCss === 'string' ? sheetsCoreCss : String(sheetsCoreCss);

@@ -24,6 +24,7 @@ import {
     preservedNarrativeLabLeafState,
 } from '../utils/narrativeLabLeafState';
 import { resolveLibraryViewType } from './LibraryModeBar';
+import { resolveStructureViewType } from './StructureModeSwitcher';
 
 export interface ViewSwitcherEntry {
     type: string;
@@ -119,6 +120,25 @@ export function renderViewSwitcher(
                         }, 50);
                     }
                 }).catch(() => plugin.activateView(targetType));
+            });
+        } else if (entry.type === TIMELINE_VIEW_TYPE) {
+            // Structure umbrella: restore the last sub-tab (timeline/tracks/plot-list/subway).
+            tab.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const targetType = resolveStructureViewType(plugin);
+                if (targetType === activeViewType) return;
+                try {
+                    await leaf.setViewState({
+                        type: targetType,
+                        active: true,
+                        state: preservedNarrativeLabLeafState(leaf),
+                    });
+                    plugin.app.workspace.revealLeaf(leaf);
+                } catch (err) {
+                    console.error('NarrativeLab: structure view switch failed, falling back', err);
+                    plugin.activateView(targetType);
+                }
             });
         } else if (entry.type !== activeViewType) {
             tab.addEventListener('click', async (e) => {

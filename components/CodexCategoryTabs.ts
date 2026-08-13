@@ -185,38 +185,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     for (const item of renderedTabs) tabs.appendChild(item.el);
     attachTabReordering(tabs, renderedTabs, plugin, onCategoriesChanged);
 
-    // Mode / Custom Categories sit immediately left of Uncategorized — not
-    // pushed to the far right — so they stay beside the category strip.
-    if (
-        (showModeToggle !== false && onModeChange)
-        || renderBeforeModeActions
-        || renderAfterModeActions
-        || showManageCategories
-    ) {
-        const actions = tabs.createDiv('codex-category-actions');
-        renderBeforeModeActions?.(actions);
-        if (showModeToggle !== false && onModeChange) {
-            renderLibraryModeToggle(actions, plugin, onModeChange, profileMode);
-        }
-        renderAfterModeActions?.(actions);
-        if (showManageCategories) {
-            const manageCategoriesBtn = actions.createEl('button', {
-                cls: 'character-mode-btn codex-manage-categories-tab',
-                attr: { type: 'button', 'aria-label': t('Manage categories') },
-            });
-            const icon = manageCategoriesBtn.createSpan();
-            obsidian.setIcon(icon, 'settings');
-            manageCategoriesBtn.createSpan({ text: t('Custom Categories') });
-            manageCategoriesBtn.addEventListener('click', () => {
-                // Lazy import avoids CodexView ↔ CodexCategoryTabs circular init.
-                void import('../views/CodexView').then(({ openManageLibraryCategoriesModal }) => {
-                    openManageLibraryCategoriesModal(plugin, onCategoriesChanged);
-                });
-            });
-        }
-    }
-
-    // Uncategorized remains a fixed definition and, when shown, is always last.
+    // Order: category tabs → Uncategorized → Custom Categories → (spacer) → mode actions.
     if (!hiddenFixed.has(UNCATEGORIZED_CATEGORY_ID)) {
         const uncategorizedActive = activeId === UNCATEGORIZED_CATEGORY_ID;
         const uncategorizedOverride = overrideFor(UNCATEGORIZED_CATEGORY_ID);
@@ -258,6 +227,36 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
                 }
             });
         }
+    }
+
+    if (showManageCategories) {
+        const manageCategoriesBtn = tabs.createEl('button', {
+            cls: 'character-mode-btn codex-manage-categories-tab',
+            attr: { type: 'button', 'aria-label': t('Manage categories') },
+        });
+        const icon = manageCategoriesBtn.createSpan();
+        obsidian.setIcon(icon, 'settings');
+        manageCategoriesBtn.createSpan({ text: t('Custom Categories') });
+        manageCategoriesBtn.addEventListener('click', () => {
+            // Lazy import avoids CodexView ↔ CodexCategoryTabs circular init.
+            void import('../views/CodexView').then(({ openManageLibraryCategoriesModal }) => {
+                openManageLibraryCategoriesModal(plugin, onCategoriesChanged);
+            });
+        });
+    }
+
+    const needModeActions = (
+        (showModeToggle !== false && onModeChange)
+        || renderBeforeModeActions
+        || renderAfterModeActions
+    );
+    if (needModeActions) {
+        const actions = tabs.createDiv('codex-category-actions');
+        renderBeforeModeActions?.(actions);
+        if (showModeToggle !== false && onModeChange) {
+            renderLibraryModeToggle(actions, plugin, onModeChange, profileMode);
+        }
+        renderAfterModeActions?.(actions);
     }
 
     return tabs;

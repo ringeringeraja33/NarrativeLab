@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, Menu, Modal, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
+import { WorkspaceLeaf, Menu, Modal, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
 import * as obsidian from 'obsidian';
 import {
     CellData,
@@ -38,6 +38,7 @@ import {
     installObsidianMarkdownShortcuts,
     type MarkdownInputAction,
 } from '../utils/markdownInput';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 // Use the shared view-type constant from `constants.ts` so the ViewSwitcher
 // can correctly detect and style the active tab.
@@ -52,7 +53,7 @@ function makeId(prefix = '') {
     return prefix + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 }
 
-export class PlotgridView extends ItemView {
+export class PlotgridView extends ProjectBoundItemView {
     plugin: SceneCardsPlugin | undefined;
     /** Full multi-page document persisted to plotgrid.json */
     // eslint-disable-next-line obsidianmd/prefer-active-doc -- Concept Grid data model, not the browser Document.
@@ -107,11 +108,12 @@ export class PlotgridView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.plugin ? this.getBoundProjectTitle(this.plugin.sceneManager) : null;
         return title ? `NarrativeLab - ${title}` : t('Concept Grid');
     }
 
     async onOpen(): Promise<void> {
+        if (this.plugin) this.captureProjectBinding(this.plugin.sceneManager);
         // Render into the same inner container used by other views so styles match
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
@@ -208,6 +210,8 @@ export class PlotgridView extends ItemView {
     /** Flush Univer into memory and write datasheet.xlsx for the bound System folder. */
     private async persistBoundPlotGrid(): Promise<void> {
         const folder = this.loadedSystemFolder;
+        // Floating markdown editors are authoritative for blocked cells — flush
+        // them after Univer so textarea edits are not overwritten by a stale pull.
         try {
             this.univerHost?.flush();
             if (this.univerHost) {
@@ -215,19 +219,19 @@ export class PlotgridView extends ItemView {
                 this.bindActivePage();
             }
         } catch { /* ignore */ }
+        this.closeAllCellEditors();
         this.cancelPendingSave();
         if (!folder || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
-        const current = this.getActiveSystemFolder();
-        if (current && current !== folder) return;
         try {
-            await this.plugin.savePlotGrid(this.document);
+            await this.plugin.savePlotGrid(this.document, { systemFolder: folder });
         } catch (error) {
             console.error('[NarrativeLab] Plot Grid persist failed:', error);
         }
     }
 
     async onClose(): Promise<void> {
-        // Commit Univer edits, then persist to the folder this view was bound to.
+        // Commit Univer + floating cell editors, then persist to the bound folder
+        // even if the global active project already changed.
         const folder = this.loadedSystemFolder;
         try {
             this.univerHost?.flush();
@@ -236,20 +240,17 @@ export class PlotgridView extends ItemView {
                 this.bindActivePage();
             }
         } catch { /* ignore */ }
+        this.closeAllCellEditors();
         this.cancelPendingSave();
         if (folder && this.plugin && typeof this.plugin.savePlotGrid === 'function') {
-            const current = this.getActiveSystemFolder();
-            if (!current || current === folder) {
-                try {
-                    await this.plugin.savePlotGrid(this.document);
-                } catch (error) {
-                    console.error('[NarrativeLab] Final Plot Grid save failed:', error);
-                }
+            try {
+                await this.plugin.savePlotGrid(this.document, { systemFolder: folder });
+            } catch (error) {
+                console.error('[NarrativeLab] Final Plot Grid save failed:', error);
             }
         }
         this.disposeUniverHost({ persist: false });
-        this.closeAllCellEditors();
-        // disposeUniverHost performs one last pull; the explicit save above is
+        // disposeUniverHost may schedule work; the explicit save above is
         // authoritative, so do not leave a second autosave running after close.
         this.cancelPendingSave();
         this.loadedSystemFolder = null;
@@ -347,7 +348,6 @@ export class PlotgridView extends ItemView {
                 await this.persistBoundPlotGrid();
                 this.univerLoadFailed = false;
                 this.univerLoadError = null;
-                this.closeAllCellEditors();
                 this.disposeUniverHost({ persist: false });
                 this.hideCellInspector();
                 this.undoStack = [];
@@ -436,14 +436,28 @@ export class PlotgridView extends ItemView {
                 // Any vault markdown still present (Research / arbitrary note)
                 if (this.resolveLinkedVaultFile(cell.linkedSceneId)) continue;
 
-                // Try to find a moved scene/note by filename
+                // Try to find a moved scene/note by filename — only inside this
+                // workbook's project tree so same-name notes in other books cannot
+                // steal the link.
                 const fileName = cell.linkedSceneId.split('/').pop();
                 if (!fileName) continue;
 
+                const projectPrefix = (this.loadedSystemFolder || this.getActiveSystemFolder())
+                    .replace(/[/\\]+System[/\\]?$/i, '')
+                    .replace(/\/+$/, '');
                 const allScenes = scMgr.getAllScenes();
-                const match = allScenes.find(s => s.filePath.endsWith('/' + fileName) || s.filePath === fileName);
-                if (match) {
-                    cell.linkedSceneId = match.filePath;
+                const scoped = projectPrefix
+                    ? allScenes.filter(s => {
+                        const path = s.filePath.replace(/\\/g, '/');
+                        return path === projectPrefix
+                            || path.startsWith(`${projectPrefix}/`);
+                    })
+                    : allScenes;
+                const matches = scoped.filter(s =>
+                    s.filePath.endsWith('/' + fileName) || s.filePath === fileName,
+                );
+                if (matches.length === 1) {
+                    cell.linkedSceneId = matches[0].filePath;
                     dirty = true;
                 }
                 // else: keep broken path — UI falls back to plain text, link preserved
@@ -484,12 +498,9 @@ export class PlotgridView extends ItemView {
                     return;
                 }
                 const currentFolder = this.getActiveSystemFolder();
-                if (folderAtSchedule && currentFolder && folderAtSchedule !== currentFolder) {
-                    // Active project changed — do not write the previous workbook into the new folder.
-                    return;
-                }
-                // Pull latest Univer cells/sizes into memory before disk write —
-                // otherwise deferred pulls leave this.document stale and "save" drops edits.
+                // Always write to the folder this workbook was loaded from. If the
+                // global active project changed, path-scoped save keeps edits in
+                // the bound book instead of aborting or bleeding into another project.
                 if (this.univerHost) {
                     try {
                         this.univerHost.flush();
@@ -497,7 +508,16 @@ export class PlotgridView extends ItemView {
                         this.bindActivePage();
                     } catch { /* ignore */ }
                 }
-                if (typeof plugin.savePlotGrid === 'function') await plugin.savePlotGrid(this.document);
+                if (typeof plugin.savePlotGrid === 'function') {
+                    await plugin.savePlotGrid(
+                        this.document,
+                        folderAtSchedule ? { systemFolder: folderAtSchedule } : {},
+                    );
+                }
+                // Refresh loadedSystemFolder stamp if we are still on that project.
+                if (folderAtSchedule && currentFolder && folderAtSchedule === currentFolder) {
+                    this.loadedSystemFolder = folderAtSchedule;
+                }
             } catch (error) {
                 // The plugin-level writer already retries transient file locks.
                 // Keep the failure observable without showing repeated toasts.
@@ -3262,7 +3282,7 @@ export class PlotgridView extends ItemView {
                     cls: 'inspector-scene-link',
                     text: linkedScene.title
                         || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
-                        || 'Untitled',
+                        || t('Untitled'),
                 });
                 sceneLink.setCssStyles({
                     display: 'block',
@@ -3491,7 +3511,7 @@ export class PlotgridView extends ItemView {
             const linkLabel = linkedScene
                 ? (linkedScene.title
                     || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
-                    || 'Untitled')
+                    || t('Untitled'))
                 : (linkedVaultFile?.basename
                     || linkedPath!.split('/').pop()?.replace(/\.md$/i, '')
                     || linkedPath!);

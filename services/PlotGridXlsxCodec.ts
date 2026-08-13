@@ -173,7 +173,13 @@ function cellValueText(value: unknown): string {
 
 /** Strip characters illegal in XML 1.0 text nodes (keep tab/LF/CR). */
 export function sanitizeExcelXmlText(value: string): string {
-    return String(value || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+    const source = String(value || '');
+    let clean = '';
+    for (let i = 0; i < source.length; i++) {
+        const code = source.charCodeAt(i);
+        if (code === 9 || code === 10 || code === 13 || code >= 32) clean += source[i];
+    }
+    return clean;
 }
 
 /** Clamp a visible cell string to Excel's per-cell limit after XML sanitization. */
@@ -317,7 +323,7 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
 
     const activePageId = meta.activePageId && pages.some(p => p.id === meta.activePageId)
         ? meta.activePageId
-        : pages[0]!.id;
+        : pages[0].id;
 
     return normalizeConceptGridDocument({
         version: 2,
@@ -343,7 +349,10 @@ export async function plotGridXlsxNeedsRewrite(data: ArrayBuffer | Uint8Array): 
         if (meta) return;
         meta = tryParseNlMeta(readChunkedMetaText(sheet));
     });
-    if (!meta || Object.keys(meta.pages || {}).length === 0) return false;
+    // ExcelJS invokes eachSheet synchronously, but TypeScript does not carry
+    // assignments made inside the callback into the outer control flow.
+    const parsedMeta = meta as PlotGridNlMeta | null;
+    if (!parsedMeta || Object.keys(parsedMeta.pages || {}).length === 0) return false;
 
     let dataSheetCount = 0;
     let metaDumpCount = 0;
@@ -354,7 +363,7 @@ export async function plotGridXlsxNeedsRewrite(data: ArrayBuffer | Uint8Array): 
             return;
         }
         dataSheetCount += 1;
-        if (meta?.pageIds?.[sheet.name]) titlesOverlap = true;
+        if (parsedMeta.pageIds?.[sheet.name]) titlesOverlap = true;
     });
 
     if (dataSheetCount === 0 && metaDumpCount > 0) return true;

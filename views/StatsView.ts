@@ -8,11 +8,12 @@ import type { WritingTracker } from '../services/WritingTracker';
 
 import { STATS_VIEW_TYPE } from '../constants';
 import { applyMobileClass } from '../components/MobileAdapter';
-import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { WorkspaceLeaf } from 'obsidian';
 import { Scene, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import { getActDisplayLabel } from '../utils/actChapter';
 import { t } from '../utils/i18n';
 import { PlotWarning, Validator } from '../services/Validator';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
     tokenizeWords,
     splitSentences,
@@ -32,7 +33,7 @@ import {
 /**
  * Statistics Dashboard View
  */
-export class StatsView extends ItemView {
+export class StatsView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private rootContainer: HTMLElement | null = null;
@@ -53,7 +54,7 @@ export class StatsView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.getBoundProjectTitle(this.sceneManager);
         return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
     }
 
@@ -62,6 +63,7 @@ export class StatsView extends ItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
@@ -1492,7 +1494,7 @@ export class StatsView extends ItemView {
 
             if (sceneEchoes.length > 0) {
                 echoes.push({
-                    sceneTitle: scene.title || 'Untitled',
+                    sceneTitle: scene.title || t('Untitled'),
                     filePath: scene.filePath,
                     echoes: sceneEchoes.slice(0, 10),
                 });
@@ -1512,7 +1514,7 @@ export class StatsView extends ItemView {
 
             if (favourites.length > 0 || sceneEchoes.length > 0) {
                 perScene.push({
-                    sceneTitle: scene.title || 'Untitled',
+                    sceneTitle: scene.title || t('Untitled'),
                     filePath: scene.filePath,
                     favourites: favourites.sort((a, b) => (b.sceneRate / b.globalRate) - (a.sceneRate / a.globalRate)).slice(0, 8),
                     echoCount: sceneEchoes.length,

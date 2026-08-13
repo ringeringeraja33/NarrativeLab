@@ -1,5 +1,14 @@
 # NarrativeLab — Changelog
 
+## 1.0.0 — Community release candidate
+
+- Prepared NarrativeLab for the Obsidian Community directory with complete user, contributor, security, privacy, release, and submission documentation.
+- Bundled the Univer spreadsheet runtime into `main.js`, so a standard Community Plugins installation contains every runtime dependency and works without an undeclared sidecar file.
+- Added project-bound workspace state so several NarrativeLab projects can stay open without replacing or cross-loading one another.
+- Added persistent horizontal and vertical archive-page layouts for Characters, Locations, Worlds, and custom Library categories.
+- Refined the unified Structure workspace, recursive Library synchronization, native Base integration, Markdown-aware spreadsheet editing, bilingual interface, and data-safety checks.
+- Added automated CI and tag-based GitHub releases containing the exact assets required by Obsidian: `main.js`, `manifest.json`, and `styles.css`.
+
 ## 0.1.1
 
 - Library Bases consolidate into a single `Library/library.base` with one view per category; switching Library tabs embeds that view. Existing `System/library.base` and legacy `Bases/library-*.base` files are migrated into `Library/` and removed. Missing/stale Base trash renames (e.g. OneDrive races) no longer block opening a project.

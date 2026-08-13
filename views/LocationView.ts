@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian event handlers intentionally launch async work and use compatibility assertions; matching enable at end of file */
-import { ButtonComponent, ItemView, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
+import { ButtonComponent, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { LOCATION_VIEW_TYPE } from '../constants';
 import { Scene, resolveStatusCfg } from '../models/Scene';
@@ -29,6 +29,7 @@ import {
     attachBuiltinSectionRemoveControl,
     filterRemovedBuiltinFields,
     getHiddenFieldKeys,
+    getLibraryProfileOrientation,
     isBuiltinSectionRemoved,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
@@ -41,6 +42,7 @@ import { RenameConfirmModal } from '../components/RenameConfirmModal';
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
+import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
 import { renderNativeLibraryBase, disposeNativeLibraryBase } from '../components/NativeLibraryBase';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import {
@@ -60,6 +62,7 @@ import type { StoryGraph } from '../components/StoryGraph';
 import {
     renderLibraryBrowseToolbar,
 } from '../components/LibraryBrowseLayout';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 /**
  * Location View — hierarchical World → Location browser with inline editing.
@@ -67,7 +70,7 @@ import {
  * Overview: collapsible tree showing worlds, their locations, orphan locations.
  * Detail: editable profile for a world or location with scene side-panel.
  */
-export class LocationView extends ItemView {
+export class LocationView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private locationManager: LocationManager;
@@ -133,13 +136,14 @@ export class LocationView extends ItemView {
     getViewType(): string { return LOCATION_VIEW_TYPE; }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.getBoundProjectTitle(this.sceneManager);
         return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
     }
 
     getIcon(): string { return 'map-pin'; }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         rememberLibraryCategory(this.plugin, 'locations');
         const container = this.containerEl.children[1] as HTMLElement;
@@ -702,6 +706,8 @@ export class LocationView extends ItemView {
         }
 
         const isWorld = item.type === 'world';
+        const layoutKey = isWorld ? 'world' : 'location';
+        const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, layoutKey);
         const draft: WorldOrLocation = { ...item, custom: { ...(item.custom || {}) }, universalFields: { ...(item.universalFields || {}) } };
         // Snapshot for undo — taken once when the detail view opens
         this.undoSnapshot = { ...item, custom: { ...(item.custom || {}) } };
@@ -721,6 +727,16 @@ export class LocationView extends ItemView {
         });
 
         const headerRight = header.createDiv('location-detail-header-right');
+
+        renderLibraryProfileOrientationToggle(headerRight, {
+            settings: this.plugin.settings,
+            categoryKey: layoutKey,
+            save: () => this.plugin.saveSettings(),
+            beforeChange: () => this.flushPendingSave(),
+            onChanged: () => {
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
 
         mountLibraryEntityBoardAction(headerRight, {
             plugin: this.plugin,
@@ -803,13 +819,12 @@ export class LocationView extends ItemView {
         });
 
         // Layout: form + side panel
-        const layout = container.createDiv('location-detail-layout');
+        const layout = container.createDiv(`location-detail-layout is-${profileOrientation}`);
         const formPanel = layout.createDiv('location-detail-form');
         const sidePanel = layout.createDiv('location-detail-side');
 
         // Categories interleaved with user-defined custom sections (#120)
         const categories = isWorld ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
-        const layoutKey = isWorld ? 'world' : 'location';
         const customHost = this.buildCustomSectionsHost(draft, categories.length);
         // Slot 0: any custom sections positioned above the first built-in.
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
@@ -872,7 +887,7 @@ export class LocationView extends ItemView {
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('location-section-icon');
         obsidian.setIcon(icon, category.icon);
-        sectionHeader.createSpan({ text: category.title });
+        sectionHeader.createSpan({ text: t(category.title) });
 
         const layoutKey = draft.type === 'world' ? 'world' : 'location';
         attachBuiltinSectionRemoveControl(sectionHeader, {
@@ -1008,7 +1023,7 @@ export class LocationView extends ItemView {
 
     private renderField(parent: HTMLElement, field: LocationFieldDef, draft: WorldOrLocation, sectionTitle?: string, builtInKeys?: string[]): void {
         const row = parent.createDiv('location-field-row');
-        const labelEl = row.createEl('label', { cls: 'location-field-label', text: field.label });
+        const labelEl = row.createEl('label', { cls: 'location-field-label', text: t(field.label) });
 
         // Up/down chevrons — reorder this built-in field within the section.
         if (sectionTitle && builtInKeys) {
@@ -1032,26 +1047,26 @@ export class LocationView extends ItemView {
 
         if (field.key === 'locationType') {
             const select = row.createEl('select', { cls: 'location-field-input dropdown' });
-            select.createEl('option', { text: field.placeholder, value: '' });
+            select.createEl('option', { text: t(field.placeholder), value: '' });
             // Built-in types
-            for (const t of LOCATION_TYPES) {
-                const opt = select.createEl('option', { text: t, value: t.toLowerCase() });
-                if (String(value).toLowerCase() === t.toLowerCase()) opt.selected = true;
+            for (const typeName of LOCATION_TYPES) {
+                const opt = select.createEl('option', { text: t(typeName), value: typeName.toLowerCase() });
+                if (String(value).toLowerCase() === typeName.toLowerCase()) opt.selected = true;
             }
             // User-defined custom types
             const customTypes = this.plugin.settings.customLocationTypes ?? [];
             if (customTypes.length > 0) {
                 const sep = select.createEl('option', { text: '──────────', value: '' });
                 sep.disabled = true;
-                for (const t of customTypes) {
-                    const opt = select.createEl('option', { text: t, value: t.toLowerCase() });
-                    if (String(value).toLowerCase() === t.toLowerCase()) opt.selected = true;
+                for (const typeName of customTypes) {
+                    const opt = select.createEl('option', { text: typeName, value: typeName.toLowerCase() });
+                    if (String(value).toLowerCase() === typeName.toLowerCase()) opt.selected = true;
                 }
             }
             // Pre-existing value not in either list (legacy)
             const knownLower = [
-                ...LOCATION_TYPES.map(t => t.toLowerCase()),
-                ...customTypes.map(t => t.toLowerCase()),
+                ...LOCATION_TYPES.map(typeName => typeName.toLowerCase()),
+                ...customTypes.map(typeName => typeName.toLowerCase()),
             ];
             if (value && !knownLower.includes(String(value).toLowerCase())) {
                 const opt = select.createEl('option', { text: String(value), value: String(value) });
@@ -1086,7 +1101,7 @@ export class LocationView extends ItemView {
         } else if (field.multiline) {
             const textarea = row.createEl('textarea', {
                 cls: 'location-field-textarea',
-                attr: { placeholder: field.placeholder, rows: '3' },
+                attr: { placeholder: t(field.placeholder), rows: '3' },
             });
             textarea.value = value;
             textarea.addEventListener('input', () => {
@@ -1097,7 +1112,7 @@ export class LocationView extends ItemView {
             const input = row.createEl('input', {
                 cls: 'location-field-input',
                 type: 'text',
-                attr: { placeholder: field.placeholder },
+                attr: { placeholder: t(field.placeholder) },
             });
             input.value = value;
             input.addEventListener('input', () => {
@@ -1247,7 +1262,7 @@ export class LocationView extends ItemView {
             const msInput = inputRow.createEl('input', {
                 cls: 'universal-multi-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : t('Type to add\u2026') },
+                attr: { placeholder: tpl.placeholder || t('Type to add\u2026') },
             });
             // Issue #102 — portal dropdown to <body> so position:fixed coords are
             // viewport-relative even when an ancestor uses transform/contain.
@@ -1341,7 +1356,7 @@ export class LocationView extends ItemView {
         } else if (tpl.type === 'textarea') {
             const textarea = row.createEl('textarea', {
                 cls: 'location-field-textarea',
-                attr: { placeholder: tpl.placeholder, rows: '3' },
+                attr: { placeholder: tpl.placeholder || '', rows: '3' },
             });
             textarea.value = value;
             textarea.addEventListener('input', () => {
@@ -1365,7 +1380,7 @@ export class LocationView extends ItemView {
             const input = row.createEl('input', {
                 cls: 'location-field-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder },
+                attr: { placeholder: tpl.placeholder || '' },
             });
             input.value = value;
             input.addEventListener('input', () => {

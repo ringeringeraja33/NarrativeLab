@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, TFile, Notice, Modal, Setting, FuzzySuggestModal } from 'obsidian';
+import { WorkspaceLeaf, TFile, Notice, Modal, Setting, FuzzySuggestModal } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { ResearchManager } from '../services/ResearchManager';
@@ -9,6 +9,7 @@ import { attachTooltip } from '../components/Tooltip';
 import { pickImage, resolveImagePath } from '../components/ImagePicker';
 import { tokenizeWords, isScriptioContinuaLocale, DEFAULT_STORYLINE_LOCALE, type StoryLineLocale } from '../utils/locale';
 import { t } from '../utils/i18n';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 /**
  * ResearchView — a right-sidebar panel for browsing, searching,
@@ -23,7 +24,7 @@ import { t } from '../utils/i18n';
  *  - Create / edit / delete posts
  *  - Open-question badge
  */
-export class ResearchView extends ItemView {
+export class ResearchView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private manager: ResearchManager;
     private rootEl: HTMLElement | null = null;
@@ -46,10 +47,14 @@ export class ResearchView extends ItemView {
     }
 
     getViewType(): string { return RESEARCH_VIEW_TYPE; }
-    getDisplayText(): string { return t('Research'); }
+    getDisplayText(): string {
+        const title = this.getBoundProjectTitle(this.plugin.sceneManager);
+        return title ? `${t('Research')} - ${title}` : t('Research');
+    }
     getIcon(): string { return 'library-big'; }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.plugin.sceneManager);
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
         await this.mountInto(container);
@@ -168,21 +173,21 @@ export class ResearchView extends ItemView {
         // ── Type filter row ──
         const typeRow = container.createDiv('sl-research-type-row');
         const types: (ResearchType | null)[] = [null, 'note', 'webclip', 'image', 'question'];
-        for (const t of types) {
-            const label = t ? RESEARCH_TYPE_CONFIG[t].label : 'All';
-            const icon = t ? RESEARCH_TYPE_CONFIG[t].icon : 'layers';
+        for (const rtype of types) {
+            const label = rtype ? t(RESEARCH_TYPE_CONFIG[rtype].label) : t('All');
+            const icon = rtype ? RESEARCH_TYPE_CONFIG[rtype].icon : 'layers';
             const btn = typeRow.createDiv({
-                cls: `sl-research-type-btn ${this.activeType === t ? 'is-active' : ''}`,
+                cls: `sl-research-type-btn ${this.activeType === rtype ? 'is-active' : ''}`,
             });
             obsidian.setIcon(btn, icon);
             attachTooltip(btn, label);
             btn.addEventListener('click', () => {
-                this.activeType = t;
+                this.activeType = rtype;
                 this.plugin.settings.researchActiveType = this.activeType;
                 void this.plugin.saveSettings();
                 this.renderResults(resultContainer);
                 typeRow.querySelectorAll('.sl-research-type-btn').forEach((el, i) => {
-                    el.toggleClass('is-active', types[i] === t);
+                    el.toggleClass('is-active', types[i] === rtype);
                 });
             });
         }
@@ -628,16 +633,16 @@ export class ResearchView extends ItemView {
         const allTypes: ResearchType[] = ['note', 'webclip', 'image', 'question'];
         const typeButtons: HTMLElement[] = [];
 
-        for (const t of allTypes) {
+        for (const rtype of allTypes) {
             const btn = typeRow.createDiv({
-                cls: `sl-research-type-pick-btn ${researchType === t ? 'is-active' : ''}`,
+                cls: `sl-research-type-pick-btn ${researchType === rtype ? 'is-active' : ''}`,
             });
-            obsidian.setIcon(btn, RESEARCH_TYPE_CONFIG[t].icon);
-            attachTooltip(btn, RESEARCH_TYPE_CONFIG[t].label);
+            obsidian.setIcon(btn, RESEARCH_TYPE_CONFIG[rtype].icon);
+            attachTooltip(btn, t(RESEARCH_TYPE_CONFIG[rtype].label));
             typeButtons.push(btn);
             btn.addEventListener('click', () => {
-                researchType = t;
-                typeButtons.forEach((b, i) => b.toggleClass('is-active', allTypes[i] === t));
+                researchType = rtype;
+                typeButtons.forEach((b, i) => b.toggleClass('is-active', allTypes[i] === rtype));
                 rebuildFields();
             });
         }

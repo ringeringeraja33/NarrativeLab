@@ -25,6 +25,9 @@ export class InfoPanelComponent {
     private notesLeaf: obsidian.WorkspaceLeaf | null = null;
     private notesPath: string | null = null;
     private notesSaveTimer: number | null = null;
+    /** Serialize notes autosaves so overlapping read→modify cannot clobber newer text. */
+    private notesSaveQueue: Promise<void> = Promise.resolve();
+    private notesFlush: (() => void) | null = null;
     /** Host Component required by MarkdownRenderer (InfoPanel is not an ItemView). */
     private markdownHost = new Component();
 
@@ -102,7 +105,7 @@ export class InfoPanelComponent {
             this.container.addClass('sl-info-panel-mode-synopsis');
             // Title kept small for context
             const titleEl = this.container.createDiv('sl-info-title');
-            titleEl.setText(scene.title || 'Untitled');
+            titleEl.setText(scene.title || t('Untitled'));
             this.renderSynopsis(scene);
             return;
         }
@@ -110,14 +113,14 @@ export class InfoPanelComponent {
         if (this.mode === 'notes') {
             this.container.addClass('sl-info-panel-mode-notes');
             const titleEl = this.container.createDiv('sl-info-title');
-            titleEl.setText(scene.title || 'Untitled');
+            titleEl.setText(scene.title || t('Untitled'));
             this.renderNotes(scene);
             return;
         }
 
         // Title
         const titleEl = this.container.createDiv('sl-info-title');
-        titleEl.setText(scene.title || 'Untitled');
+        titleEl.setText(scene.title || t('Untitled'));
 
         // ── Status ──
         this.renderStatusRow(scene);
@@ -292,13 +295,18 @@ export class InfoPanelComponent {
             const editor = (leaf.view as unknown as { editor?: obsidian.Editor })?.editor;
             if (!editor) return;
             const value = editor.getValue();
-            void this.plugin.app.vault.read(file).then(async (diskValue) => {
-                if (diskValue !== value) {
-                    await this.plugin.app.vault.modify(file, value);
-                }
-            }).catch(error => {
-                console.error('[NarrativeLab] Failed to autosave scene notes:', error);
-            });
+            this.notesSaveQueue = this.notesSaveQueue
+                .catch(() => undefined)
+                .then(async () => {
+                    const diskValue = await this.plugin.app.vault.read(file);
+                    if (diskValue !== value) {
+                        await this.plugin.app.vault.modify(file, value);
+                    }
+                })
+                .catch(error => {
+                    console.error('[NarrativeLab] Failed to autosave scene notes:', error);
+                });
+            void this.notesSaveQueue;
         };
 
         const scheduleSave = (): void => {
@@ -316,6 +324,7 @@ export class InfoPanelComponent {
             }
             saveNow();
         };
+        this.notesFlush = flushSave;
 
         splitEl.addEventListener('input', scheduleSave, true);
         splitEl.addEventListener('keyup', scheduleSave, true);
@@ -323,7 +332,7 @@ export class InfoPanelComponent {
     }
 
     private stripRedundantNotesHeadings(content: string, scene: Scene): string {
-        const title = (scene.title || 'Untitled').trim();
+        const title = (scene.title || t('Untitled')).trim();
         const lines = content.replace(/^\uFEFF/, '').split(/\r?\n/);
 
         let index = 0;
@@ -365,6 +374,8 @@ export class InfoPanelComponent {
     }
 
     private detachNotesEditor(): void {
+        try { this.notesFlush?.(); } catch { /* ignore */ }
+        this.notesFlush = null;
         if (this.notesSaveTimer !== null) {
             window.clearTimeout(this.notesSaveTimer);
             this.notesSaveTimer = null;

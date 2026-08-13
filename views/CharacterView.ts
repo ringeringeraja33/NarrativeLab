@@ -28,13 +28,14 @@ import type SceneCardsPlugin from '../main';
 
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
+import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { renderLibraryArchiveFilterBar, collectEntityFilterKeys, collectArchiveFilterLabels, ARCHIVE_FILTER_HASHTAGS_KEY, buildArchiveFilterFieldOptions } from '../components/LibraryFilterChips';
 import { disposeNativeLibraryBase, renderNativeLibraryBase } from '../components/NativeLibraryBase';
 import {
     renderLibraryBrowseToolbar,
 } from '../components/LibraryBrowseLayout';
-import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
+import { Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
 import { CHARACTER_CATEGORIES, CHARACTER_ROLES, CHARACTER_TAGLINE_FIELD_KEYS, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractAllCharacterTags, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations, resolveCharacterCardSnippet } from '../models/Character';
 import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
@@ -45,6 +46,7 @@ import {
     attachBuiltinSectionRemoveControl,
     filterRemovedBuiltinFields,
     getHiddenFieldKeys,
+    getLibraryProfileOrientation,
     isBuiltinSectionRemoved,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
@@ -55,6 +57,7 @@ import {
     mergeCharacterRelationTypes,
     upsertCustomCharacterRelationType,
 } from '../utils/storyGraphCharacterRelations';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 type ScenePresenceStats = { pov: number; present: number };
 
@@ -64,7 +67,7 @@ type ScenePresenceStats = { pov: number; present: number };
  * Overview mode: grid of compact character cards (name, role, scene count).
  * Detail mode: full character profile with collapsible sections and editable fields.
  */
-export class CharacterView extends ItemView {
+export class CharacterView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private characterManager: CharacterManager;
@@ -157,7 +160,7 @@ export class CharacterView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.getBoundProjectTitle(this.sceneManager);
         return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
     }
 
@@ -173,6 +176,7 @@ export class CharacterView extends ItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         rememberLibraryCategory(this.plugin, 'characters');
         const container = this.getViewRoot();
@@ -1145,7 +1149,10 @@ export class CharacterView extends ItemView {
 
     private renderCharacterDetail(container: HTMLElement): void {
         container.empty();
-        container.addClass('character-detail--board');
+        container.removeClass('character-detail--board', 'character-detail--vertical');
+        const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, 'character');
+        const horizontalProfile = profileOrientation === 'horizontal';
+        container.addClass(horizontalProfile ? 'character-detail--board' : 'character-detail--vertical');
         const selectedPath = this.selectedCharacter ? normalizePath(this.selectedCharacter) : '';
         const basename = selectedPath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
         let character =
@@ -1174,11 +1181,13 @@ export class CharacterView extends ItemView {
             this._lastSavedRelations = normalizeCharacterRelations(selected.relations).map(r => ({ ...r }));
         }
 
-        // Board mode shows every section as a column — expand built-ins / custom.
-        for (const cat of CHARACTER_CATEGORIES) this.collapsedSections.delete(cat.title);
-        this.collapsedSections.delete('Custom Fields');
-        for (const key of [...this.collapsedSections]) {
-            if (key.startsWith('custom-section::character::')) this.collapsedSections.delete(key);
+        // Horizontal mode shows every section as a column.
+        if (horizontalProfile) {
+            for (const cat of CHARACTER_CATEGORIES) this.collapsedSections.delete(cat.title);
+            this.collapsedSections.delete('Custom Fields');
+            for (const key of [...this.collapsedSections]) {
+                if (key.startsWith('custom-section::character::')) this.collapsedSections.delete(key);
+            }
         }
 
         // Back + actions
@@ -1195,6 +1204,14 @@ export class CharacterView extends ItemView {
         });
 
         const headerRight = header.createDiv('character-detail-header-right');
+
+        renderLibraryProfileOrientationToggle(headerRight, {
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            save: () => this.plugin.saveSettings(),
+            beforeChange: () => this.flushPendingSave(),
+            onChanged: () => this.rerenderCharacterDetail(),
+        });
 
         mountLibraryEntityBoardAction(headerRight, {
             plugin: this.plugin,
@@ -1290,9 +1307,13 @@ export class CharacterView extends ItemView {
             }
         }
 
-        // Layout: horizontal section board + sticky side rail
-        const layout = container.createDiv('character-detail-layout character-detail-layout--board');
-        const formPanel = layout.createDiv('character-detail-form character-detail-board-track');
+        // Layout: switchable horizontal board or vertically stacked profile.
+        const layout = container.createDiv(
+            `character-detail-layout ${horizontalProfile ? 'character-detail-layout--board' : 'character-detail-layout--vertical'}`,
+        );
+        const formPanel = layout.createDiv(
+            `character-detail-form${horizontalProfile ? ' character-detail-board-track' : ' character-detail-vertical-track'}`,
+        );
         const sidePanel = layout.createDiv('character-detail-side');
         const commitFocusedField = (event: Event) => {
             const tagName = (event.target as { tagName?: string } | null)?.tagName?.toLowerCase();
@@ -1304,14 +1325,16 @@ export class CharacterView extends ItemView {
 
         // Wheel on the board gutter / headers pans columns; column bodies keep vertical scroll.
         // Shift+wheel always pans horizontally.
-        formPanel.addEventListener('wheel', (e) => {
-            if (e.deltaY === 0) return;
-            if (formPanel.scrollWidth <= formPanel.clientWidth + 1) return;
-            const inColumnBody = !!(e.target as HTMLElement | null)?.closest?.('.character-section-body');
-            if (inColumnBody && !e.shiftKey) return;
-            e.preventDefault();
-            formPanel.scrollLeft += e.deltaY + e.deltaX;
-        }, { passive: false });
+        if (horizontalProfile) {
+            formPanel.addEventListener('wheel', (e) => {
+                if (e.deltaY === 0) return;
+                if (formPanel.scrollWidth <= formPanel.clientWidth + 1) return;
+                const inColumnBody = !!(e.target as HTMLElement | null)?.closest?.('.character-section-body');
+                if (inColumnBody && !e.shiftKey) return;
+                e.preventDefault();
+                formPanel.scrollLeft += e.deltaY + e.deltaX;
+            }, { passive: false });
+        }
 
         // ── Form sections as board columns (+ interleaved custom sections) ──
         // Eagerly fill only the first columns; remaining column fields load when
@@ -1325,13 +1348,13 @@ export class CharacterView extends ItemView {
                 continue;
             }
             this.renderCategory(formPanel, category, draft, {
-                board: true,
+                board: horizontalProfile,
                 eager: i < 2,
             });
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
-        this.renderCustomFields(formPanel, draft, { board: true });
+        this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
         renderAddCustomSectionButton(formPanel, customHost);
         renderRemovedBuiltinSectionsToggle(formPanel, {
             settings: this.plugin.settings,
@@ -1763,7 +1786,7 @@ export class CharacterView extends ItemView {
 
         // Label with an edit icon
         const labelWrap = row.createDiv('character-universal-label-wrap');
-        labelWrap.createEl('label', { cls: 'character-field-label', text: t(tpl.label) });
+        labelWrap.createEl('label', { cls: 'character-field-label', text: tpl.label });
 
         const editBtn = labelWrap.createEl('span', {
             cls: 'character-universal-edit-btn',
@@ -1854,7 +1877,7 @@ export class CharacterView extends ItemView {
             const msInput = inputRow.createEl('input', {
                 cls: 'universal-multi-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : t('Type to add\u2026') },
+                attr: { placeholder: tpl.placeholder || t('Type to add\u2026') },
             });
             // Issue #102 — portal dropdown to <body> so position:fixed coords are
             // viewport-relative even when an ancestor uses transform/contain.
@@ -1932,7 +1955,7 @@ export class CharacterView extends ItemView {
             });
         } else if (tpl.type === 'dropdown') {
             const select = row.createEl('select', { cls: 'character-field-input dropdown' });
-            select.createEl('option', { text: tpl.placeholder ? t(tpl.placeholder) : t('Select…'), value: '' });
+            select.createEl('option', { text: tpl.placeholder || t('Select…'), value: '' });
 
             const dropdownOptions = [...tpl.options];
             if (tpl.folderSource) {
@@ -1963,7 +1986,7 @@ export class CharacterView extends ItemView {
         } else if (tpl.type === 'textarea') {
             const textarea = row.createEl('textarea', {
                 cls: 'character-field-textarea',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : '', rows: '2' },
+                attr: { placeholder: tpl.placeholder || '', rows: '2' },
             });
             textarea.value = value;
             const autoGrow = () => {
@@ -1994,7 +2017,7 @@ export class CharacterView extends ItemView {
             const input = row.createEl('input', {
                 cls: 'character-field-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : '' },
+                attr: { placeholder: tpl.placeholder || '' },
             });
             input.value = value;
             input.addEventListener('input', () => {

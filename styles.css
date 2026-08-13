@@ -472,6 +472,20 @@ body.narrative-lab-theme-dark .plot-grid-root {
 
 .sl-series-convert-btn {
     flex-shrink: 0;
+    cursor: pointer;
+}
+
+.modal-container.nl-stacked-modal {
+    z-index: 100000;
+}
+
+.nl-stacked-modal-content,
+.nl-wikilink-suggest-container {
+    z-index: 100001;
+}
+
+.modal-container.nl-wikilink-suggest-shell {
+    z-index: 100000;
 }
 
 .sl-series-card {
@@ -4596,7 +4610,63 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 
 .character-detail-header-right {
     display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
+}
+
+/* Per-category archive profile direction. Keep this control compact because it
+   shares the detail header with the file and delete actions. */
+.library-profile-orientation {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-secondary);
+}
+
+button.library-profile-orientation-btn,
+.location-detail-header-right button.library-profile-orientation-btn,
+.codex-detail-header-right button.library-profile-orientation-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 26px;
+    margin: 0;
+    padding: 3px 7px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+button.library-profile-orientation-btn:hover,
+.location-detail-header-right button.library-profile-orientation-btn:hover,
+.codex-detail-header-right button.library-profile-orientation-btn:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+button.library-profile-orientation-btn.is-active,
+button.library-profile-orientation-btn.is-active:hover,
+.location-detail-header-right button.library-profile-orientation-btn.is-active,
+.codex-detail-header-right button.library-profile-orientation-btn.is-active {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.library-profile-orientation-icon,
+.library-profile-orientation-icon svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 14px;
 }
 .character-delete-btn,
 .character-open-btn {
@@ -4719,6 +4789,28 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     min-height: 0;
     gap: 14px;
     overflow: hidden;
+}
+
+.character-detail--vertical {
+    display: block;
+    min-height: 0;
+}
+
+.character-detail-layout--vertical {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.character-detail-vertical-track {
+    width: 100%;
+    min-width: 0;
+}
+
+.character-detail-layout--vertical .character-detail-side {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+    position: static;
 }
 
 .character-detail-form {
@@ -6129,6 +6221,8 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 
 .location-detail-header-right {
     display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 4px;
 }
 
@@ -6177,6 +6271,14 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     display: flex;
     flex-direction: column;
     gap: 16px;
+}
+
+.location-detail-layout.is-vertical {
+    flex-direction: column;
+}
+
+.location-detail-layout.is-vertical .location-detail-side {
+    width: 100%;
 }
 
 @media (max-width: 700px) {
@@ -11872,6 +11974,12 @@ body /* Clamp title on mobile too, in case it's very long */
 .sl-nav-project-root.is-active-project {
     border-bottom: 1px solid var(--background-modifier-border);
 }
+.sl-nav-series-root {
+    font-weight: 700;
+}
+.sl-nav-series-root .sl-nav-folder-count {
+    margin-left: auto;
+}
 .sl-nav-project-root .sl-nav-project-open {
     margin-left: auto;
 }
@@ -12883,9 +12991,10 @@ body /* Clamp title on mobile too, in case it's very long */
     box-sizing: border-box;
 }
 
-/* Sit immediately before Uncategorized (not pinned to the far right). */
+/* Mode actions (Profiles / Browse / Story Graph) sit on the far right.
+   Uncategorized + Custom Categories stay beside the category strip. */
 .codex-category-tabs .codex-category-actions {
-    margin-left: 4px;
+    margin-left: auto;
     margin-right: 0;
     display: inline-flex;
     align-items: stretch;
@@ -12944,9 +13053,15 @@ body /* Clamp title on mobile too, in case it's very long */
     box-shadow: inset -3px 0 0 var(--interactive-accent);
 }
 .codex-tab.codex-uncategorized-tab {
+    flex-shrink: 0;
+}
+.codex-manage-categories-tab {
+    flex-shrink: 0;
+    align-self: stretch;
     margin-left: 8px;
     padding-left: 12px;
     border-left: 1px solid var(--background-modifier-border);
+    border-radius: 0;
 }
 .codex-tab.codex-tab:hover {
     background: none;
@@ -13138,6 +13253,8 @@ body /* Clamp title on mobile too, in case it's very long */
 .codex-back-link.codex-back-link:hover { color: var(--interactive-accent); background: none; }
 .codex-detail-header-right {
     display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 8px;
 }
 .codex-detail-action-btn.codex-detail-action-btn {
@@ -13202,6 +13319,9 @@ body /* Clamp title on mobile too, in case it's very long */
     display: grid;
     grid-template-columns: 1fr 280px;
     gap: 20px;
+}
+.codex-detail-layout.is-vertical {
+    grid-template-columns: minmax(0, 1fr);
 }
 @media (max-width: 700px) {
     .codex-detail-layout {

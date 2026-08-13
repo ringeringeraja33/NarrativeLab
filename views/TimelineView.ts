@@ -6,18 +6,19 @@ import { InspectorComponent } from '../components/Inspector';
 import { QuickAddModal } from '../components/QuickAddModal';
 import { BeatSheetApplyModal } from '../components/BeatSheetApplyModal';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { renderStructureModeSwitcher } from '../components/StructureModeSwitcher';
+import { renderStructureModeSwitcher, rememberStructureMode } from '../components/StructureModeSwitcher';
 import { enableDragToPan } from '../components/DragToPan';
 import type SceneCardsPlugin from '../main';
 
 import { TIMELINE_VIEW_TYPE } from '../constants';
 import { applyMobileClass } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
-import { ButtonComponent, DropdownComponent, ItemView, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
+import { ButtonComponent, DropdownComponent, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { BUILTIN_BEAT_SHEETS, BUILTIN_SCENE_TEMPLATES, Scene, SceneStatus, TIMELINE_MODES, TIMELINE_MODE_ICONS, TIMELINE_MODE_LABELS, TimelineMode, formatSceneLength, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import { getActDisplayLabel } from '../utils/actChapter';
 import { t, localizeBeatSheet, localizeSceneTemplate } from '../utils/i18n';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 /**
  * Timeline ordering mode
@@ -32,7 +33,7 @@ type SwimlaneGroupBy = 'pov' | 'character' | 'location' | 'plotline' | 'tag';
 /**
  * Timeline View - shows scenes in chronological order with optional swimlanes
  */
-export class TimelineView extends ItemView {
+export class TimelineView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private inspectorComponent: InspectorComponent | null = null;
@@ -62,7 +63,7 @@ export class TimelineView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.getBoundProjectTitle(this.sceneManager);
         return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
     }
 
@@ -71,6 +72,7 @@ export class TimelineView extends ItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         this.timelineOrder = this.plugin.settings.timelineOrder === 'chronological' ? 'chronological' : 'reading';
         const container = this.containerEl.children[1] as HTMLElement;
@@ -252,9 +254,8 @@ export class TimelineView extends ItemView {
     private setSwimlaneMode(enabled: boolean): void {
         if (this.swimlaneMode === enabled) return;
         this.swimlaneMode = enabled;
-        this.plugin.settings.timelineSwimlaneMode = enabled;
+        rememberStructureMode(this.plugin, enabled ? 'tracks' : 'timeline');
         this.refresh();
-        void this.plugin.saveSettings();
     }
 
     private renderTimeline(container: HTMLElement): void {

@@ -10,6 +10,10 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Obsolete pre-community split bundle (Univer now ships inside main.js)
+plotgrid-univer.js
+plotgrid-univer*.css
+
 # Lockfiles from alternate package managers
 pnpm-lock.yaml
 pnpm-workspace.yaml

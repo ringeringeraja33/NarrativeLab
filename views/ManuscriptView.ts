@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian event handlers intentionally launch async work and use compatibility assertions; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, WorkspaceSplit, MarkdownRenderer, TFile, setIcon, Notice } from 'obsidian';
+import { WorkspaceLeaf, WorkspaceSplit, MarkdownRenderer, TFile, setIcon, Notice } from 'obsidian';
 import { EditorView, Decoration } from '@codemirror/view';
 import { RangeSetBuilder, StateEffect, Compartment, EditorSelection } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
@@ -13,6 +13,7 @@ import { compareActChapter, getActDisplayLabel } from '../utils/actChapter';
 import SceneCardsPlugin from '../main';
 import { MANUSCRIPT_VIEW_TYPE } from '../constants';
 import { t } from '../utils/i18n';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 /**
  * Discussion #183 — module-level cursor/scroll snapshot.
@@ -37,7 +38,7 @@ let _lastManuscriptState: {
  * inside a single scrollable document with act/chapter dividers. Frontmatter
  * is hidden via CSS. Editors are lazy-loaded as scenes scroll into view.
  */
-export class ManuscriptView extends ItemView {
+export class ManuscriptView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private rootContainer: HTMLElement | null = null;
@@ -131,7 +132,7 @@ export class ManuscriptView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.getBoundProjectTitle(this.sceneManager);
         return title ? `${t('Manuscript')} - ${title}` : t('Manuscript');
     }
 
@@ -140,6 +141,7 @@ export class ManuscriptView extends ItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();

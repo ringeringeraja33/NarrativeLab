@@ -24,7 +24,11 @@ export interface LibraryProfileLayoutSettings {
     codexCategoryCustomSections: Record<string, unknown[]>;
     /** Default custom field names seeded onto new Codex entries (per category). */
     codexCategoryFieldTemplates: Record<string, string[]>;
+    /** Detail page direction, keyed by character/location/world/Codex category. */
+    profileOrientations: Record<string, LibraryProfileOrientation>;
 }
+
+export type LibraryProfileOrientation = 'horizontal' | 'vertical';
 
 export function emptyLibraryProfileLayout(): LibraryProfileLayoutSettings {
     return {
@@ -35,6 +39,7 @@ export function emptyLibraryProfileLayout(): LibraryProfileLayoutSettings {
         locationCustomSections: [],
         codexCategoryCustomSections: {},
         codexCategoryFieldTemplates: {},
+        profileOrientations: {},
     };
 }
 
@@ -51,6 +56,7 @@ export function readLibraryProfileLayout(settings: SceneCardsSettings): LibraryP
             : [],
         codexCategoryCustomSections: JSON.parse(JSON.stringify(settings.codexCategoryCustomSections || {})) as Record<string, unknown[]>,
         codexCategoryFieldTemplates: { ...(settings.codexCategoryFieldTemplates || {}) },
+        profileOrientations: { ...(settings.profileOrientations || {}) },
     };
 }
 
@@ -69,6 +75,7 @@ export function applyLibraryProfileLayout(
         : [];
     settings.codexCategoryCustomSections = { ...(layout.codexCategoryCustomSections || {}) } as SceneCardsSettings['codexCategoryCustomSections'];
     settings.codexCategoryFieldTemplates = { ...(layout.codexCategoryFieldTemplates || {}) };
+    settings.profileOrientations = { ...(layout.profileOrientations || {}) };
 }
 
 export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLayoutSettings | null {
@@ -82,7 +89,8 @@ export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLay
         || Array.isArray(rec.characterCustomSections)
         || Array.isArray(rec.locationCustomSections)
         || isRecord(rec.codexCategoryCustomSections)
-        || isRecord(rec.codexCategoryFieldTemplates);
+        || isRecord(rec.codexCategoryFieldTemplates)
+        || isRecord(rec.profileOrientations);
     if (!hasAny && !('version' in rec)) return null;
 
     return {
@@ -108,7 +116,45 @@ export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLay
         codexCategoryFieldTemplates: isRecord(rec.codexCategoryFieldTemplates)
             ? sanitizeStringListMap(rec.codexCategoryFieldTemplates)
             : {},
+        profileOrientations: isRecord(rec.profileOrientations)
+            ? sanitizeOrientationMap(rec.profileOrientations)
+            : {},
     };
+}
+
+function sanitizeOrientationMap(raw: Record<string, unknown>): Record<string, LibraryProfileOrientation> {
+    const out: Record<string, LibraryProfileOrientation> = {};
+    for (const [key, value] of Object.entries(raw)) {
+        if (value === 'horizontal' || value === 'vertical') out[key] = value;
+    }
+    return out;
+}
+
+export function getLibraryProfileOrientation(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+): LibraryProfileOrientation {
+    return settings.profileOrientations?.[categoryKey] === 'vertical'
+        ? 'vertical'
+        : 'horizontal';
+}
+
+export async function setLibraryProfileOrientation(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    orientation: LibraryProfileOrientation,
+    save: () => Promise<void>,
+): Promise<void> {
+    if (!settings.profileOrientations) settings.profileOrientations = {};
+    const previous = settings.profileOrientations[categoryKey];
+    settings.profileOrientations[categoryKey] = orientation;
+    try {
+        await save();
+    } catch (error) {
+        if (previous) settings.profileOrientations[categoryKey] = previous;
+        else delete settings.profileOrientations[categoryKey];
+        throw error;
+    }
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -291,10 +337,11 @@ export function attachBuiltinFieldVisibilityControls(
             attr: { 'aria-label': isHidden ? t('Show this field') : t('Hide this field') },
         });
         obsidian.setIcon(hideBtn, isHidden ? 'eye' : 'eye-off');
-        hideBtn.addEventListener('click', async (e) => {
+        hideBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            await toggleHiddenProfileField(settings, categoryKey, fieldKey, opts.save);
-            opts.onChanged();
+            void toggleHiddenProfileField(settings, categoryKey, fieldKey, opts.save)
+                .then(() => opts.onChanged())
+                .catch(error => console.error('[NarrativeLab] Failed to change field visibility:', error));
         });
     }
 
@@ -359,11 +406,12 @@ export function renderRemovedBuiltinFieldsToggle(
             text: t('Restore'),
             attr: { type: 'button' },
         });
-        restoreBtn.addEventListener('click', async (e) => {
+        restoreBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            await restoreBuiltinProfileField(opts.settings, opts.categoryKey, field.key, opts.save);
-            opts.onChanged();
+            void restoreBuiltinProfileField(opts.settings, opts.categoryKey, field.key, opts.save)
+                .then(() => opts.onChanged())
+                .catch(error => console.error('[NarrativeLab] Failed to restore profile field:', error));
         });
     }
     let showing = false;
@@ -469,17 +517,17 @@ export function renderRemovedBuiltinSectionsToggle(
             text: t('Restore'),
             attr: { type: 'button' },
         });
-        restoreBtn.addEventListener('click', async (e) => {
+        restoreBtn.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            await restoreBuiltinProfileSection(
+            void restoreBuiltinProfileSection(
                 opts.settings,
                 opts.categoryKey,
                 section.title,
                 section.fields.map(f => f.key),
                 opts.save,
-            );
-            opts.onChanged();
+            ).then(() => opts.onChanged())
+                .catch(error => console.error('[NarrativeLab] Failed to restore profile section:', error));
         });
     }
     let showing = false;

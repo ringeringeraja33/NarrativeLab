@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from 'esbuild';
 
@@ -39,10 +40,12 @@ const mod = await import(`data:text/javascript;base64,${Buffer.from(source).toSt
 const {
     emptyLibraryProfileLayout,
     filterRemovedBuiltinFields,
+    getLibraryProfileOrientation,
     isCoreProfileField,
     libraryProfileLayoutFromUnknown,
     removeBuiltinProfileField,
     restoreBuiltinProfileField,
+    setLibraryProfileOrientation,
 } = mod;
 
 test('name is a core undeletable field', () => {
@@ -89,4 +92,57 @@ test('libraryProfileLayoutFromUnknown requires useful payload', () => {
     assert.ok(parsed);
     assert.deepEqual(parsed.hiddenFields.character, ['fears']);
     assert.deepEqual(emptyLibraryProfileLayout().characterCustomSections, []);
+});
+
+test('profile orientation defaults to horizontal and persists per category', async () => {
+    const settings = { profileOrientations: {} };
+    assert.equal(getLibraryProfileOrientation(settings, 'character'), 'horizontal');
+
+    let saved = 0;
+    await setLibraryProfileOrientation(settings, 'character', 'vertical', async () => { saved += 1; });
+    assert.equal(getLibraryProfileOrientation(settings, 'character'), 'vertical');
+    assert.equal(getLibraryProfileOrientation(settings, 'location'), 'horizontal');
+    assert.equal(saved, 1);
+});
+
+test('profile orientation rolls back when project persistence fails', async () => {
+    const settings = { profileOrientations: { character: 'horizontal' } };
+    await assert.rejects(
+        setLibraryProfileOrientation(settings, 'character', 'vertical', async () => {
+            throw new Error('write failed');
+        }),
+        /write failed/,
+    );
+    assert.equal(settings.profileOrientations.character, 'horizontal');
+});
+
+test('profile orientation loader rejects invalid values', () => {
+    const parsed = libraryProfileLayoutFromUnknown({
+        version: 1,
+        profileOrientations: {
+            character: 'vertical',
+            location: 'diagonal',
+            npc: 'horizontal',
+        },
+    });
+    assert.deepEqual(parsed?.profileOrientations, {
+        character: 'vertical',
+        npc: 'horizontal',
+    });
+});
+
+test('all archive detail views expose the shared orientation control', async () => {
+    const [character, location, codex, css] = await Promise.all([
+        readFile('views/CharacterView.ts', 'utf8'),
+        readFile('views/LocationView.ts', 'utf8'),
+        readFile('views/CodexView.ts', 'utf8'),
+        readFile('styles.css', 'utf8'),
+    ]);
+    for (const source of [character, location, codex]) {
+        assert.match(source, /renderLibraryProfileOrientationToggle/);
+        assert.match(source, /getLibraryProfileOrientation/);
+    }
+    assert.match(css, /character-detail-layout--vertical/);
+    assert.match(css, /location-detail-layout\.is-vertical/);
+    assert.match(css, /codex-detail-layout\.is-vertical/);
 });

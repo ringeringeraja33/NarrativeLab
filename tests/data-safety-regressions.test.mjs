@@ -131,6 +131,25 @@ test('series migrations journal transfers and roll back every move path', () => 
     assert.match(seriesManager, /rolling back series dissolve/);
 });
 
+test('series convert and dissolve open stacked child modals after the click settles', () => {
+    assert.match(mainTs, /function openStackedModal/);
+    assert.match(mainTs, /nl-stacked-modal/);
+    assert.match(mainTs, /convertBtn\.addEventListener\('click', \(event\) => \{[\s\S]*stopPropagation\(\)[\s\S]*convertProjectToSeries/);
+    assert.match(mainTs, /dissolveBtn\.addEventListener\('click', \(event\) => \{[\s\S]*stopPropagation\(\)[\s\S]*dissolveSeries/);
+    const convertFn = mainTs.slice(
+        mainTs.indexOf('private convertProjectToSeries'),
+        mainTs.indexOf('private async dissolveSeries'),
+    );
+    assert.match(convertFn, /openStackedModal\(modal\)/);
+    assert.doesNotMatch(convertFn, /modal\.open\(\)/);
+    const dissolveFn = mainTs.slice(
+        mainTs.indexOf('private async dissolveSeries'),
+        mainTs.indexOf('private async renameSeries'),
+    );
+    assert.match(dissolveFn, /openStackedModal\(modal\)/);
+    assert.match(styles, /\.modal-container\.nl-stacked-modal/);
+});
+
 test('failed project trash restores series metadata', () => {
     assert.match(sceneManager, /seriesMetadataRollback/);
     assert.match(sceneManager, /Failed to restore series metadata after project deletion failed/);
@@ -269,15 +288,37 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(save, /writeVaultBinaryResilient/);
     assert.match(save, /encodePlotGridXlsx/);
     assert.match(save, /ensureVaultFolder/);
+    assert.match(save, /systemFolder\?:/);
     assert.match(save, /_reportedInvalidPlotGridXlsxPaths\.has\(path\)/);
     assert.equal((save.match(/new Notice\(/g) || []).length, 1, 'corrupt workbook warning is deduplicated');
     assert.match(mainTs, /getBasePath\?\./);
 });
 
-test('editable Base field and Library category names stay language-neutral', () => {
+test('plotgrid persists bound System folder and flushes cell editors before final save', async () => {
+    const plotgrid = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
+    assert.match(plotgrid, /savePlotGrid\(this\.document, \{ systemFolder: folder \}\)/);
+    assert.match(plotgrid, /savePlotGrid\(\s*this\.document,\s*folderAtSchedule \? \{ systemFolder: folderAtSchedule \} : \{\},?\s*\)/);
+    const onClose = plotgrid.slice(plotgrid.indexOf('async onClose()'), plotgrid.indexOf('private closeAllCellEditors'));
+    assert.match(onClose, /closeAllCellEditors\(\)/);
+    assert.ok(
+        onClose.indexOf('closeAllCellEditors()') < onClose.indexOf('savePlotGrid(this.document'),
+        'floating cell editors must flush into memory before the final disk save',
+    );
+    assert.match(plotgrid, /matches\.length === 1/);
+    assert.match(plotgrid, /projectPrefix/);
+});
+
+test('editable Base field names stay language-neutral; Library tab labels use t()', () => {
     assert.match(nativeLibraryBase, /propertyConfig\.displayName = key/);
     assert.match(nativeLibraryBase, /ensureRawNotePropertyDisplayNames\(config/);
-    assert.match(libraryCategorySync, /return english;/);
+    assert.match(libraryCategorySync, /return t\(english\);/);
+    assert.match(
+        libraryCategorySync.slice(
+            libraryCategorySync.indexOf('export function resolveLibraryFolderName'),
+            libraryCategorySync.indexOf('export function resolveLibraryCategoryLabel'),
+        ),
+        /return defaultName;/,
+    );
     assert.doesNotMatch(
         libraryCategorySync.slice(
             libraryCategorySync.indexOf('export function resolveLibraryCategoryLabel'),
@@ -291,9 +332,40 @@ test('custom profile categories expose a working profile overview mode', () => {
     assert.match(categoryTabs, /profileMode\?: LibraryProfileModeAction/);
     assert.match(libraryModeBar, /data-mode': 'profile'/);
     assert.match(codexView, /activeCategoryHasProfilePage/);
-    assert.match(codexView, /profileOverviewCategoryId = this\.activeCategory/);
+    assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile'\)/);
     assert.match(codexView, /showLayoutToggle: !this\.isProfileOverviewMode\(\)/);
     assert.match(codexView, /this\.isProfileOverviewMode\(\)\s*\? 'cards'/);
+});
+
+test('project-scoped tabs never reuse or lose another project binding', async () => {
+    const [baseView, structureSwitcher, viewSwitcher, timeline, storyline, plotgrid, research, manuscript] = await Promise.all([
+        readFile(new URL('../views/ProjectBoundItemView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/StructureModeSwitcher.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/ViewSwitcher.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/TimelineView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/StorylineView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/ResearchView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/ManuscriptView.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(baseView, /NARRATIVE_LAB_PROJECT_FILE_STATE_KEY/);
+    assert.match(baseView, /captureProjectBinding/);
+    for (const source of [timeline, storyline, plotgrid, research, manuscript, characterView, locationView, codexView, statsView]) {
+        assert.match(source, /extends ProjectBoundItemView/);
+        assert.match(source, /captureProjectBinding/);
+    }
+    assert.match(structureSwitcher, /preservedNarrativeLabLeafState\(leaf\)/);
+    assert.match(viewSwitcher, /preservedNarrativeLabLeafState\(leaf\)/);
+    const activate = mainTs.slice(mainTs.indexOf('async activateView(viewType'), mainTs.indexOf('async openBoardForProject'));
+    assert.doesNotMatch(activate, /\?\? leaves\[0\]/);
+    assert.match(activate, /Never replace another project's open tab/);
+    assert.match(mainTs, /drainProjectLeafSyncQueue/);
+    assert.match(mainTs, /while \(this\._pendingProjectLeaf\)/);
+    assert.match(mainTs, /drainOpenViewsRefreshQueue/);
+    assert.match(mainTs, /while \(this\._pendingOpenViewsRefresh !== 'none'\)/);
+    assert.match(mainTs, /Promise\.allSettled\(refreshTasks\)/);
+    const switchProject = sceneManager.slice(sceneManager.indexOf('async setActiveProject('), sceneManager.indexOf('async renameProject('));
+    assert.match(switchProject, /await this\.plugin\.refreshOpenViews\(\)/);
 });
 
 test('plot-grid text keeps Markdown source and renders rich text with native wikilinks', async () => {
@@ -306,9 +378,12 @@ test('plot-grid text keeps Markdown source and renders rich text with native wik
     assert.match(plotgrid, /openCellMarkdownEditor/);
     assert.match(plotgrid, /new WikilinkSuggest/);
     assert.match(plotgrid, /MarkdownRenderer\.render/);
-    assert.match(plotgrid, /commit\(this\.textarea\.value\)/);
+    assert.match(plotgrid, /flushAutosave/);
+    assert.match(plotgrid, /persistDraft\(\{ pushGrid: true \}\)/);
+    assert.match(plotgrid, /__nlCellEditorFlush = flushAutosave/);
     assert.doesNotMatch(plotgrid, /openNoteLinkModal|openSceneLinkModal/);
-    assert.doesNotMatch(univerHost, /onCellRender|canvasMarkdownSegments|fillRect\(/);
+    assert.doesNotMatch(univerHost, /canvasMarkdownSegments/);
+    assert.doesNotMatch(univerHost, /fillText\(|measureText\(/);
     assert.match(univerHost, /--link-color/);
     assert.match(codec, /plotGridSourceToUniverRichText/);
     assert.match(codec, /PLOTGRID_SOURCE_FIELD/);
@@ -317,7 +392,9 @@ test('plot-grid text keeps Markdown source and renders rich text with native wik
         univerHost.indexOf('function registerNarrativeLabContextMenu'),
         univerHost.indexOf('function linkedCellAt'),
     );
-    assert.doesNotMatch(contextMenu, /link-note|unlink-note|open-linked-note/);
+    assert.match(contextMenu, /link-note/);
+    assert.match(contextMenu, /unlink-note/);
+    assert.match(contextMenu, /connectedTitle|Connected notes|已连接笔记/);
     assert.match(markdownInput, /getHotkeys/);
     assert.match(markdownInput, /insert-wikilink/);
 });
@@ -333,4 +410,24 @@ test('NarrativeCanvas textareas inherit the configured Obsidian Markdown shortcu
     assert.match(canvasHost, /getMarkdownShortcutAction\(event\)/);
     assert.match(canvasHost, /hotkeyManager/);
     assert.match(canvasHost, /editor:insert-wikilink/);
+});
+
+test('project picker paints the cached list before a vault rescan', () => {
+    const picker = mainTs.slice(mainTs.indexOf('class ProjectSelectModal'), mainTs.indexOf('function openStackedModal'));
+    assert.match(picker, /getProjects\(\)/);
+    assert.match(picker, /fillSelect\(cached/);
+    assert.match(picker, /Scanning…/);
+    assert.match(picker, /void refreshSelect\(\)/);
+    const fillIdx = picker.indexOf('fillSelect(cached');
+    const scanIdx = picker.indexOf('void refreshSelect()');
+    assert.ok(fillIdx >= 0 && scanIdx > fillIdx);
+});
+
+test('project scan keeps the previous list until the new map is ready', () => {
+    assert.match(sceneManager, /scanProjectsInner/);
+    assert.match(sceneManager, /projectFromMetadataCache/);
+    assert.match(sceneManager, /this\.projects = next/);
+    assert.doesNotMatch(sceneManager, /this\.projects\.clear\(\)/);
+    assert.match(sceneManager, /getAbstractFileByPath\(path\) != null/);
+    assert.match(sceneManager, /_scanProjectsPromise/);
 });

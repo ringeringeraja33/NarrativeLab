@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-floating-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; matching enable at end of file */
 import { StoryLineProject, ProjectDraft, SeriesMetadata, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER, DEFAULT_CANVAS_FOLDER, DEFAULT_PROJECT_LIBRARY_FOLDERS, DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES } from '../models/StoryLineProject';
 import { MetadataParser, setWordcountLocale, setSceneTitleToStemMap } from './MetadataParser';
 import { normalizeStoryLineLocale, resolveLocale, DEFAULT_STORYLINE_LOCALE, AUTO_DETECT_LOCALE, type StoryLineLocale } from '../utils/locale';
@@ -64,6 +64,24 @@ function normalizeActChapterList(raw: unknown): number[] {
     return Array.from(new Set(nums)).sort((a, b) => a - b);
 }
 
+/** Folders that never contain a project manifest — skip during disk fallback. */
+const PROJECT_SCAN_SKIP_FOLDERS = new Set([
+    'System', 'Scenes', 'Characters', 'Locations', 'Library', 'Codex', 'Notes',
+    'Archive', 'Research', 'NCanvas', 'Canvas', 'Bases', 'Attachments', 'SceneNotes',
+]);
+
+async function mapPool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+    if (items.length === 0) return;
+    let index = 0;
+    const workerCount = Math.min(Math.max(1, limit), items.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+        while (index < items.length) {
+            const item = items[index++];
+            await fn(item);
+        }
+    }));
+}
+
 /** Normalize project frontmatter `libraryFolders` map (id → folder basename). */
 function normalizeLibraryFoldersMap(raw: unknown): Record<string, string> {
     if (!raw || typeof raw !== 'object') return {};
@@ -92,6 +110,8 @@ export class SceneManager implements ISceneStore {
     private _activeProject: StoryLineProject | null = null;
     /** Serialize project.md writes — concurrent vault.modify races cause Windows UNKNOWN open errors. */
     private _projectFrontmatterWrite: Promise<void> = Promise.resolve();
+    /** Coalesce overlapping project scans so the picker never starts a second vault walk. */
+    private _scanProjectsPromise: Promise<StoryLineProject[]> | null = null;
     /** Paths currently being adopted as Notes/ corkboard files (re-entrancy guard). */
     private adoptingNotes = new Set<string>();
     /** Paths currently being converted by NarrativeLab — skip watcher re-adoption. */
@@ -415,107 +435,128 @@ export class SceneManager implements ISceneStore {
      * Discover project manifests anywhere in the vault.
      * Both `type: narrative-lab` and legacy `type: storyline` are accepted.
      *
-     * Uses the vault adapter (filesystem) API so that externally-created
-     * files (e.g. sample projects, Dropbox-synced files) are discovered
-     * even before Obsidian's vault index has caught up.
+     * Prefers Obsidian's in-memory markdown index and frontmatter cache so
+     * the project picker can refresh without a disk walk. Falls back to the
+     * vault adapter for files the metadata cache has not typed yet (fresh
+     * syncs, cold start, Dropbox/OneDrive before indexing).
      */
     async scanProjects(): Promise<StoryLineProject[]> {
-        this.projects.clear();
-        const rootPath = this.plugin.settings.storyLineRoot;
+        if (this._scanProjectsPromise) return this._scanProjectsPromise;
+        this._scanProjectsPromise = this.scanProjectsInner().finally(() => {
+            this._scanProjectsPromise = null;
+        });
+        return this._scanProjectsPromise;
+    }
+
+    private async scanProjectsInner(): Promise<StoryLineProject[]> {
+        const rootPath = this.plugin.settings.storyLineRoot
+            ? normalizePath(this.plugin.settings.storyLineRoot)
+            : '';
         const adapter = this.app.vault.adapter;
         const configDir = normalizePath(this.app.vault.configDir);
+        const next = new Map<string, StoryLineProject>();
         const isDiscardedPath = (path: string): boolean => {
             const normalized = normalizePath(path);
             return normalized.split('/').includes('.trash')
                 || normalized === configDir
                 || normalized.startsWith(`${configDir}/`);
         };
+        const inSkippedFolder = (path: string): boolean =>
+            normalizePath(path).split('/').some(seg => PROJECT_SCAN_SKIP_FOLDERS.has(seg) || (seg.startsWith('.') && seg !== '.'));
 
-        // Helper: try to parse a .md file at the given path as a project
-        const tryParse = async (filePath: string) => {
-            if (!filePath.endsWith('.md') || isDiscardedPath(filePath)) return;
+        const addProject = (project: StoryLineProject | null) => {
+            if (!project || isDiscardedPath(project.filePath) || next.has(project.filePath)) return;
+            this.applyLegacyFolders(project);
+            next.set(project.filePath, project);
+        };
+
+        const tryParseDisk = async (filePath: string) => {
+            if (!filePath.endsWith('.md') || isDiscardedPath(filePath) || next.has(filePath)) return;
             try {
                 const content = await adapter.read(filePath);
-                const project = this.parseProjectContent(content, filePath);
-                if (project) {
-                    await this.detectLegacyFolders(project);
-                    this.projects.set(filePath, project);
-                }
+                addProject(this.parseProjectContent(content, filePath));
             } catch { /* file unreadable — skip */ }
         };
 
-        // Recursively scan subfolders for project .md files
-        // Supports: NarrativeLab/Project/Project.md AND NarrativeLab/Series/Book/Book.md
-        const scanFolder = async (folderPath: string) => {
-            try {
-                const listing = await adapter.list(folderPath);
-                for (const f of listing.files) {
-                    await tryParse(f);
-                }
-                for (const sub of listing.folders) {
-                    // Skip internal folders that never contain project files
-                    const folderName = sub.split('/').pop() ?? '';
-                    if (folderName.startsWith('.')
-                        || ['System', 'Scenes', 'Characters', 'Locations', 'Library', 'Codex', 'Notes', 'Archive', 'Research', 'NCanvas', 'Canvas', 'Bases', 'Attachments', 'SceneNotes'].includes(folderName)) continue;
-                    await scanFolder(sub);
-                }
-            } catch { /* folder unreadable — skip */ }
-        };
-
-        // The configured folder is only a creation default. Scan it directly
-        // when present so freshly synced files are found before metadata indexing.
-        if (rootPath && await adapter.exists(rootPath)) {
-            const rootListing = await adapter.list(rootPath);
-            for (const f of rootListing.files) await tryParse(f);
-            for (const folder of rootListing.folders) {
-                const folderName = folder.split('/').pop() ?? '';
-                if (!folderName.startsWith('.') && folderName !== 'System') await scanFolder(folder);
-            }
+        // Fast path: Obsidian's in-memory index + frontmatter cache. No disk I/O,
+        // which matters on OneDrive / iCloud where each adapter.read can take hundreds of ms.
+        const indexed = this.app.vault.getMarkdownFiles();
+        for (const file of indexed) {
+            if (isDiscardedPath(file.path)) continue;
+            addProject(this.projectFromMetadataCache(file));
         }
 
-        // ── Vault-wide discovery ──────────────────────────────────
-        // Scan the entire vault index. Project location is deliberately
-        // unrestricted; the manifest itself defines the project root.
-        try {
-            const allFiles = this.app.vault.getMarkdownFiles();
-            for (const file of allFiles) {
-                if (this.projects.has(file.path)) continue; // already found in root scan
-                const cache = this.app.metadataCache.getFileCache(file);
-                const type = cache?.frontmatter?.type;
-                if (type === 'narrative-lab' || type === 'storyline') {
-                    await tryParse(file.path);
-                }
-            }
-        } catch { /* vault-wide scan is best-effort */ }
+        // Disk fallback only for markdown that the metadata cache has not typed yet.
+        const pendingReads: string[] = [];
+        const rootPrefix = rootPath ? `${rootPath}/` : '';
+        for (const file of indexed) {
+            if (next.has(file.path) || isDiscardedPath(file.path) || inSkippedFolder(file.path)) continue;
+            const cache = this.app.metadataCache.getFileCache(file);
+            if (cache?.frontmatter) continue;
+            if (rootPath && !(file.path === `${rootPath}.md` || file.path.startsWith(rootPrefix))) continue;
+            pendingReads.push(file.path);
+        }
+        await mapPool(pendingReads, 8, tryParseDisk);
 
-        // ── Saved-active-project fallback ──────────────────────────
-        // Issue #207 — projects created in a custom vault folder (outside
-        // storyLineRoot) can be missed by both the root scan and the
-        // vault-wide metadataCache scan when the cache hasn't indexed the
-        // newly-created file yet (common on mobile, with synced folders,
-        // or immediately after creation). When a saved activeProjectFile
-        // path exists on disk but wasn't picked up, read it directly and
-        // parse it from its file contents — bypassing the metadata cache
-        // entirely — so the project is never orphaned on reload.
-        const savedPath = this.plugin.settings.activeProjectFile;
-        if (savedPath && !isDiscardedPath(savedPath) && !this.projects.has(savedPath)) {
+        // Cold vault / pre-index: walk the creation-default folder on disk so
+        // freshly synced files are found before metadataCache catches up.
+        const indexedUnderRoot = rootPath
+            ? indexed.filter(file => file.path === rootPath || file.path.startsWith(rootPrefix) || file.path === `${rootPath}.md`)
+            : indexed;
+        if (rootPath && indexedUnderRoot.length === 0) {
+            const scanFolder = async (folderPath: string) => {
+                try {
+                    const listing = await adapter.list(folderPath);
+                    await mapPool(listing.files, 8, tryParseDisk);
+                    for (const sub of listing.folders) {
+                        const folderName = sub.split('/').pop() ?? '';
+                        if (folderName.startsWith('.') || PROJECT_SCAN_SKIP_FOLDERS.has(folderName)) continue;
+                        await scanFolder(sub);
+                    }
+                } catch { /* folder unreadable — skip */ }
+            };
             try {
-                if (await this.app.vault.adapter.exists(savedPath)) {
-                    const content = await this.app.vault.adapter.read(savedPath);
-                    const project = this.parseProjectContent(content, savedPath);
-                    if (project) {
-                        await this.detectLegacyFolders(project);
-                        this.projects.set(savedPath, project);
+                if (await adapter.exists(rootPath)) {
+                    const rootListing = await adapter.list(rootPath);
+                    await mapPool(rootListing.files, 8, tryParseDisk);
+                    for (const folder of rootListing.folders) {
+                        const folderName = folder.split('/').pop() ?? '';
+                        if (!folderName.startsWith('.') && folderName !== 'System') await scanFolder(folder);
                     }
                 }
-            } catch { /* file unreadable or missing — skip */ }
+            } catch { /* root unreadable — skip */ }
         }
 
-        // Restore active project from settings
+        // Issue #207 — keep the saved active project even if both index passes missed it.
+        const savedPath = this.plugin.settings.activeProjectFile;
+        if (savedPath && !isDiscardedPath(savedPath) && !next.has(savedPath)) {
+            const savedFile = this.app.vault.getAbstractFileByPath(savedPath);
+            if (savedFile instanceof TFile) {
+                addProject(this.projectFromMetadataCache(savedFile));
+            }
+            if (!next.has(savedPath)) {
+                await tryParseDisk(savedPath);
+            }
+        }
+
+        // Swap the map only after the scan finishes so the project picker can
+        // keep showing the previous list while this refresh is in flight.
+        // If the vault index is still empty, keep the previous list rather than
+        // flashing "no projects" over a known-good cache.
+        if (next.size === 0 && this.projects.size > 0 && indexed.length === 0) {
+            this.applyActiveProjectLocale();
+            return this.getProjects();
+        }
+        const previous = this.projects;
+        this.projects = next;
+        for (const [path, project] of previous) {
+            if (next.has(path)) continue;
+            if (this.app.vault.getAbstractFileByPath(path)) next.set(path, project);
+        }
+
         if (savedPath && this.projects.has(savedPath)) {
             this._activeProject = this.projects.get(savedPath)!;
         } else if (this.projects.size > 0) {
-            // Default to first project found
             this._activeProject = this.projects.values().next().value ?? null;
             if (this._activeProject) {
                 this.plugin.settings.activeProjectFile = this._activeProject.filePath;
@@ -524,11 +565,11 @@ export class SceneManager implements ISceneStore {
                 // the migration code has had a chance to move them to System/ files.
                 await this.plugin.saveData(this.plugin.settings);
             }
+        } else {
+            this._activeProject = null;
         }
 
-        // Propagate the active project's language to wordcount tokenisation.
         this.applyActiveProjectLocale();
-
         return this.getProjects();
     }
 
@@ -723,7 +764,7 @@ export class SceneManager implements ISceneStore {
         // Ask the plugin to refresh any open NarrativeLab views so the UI updates
         try {
             if (this.plugin && typeof this.plugin.refreshOpenViews === 'function') {
-                this.plugin.refreshOpenViews();
+                await this.plugin.refreshOpenViews();
             }
         } catch (e) {
             // non-fatal; UI may refresh on next file event
@@ -974,78 +1015,83 @@ export class SceneManager implements ISceneStore {
         if (!fmMatch) return null;
 
         try {
-            const fm = parseYaml(fmMatch[1]);
-            if (fm?.type !== 'narrative-lab' && fm?.type !== 'storyline') return null;
-
-            // Derive basename from file path (strip directory + extension)
-            const basename = filePath.split('/').pop()?.replace(/\.md$/i, '') ?? filePath;
-            const title = fm.title || basename;
-
-            // Derive folders from the file's actual location (works for any vault path)
-            const folders = deriveProjectFoldersFromFilePath(filePath);
-            const libraryFolders = normalizeLibraryFoldersMap(fm.libraryFolders);
-            const charSeg = libraryFolders.characters || 'Characters';
-            const locSeg = libraryFolders.locations || 'Locations';
-
-            return {
-                filePath,
-                title,
-                created: fm.created || '',
-                description: content.slice(fmMatch[0].length).trim(),
-                // Issue: multi-language support — accept both `language:` (preferred)
-                // and `storyline-locale:` (community PR #90 spelling) for forward/back compat.
-                locale: (fm.language || fm['storyline-locale'])
-                    ? normalizeStoryLineLocale(fm.language ?? fm['storyline-locale'])
-                    : undefined,
-                ...folders,
-                characterFolder: normalizePath(`${folders.codexFolder}/${charSeg}`),
-                locationFolder: normalizePath(`${folders.codexFolder}/${locSeg}`),
-                libraryFolders: Object.keys(libraryFolders).length > 0 ? libraryFolders : undefined,
-                definedActs: normalizeActChapterList(fm.acts),
-                definedChapters: normalizeActChapterList(fm.chapters),
-                actLabels: (fm.actLabels && typeof fm.actLabels === 'object') ? Object.fromEntries(Object.entries(fm.actLabels).map(([k, v]) => [Number(k), String(v)])) : {},
-                chapterLabels: (fm.chapterLabels && typeof fm.chapterLabels === 'object') ? Object.fromEntries(Object.entries(fm.chapterLabels).map(([k, v]) => [Number(k), String(v)])) : {},
-                actDescriptions: (fm.actDescriptions && typeof fm.actDescriptions === 'object') ? Object.fromEntries(Object.entries(fm.actDescriptions).map(([k, v]) => [Number(k), String(v)])) : {},
-                chapterDescriptions: (fm.chapterDescriptions && typeof fm.chapterDescriptions === 'object') ? Object.fromEntries(Object.entries(fm.chapterDescriptions).map(([k, v]) => [Number(k), String(v)])) : {},
-                filterPresets: Array.isArray(fm.filterPresets) ? fm.filterPresets : [],
-                plotlines: Array.isArray(fm.plotlines)
-                    ? [...new Set((fm.plotlines as unknown[])
-                        .map((value: unknown) => String(value).trim())
-                        .filter(Boolean))]
-                    : [],
-                corkboardPositions: {},
-                seriesId: fm.seriesId || undefined,
-                coverImage: fm.coverImage || undefined,
-                activeBeatSheet: fm.activeBeatSheet || undefined,
-                drafts: normalizeProjectDrafts(fm.drafts),
-                activeDraftId: typeof fm.activeDraft === 'string' ? fm.activeDraft
-                    : (typeof fm.activeDraftId === 'string' ? fm.activeDraftId : undefined),
-            };
+            const fm = parseYaml(fmMatch[1]) as { [key: string]: unknown } | null;
+            return this.projectFromFrontmatter(fm, filePath, content.slice(fmMatch[0].length).trim());
         } catch {
             return null;
         }
     }
 
+    private projectFromMetadataCache(file: TFile): StoryLineProject | null {
+        const cache = this.app.metadataCache.getFileCache(file);
+        const fm = cache?.frontmatter;
+        if (!fm) return null;
+        return this.projectFromFrontmatter(fm as { [key: string]: unknown }, file.path, '');
+    }
+
+    private projectFromFrontmatter(fm: { [key: string]: unknown } | null | undefined, filePath: string, description = ''): StoryLineProject | null {
+        if (!fm || (fm.type !== 'narrative-lab' && fm.type !== 'storyline')) return null;
+
+        const basename = filePath.split('/').pop()?.replace(/\.md$/i, '') ?? filePath;
+        const title = (typeof fm.title === 'string' && fm.title) ? fm.title : basename;
+        const folders = deriveProjectFoldersFromFilePath(filePath);
+        const libraryFolders = normalizeLibraryFoldersMap(fm.libraryFolders);
+        const charSeg = libraryFolders.characters || 'Characters';
+        const locSeg = libraryFolders.locations || 'Locations';
+
+        return {
+            filePath,
+            title,
+            created: typeof fm.created === 'string' ? fm.created : '',
+            description,
+            locale: (fm.language || fm['storyline-locale'])
+                ? normalizeStoryLineLocale(String(fm.language ?? fm['storyline-locale']))
+                : undefined,
+            ...folders,
+            characterFolder: normalizePath(`${folders.codexFolder}/${charSeg}`),
+            locationFolder: normalizePath(`${folders.codexFolder}/${locSeg}`),
+            libraryFolders: Object.keys(libraryFolders).length > 0 ? libraryFolders : undefined,
+            definedActs: normalizeActChapterList(fm.acts),
+            definedChapters: normalizeActChapterList(fm.chapters),
+            actLabels: (fm.actLabels && typeof fm.actLabels === 'object') ? Object.fromEntries(Object.entries(fm.actLabels as Record<string, unknown>).map(([k, v]) => [Number(k), String(v)])) : {},
+            chapterLabels: (fm.chapterLabels && typeof fm.chapterLabels === 'object') ? Object.fromEntries(Object.entries(fm.chapterLabels as Record<string, unknown>).map(([k, v]) => [Number(k), String(v)])) : {},
+            actDescriptions: (fm.actDescriptions && typeof fm.actDescriptions === 'object') ? Object.fromEntries(Object.entries(fm.actDescriptions as Record<string, unknown>).map(([k, v]) => [Number(k), String(v)])) : {},
+            chapterDescriptions: (fm.chapterDescriptions && typeof fm.chapterDescriptions === 'object') ? Object.fromEntries(Object.entries(fm.chapterDescriptions as Record<string, unknown>).map(([k, v]) => [Number(k), String(v)])) : {},
+            filterPresets: Array.isArray(fm.filterPresets) ? fm.filterPresets as StoryLineProject['filterPresets'] : [],
+            plotlines: Array.isArray(fm.plotlines)
+                ? [...new Set(fm.plotlines.map((value: unknown) => String(value).trim()).filter(Boolean))]
+                : [],
+            corkboardPositions: {},
+            seriesId: typeof fm.seriesId === 'string' && fm.seriesId ? fm.seriesId : undefined,
+            coverImage: typeof fm.coverImage === 'string' ? fm.coverImage : undefined,
+            activeBeatSheet: typeof fm.activeBeatSheet === 'string' ? fm.activeBeatSheet : undefined,
+            drafts: normalizeProjectDrafts(fm.drafts),
+            activeDraftId: typeof fm.activeDraft === 'string' ? fm.activeDraft
+                : (typeof fm.activeDraftId === 'string' ? fm.activeDraftId : undefined),
+        };
+    }
+
     /**
      * Legacy detection for pre-NarrativeLab projects. Prefer Library, then
      * fall back to Codex, then to root-level Characters/Locations folders.
+     * Uses the in-memory vault index so a project scan does not hit disk.
      */
-    private async detectLegacyFolders(project: StoryLineProject): Promise<void> {
-        const adapter = this.app.vault.adapter;
+    private applyLegacyFolders(project: StoryLineProject): void {
         const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const legacyCodexFolder = normalizePath(`${folders.baseFolder}/Codex`);
         const legacyCharFolder = normalizePath(`${folders.baseFolder}/Characters`);
         const legacyLocFolder = normalizePath(`${folders.baseFolder}/Locations`);
+        const exists = (path: string) => this.app.vault.getAbstractFileByPath(path) != null;
 
-        if (!await adapter.exists(project.codexFolder) && await adapter.exists(legacyCodexFolder)) {
+        if (!exists(project.codexFolder) && exists(legacyCodexFolder)) {
             project.codexFolder = legacyCodexFolder;
             project.characterFolder = normalizePath(`${legacyCodexFolder}/Characters`);
             project.locationFolder = normalizePath(`${legacyCodexFolder}/Locations`);
         }
-        if (!await adapter.exists(project.characterFolder) && await adapter.exists(legacyCharFolder)) {
+        if (!exists(project.characterFolder) && exists(legacyCharFolder)) {
             project.characterFolder = legacyCharFolder;
         }
-        if (!await adapter.exists(project.locationFolder) && await adapter.exists(legacyLocFolder)) {
+        if (!exists(project.locationFolder) && exists(legacyLocFolder)) {
             project.locationFolder = legacyLocFolder;
         }
     }
@@ -4250,4 +4296,4 @@ export class SceneManager implements ISceneStore {
         return primaryFile;
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-floating-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- end of file-wide suppression block opened at line 1 */

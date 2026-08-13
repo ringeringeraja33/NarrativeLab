@@ -1,0 +1,53 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Require tag to match manifest version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node -e "const fs=require('fs'); const manifest=JSON.parse(fs.readFileSync('manifest.json','utf8')); if (process.env.RELEASE_TAG !== manifest.version) { console.error('Tag must exactly match manifest version:', process.env.RELEASE_TAG, manifest.version); process.exit(1); }"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate source
+        run: npm run lint:obsidian && npm test
+
+      - name: Build release assets
+        run: npm run build
+
+      - name: Package optional archive
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: zip "narrative-lab-${RELEASE_TAG}.zip" main.js manifest.json styles.css
+
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            --title "NarrativeLab $RELEASE_TAG" \
+            --notes-file "release-notes/$RELEASE_TAG.md" \
+            main.js manifest.json styles.css "narrative-lab-$RELEASE_TAG.zip"

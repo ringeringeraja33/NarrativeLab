@@ -468,11 +468,16 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /projectChanged/);
 });
 
-test('lazy Univer host receives Obsidian UI through the main bundle', async () => {
+test('integrated Univer host receives Obsidian UI through the community main bundle', async () => {
     const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
+    const loader = await readFile(new URL('../utils/loadPlotGridUniver.ts', import.meta.url), 'utf8');
+    const build = await readFile(new URL('../esbuild.config.mjs', import.meta.url), 'utf8');
     assert.doesNotMatch(host, /from ['"]obsidian['"]/);
     assert.match(host, /onContextMenuRequest/);
     assert.match(host, /event\?\.detail/);
+    assert.match(loader, /import \{ createPlotGridUniverHost \}/);
+    assert.doesNotMatch(loader, /window\.require|plotgrid-univer\.js/);
+    assert.doesNotMatch(build, /services\/plotgrid-univer-entry|outfile:.*plotgrid-univer/);
 });
 
 test('wikilink suggestions follow the textarea caret inside editor modals', async () => {

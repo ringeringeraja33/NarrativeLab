@@ -29,8 +29,8 @@ export class SplitSceneModal extends Modal {
         this.plugin = plugin;
         this.scene = scene;
         this.onDone = onDone;
-        this.titleA = scene.title || 'Untitled';
-        this.titleB = `${scene.title || 'Untitled'} (part 2)`;
+        this.titleA = scene.title || t('Untitled');
+        this.titleB = t('{title} (part 2)', { title: scene.title || t('Untitled') });
     }
 
     onOpen(): void {
@@ -176,7 +176,7 @@ export class MergeSceneModal extends Modal {
         this.plugin = plugin;
         this.scenes = scenes;
         this.onDone = onDone;
-        this.mergedTitle = scenes[0]?.title || 'Merged Scene';
+        this.mergedTitle = scenes[0]?.title || t('Merged Scene');
     }
 
     onOpen(): void {
