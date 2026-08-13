@@ -3,6 +3,8 @@
  * Character data model - represents a character profile stored as a markdown file
  * in the project's Characters/ folder.
  */
+import { coerceString } from '../utils/narrow';
+
 export interface Character {
     /** Vault-relative path of the character .md file */
     filePath: string;
@@ -572,18 +574,12 @@ export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
             { key: 'occupation', label: 'Occupation', placeholder: 'Current job, income level, career history' },
             { key: 'residency', label: 'Residency', placeholder: 'Where they are from and where they currently live', multiline: true },
             { key: 'locations', label: 'Locations', placeholder: 'Story locations they appear at (e.g. The Tavern, Castle Ruins)' },
-        ],
-    },
-    {
-        title: 'Relationships',
-        icon: 'users',
-        fields: [
             { key: 'family', label: 'Family / Background', placeholder: 'Relationships with parents, siblings, spouse…', multiline: true },
             { key: 'relations', label: 'Relations', placeholder: 'Add relation rows by category and type' },
         ],
     },
     {
-        title: 'Personality',
+        title: 'Personality and Appearance',
         icon: 'brain',
         fields: [
             { key: 'personality', label: 'Personality', placeholder: 'Three to five words to describe them' },
@@ -594,42 +590,24 @@ export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
             { key: 'fears', label: 'Fears', placeholder: 'What they are most afraid of — the thing stopping them from going after their desire', multiline: true },
             { key: 'belief', label: 'Belief', placeholder: 'What they believe about themselves and their identity', multiline: true },
             { key: 'misbelief', label: 'Misbelief', placeholder: 'The thing they believe is true about the world (but isn\'t)', multiline: true },
-        ],
-    },
-    {
-        title: 'Physical Characteristics',
-        icon: 'scan-face',
-        fields: [
             { key: 'appearance', label: 'Appearance', placeholder: 'Height, weight, body type, hair, eye color, skin tone', multiline: true },
             { key: 'distinguishingFeatures', label: 'Distinguishing Features', placeholder: 'Scars, tattoos, birthmarks, or unique marks', multiline: true },
             { key: 'style', label: 'Style', placeholder: 'Clothing style, accessories, posture', multiline: true },
             { key: 'quirks', label: 'Quirks', placeholder: 'Specific habits like tapping fingers, stuttering when nervous…', multiline: true },
+            { key: 'habits', label: 'Habits', placeholder: 'Hobbies, favorite foods, daily routines', multiline: true },
+            { key: 'props', label: 'Props', placeholder: 'Items they frequently use or carry', multiline: true },
         ],
     },
     {
-        title: 'Backstory',
-        icon: 'clock',
+        title: 'Background and Arc',
+        icon: 'book-open',
         fields: [
             { key: 'formativeMemories', label: 'Formative Memories', placeholder: 'Key events from childhood or past that shaped their personality', multiline: true },
             { key: 'accomplishments', label: 'Accomplishments / Failures', placeholder: 'Defining moments that shaped their self-worth', multiline: true },
             { key: 'secrets', label: 'Secrets', placeholder: 'What they are hiding', multiline: true },
-        ],
-    },
-    {
-        title: 'Character Arc',
-        icon: 'trending-up',
-        fields: [
             { key: 'startingPoint', label: 'Starting Point', placeholder: 'How they are at the beginning of the story', multiline: true },
             { key: 'goal', label: 'Goal', placeholder: 'What they want to achieve', multiline: true },
             { key: 'expectedChange', label: 'Expected Change', placeholder: 'How they will change by the end of the story', multiline: true },
-        ],
-    },
-    {
-        title: 'Other',
-        icon: 'more-horizontal',
-        fields: [
-            { key: 'habits', label: 'Habits', placeholder: 'Hobbies, favorite foods, daily routines', multiline: true },
-            { key: 'props', label: 'Props', placeholder: 'Items they frequently use or carry', multiline: true },
         ],
     },
 ];
@@ -646,6 +624,32 @@ export const CHARACTER_FIELD_KEYS: (keyof Character)[] = [
     'habits', 'props',
     'books',
 ];
+
+/** Field keys that can be selected as the per-character card summary (`tagline`). */
+export const CHARACTER_TAGLINE_FIELD_KEYS: ReadonlySet<string> = new Set(
+    CHARACTER_CATEGORIES.flatMap(cat => cat.fields.map(f => String(f.key)))
+        .filter(key => !['name', 'tagline', 'relations', 'locations', 'image', 'gallery'].includes(key)),
+);
+
+/**
+ * Resolve the short blurb shown on character cards.
+ * `tagline` is normally a field key (personality, occupation, …). Legacy free-text
+ * values (Scrivener synopsis imports) are shown as-is when they aren't a known key.
+ */
+export function resolveCharacterCardSnippet(char: Character): string {
+    const auto = coerceString(char.personality)
+        || coerceString(char.occupation)
+        || getRoleDisplay(char)
+        || '';
+    const tagline = coerceString(char.tagline).trim();
+    if (!tagline) return auto;
+    if (CHARACTER_TAGLINE_FIELD_KEYS.has(tagline)) {
+        const fromField = coerceString((char as unknown as Record<string, unknown>)[tagline]).trim();
+        return fromField || auto;
+    }
+    // Legacy free-text tagline
+    return tagline;
+}
 
 export const CHARACTER_RELATION_ARRAY_FIELDS: (keyof Character)[] = [
     'allies', 'enemies', 'romantic', 'mentors', 'customRelations',

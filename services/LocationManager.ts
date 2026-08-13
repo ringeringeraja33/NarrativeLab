@@ -7,7 +7,7 @@ import {
     WORLD_FIELD_KEYS, LOCATION_FIELD_KEYS,
 } from '../models/Location';
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
-import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
+import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 
 /**
  * Manages world & location .md files — loading, saving, creating, deleting.
@@ -365,6 +365,7 @@ export class LocationManager {
         const finalBody = item.notes ?? body;
         const newContent = `---\n${stringifyYaml(fm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
+        rememberEntityAfterSave(this.app, 'location', normalizedFilePath, item);
     }
 
     // ── Delete ─────────────────────────────────────────

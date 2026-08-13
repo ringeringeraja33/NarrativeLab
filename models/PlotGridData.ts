@@ -52,6 +52,25 @@ export interface RowMeta {
     sourceId?: string;
 }
 
+/** One mention of an entity inside Concept Grid / datasheet.xlsx. */
+export interface PlotGridAppearanceHit {
+    pageId: string;
+    pageTitle: string;
+    rowId: string;
+    rowLabel: string;
+    /** Vault path of Library/datasheet.xlsx */
+    filePath: string;
+    /** Scene file when the row is auto-synced from Scenes */
+    scenePath?: string;
+    /** Column where the mention was found (best-effort) */
+    columnId?: string;
+    columnLabel?: string;
+    /** 0-based index in page.rows — for Univer setActiveCell */
+    rowIndex: number;
+    /** 0-based index in page.columns when known */
+    columnIndex?: number;
+}
+
 /** Single-page grid payload (legacy v1 shape and active-page working set). */
 export interface PlotGridData {
     rows: RowMeta[];

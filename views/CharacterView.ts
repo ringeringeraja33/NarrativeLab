@@ -35,16 +35,19 @@ import {
     renderLibraryBrowseToolbar,
 } from '../components/LibraryBrowseLayout';
 import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
-import { CHARACTER_CATEGORIES, CHARACTER_ROLES, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractAllCharacterTags, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations } from '../models/Character';
+import { CHARACTER_CATEGORIES, CHARACTER_ROLES, CHARACTER_TAGLINE_FIELD_KEYS, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractAllCharacterTags, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations, resolveCharacterCardSnippet } from '../models/Character';
 import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { seedUiLanguage, t } from '../utils/i18n';
 import {
     attachBuiltinFieldVisibilityControls,
+    attachBuiltinSectionRemoveControl,
     filterRemovedBuiltinFields,
     getHiddenFieldKeys,
+    isBuiltinSectionRemoved,
     renderRemovedBuiltinFieldsToggle,
+    renderRemovedBuiltinSectionsToggle,
 } from '../utils/libraryProfileLayout';
 import {
     ensureSeededCharacterRelationTypes,
@@ -874,9 +877,7 @@ export class CharacterView extends ItemView {
         card.createEl('h4', { text: char.name });
 
         // Short description snippet — per-character tagline field selector, with auto fallback
-        const taglineKey = char.tagline; // a field key like 'personality', 'occupation', etc.
-        const autoSnippet = char.personality || char.occupation || getRoleDisplay(char.role) || '';
-        const snippet = (taglineKey ? coerceString((char as unknown as Record<string, unknown>)[taglineKey]) : '') || autoSnippet;
+        const snippet = resolveCharacterCardSnippet(char);
         if (snippet) {
             card.createEl('p', { cls: 'character-card-snippet', text: snippet });
         }
@@ -1265,16 +1266,27 @@ export class CharacterView extends ItemView {
         const heroSub = heroMeta.createDiv('character-detail-hero-sub');
         const roleText = getRoleDisplay(draft.role);
         if (roleText) heroSub.createSpan({ cls: 'character-detail-hero-chip', text: roleText });
-        if (draft.occupation) {
-            heroSub.createSpan({ cls: 'character-detail-hero-chip is-muted', text: draft.occupation });
-        }
-        if (draft.residency) {
-            const residencySnippet = coerceString(draft.residency).replace(/\s+/g, ' ').trim();
-            if (residencySnippet) {
+        const cardSnippet = resolveCharacterCardSnippet(draft);
+        if (cardSnippet && cardSnippet !== roleText) {
+            const snippetText = cardSnippet.replace(/\s+/g, ' ').trim();
+            if (snippetText) {
                 heroSub.createSpan({
-                    cls: 'character-detail-hero-chip is-muted',
-                    text: residencySnippet.length > 48 ? `${residencySnippet.slice(0, 48)}…` : residencySnippet,
+                    cls: 'character-detail-hero-chip is-muted character-detail-hero-tagline',
+                    text: snippetText.length > 64 ? `${snippetText.slice(0, 64)}…` : snippetText,
                 });
+            }
+        } else {
+            if (draft.occupation) {
+                heroSub.createSpan({ cls: 'character-detail-hero-chip is-muted', text: draft.occupation });
+            }
+            if (draft.residency) {
+                const residencySnippet = coerceString(draft.residency).replace(/\s+/g, ' ').trim();
+                if (residencySnippet) {
+                    heroSub.createSpan({
+                        cls: 'character-detail-hero-chip is-muted',
+                        text: residencySnippet.length > 48 ? `${residencySnippet.slice(0, 48)}…` : residencySnippet,
+                    });
+                }
             }
         }
 
@@ -1307,7 +1319,12 @@ export class CharacterView extends ItemView {
         const customHost = this.buildCustomSectionsHost(draft);
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
         for (let i = 0; i < CHARACTER_CATEGORIES.length; i++) {
-            this.renderCategory(formPanel, CHARACTER_CATEGORIES[i], draft, {
+            const category = CHARACTER_CATEGORIES[i];
+            if (isBuiltinSectionRemoved(this.plugin.settings, 'character', category.title)) {
+                renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
+                continue;
+            }
+            this.renderCategory(formPanel, category, draft, {
                 board: true,
                 eager: i < 2,
             });
@@ -1316,6 +1333,15 @@ export class CharacterView extends ItemView {
 
         this.renderCustomFields(formPanel, draft, { board: true });
         renderAddCustomSectionButton(formPanel, customHost);
+        renderRemovedBuiltinSectionsToggle(formPanel, {
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            sections: CHARACTER_CATEGORIES.map(c => ({ title: c.title, fields: c.fields })),
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
+                if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
+            },
+        });
 
         // ── Side panel: gallery first; defer scene/refs until after first paint ──
         this.renderGallery(sidePanel, draft);
@@ -1359,6 +1385,18 @@ export class CharacterView extends ItemView {
         const icon = sectionHeader.createSpan('character-section-icon');
         obsidian.setIcon(icon, category.icon);
         sectionHeader.createSpan({ text: t(category.title) });
+
+        attachBuiltinSectionRemoveControl(sectionHeader, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            sectionTitle: category.title,
+            sectionFields: category.fields,
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
+                if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
+            },
+        });
 
         // ── '+' button to add a universal field to this section ──
         const addFieldBtn = sectionHeader.createEl('button', {
@@ -1478,6 +1516,7 @@ export class CharacterView extends ItemView {
             sectionHeader.addEventListener('click', (e) => {
                 // Ignore clicks on the add-field button
                 if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
+                if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
                 if (this.collapsedSections.has(category.title)) {
                     this.collapsedSections.delete(category.title);
                     ensureBody();
@@ -1570,20 +1609,31 @@ export class CharacterView extends ItemView {
         if (field.key === 'tagline') {
             // Tagline is a dropdown that picks which other field to show on the card
             const select = row.createEl('select', { cls: 'character-field-input dropdown' });
-            select.createEl('option', { text: t('Auto (personality → occupation → role)'), value: '' });
+            select.createEl('option', {
+                text: t('Auto (personality → occupation → role)'),
+                attr: { value: '' },
+            });
             const taglineOptions: { key: string; label: string }[] = [];
             for (const cat of CHARACTER_CATEGORIES) {
                 for (const f of cat.fields) {
-                    if (['name', 'tagline', 'relations', 'locations', 'image'].includes(f.key)) continue;
-                    taglineOptions.push({ key: f.key, label: f.label });
+                    if (!CHARACTER_TAGLINE_FIELD_KEYS.has(String(f.key))) continue;
+                    taglineOptions.push({ key: String(f.key), label: f.label });
                 }
             }
             for (const opt of taglineOptions) {
-                const el = select.createEl('option', { text: t(opt.label), value: opt.key });
-                if (value === opt.key) el.selected = true;
+                select.createEl('option', { text: t(opt.label), attr: { value: opt.key } });
             }
+            // Preserve legacy free-text taglines (Scrivener synopsis) so they stay selectable.
+            if (value && !CHARACTER_TAGLINE_FIELD_KEYS.has(value)) {
+                select.createEl('option', {
+                    text: t('Custom: {text}', { text: value.length > 40 ? `${value.slice(0, 40)}…` : value }),
+                    attr: { value },
+                });
+            }
+            select.value = value;
             select.addEventListener('change', () => {
-                (draft as unknown as Record<string, unknown>)[field.key] = select.value;
+                const next = select.value;
+                draft.tagline = next || undefined;
                 this.scheduleSave(draft);
             });
             return;
@@ -2742,6 +2792,7 @@ export class CharacterView extends ItemView {
         const pgStatEl = statGrid.createDiv('character-stat-item');
         pgStatEl.setCssStyles({ display: 'none' });
         const pgValEl = pgStatEl.createDiv({ cls: 'character-stat-value', text: '0' });
+        pgStatEl.createDiv({ cls: 'character-stat-label', text: t('Plotgrid') });
 
         // Writing progress
         const totalScenes = allCharScenes.length;
@@ -2817,28 +2868,106 @@ export class CharacterView extends ItemView {
 
         if (typeof this.plugin.scanPlotGridCells === 'function') {
             this.plugin.scanPlotGridCells().then(result => {
-                const pgChars = result.characters;
-                // Gather all plotgrid rows mentioning this character
-                let pgRows = new Set<string>();
+                const hitsByKey = result.characterHits || new Map();
+                const hitMap = new Map<string, import('../models/PlotGridData').PlotGridAppearanceHit>();
                 for (const key of charAliases) {
-                    const rows = pgChars.get(key);
-                    if (rows) rows.forEach(r => pgRows.add(r));
+                    const hits = hitsByKey.get(key);
+                    if (!hits) continue;
+                    for (const hit of hits) {
+                        hitMap.set(`${hit.pageId}::${hit.rowId}`, hit);
+                    }
                 }
-                if (pgRows.size > 0) {
-                    // Update the stat counter
+                // Fallback for older scan payloads that only return row-label sets.
+                if (hitMap.size === 0) {
+                    const pgChars = result.characters;
+                    const pgRows = new Set<string>();
+                    for (const key of charAliases) {
+                        const rows = pgChars.get(key);
+                        if (rows) rows.forEach(r => pgRows.add(r));
+                    }
+                    if (pgRows.size === 0) return;
                     pgStatEl.setCssStyles({ display: '' });
                     pgValEl.textContent = String(pgRows.size);
-
-                    // Show section
                     pgSection.setCssStyles({ display: '' });
                     pgSection.createEl('h4', { text: t('Plotgrid Appearances') });
-                    const sortedRows = [...pgRows].sort();
-                    for (const rowLabel of sortedRows) {
+                    for (const rowLabel of [...pgRows].sort()) {
                         const item = pgSection.createDiv('character-side-scene-item');
                         const icon = item.createSpan({ cls: 'scene-id' });
                         obsidian.setIcon(icon, 'grid-3x3');
                         item.createSpan({ cls: 'scene-title', text: ` ${rowLabel}` });
                     }
+                    return;
+                }
+
+                const hits = [...hitMap.values()].sort((a, b) => {
+                    const pageCmp = a.pageTitle.localeCompare(b.pageTitle, undefined, { sensitivity: 'base' });
+                    if (pageCmp !== 0) return pageCmp;
+                    return a.rowLabel.localeCompare(b.rowLabel, undefined, { sensitivity: 'base' });
+                });
+
+                pgStatEl.setCssStyles({ display: '' });
+                pgValEl.textContent = String(hits.length);
+
+                pgSection.setCssStyles({ display: '' });
+                pgSection.createEl('h4', { text: t('Plotgrid Appearances') });
+                pgSection.createEl('p', {
+                    cls: 'setting-item-description character-side-plotgrid-hint',
+                    text: t('Click a row to open Concept Grid. Scene-linked rows also show their source file.'),
+                });
+
+                for (const hit of hits) {
+                    const item = pgSection.createDiv('character-side-scene-item character-side-plotgrid-item');
+                    const main = item.createDiv('character-side-plotgrid-main');
+                    const icon = main.createSpan({ cls: 'scene-id' });
+                    obsidian.setIcon(icon, 'grid-3x3');
+                    main.createSpan({ cls: 'scene-title', text: hit.rowLabel || t('Untitled row') });
+
+                    const meta = item.createDiv('character-side-plotgrid-meta');
+                    const sheetBits = [hit.pageTitle, hit.filePath.split('/').pop() || hit.filePath]
+                        .filter(Boolean);
+                    meta.createSpan({
+                        cls: 'character-side-plotgrid-sheet',
+                        text: sheetBits.join(' · '),
+                        attr: { title: hit.filePath },
+                    });
+                    if (hit.columnLabel) {
+                        meta.createSpan({
+                            cls: 'character-side-plotgrid-col',
+                            text: t('Column: {label}', { label: hit.columnLabel }),
+                        });
+                    }
+                    if (hit.scenePath) {
+                        const sceneName = hit.scenePath.split('/').pop()?.replace(/\.md$/i, '')
+                            || hit.scenePath;
+                        const sceneLink = meta.createEl('button', {
+                            cls: 'character-side-plotgrid-scene',
+                            text: sceneName,
+                            attr: {
+                                type: 'button',
+                                title: hit.scenePath,
+                            },
+                        });
+                        sceneLink.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            const file = this.app.vault.getAbstractFileByPath(hit.scenePath!);
+                            if (file instanceof obsidian.TFile) {
+                                void this.app.workspace.getLeaf('tab').openFile(file, {
+                                    state: { mode: 'source', source: false },
+                                });
+                            } else {
+                                new obsidian.Notice(t('Could not find scene file.'));
+                            }
+                        });
+                    }
+
+                    item.setAttr('title', t('Open in Concept Grid — {page} / {row}', {
+                        page: hit.pageTitle,
+                        row: hit.rowLabel,
+                    }));
+                    item.addEventListener('click', () => {
+                        void this.plugin.openPlotGridAppearance(hit);
+                    });
                 }
             }).catch(() => { /* non-fatal */ });
         }

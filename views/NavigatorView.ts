@@ -179,15 +179,9 @@ export class NavigatorView extends ItemView {
             this.toggleNode(`project:${project.filePath}`);
             return;
         }
-        this.plotlineFilter = null;
-        this.selectedScenePath = null;
-        try {
-            await this.sceneManager.setActiveProject(project);
-            this.collapsedNodes.delete(`project:${project.filePath}`);
-            await this.plugin.refreshOpenViews();
-        } catch (err) {
-            new Notice(t('Failed to open project: ') + String(err));
-        }
+        // Clicking another project should open (or focus) its Board tab — not
+        // only flip the global active project while leaving a single tab behind.
+        await this.openProjectFromNavigator(project);
     }
 
     /** Explicit open action from the project-row trailing button (always opens Board). */

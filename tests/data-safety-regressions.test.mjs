@@ -193,6 +193,21 @@ test('character field drafts survive re-renders and undo failures cannot block s
     assert.match(characterView, /layout\.addEventListener\('focusout', commitFocusedField\)/);
 });
 
+test('library entity saves refresh stamp cache so reload cannot resurrect pre-save parses', async () => {
+    const [characterManager, locationManager, codexManager, entityCache] = await Promise.all([
+        readFile(new URL('../services/CharacterManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/LocationManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/CodexManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/EntityFileCache.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(entityCache, /export function rememberEntityAfterSave/);
+    assert.match(characterManager, /rememberEntityAfterSave\(this\.app, 'character'/);
+    assert.match(locationManager, /rememberEntityAfterSave\(this\.app, 'location'/);
+    assert.match(codexManager, /rememberEntityAfterSave\(this\.app, `codex:\$\{catId\}`/);
+    assert.match(characterView, /resolveCharacterCardSnippet/);
+    assert.match(characterView, /attr: \{ value: opt\.key \}/);
+});
+
 test('story graph legend rows filter independently without remounting the canvas', () => {
     assert.match(storyGraph, /private legendNodeKeys = new Set<string>\(\)/);
     assert.match(storyGraph, /private legendEdgeKeys = new Set<string>\(\)/);

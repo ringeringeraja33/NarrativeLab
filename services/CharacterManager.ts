@@ -4,7 +4,7 @@ import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } f
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceString } from '../utils/narrow';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
-import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
+import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 
 /**
  * Manages character .md files — loading, saving, creating, and deleting
@@ -257,8 +257,12 @@ export class CharacterManager {
         const newContent = `---\n${stringifyYaml(fm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
 
-        // Update in-memory cache
-        this.characters.set(normalizedFilePath, { ...character, filePath: normalizedFilePath });
+        // Update in-memory + stamp caches together. If only `characters` is
+        // updated, the next reloadEntities() can revive a pre-save stamp-cache
+        // parse and drop fields the user just edited (e.g. tagline).
+        const saved: Character = { ...character, filePath: normalizedFilePath };
+        this.characters.set(normalizedFilePath, saved);
+        rememberEntityAfterSave(this.app, 'character', normalizedFilePath, saved);
     }
 
     /**
@@ -343,7 +347,10 @@ export class CharacterManager {
             filePath,
             type: 'character',
             name: resolveLibraryEntityName(safeFm.name, filePath, safeFm.title),
-            tagline: safeFm.tagline,
+            tagline: (() => {
+                const raw = coerceString(safeFm.tagline).trim();
+                return raw || undefined;
+            })(),
             image: safeFm.image,
             gallery: this.parseGallery(safeFm.gallery),
             nickname: safeFm.nickname,

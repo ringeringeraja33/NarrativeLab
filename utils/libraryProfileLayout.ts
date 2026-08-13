@@ -17,6 +17,8 @@ export interface LibraryProfileLayoutSettings {
     hiddenFields: Record<string, string[]>;
     /** Built-in field keys removed from the form for this project + archive page. */
     removedBuiltinFields: Record<string, string[]>;
+    /** Built-in section titles removed as whole columns for this project + archive page. */
+    removedBuiltinSections: Record<string, string[]>;
     characterCustomSections: unknown[];
     locationCustomSections: unknown[];
     codexCategoryCustomSections: Record<string, unknown[]>;
@@ -28,6 +30,7 @@ export function emptyLibraryProfileLayout(): LibraryProfileLayoutSettings {
     return {
         hiddenFields: {},
         removedBuiltinFields: {},
+        removedBuiltinSections: {},
         characterCustomSections: [],
         locationCustomSections: [],
         codexCategoryCustomSections: {},
@@ -39,6 +42,7 @@ export function readLibraryProfileLayout(settings: SceneCardsSettings): LibraryP
     return {
         hiddenFields: { ...(settings.hiddenFields || {}) },
         removedBuiltinFields: { ...(settings.removedBuiltinFields || {}) },
+        removedBuiltinSections: { ...(settings.removedBuiltinSections || {}) },
         characterCustomSections: Array.isArray(settings.characterCustomSections)
             ? JSON.parse(JSON.stringify(settings.characterCustomSections)) as unknown[]
             : [],
@@ -56,6 +60,7 @@ export function applyLibraryProfileLayout(
 ): void {
     settings.hiddenFields = { ...(layout.hiddenFields || {}) };
     settings.removedBuiltinFields = { ...(layout.removedBuiltinFields || {}) };
+    settings.removedBuiltinSections = { ...(layout.removedBuiltinSections || {}) };
     settings.characterCustomSections = Array.isArray(layout.characterCustomSections)
         ? (layout.characterCustomSections as SceneCardsSettings['characterCustomSections'])
         : [];
@@ -73,6 +78,7 @@ export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLay
     const hasAny =
         isRecord(rec.hiddenFields)
         || isRecord(rec.removedBuiltinFields)
+        || isRecord(rec.removedBuiltinSections)
         || Array.isArray(rec.characterCustomSections)
         || Array.isArray(rec.locationCustomSections)
         || isRecord(rec.codexCategoryCustomSections)
@@ -85,6 +91,9 @@ export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLay
             : {},
         removedBuiltinFields: isRecord(rec.removedBuiltinFields)
             ? sanitizeStringListMap(rec.removedBuiltinFields)
+            : {},
+        removedBuiltinSections: isRecord(rec.removedBuiltinSections)
+            ? sanitizeStringListMap(rec.removedBuiltinSections)
             : {},
         characterCustomSections: Array.isArray(rec.characterCustomSections) ? rec.characterCustomSections : [],
         locationCustomSections: Array.isArray(rec.locationCustomSections) ? rec.locationCustomSections : [],
@@ -125,6 +134,74 @@ export function getHiddenFieldKeys(settings: SceneCardsSettings, categoryKey: st
 
 export function getRemovedBuiltinFieldKeys(settings: SceneCardsSettings, categoryKey: string): string[] {
     return settings.removedBuiltinFields?.[categoryKey] ?? [];
+}
+
+export function getRemovedBuiltinSectionTitles(settings: SceneCardsSettings, categoryKey: string): string[] {
+    return settings.removedBuiltinSections?.[categoryKey] ?? [];
+}
+
+export function isBuiltinSectionRemoved(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    sectionTitle: string,
+): boolean {
+    return getRemovedBuiltinSectionTitles(settings, categoryKey).includes(sectionTitle);
+}
+
+/** Sections that still contain undeletable core fields (e.g. name) cannot be removed whole. */
+export function canRemoveBuiltinSection(fields: Array<{ key: string }>): boolean {
+    return fields.length > 0 && !fields.some(f => isCoreProfileField(f.key));
+}
+
+export async function removeBuiltinProfileSection(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    sectionTitle: string,
+    fieldKeys: string[],
+    save: () => Promise<void>,
+): Promise<void> {
+    if (!settings.removedBuiltinSections) settings.removedBuiltinSections = {};
+    if (!settings.removedBuiltinSections[categoryKey]) settings.removedBuiltinSections[categoryKey] = [];
+    const sections = settings.removedBuiltinSections[categoryKey];
+    if (!sections.includes(sectionTitle)) sections.push(sectionTitle);
+
+    if (!settings.removedBuiltinFields) settings.removedBuiltinFields = {};
+    if (!settings.removedBuiltinFields[categoryKey]) settings.removedBuiltinFields[categoryKey] = [];
+    const fields = settings.removedBuiltinFields[categoryKey];
+    for (const key of fieldKeys) {
+        if (isCoreProfileField(key)) continue;
+        if (!fields.includes(key)) fields.push(key);
+    }
+    const hidden = settings.hiddenFields?.[categoryKey];
+    if (hidden) {
+        for (const key of fieldKeys) {
+            const i = hidden.indexOf(key);
+            if (i >= 0) hidden.splice(i, 1);
+        }
+    }
+    await save();
+}
+
+export async function restoreBuiltinProfileSection(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    sectionTitle: string,
+    fieldKeys: string[],
+    save: () => Promise<void>,
+): Promise<void> {
+    const sections = settings.removedBuiltinSections?.[categoryKey];
+    if (sections) {
+        const i = sections.indexOf(sectionTitle);
+        if (i >= 0) sections.splice(i, 1);
+    }
+    const fields = settings.removedBuiltinFields?.[categoryKey];
+    if (fields) {
+        for (const key of fieldKeys) {
+            const i = fields.indexOf(key);
+            if (i >= 0) fields.splice(i, 1);
+        }
+    }
+    await save();
 }
 
 /** Drop permanently removed built-ins from a category field list. */
@@ -302,5 +379,121 @@ export function renderRemovedBuiltinFieldsToggle(
             : (removedInSection.length > 1
                 ? t('Show {count} removed fields', { count: removedInSection.length })
                 : t('Show {count} removed field', { count: removedInSection.length }));
+    });
+}
+
+/**
+ * X control on a built-in section header — removes the whole column from this
+ * archive page (fields stay on disk and can be restored).
+ */
+export function attachBuiltinSectionRemoveControl(
+    headerEl: HTMLElement,
+    opts: {
+        app: App;
+        settings: SceneCardsSettings;
+        categoryKey: string;
+        sectionTitle: string;
+        sectionFields: Array<{ key: string }>;
+        save: () => Promise<void>;
+        onChanged: () => void;
+    },
+): void {
+    if (!canRemoveBuiltinSection(opts.sectionFields)) return;
+
+    const actions = headerEl.querySelector('.codex-section-actions') as HTMLElement
+        || headerEl.createSpan({ cls: 'codex-section-actions builtin-section-actions' });
+    const removeBtn = actions.createSpan({
+        cls: 'codex-section-action-btn builtin-section-remove-btn',
+        attr: {
+            'aria-label': t('Remove section'),
+            role: 'button',
+            title: t('Remove this section from this archive page'),
+        },
+    });
+    obsidian.setIcon(removeBtn, 'x');
+    removeBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        openConfirmModal(opts.app, {
+            title: t('Remove Section'),
+            message: t(
+                'Remove “{section}” from this archive page in the current project? Existing note data is kept; you can restore the section later.',
+                { section: t(opts.sectionTitle) },
+            ),
+            confirmLabel: t('Remove section'),
+            confirmClass: 'mod-warning',
+            onConfirm: async () => {
+                await removeBuiltinProfileSection(
+                    opts.settings,
+                    opts.categoryKey,
+                    opts.sectionTitle,
+                    opts.sectionFields.map(f => f.key),
+                    opts.save,
+                );
+                opts.onChanged();
+            },
+        });
+    });
+}
+
+/** Collapsible list of removed built-in sections with Restore actions. */
+export function renderRemovedBuiltinSectionsToggle(
+    parent: HTMLElement,
+    opts: {
+        settings: SceneCardsSettings;
+        categoryKey: string;
+        /** All built-in sections for this archive page. */
+        sections: Array<{ title: string; fields: Array<{ key: string }> }>;
+        save: () => Promise<void>;
+        onChanged: () => void;
+    },
+): void {
+    const removedTitles = new Set(getRemovedBuiltinSectionTitles(opts.settings, opts.categoryKey));
+    const removedSections = opts.sections.filter(s => removedTitles.has(s.title));
+    if (removedSections.length === 0) return;
+
+    const toggleEl = parent.createDiv('removed-fields-toggle removed-sections-toggle');
+    toggleEl.createEl('a', {
+        text: removedSections.length > 1
+            ? t('Show {count} removed sections', { count: removedSections.length })
+            : t('Show {count} removed section', { count: removedSections.length }),
+        cls: 'removed-fields-toggle-link',
+    });
+    const listEl = parent.createDiv('removed-fields-container');
+    listEl.setCssStyles({ display: 'none' });
+    for (const section of removedSections) {
+        const row = listEl.createDiv('removed-field-row');
+        row.createSpan({ text: t(section.title), cls: 'removed-field-label' });
+        const restoreBtn = row.createEl('button', {
+            cls: 'removed-field-restore-btn',
+            text: t('Restore'),
+            attr: { type: 'button' },
+        });
+        restoreBtn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            await restoreBuiltinProfileSection(
+                opts.settings,
+                opts.categoryKey,
+                section.title,
+                section.fields.map(f => f.key),
+                opts.save,
+            );
+            opts.onChanged();
+        });
+    }
+    let showing = false;
+    toggleEl.addEventListener('click', () => {
+        showing = !showing;
+        listEl.setCssStyles({ display: showing ? '' : 'none' });
+        const a = toggleEl.querySelector('a');
+        if (!a) return;
+        a.textContent = showing
+            ? (removedSections.length > 1
+                ? t('Hide {count} removed sections', { count: removedSections.length })
+                : t('Hide {count} removed section', { count: removedSections.length }))
+            : (removedSections.length > 1
+                ? t('Show {count} removed sections', { count: removedSections.length })
+                : t('Show {count} removed section', { count: removedSections.length }));
     });
 }

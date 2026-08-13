@@ -36,19 +36,26 @@ import {
     renderLibraryArchiveFilterBar,
 } from '../components/LibraryFilterChips';
 import {
+    AddCustomSectionModal,
+    AddSectionFieldModal,
     CUSTOM_SECTION_KEY_SEP,
     renderCustomSectionsAtSlot,
     renderAddCustomSectionButton,
+    type CustomSection,
     type CustomSectionsHost,
 } from '../components/CustomSectionsRenderer';
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { t } from '../utils/i18n';
 import {
     attachBuiltinFieldVisibilityControls,
+    attachBuiltinSectionRemoveControl,
+    canRemoveBuiltinSection,
     filterRemovedBuiltinFields,
     getHiddenFieldKeys,
+    isBuiltinSectionRemoved,
     isCoreProfileField,
     renderRemovedBuiltinFieldsToggle,
+    renderRemovedBuiltinSectionsToggle,
 } from '../utils/libraryProfileLayout';
 import { coerceString } from '../utils/narrow';
 import { setLibraryCategoryProfileSetting } from '../utils/libraryCategoryTransactions';
@@ -1199,11 +1206,51 @@ export class CodexView extends ItemView {
         const formPanel = layout.createDiv('codex-detail-form');
         const sidePanel = layout.createDiv('codex-detail-side');
 
+        // Blank custom profile pages: keep an editable name, then only user-built sections/fields.
+        const isBlankCustomProfile = !catDef.builtIn && catDef.categories.length === 0;
+        if (isBlankCustomProfile) {
+            const nameRow = formPanel.createDiv('codex-field-row codex-blank-profile-name');
+            nameRow.createEl('label', { cls: 'codex-field-label', text: t('Name') });
+            const nameInput = nameRow.createEl('input', {
+                cls: 'codex-field-input',
+                attr: { type: 'text', placeholder: t('Entry name') },
+            });
+            nameInput.value = draft.name || '';
+            nameInput.addEventListener('input', () => {
+                draft.name = nameInput.value;
+                this.scheduleSave(draft);
+            });
+            nameInput.addEventListener('blur', async () => {
+                const newName = nameInput.value.trim();
+                if (newName && newName !== entry.name) {
+                    try {
+                        const codexFolder = this.sceneManager.getCodexFolder();
+                        const renamed = await this.codexManager.renameEntry(draft, newName, codexFolder);
+                        this.selectedEntry = renamed.filePath;
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    } catch (err) {
+                        new Notice(t('Rename failed: {err}', { err: String(err) }));
+                    }
+                }
+            });
+
+            const emptyHint = formPanel.createDiv('codex-blank-profile-hint');
+            emptyHint.createEl('p', {
+                cls: 'setting-item-description',
+                text: t('This profile starts blank. Add custom section titles and fields below.'),
+            });
+        }
+
         // Render field categories interleaved with user-defined custom sections (#114)
         const customHost = this.buildCustomSectionsHost(draft, catDef.categories.length);
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
         for (let i = 0; i < catDef.categories.length; i++) {
-            this.renderFieldCategory(formPanel, catDef.categories[i], draft, catDef);
+            const category = catDef.categories[i];
+            if (isBuiltinSectionRemoved(this.plugin.settings, catDef.id, category.title)) {
+                renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
+                continue;
+            }
+            this.renderFieldCategory(formPanel, category, draft, catDef);
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
@@ -1212,6 +1259,15 @@ export class CodexView extends ItemView {
 
         // "+ Add custom section" button at the bottom
         renderAddCustomSectionButton(formPanel, customHost);
+        renderRemovedBuiltinSectionsToggle(formPanel, {
+            settings: this.plugin.settings,
+            categoryKey: catDef.id,
+            sections: catDef.categories.map(c => ({ title: c.title, fields: c.fields })),
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+        });
 
         // Books (series-ready)
         this.renderBooksField(formPanel, draft);
@@ -1241,6 +1297,7 @@ export class CodexView extends ItemView {
         sectionHeader.addEventListener('click', (e) => {
             // Ignore clicks on the add-field button
             if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
+            if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
             if (this.collapsedSections.has(sectionKey)) {
                 this.collapsedSections.delete(sectionKey);
             } else {
@@ -1256,6 +1313,18 @@ export class CodexView extends ItemView {
         obsidian.setIcon(catIcon, cat.icon);
 
         sectionHeader.createSpan({ cls: 'codex-section-title', text: cat.title });
+
+        attachBuiltinSectionRemoveControl(sectionHeader, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: catDef.id,
+            sectionTitle: cat.title,
+            sectionFields: cat.fields,
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+        });
 
         // '+' button to add a universal field to this section
         const addFieldBtn = sectionHeader.createEl('button', {
@@ -2765,7 +2834,7 @@ export class CodexView extends ItemView {
 
         new Setting(addSection)
             .setName(t('Include profile page'))
-            .setDesc(t('Like Characters and Locations: richer profile fields, card browse, and links in the scene inspector.'))
+            .setDesc(t('Blank profile page you fill with custom section titles and fields. Also enables card browse and scene-inspector links.'))
             .addToggle(toggle => toggle
                 .setValue(newHasProfilePage)
                 .onChange(v => { newHasProfilePage = v; }));
@@ -2972,11 +3041,14 @@ export class CodexView extends ItemView {
 
         content.createEl('p', {
             cls: 'setting-item-description',
-            text: t('Show, hide, or remove preset fields for this archive page in the current project. Removed fields keep existing note data and can be restored.'),
+            text: category.categories.length === 0 && !category.builtIn
+                ? t('This profile starts blank. Add custom section titles and fields — no preset fields are included.')
+                : t('Show, hide, or remove preset fields for this archive page in the current project. Removed fields keep existing note data and can be restored.'),
         });
 
         const hidden = new Set(this.plugin.settings.hiddenFields?.[layoutKey] || []);
         const removed = new Set(this.plugin.settings.removedBuiltinFields?.[layoutKey] || []);
+        const removedSections = new Set(this.plugin.settings.removedBuiltinSections?.[layoutKey] || []);
 
         const allFields: Array<{ key: string; label: string; section: string }> = [];
         const seen = new Set<string>();
@@ -2992,9 +3064,9 @@ export class CodexView extends ItemView {
         const renderFieldLists = () => {
             fieldsHost.empty();
             const activeBySection = new Map<string, Array<{ key: string; label: string }>>();
-            const removedFields: Array<{ key: string; label: string }> = [];
+            const removedFields: Array<{ key: string; label: string; section: string }> = [];
             for (const field of allFields) {
-                if (removed.has(field.key)) {
+                if (removed.has(field.key) || removedSections.has(field.section)) {
                     removedFields.push(field);
                     continue;
                 }
@@ -3005,7 +3077,81 @@ export class CodexView extends ItemView {
 
             for (const [sectionTitle, fields] of activeBySection) {
                 if (fields.length === 0) continue;
-                fieldsHost.createEl('h5', { text: t(sectionTitle) });
+                const sectionDef = category.categories.find(s => s.title === sectionTitle);
+                const sectionHead = fieldsHost.createDiv('codex-category-section-head');
+                sectionHead.createEl('h5', { text: t(sectionTitle) });
+                const sectionActions = sectionHead.createDiv('codex-category-section-actions');
+                const addFieldBtn = sectionActions.createEl('button', {
+                    cls: 'codex-category-field-add',
+                    attr: {
+                        type: 'button',
+                        'aria-label': t('Add universal field'),
+                        title: t('Add universal field to this section'),
+                    },
+                });
+                obsidian.setIcon(addFieldBtn, 'plus');
+                addFieldBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const existingSiblings = this.plugin.fieldTemplates
+                        .getBySection(sectionTitle, layoutKey)
+                        .map(tpl => ({ id: tpl.id, label: tpl.label }));
+                    const builtInKeys = fields.map(f => f.key);
+                    const sectionNames = category.categories.map(c => c.title);
+                    const modal = new AddFieldModal(
+                        this.app,
+                        sectionTitle,
+                        null,
+                        async (template, positionAfterId) => {
+                            template.category = layoutKey;
+                            await this.plugin.fieldTemplates.add(template);
+                            if (positionAfterId !== undefined) {
+                                await this.plugin.fieldTemplates.moveAfter(
+                                    sectionTitle, layoutKey, builtInKeys,
+                                    template.id, positionAfterId,
+                                );
+                            }
+                            new Notice(t('Field added'));
+                            renderFieldLists();
+                        },
+                        undefined,
+                        sectionNames,
+                        existingSiblings,
+                    );
+                    modal.open();
+                });
+                if (sectionDef && canRemoveBuiltinSection(sectionDef.fields)) {
+                    const removeSectionBtn = sectionActions.createEl('button', {
+                        cls: 'codex-category-field-remove',
+                        attr: {
+                            type: 'button',
+                            'aria-label': t('Remove section'),
+                            title: t('Remove this section from this archive page'),
+                        },
+                    });
+                    obsidian.setIcon(removeSectionBtn, 'x');
+                    removeSectionBtn.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openConfirmModal(this.app, {
+                            title: t('Remove Section'),
+                            message: t(
+                                'Remove “{section}” from this archive page in the current project? Existing note data is kept; you can restore the section later.',
+                                { section: t(sectionTitle) },
+                            ),
+                            confirmLabel: t('Remove section'),
+                            confirmClass: 'mod-warning',
+                            onConfirm: () => {
+                                removedSections.add(sectionTitle);
+                                for (const field of fields) {
+                                    removed.add(field.key);
+                                    hidden.delete(field.key);
+                                }
+                                renderFieldLists();
+                            },
+                        });
+                    });
+                }
                 for (const field of fields) {
                     const row = fieldsHost.createDiv('codex-category-field-row');
                     const toggle = row.createEl('input', {
@@ -3055,13 +3201,30 @@ export class CodexView extends ItemView {
                 }
             }
 
-            if (removedFields.length > 0) {
+            if (removedFields.length > 0 || removedSections.size > 0) {
                 fieldsHost.createEl('h5', { text: t('Removed fields') });
                 fieldsHost.createEl('p', {
                     cls: 'setting-item-description',
                     text: t('These default fields are hidden from the form. Restore them anytime.'),
                 });
+                for (const sectionTitle of removedSections) {
+                    const row = fieldsHost.createDiv('codex-category-field-row codex-category-field-row-removed');
+                    row.createSpan({ text: t(sectionTitle), cls: 'codex-category-field-label' });
+                    const restoreBtn = row.createEl('button', {
+                        cls: 'codex-category-field-restore',
+                        text: t('Restore'),
+                        attr: { type: 'button' },
+                    });
+                    restoreBtn.addEventListener('click', () => {
+                        removedSections.delete(sectionTitle);
+                        for (const field of allFields.filter(f => f.section === sectionTitle)) {
+                            removed.delete(field.key);
+                        }
+                        renderFieldLists();
+                    });
+                }
                 for (const field of removedFields) {
+                    if (removedSections.has(field.section)) continue;
                     const row = fieldsHost.createDiv('codex-category-field-row codex-category-field-row-removed');
                     row.createSpan({ text: t(field.label), cls: 'codex-category-field-label' });
                     const restoreBtn = row.createEl('button', {
@@ -3078,39 +3241,222 @@ export class CodexView extends ItemView {
         };
         renderFieldLists();
 
-        content.createEl('h5', { text: t('Additional fields') });
-        content.createEl('p', {
-            cls: 'setting-item-description',
-            text: t('Enter one field name per line. New entries will include these fields automatically.'),
-        });
-        const textarea = content.createEl('textarea', {
-            cls: 'codex-category-fields-textarea',
-        });
-        textarea.value = (this.plugin.settings.codexCategoryFieldTemplates?.[layoutKey] || []).join('\n');
-
-        new Setting(content)
-            .addButton(button => button
-                .setButtonText(t('Save'))
-                .setCta()
-                .onClick(async () => {
-                    if (!this.plugin.settings.hiddenFields) this.plugin.settings.hiddenFields = {};
-                    if (!this.plugin.settings.removedBuiltinFields) this.plugin.settings.removedBuiltinFields = {};
-                    this.plugin.settings.hiddenFields[layoutKey] = Array.from(hidden);
-                    this.plugin.settings.removedBuiltinFields[layoutKey] = Array.from(removed);
-                    if (!this.plugin.settings.codexCategoryFieldTemplates) {
-                        this.plugin.settings.codexCategoryFieldTemplates = {};
+        // Custom sections (大标题) — same list the archive page uses.
+        const customSections = this.getCustomSectionsForLayout(layoutKey);
+        const isBlankProfile = category.categories.length === 0 && !category.builtIn;
+        const customHost = content.createDiv('codex-category-custom-sections');
+        const renderCustomSectionList = () => {
+            customHost.empty();
+            customHost.createEl('h5', { text: t('Custom sections') });
+            customHost.createEl('p', {
+                cls: 'setting-item-description',
+                text: isBlankProfile
+                    ? t('This profile starts blank. Add section titles and fields here — nothing is pre-filled.')
+                    : t('Custom section titles appear as extra columns on the archive profile page.'),
+            });
+            if (customSections.length === 0) {
+                customHost.createEl('p', {
+                    cls: 'setting-item-description',
+                    text: t('No custom sections yet.'),
+                });
+            } else {
+                for (const sec of customSections) {
+                    const sectionBlock = customHost.createDiv('codex-category-custom-section-block');
+                    const row = sectionBlock.createDiv('codex-category-field-row');
+                    row.createSpan({ text: sec.title, cls: 'codex-category-field-label' });
+                    const addFieldInSec = row.createEl('button', {
+                        cls: 'codex-category-field-add',
+                        attr: {
+                            type: 'button',
+                            'aria-label': t('Add field'),
+                            title: t('+ Add field to this section'),
+                        },
+                    });
+                    obsidian.setIcon(addFieldInSec, 'plus');
+                    addFieldInSec.addEventListener('click', () => {
+                        const modal = new AddSectionFieldModal(this.app, (result) => {
+                            if (!result?.name?.trim()) return;
+                            const trimmed = result.name.trim();
+                            if (sec.fields.some(f => (typeof f === 'string' ? f : f.name) === trimmed)) {
+                                new Notice(t('Field "{name}" already exists in this section.', { name: trimmed }));
+                                return;
+                            }
+                            sec.fields.push(result);
+                            this.persistCustomSectionsForLayout(layoutKey, customSections);
+                            renderCustomSectionList();
+                        });
+                        modal.open();
+                    });
+                    const removeBtn = row.createEl('button', {
+                        cls: 'codex-category-field-remove',
+                        attr: { type: 'button', 'aria-label': t('Remove section') },
+                    });
+                    obsidian.setIcon(removeBtn, 'x');
+                    removeBtn.addEventListener('click', () => {
+                        const idx = customSections.indexOf(sec);
+                        if (idx >= 0) customSections.splice(idx, 1);
+                        this.persistCustomSectionsForLayout(layoutKey, customSections);
+                        renderCustomSectionList();
+                    });
+                    for (const field of sec.fields) {
+                        const fname = typeof field === 'string' ? field : field.name;
+                        const frow = sectionBlock.createDiv('codex-category-field-row is-nested');
+                        frow.createSpan({ text: fname, cls: 'codex-category-field-label' });
+                        const removeFieldBtn = frow.createEl('button', {
+                            cls: 'codex-category-field-remove',
+                            attr: { type: 'button', 'aria-label': t('Remove field') },
+                        });
+                        obsidian.setIcon(removeFieldBtn, 'x');
+                        removeFieldBtn.addEventListener('click', () => {
+                            const fi = sec.fields.indexOf(field);
+                            if (fi >= 0) sec.fields.splice(fi, 1);
+                            this.persistCustomSectionsForLayout(layoutKey, customSections);
+                            renderCustomSectionList();
+                        });
                     }
-                    this.plugin.settings.codexCategoryFieldTemplates[layoutKey] = Array.from(new Set(
-                        textarea.value
-                            .split(/\r?\n/)
-                            .map(name => name.trim())
-                            .filter(Boolean),
-                    ));
-                    await this.plugin.saveSettings();
-                    modal.close();
-                    if (this.rootContainer) this.renderView(this.rootContainer);
-                }));
+                }
+            }
+            const addRow = customHost.createDiv('codex-add-custom-section-row');
+            const addBtn = addRow.createEl('button', {
+                cls: 'codex-add-custom-section-btn',
+                text: t('+ Add custom section'),
+            });
+            addBtn.addEventListener('click', () => {
+                const modal = new AddCustomSectionModal(this.app, '', (title) => {
+                    const trimmed = title.trim();
+                    if (!trimmed) return;
+                    if (customSections.some(s => s.title === trimmed)
+                        || category.categories.some(s => s.title === trimmed)) {
+                        new Notice(t('A section called "{name}" already exists.', { name: trimmed }));
+                        return;
+                    }
+                    customSections.push({
+                        title: trimmed,
+                        fields: [],
+                        position: Math.max(category.categories.length, customSections.length),
+                    });
+                    this.persistCustomSectionsForLayout(layoutKey, customSections);
+                    renderCustomSectionList();
+                });
+                modal.open();
+            });
+        };
+        renderCustomSectionList();
+
+        if (!isBlankProfile) {
+            content.createEl('h5', { text: t('Additional fields') });
+            content.createEl('p', {
+                cls: 'setting-item-description',
+                text: t('Enter one field name per line. New entries will include these fields automatically.'),
+            });
+            const textarea = content.createEl('textarea', {
+                cls: 'codex-category-fields-textarea',
+            });
+            textarea.value = (this.plugin.settings.codexCategoryFieldTemplates?.[layoutKey] || []).join('\n');
+
+            // Quick add for a small custom/universal field (小字段)
+            const addFieldRow = content.createDiv('codex-add-custom-section-row');
+            const addFieldBtn = addFieldRow.createEl('button', {
+                cls: 'codex-add-custom-section-btn',
+                text: t('+ Add field'),
+            });
+            addFieldBtn.addEventListener('click', () => {
+                const defaultSection = category.categories[0]?.title || 'Basic Information';
+                const sectionNames = [
+                    ...category.categories.map(c => c.title),
+                    ...customSections.map(s => s.title),
+                ];
+                const modal = new AddFieldModal(
+                    this.app,
+                    defaultSection,
+                    null,
+                    async (template) => {
+                        template.category = layoutKey;
+                        await this.plugin.fieldTemplates.add(template);
+                        new Notice(t('Field added'));
+                        renderFieldLists();
+                    },
+                    undefined,
+                    sectionNames,
+                );
+                modal.open();
+            });
+
+            new Setting(content)
+                .addButton(button => button
+                    .setButtonText(t('Save'))
+                    .setCta()
+                    .onClick(async () => {
+                        if (!this.plugin.settings.hiddenFields) this.plugin.settings.hiddenFields = {};
+                        if (!this.plugin.settings.removedBuiltinFields) this.plugin.settings.removedBuiltinFields = {};
+                        if (!this.plugin.settings.removedBuiltinSections) this.plugin.settings.removedBuiltinSections = {};
+                        this.plugin.settings.hiddenFields[layoutKey] = Array.from(hidden);
+                        this.plugin.settings.removedBuiltinFields[layoutKey] = Array.from(removed);
+                        this.plugin.settings.removedBuiltinSections[layoutKey] = Array.from(removedSections);
+                        if (!this.plugin.settings.codexCategoryFieldTemplates) {
+                            this.plugin.settings.codexCategoryFieldTemplates = {};
+                        }
+                        this.plugin.settings.codexCategoryFieldTemplates[layoutKey] = Array.from(new Set(
+                            textarea.value
+                                .split(/\r?\n/)
+                                .map(name => name.trim())
+                                .filter(Boolean),
+                        ));
+                        await this.plugin.saveSettings();
+                        modal.close();
+                        void this.plugin.refreshOpenViews();
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    }));
+        } else {
+            new Setting(content)
+                .addButton(button => button
+                    .setButtonText(t('Done'))
+                    .setCta()
+                    .onClick(async () => {
+                        await this.plugin.saveSettings();
+                        modal.close();
+                        void this.plugin.refreshOpenViews();
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    }));
+        }
         modal.open();
+    }
+
+    /** Custom sections list for Characters / Locations / Codex archive pages. */
+    private getCustomSectionsForLayout(layoutKey: string): CustomSection[] {
+        if (layoutKey === 'character') {
+            if (!this.plugin.settings.characterCustomSections) {
+                this.plugin.settings.characterCustomSections = [];
+            }
+            return this.plugin.settings.characterCustomSections as CustomSection[];
+        }
+        if (layoutKey === 'location' || layoutKey === 'world') {
+            if (!this.plugin.settings.locationCustomSections) {
+                this.plugin.settings.locationCustomSections = [];
+            }
+            return this.plugin.settings.locationCustomSections as CustomSection[];
+        }
+        if (!this.plugin.settings.codexCategoryCustomSections) {
+            this.plugin.settings.codexCategoryCustomSections = {};
+        }
+        if (!this.plugin.settings.codexCategoryCustomSections[layoutKey]) {
+            this.plugin.settings.codexCategoryCustomSections[layoutKey] = [];
+        }
+        return this.plugin.settings.codexCategoryCustomSections[layoutKey] as CustomSection[];
+    }
+
+    private persistCustomSectionsForLayout(layoutKey: string, sections: CustomSection[]): void {
+        if (layoutKey === 'character') {
+            this.plugin.settings.characterCustomSections = sections as SceneCardsPlugin['settings']['characterCustomSections'];
+        } else if (layoutKey === 'location' || layoutKey === 'world') {
+            this.plugin.settings.locationCustomSections = sections as SceneCardsPlugin['settings']['locationCustomSections'];
+        } else {
+            if (!this.plugin.settings.codexCategoryCustomSections) {
+                this.plugin.settings.codexCategoryCustomSections = {};
+            }
+            this.plugin.settings.codexCategoryCustomSections[layoutKey] = sections as never[];
+        }
+        void this.plugin.saveSettings();
     }
 
     // ══════════════════════════════════════════════════

@@ -493,63 +493,26 @@ export function makeCustomCodexCategory(id: string, label: string, icon: string 
 }
 
 /**
- * Custom category with a Characters-style profile field layout
- * (basic info, appearance, personality, notes).
+ * Custom category with a blank profile page.
+ * Users add their own section titles and fields — no Character-style presets
+ * and no shared Linking & Matching block.
  */
 export function makeProfileCodexCategory(
     id: string,
     label: string,
     icon: string = 'user',
 ): CodexCategoryDef {
-    const categories: CodexFieldCategory[] = [
-        {
-            title: 'Basic Information',
-            icon: 'user',
-            fields: [
-                { key: 'name', label: 'Name', placeholder: 'Profile name' },
-                { key: 'nickname', label: 'Aliases', placeholder: 'Other names or titles' },
-                { key: 'role', label: 'Role', placeholder: 'Role in the story' },
-                { key: 'description', label: 'Summary', placeholder: 'Short summary', multiline: true },
-            ],
-        },
-        {
-            title: 'Appearance',
-            icon: 'eye',
-            fields: [
-                { key: 'appearance', label: 'Appearance', placeholder: 'What do they look like?', multiline: true },
-                { key: 'style', label: 'Style', placeholder: 'Clothing, posture, presentation', multiline: true },
-            ],
-        },
-        {
-            title: 'Personality',
-            icon: 'heart',
-            fields: [
-                { key: 'personality', label: 'Personality', placeholder: '3–5 traits', multiline: true },
-                { key: 'strengths', label: 'Strengths', placeholder: 'Best qualities', multiline: true },
-                { key: 'flaws', label: 'Flaws', placeholder: 'Weaknesses or blind spots', multiline: true },
-            ],
-        },
-        {
-            title: 'Notes',
-            icon: 'notebook',
-            fields: [
-                { key: 'notes', label: 'Notes', placeholder: 'Free-form notes', multiline: true },
-            ],
-        },
-    ];
-    return withLinkingSection({
+    return {
         id,
         label,
         icon,
         folder: label,
-        categories,
-        fieldKeys: Array.from(new Set([
-            'name', 'image', 'gallery',
-            ...categories.flatMap(section => section.fields.map(field => field.key)),
-        ])),
+        categories: [],
+        // System-only keys for identity / media; nothing is pre-rendered as form fields.
+        fieldKeys: ['name', 'image', 'gallery'],
         builtIn: false,
         showInSidebar: true,
-    });
+    };
 }
 
 /** Permanent virtual category for Markdown files stored directly in Library/. */

@@ -43,6 +43,7 @@ import {
 import { PlotgridView } from './views/PlotgridView';
 import {
     type ConceptGridDocument,
+    type PlotGridAppearanceHit,
     type PlotGridData,
     countConceptGridFilledCells,
     isConceptGridDocumentEmpty,
@@ -289,6 +290,10 @@ export default class SceneCardsPlugin extends Plugin {
             characters: Map<string, Set<string>>;
             locations: Map<string, Set<string>>;
             tags: Map<string, Set<string>>;
+            characterHits: Map<string, PlotGridAppearanceHit[]>;
+            locationHits: Map<string, PlotGridAppearanceHit[]>;
+            tagHits: Map<string, PlotGridAppearanceHit[]>;
+            filePath: string;
         };
     } | null = null;
     private static readonly PLOTGRID_SCAN_TTL_MS = 60_000;
@@ -1848,7 +1853,7 @@ export default class SceneCardsPlugin extends Plugin {
         'codexEnabledCategories', 'codexCustomCategories', 'libraryCategoryOrder',
         'libraryHiddenFixedCategories', 'codexDeletedPresetCategories',
         // Archive profile field layout (System/library-profile-layout.json)
-        'hiddenFields', 'removedBuiltinFields',
+        'hiddenFields', 'removedBuiltinFields', 'removedBuiltinSections',
         'characterCustomSections', 'locationCustomSections', 'codexCategoryCustomSections',
         'codexCategoryFieldTemplates',
     ];
@@ -1949,6 +1954,7 @@ export default class SceneCardsPlugin extends Plugin {
             const emptyProfile = emptyLibraryProfileLayout();
             toSave.hiddenFields = emptyProfile.hiddenFields;
             toSave.removedBuiltinFields = emptyProfile.removedBuiltinFields;
+            toSave.removedBuiltinSections = emptyProfile.removedBuiltinSections;
             toSave.characterCustomSections = emptyProfile.characterCustomSections;
             toSave.locationCustomSections = emptyProfile.locationCustomSections;
             toSave.codexCategoryCustomSections = emptyProfile.codexCategoryCustomSections;
@@ -2009,7 +2015,8 @@ export default class SceneCardsPlugin extends Plugin {
     /**
      * Scan all plotgrid cells for character, location, and tag mentions.
      * Returns a map of canonical-character-name → set of row labels where
-     * that character is mentioned, plus similar maps for locations and tags.
+     * that character is mentioned, plus similar maps for locations and tags,
+     * and detailed hit lists (page / file / scene) for archive deep-links.
      *
      * Used by CharacterView to augment per-character scene counts with
      * plotgrid references.
@@ -2018,6 +2025,10 @@ export default class SceneCardsPlugin extends Plugin {
         characters: Map<string, Set<string>>;
         locations: Map<string, Set<string>>;
         tags: Map<string, Set<string>>;
+        characterHits: Map<string, PlotGridAppearanceHit[]>;
+        locationHits: Map<string, PlotGridAppearanceHit[]>;
+        tagHits: Map<string, PlotGridAppearanceHit[]>;
+        filePath: string;
     }> {
         const cached = this._plotGridScanCache;
         if (cached && Date.now() - cached.at < SceneCardsPlugin.PLOTGRID_SCAN_TTL_MS) {
@@ -2027,10 +2038,23 @@ export default class SceneCardsPlugin extends Plugin {
         const characters = new Map<string, Set<string>>();
         const locations = new Map<string, Set<string>>();
         const tags = new Map<string, Set<string>>();
+        const characterHits = new Map<string, PlotGridAppearanceHit[]>();
+        const locationHits = new Map<string, PlotGridAppearanceHit[]>();
+        const tagHits = new Map<string, PlotGridAppearanceHit[]>();
+        const filePath = normalizePath(plotGridXlsxPath(this.getProjectBaseFolder()));
+
+        const empty = {
+            characters,
+            locations,
+            tags,
+            characterHits,
+            locationHits,
+            tagHits,
+            filePath,
+        };
 
         const data = await this.loadPlotGrid();
         if (!data?.pages?.length) {
-            const empty = { characters, locations, tags };
             this._plotGridScanCache = { at: Date.now(), result: empty };
             return empty;
         }
@@ -2040,16 +2064,52 @@ export default class SceneCardsPlugin extends Plugin {
         // Build alias map for dedup
         const aliasMap = this.characterManager.buildAliasMap(this.settings.characterAliases);
 
+        const upsertHit = (
+            map: Map<string, PlotGridAppearanceHit[]>,
+            key: string,
+            hit: PlotGridAppearanceHit,
+        ): void => {
+            const list = map.get(key) || [];
+            const existing = list.find(h => h.pageId === hit.pageId && h.rowId === hit.rowId);
+            if (existing) {
+                if (!existing.columnLabel && hit.columnLabel) {
+                    existing.columnLabel = hit.columnLabel;
+                    existing.columnId = hit.columnId;
+                    existing.columnIndex = hit.columnIndex;
+                }
+                return;
+            }
+            list.push(hit);
+            map.set(key, list);
+        };
+
         for (const page of data.pages) {
           for (const [key, cell] of Object.entries(page.cells || {})) {
             if (!cell?.content?.trim()) continue;
 
             // Determine row label for context
             const rowId = key.split('-').slice(0, 2).join('-'); // row id is first part of key
-            const row = page.rows.find(r => key.startsWith(r.id + '-'));
+            const rowIndex = page.rows.findIndex(r => key.startsWith(r.id + '-'));
+            const row = rowIndex >= 0 ? page.rows[rowIndex] : undefined;
             const rowLabel = row?.label || rowId;
+            const colIndex = row
+                ? page.columns.findIndex(c => key === `${row.id}-${c.id}`)
+                : -1;
+            const col = colIndex >= 0 ? page.columns[colIndex] : undefined;
 
             const result = this.linkScanner.scanText(cell.content);
+            const baseHit: PlotGridAppearanceHit = {
+                pageId: page.id,
+                pageTitle: page.title || t('Page {n}', { n: 1 }),
+                rowId: row?.id || rowId,
+                rowLabel,
+                filePath,
+                scenePath: row?.sourceId || undefined,
+                columnId: col?.id,
+                columnLabel: col?.label,
+                rowIndex: rowIndex >= 0 ? rowIndex : 0,
+                columnIndex: colIndex >= 0 ? colIndex : undefined,
+            };
 
             // Characters (deduplicated via alias map)
             for (const name of result.characters) {
@@ -2057,6 +2117,7 @@ export default class SceneCardsPlugin extends Plugin {
                 const cKey = canonical.toLowerCase();
                 if (!characters.has(cKey)) characters.set(cKey, new Set());
                 characters.get(cKey)!.add(rowLabel);
+                upsertHit(characterHits, cKey, { ...baseHit });
             }
 
             // Locations (deduplicated)
@@ -2064,6 +2125,7 @@ export default class SceneCardsPlugin extends Plugin {
                 const lKey = name.toLowerCase();
                 if (!locations.has(lKey)) locations.set(lKey, new Set());
                 locations.get(lKey)!.add(rowLabel);
+                upsertHit(locationHits, lKey, { ...baseHit });
             }
 
             // Tags
@@ -2071,13 +2133,35 @@ export default class SceneCardsPlugin extends Plugin {
                 const tKey = tag.toLowerCase();
                 if (!tags.has(tKey)) tags.set(tKey, new Set());
                 tags.get(tKey)!.add(rowLabel);
+                upsertHit(tagHits, tKey, { ...baseHit });
             }
           }
         }
 
-        const result = { characters, locations, tags };
+        const result = {
+            characters,
+            locations,
+            tags,
+            characterHits,
+            locationHits,
+            tagHits,
+            filePath,
+        };
         this._plotGridScanCache = { at: Date.now(), result };
         return result;
+    }
+
+    /** Open Concept Grid focused on a plotgrid appearance hit from an archive page. */
+    async openPlotGridAppearance(hit: PlotGridAppearanceHit): Promise<void> {
+        await this.activateView(PLOTGRID_VIEW_TYPE);
+        const leaves = this.app.workspace.getLeavesOfType(PLOTGRID_VIEW_TYPE);
+        const leaf = leaves[0];
+        if (!leaf) return;
+        this.app.workspace.revealLeaf(leaf);
+        const view = leaf.view as PlotgridView;
+        if (typeof view.navigateToAppearance === 'function') {
+            view.navigateToAppearance(hit);
+        }
     }
 
     /** Drop cached plotgrid mention scan (call after plotgrid writes). */
@@ -2379,20 +2463,43 @@ export default class SceneCardsPlugin extends Plugin {
         const tempPath = `${filePath}.tmp`;
         const backupPath = `${filePath}.bak`;
         const existed = await adapter.exists(filePath);
-        const previousContent = existed ? await adapter.read(filePath) : null;
+        let previousContent: string | null = null;
+        if (existed) {
+            try {
+                previousContent = await adapter.read(filePath);
+            } catch (error) {
+                // Don't block the save if the previous file is briefly locked.
+                console.warn(`[NarrativeLab] Could not read ${filename} before backup:`, error);
+            }
+        }
 
-        // Keep the pending payload available if replacing the destination fails.
-        await adapter.write(tempPath, payload);
+        // Stage the new payload first so a later destination failure still leaves
+        // the intended content on disk beside the original file.
+        await this.writeVaultTextOnceResilient(tempPath, payload);
+
         if (previousContent !== null) {
-            await adapter.write(backupPath, previousContent);
+            // .bak is best-effort: Windows often locks *.bak (AV / indexer /
+            // previous failed save), and that must not abort plotlines.json itself.
+            try {
+                await this.writeVaultTextOnceResilient(backupPath, previousContent);
+            } catch (error) {
+                console.warn(`[NarrativeLab] Could not refresh ${filename}.bak:`, error);
+            }
             if (this._invalidSystemJsonPaths.has(filePath)) {
                 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-                await adapter.write(`${filePath}.corrupt-${stamp}.bak`, previousContent);
+                try {
+                    await this.writeVaultTextOnceResilient(
+                        `${filePath}.corrupt-${stamp}.bak`,
+                        previousContent,
+                    );
+                } catch (error) {
+                    console.warn(`[NarrativeLab] Could not write corrupt backup for ${filename}:`, error);
+                }
             }
         }
 
         try {
-            await adapter.write(filePath, payload);
+            await this.writeVaultTextOnceResilient(filePath, payload);
             this._invalidSystemJsonPaths.delete(filePath);
             this._reportedInvalidSystemJsonPaths.delete(filePath);
             await adapter.remove(tempPath).catch(() => undefined);
@@ -2403,6 +2510,30 @@ export default class SceneCardsPlugin extends Plugin {
                 message: error instanceof Error ? error.message : String(error),
             }));
         }
+    }
+
+    /** Single-path text write with short retries for Windows UNKNOWN/EBUSY locks. */
+    private async writeVaultTextOnceResilient(filePath: string, contents: string): Promise<void> {
+        const adapter = this.app.vault.adapter;
+        const path = normalizePath(filePath);
+        const isTransient = (error: unknown): boolean => {
+            const msg = error instanceof Error ? `${error.message} ${error.name}` : String(error);
+            return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied|sharing violation/i.test(msg);
+        };
+        const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms));
+
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 8; attempt++) {
+            try {
+                await adapter.write(path, contents);
+                return;
+            } catch (error) {
+                lastError = error;
+                if (!isTransient(error) || attempt === 7) break;
+                await sleep(Math.min(1200, 50 * (attempt + 1) * (attempt + 1)));
+            }
+        }
+        throw lastError instanceof Error ? lastError : new Error(String(lastError));
     }
 
     /**
@@ -2447,6 +2578,7 @@ export default class SceneCardsPlugin extends Plugin {
             applyLibraryProfileLayout(this.settings, {
                 hiddenFields: { ...this._legacyLibraryProfileLayoutDefaults.hiddenFields },
                 removedBuiltinFields: { ...this._legacyLibraryProfileLayoutDefaults.removedBuiltinFields },
+                removedBuiltinSections: { ...(this._legacyLibraryProfileLayoutDefaults.removedBuiltinSections || {}) },
                 characterCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.characterCustomSections)) as unknown[],
                 locationCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.locationCustomSections)) as unknown[],
                 codexCategoryCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.codexCategoryCustomSections)) as Record<string, unknown[]>,
@@ -3123,6 +3255,29 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
+    /** Main-area NarrativeLab view types that can carry a per-project leaf binding. */
+    private static readonly PROJECT_SCOPED_VIEW_TYPES: string[] = [
+        BOARD_VIEW_TYPE,
+        PLOTGRID_VIEW_TYPE,
+        TIMELINE_VIEW_TYPE,
+        STORYLINE_VIEW_TYPE,
+        CHARACTER_VIEW_TYPE,
+        LOCATION_VIEW_TYPE,
+        CODEX_VIEW_TYPE,
+        STATS_VIEW_TYPE,
+        MANUSCRIPT_VIEW_TYPE,
+        RESEARCH_VIEW_TYPE,
+        NARRATIVE_CANVAS_VIEW_TYPE,
+    ];
+
+    private countProjectScopedLeaves(): number {
+        let n = 0;
+        for (const viewType of SceneCardsPlugin.PROJECT_SCOPED_VIEW_TYPES) {
+            n += this.app.workspace.getLeavesOfType(viewType).length;
+        }
+        return n;
+    }
+
     /**
      * Activate a view type in the workspace
      */
@@ -3131,19 +3286,24 @@ export default class SceneCardsPlugin extends Plugin {
 
         let leaf: WorkspaceLeaf | null = null;
         const leaves = workspace.getLeavesOfType(viewType);
+        const activePath = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : null;
 
         if (leaves.length > 0) {
-            // View already open, focus it
-            leaf = leaves[0];
+            // Prefer a leaf already bound to the active project (multi-project tabs).
+            leaf = (activePath
+                ? leaves.find(item => getLeafNarrativeLabProjectFile(item) === activePath)
+                : null) ?? leaves[0];
         } else {
-            // Create new leaf
-            leaf = workspace.getLeaf(false);
+            // Never replace another project's open tab — open beside it instead.
+            const hasScopedLeaves = this.countProjectScopedLeaves() > 0;
+            leaf = hasScopedLeaves ? workspace.getLeaf('tab') : workspace.getLeaf(false);
             if (leaf) {
-                const projectFile = this.sceneManager.activeProject?.filePath ?? null;
                 await leaf.setViewState({
                     type: viewType,
                     active: true,
-                    state: narrativeLabLeafState(projectFile),
+                    state: narrativeLabLeafState(activePath),
                 });
             }
         }
@@ -3164,9 +3324,12 @@ export default class SceneCardsPlugin extends Plugin {
         let leaf = boards.find(item => getLeafNarrativeLabProjectFile(item) === projectFile) ?? null;
 
         if (!leaf) {
-            // Prefer a brand-new tab when another Board is already open so both
-            // projects can stay visible side-by-side / in the tab bar.
-            leaf = boards.length > 0 ? workspace.getLeaf('tab') : workspace.getLeaf(false);
+            // getLeaf(false) reuses the active leaf — that silently replaces a
+            // Character/Location/Board tab when the previous project's Board was
+            // switched away in-place. Always open a new tab whenever any
+            // project-scoped NarrativeLab leaf already exists.
+            const hasScopedLeaves = this.countProjectScopedLeaves() > 0;
+            leaf = hasScopedLeaves ? workspace.getLeaf('tab') : workspace.getLeaf(false);
             await leaf.setViewState({
                 type: BOARD_VIEW_TYPE,
                 active: true,

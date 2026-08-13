@@ -6,7 +6,12 @@ export const NARRATIVE_LAB_PROJECT_FILE_STATE_KEY = 'narrativeLabProjectFile';
 export function getLeafNarrativeLabProjectFile(leaf: WorkspaceLeaf): string | null {
     const state = leaf.getViewState()?.state as Record<string, unknown> | undefined;
     const raw = state?.[NARRATIVE_LAB_PROJECT_FILE_STATE_KEY];
-    return typeof raw === 'string' && raw.trim() ? normalizePath(raw) : null;
+    if (typeof raw === 'string' && raw.trim()) return normalizePath(raw);
+    // Board (and any future) views keep an in-memory binding that can be ahead
+    // of serialized leaf state right after open / view-type switches.
+    const view = leaf.view as { getBoundProjectFile?: () => string | null } | null;
+    const bound = view?.getBoundProjectFile?.();
+    return typeof bound === 'string' && bound.trim() ? normalizePath(bound) : null;
 }
 
 /** Build a leaf state object that keeps the bound project (and optional extras). */

@@ -185,6 +185,37 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     for (const item of renderedTabs) tabs.appendChild(item.el);
     attachTabReordering(tabs, renderedTabs, plugin, onCategoriesChanged);
 
+    // Mode / Custom Categories sit immediately left of Uncategorized — not
+    // pushed to the far right — so they stay beside the category strip.
+    if (
+        (showModeToggle !== false && onModeChange)
+        || renderBeforeModeActions
+        || renderAfterModeActions
+        || showManageCategories
+    ) {
+        const actions = tabs.createDiv('codex-category-actions');
+        renderBeforeModeActions?.(actions);
+        if (showModeToggle !== false && onModeChange) {
+            renderLibraryModeToggle(actions, plugin, onModeChange, profileMode);
+        }
+        renderAfterModeActions?.(actions);
+        if (showManageCategories) {
+            const manageCategoriesBtn = actions.createEl('button', {
+                cls: 'character-mode-btn codex-manage-categories-tab',
+                attr: { type: 'button', 'aria-label': t('Manage categories') },
+            });
+            const icon = manageCategoriesBtn.createSpan();
+            obsidian.setIcon(icon, 'settings');
+            manageCategoriesBtn.createSpan({ text: t('Custom Categories') });
+            manageCategoriesBtn.addEventListener('click', () => {
+                // Lazy import avoids CodexView ↔ CodexCategoryTabs circular init.
+                void import('../views/CodexView').then(({ openManageLibraryCategoriesModal }) => {
+                    openManageLibraryCategoriesModal(plugin, onCategoriesChanged);
+                });
+            });
+        }
+    }
+
     // Uncategorized remains a fixed definition and, when shown, is always last.
     if (!hiddenFixed.has(UNCATEGORIZED_CATEGORY_ID)) {
         const uncategorizedActive = activeId === UNCATEGORIZED_CATEGORY_ID;
@@ -212,7 +243,11 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
                     return;
                 }
                 try {
-                    void leaf.setViewState({ type: CODEX_VIEW_TYPE, active: true, state: {} });
+                    void leaf.setViewState({
+                        type: CODEX_VIEW_TYPE,
+                        active: true,
+                        state: preservedNarrativeLabLeafState(leaf),
+                    });
                     plugin.app.workspace.revealLeaf(leaf);
                     window.setTimeout(() => {
                         const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
@@ -221,37 +256,6 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
                 } catch {
                     plugin.activateView(CODEX_VIEW_TYPE);
                 }
-            });
-        }
-    }
-
-    // Keep the complete right-side action cluster together so no controls
-    // overflow past the edge when category labels consume more room.
-    if (
-        (showModeToggle !== false && onModeChange)
-        || renderBeforeModeActions
-        || renderAfterModeActions
-        || showManageCategories
-    ) {
-        const actions = tabs.createDiv('codex-category-actions');
-        renderBeforeModeActions?.(actions);
-        if (showModeToggle !== false && onModeChange) {
-            renderLibraryModeToggle(actions, plugin, onModeChange, profileMode);
-        }
-        renderAfterModeActions?.(actions);
-        if (showManageCategories) {
-            const manageCategoriesBtn = actions.createEl('button', {
-                cls: 'character-mode-btn codex-manage-categories-tab',
-                attr: { type: 'button', 'aria-label': t('Manage categories') },
-            });
-            const icon = manageCategoriesBtn.createSpan();
-            obsidian.setIcon(icon, 'settings');
-            manageCategoriesBtn.createSpan({ text: t('Custom Categories') });
-            manageCategoriesBtn.addEventListener('click', () => {
-                // Lazy import avoids CodexView ↔ CodexCategoryTabs circular init.
-                void import('../views/CodexView').then(({ openManageLibraryCategoriesModal }) => {
-                    openManageLibraryCategoriesModal(plugin, onCategoriesChanged);
-                });
             });
         }
     }

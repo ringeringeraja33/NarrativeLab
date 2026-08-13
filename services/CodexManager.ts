@@ -9,7 +9,7 @@ import {
     makeUncategorizedCodexCategory,
     withLinkingSection,
 } from '../models/Codex';
-import { collectMarkdownFiles, isExcalidrawFilePath, isLibraryEntityMarkdownFile, loadWithStampCache, setCachedEntry, fileStamp } from './EntityFileCache';
+import { collectMarkdownFiles, isExcalidrawFilePath, isLibraryEntityMarkdownFile, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 
 /**
@@ -384,12 +384,13 @@ export class CodexManager {
         const newContent = `---\n${stringifyYaml(fm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
 
-        // Update in-memory cache
-        for (const catMap of this.entriesByCategory.values()) {
-            if (catMap.has(normalizedPath)) {
-                catMap.set(normalizedPath, { ...entry, filePath: normalizedPath });
-                break;
-            }
+        // Update in-memory + stamp caches together (see CharacterManager.saveCharacter).
+        const saved: CodexEntry = { ...entry, filePath: normalizedPath };
+        for (const [catId, catMap] of this.entriesByCategory.entries()) {
+            if (!catMap.has(normalizedPath)) continue;
+            catMap.set(normalizedPath, saved);
+            rememberEntityAfterSave(this.app, `codex:${catId}`, normalizedPath, saved);
+            break;
         }
     }
 

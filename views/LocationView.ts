@@ -26,9 +26,12 @@ import { formatActChapterPrefix } from '../utils/actChapter';
 import { t } from '../utils/i18n';
 import {
     attachBuiltinFieldVisibilityControls,
+    attachBuiltinSectionRemoveControl,
     filterRemovedBuiltinFields,
     getHiddenFieldKeys,
+    isBuiltinSectionRemoved,
     renderRemovedBuiltinFieldsToggle,
+    renderRemovedBuiltinSectionsToggle,
 } from '../utils/libraryProfileLayout';
 
 import type SceneCardsPlugin from '../main';
@@ -806,11 +809,17 @@ export class LocationView extends ItemView {
 
         // Categories interleaved with user-defined custom sections (#120)
         const categories = isWorld ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
+        const layoutKey = isWorld ? 'world' : 'location';
         const customHost = this.buildCustomSectionsHost(draft, categories.length);
         // Slot 0: any custom sections positioned above the first built-in.
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
         for (let i = 0; i < categories.length; i++) {
-            this.renderCategory(formPanel, categories[i], draft);
+            const category = categories[i];
+            if (isBuiltinSectionRemoved(this.plugin.settings, layoutKey, category.title)) {
+                renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
+                continue;
+            }
+            this.renderCategory(formPanel, category, draft);
             // Slot i+1: any custom sections after the i-th built-in.
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
@@ -825,6 +834,15 @@ export class LocationView extends ItemView {
 
         // "+ Add custom section" button at the bottom
         renderAddCustomSectionButton(formPanel, customHost);
+        renderRemovedBuiltinSectionsToggle(formPanel, {
+            settings: this.plugin.settings,
+            categoryKey: layoutKey,
+            sections: categories.map(c => ({ title: c.title, fields: c.fields })),
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
 
         // Gallery (before side panel stats)
         this.renderGallery(sidePanel, draft);
@@ -855,6 +873,19 @@ export class LocationView extends ItemView {
         const icon = sectionHeader.createSpan('location-section-icon');
         obsidian.setIcon(icon, category.icon);
         sectionHeader.createSpan({ text: category.title });
+
+        const layoutKey = draft.type === 'world' ? 'world' : 'location';
+        attachBuiltinSectionRemoveControl(sectionHeader, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: layoutKey,
+            sectionTitle: category.title,
+            sectionFields: category.fields,
+            save: () => this.plugin.saveSettings(),
+            onChanged: () => {
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
 
         // '+' button to add a universal field to this section
         const addFieldBtn = sectionHeader.createEl('button', {
@@ -908,6 +939,7 @@ export class LocationView extends ItemView {
 
         sectionHeader.addEventListener('click', (e) => {
             if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
+            if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
             if (this.collapsedSections.has(category.title)) {
                 this.collapsedSections.delete(category.title);
                 sectionBody.setCssStyles({ display: '' });

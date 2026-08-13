@@ -40,6 +40,27 @@ export function invalidateCachedPath(ns: string, path: string): void {
     getCache(ns).delete(normalizePath(path));
 }
 
+/**
+ * After a successful vault write, keep the stamp cache aligned with the
+ * in-memory entity. Otherwise reloadEntities() can hit a pre-save stamp
+ * and resurrect a stale parse (e.g. Character tagline / field edits look
+ * like they “didn’t save”).
+ */
+export function rememberEntityAfterSave<T>(
+    app: App,
+    ns: string,
+    path: string,
+    entry: T,
+): void {
+    const normalized = normalizePath(path);
+    const file = app.vault.getAbstractFileByPath(normalized);
+    if (file instanceof TFile) {
+        setCachedEntry(ns, normalized, fileStamp(file), entry);
+    } else {
+        invalidateCachedPath(ns, normalized);
+    }
+}
+
 /** Invalidate a path across all entity namespaces (rename/delete). */
 export function invalidateAllEntityCaches(path: string): void {
     const p = normalizePath(path);

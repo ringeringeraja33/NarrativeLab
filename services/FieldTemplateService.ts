@@ -54,6 +54,25 @@ export interface SectionOrderEntry {
     key: string;
 }
 
+/**
+ * Character profile sections merged over time. Templates / sectionOrders that
+ * still use the old titles are remapped so fields stay visible.
+ */
+const CHARACTER_SECTION_ALIASES: Record<string, string> = {
+    Backstory: 'Background and Arc',
+    'Character Arc': 'Background and Arc',
+    Personality: 'Personality and Appearance',
+    'Physical Characteristics': 'Personality and Appearance',
+    Relationships: 'Basic Information',
+    Other: 'Personality and Appearance',
+};
+
+function normalizeTemplateSection(section: string, category?: string): string {
+    const cat = category || 'character';
+    if (cat !== 'character') return section;
+    return CHARACTER_SECTION_ALIASES[section] ?? section;
+}
+
 /** On-disk shape of field-templates.json */
 export interface FieldTemplateFile {
     version: number;
@@ -123,12 +142,14 @@ export class FieldTemplateService {
 
     /** Templates belonging to a specific section, optionally scoped by category */
     getBySection(sectionTitle: string, category?: string): UniversalFieldTemplate[] {
+        const want = normalizeTemplateSection(sectionTitle, category);
         return this.templates
             .filter(t => {
-                if (t.section !== sectionTitle) return false;
+                const tCat = t.category || 'character';
+                const tSection = normalizeTemplateSection(t.section, tCat);
+                if (tSection !== want) return false;
                 // Scope by category if provided
                 if (category !== undefined) {
-                    const tCat = t.category || 'character';
                     return tCat === category;
                 }
                 return true;
@@ -281,7 +302,7 @@ export class FieldTemplateService {
     // ── Merged ordering (built-in + universal) ─────────
 
     private sectionKey(section: string, category?: string): string {
-        return `${section}|${category ?? ''}`;
+        return `${normalizeTemplateSection(section, category)}|${category ?? ''}`;
     }
 
     /**
@@ -381,22 +402,44 @@ export class FieldTemplateService {
                 }
             }
             if (Array.isArray(data.fields)) {
-                this.templates = data.fields.map(f => ({
-                    id: f.id ?? generateId(),
-                    label: f.label ?? 'Untitled',
-                    section: f.section ?? 'Other',
-                    category: f.category,
-                    type: f.type ?? 'text',
-                    options: Array.isArray(f.options) ? f.options : [],
-                    folderSource: f.folderSource,
-                    placeholder: f.placeholder ?? '',
-                    order: typeof f.order === 'number' ? f.order : 0,
-                    topLevelKey: typeof f.topLevelKey === 'string' && f.topLevelKey.trim() ? f.topLevelKey.trim() : undefined,
-                    defaultValue: typeof f.defaultValue === 'string' && f.defaultValue.length > 0 ? f.defaultValue : undefined,
-                }));
+                this.templates = data.fields.map(f => {
+                    const category = f.category;
+                    const rawSection = f.section ?? 'Personality and Appearance';
+                    return {
+                        id: f.id ?? generateId(),
+                        label: f.label ?? 'Untitled',
+                        section: normalizeTemplateSection(rawSection, category || 'character'),
+                        category,
+                        type: f.type ?? 'text',
+                        options: Array.isArray(f.options) ? f.options : [],
+                        folderSource: f.folderSource,
+                        placeholder: f.placeholder ?? '',
+                        order: typeof f.order === 'number' ? f.order : 0,
+                        topLevelKey: typeof f.topLevelKey === 'string' && f.topLevelKey.trim() ? f.topLevelKey.trim() : undefined,
+                        defaultValue: typeof f.defaultValue === 'string' && f.defaultValue.length > 0 ? f.defaultValue : undefined,
+                    };
+                });
             } else {
                 this.templates = [];
             }
+            // Merge legacy character section order keys into the combined section.
+            const mergedOrders: Record<string, SectionOrderEntry[]> = {};
+            for (const [k, v] of Object.entries(this.sectionOrders)) {
+                const pipe = k.indexOf('|');
+                const section = pipe >= 0 ? k.slice(0, pipe) : k;
+                const category = pipe >= 0 ? k.slice(pipe + 1) : '';
+                const normalized = `${normalizeTemplateSection(section, category || 'character')}|${category}`;
+                const prev = mergedOrders[normalized] ?? [];
+                const seen = new Set(prev.map(e => `${e.kind}:${e.key}`));
+                for (const e of v) {
+                    const tag = `${e.kind}:${e.key}`;
+                    if (seen.has(tag)) continue;
+                    prev.push(e);
+                    seen.add(tag);
+                }
+                mergedOrders[normalized] = prev;
+            }
+            this.sectionOrders = mergedOrders;
         } catch {
             this.templates = [];
             this.sectionOrders = {};

@@ -904,6 +904,8 @@ export interface SceneCardsSettings {
      * Note data is kept; fields can be restored from the archive UI.
      */
     removedBuiltinFields?: Record<string, string[]>;
+    /** Built-in section titles removed as whole columns (per archive category key). */
+    removedBuiltinSections?: Record<string, string[]>;
     /** Which codex category IDs should appear in the Scene Inspector sidebar */
     codexSidebarCategories: string[];
     /** Series name — groups projects that share a common universe / codex */
@@ -1110,6 +1112,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     characterCustomSections: [],
     locationCustomSections: [],
     removedBuiltinFields: {},
+    removedBuiltinSections: {},
     /** Which codex category IDs should appear in the Scene Inspector sidebar */
     codexSidebarCategories: [] as string[],
     series: '',

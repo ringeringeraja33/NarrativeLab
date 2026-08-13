@@ -708,6 +708,41 @@ export class PlotgridView extends ItemView {
         this.renderGrid();
     }
 
+    /** Jump to a datasheet page/row from a Library archive appearance link. */
+    navigateToAppearance(hit: {
+        pageId: string;
+        rowId?: string;
+        rowIndex?: number;
+        columnIndex?: number;
+    }): void {
+        if (hit.pageId) this.switchPage(hit.pageId);
+        const page = this.document.pages.find(p => p.id === hit.pageId)
+            || this.document.pages.find(p => p.id === this.document.activePageId);
+        if (!page) return;
+        let rowIndex = typeof hit.rowIndex === 'number' ? hit.rowIndex : -1;
+        if (rowIndex < 0 && hit.rowId) {
+            rowIndex = page.rows.findIndex(r => r.id === hit.rowId);
+        }
+        const colIndex = typeof hit.columnIndex === 'number' && hit.columnIndex >= 0
+            ? hit.columnIndex
+            : 0;
+        if (rowIndex < 0) return;
+        // Univer coords: row/col 0 are NarrativeLab header axes; data starts at 1.
+        window.setTimeout(() => {
+            try {
+                this.univerHost?.setActiveSheet(page.id);
+                this.univerHost?.setActiveCell(page.id, rowIndex + 1, colIndex + 1);
+                this.univerHost?.focus();
+            } catch { /* best effort */ }
+            const htmlCell = this.canvasEl?.querySelector(
+                `.plot-grid-cell[data-row="${rowIndex}"][data-col="${colIndex}"]`,
+            ) as HTMLElement | null;
+            htmlCell?.scrollIntoView({ block: 'center', inline: 'nearest' });
+            htmlCell?.addClass('is-appearance-flash');
+            window.setTimeout(() => htmlCell?.removeClass('is-appearance-flash'), 1600);
+        }, 80);
+    }
+
     private createPage(): void {
         const page = createEmptyConceptGridPage(t('Page {n}', { n: this.document.pages.length + 1 }));
         this.document.pages.push(page);

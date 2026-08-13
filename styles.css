@@ -5853,6 +5853,62 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     align-items: center;
 }
 
+.character-side-plotgrid-hint {
+    margin: 0 0 8px;
+    font-size: 0.78em;
+    line-height: 1.35;
+}
+.character-side-plotgrid-item {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 8px 10px;
+}
+.character-side-plotgrid-main {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    min-width: 0;
+}
+.character-side-plotgrid-item .scene-title {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    word-break: break-word;
+    line-height: 1.35;
+}
+.character-side-plotgrid-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-left: 22px;
+    font-size: 0.78em;
+    color: var(--text-muted);
+    line-height: 1.35;
+    word-break: break-word;
+}
+.character-side-plotgrid-scene {
+    align-self: flex-start;
+    margin: 2px 0 0;
+    padding: 0;
+    border: none;
+    background: transparent;
+    color: var(--text-accent);
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.character-side-plotgrid-scene:hover {
+    color: var(--text-accent-hover, var(--text-accent));
+}
+.plot-grid-cell.is-appearance-flash {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: -2px;
+    box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+}
+
 /* POV badge in scene list */
 .character-pov-badge {
     font-size: 0.65em;
@@ -12827,13 +12883,15 @@ body /* Clamp title on mobile too, in case it's very long */
     box-sizing: border-box;
 }
 
-/* Keep New / Browse / Story Graph / Custom Categories together on the right. */
+/* Sit immediately before Uncategorized (not pinned to the far right). */
 .codex-category-tabs .codex-category-actions {
-    margin-left: auto;
+    margin-left: 4px;
+    margin-right: 0;
     display: inline-flex;
     align-items: stretch;
     align-self: stretch;
     flex-shrink: 0;
+    gap: 2px;
 }
 .codex-category-tabs .library-mode-toggle {
     margin-left: 0;
@@ -13560,6 +13618,11 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
 .location-section-custom:hover .codex-section-action-btn {
     opacity: 0.6;
 }
+.character-section-header:hover .builtin-section-actions .codex-section-action-btn,
+.location-section-header:hover .builtin-section-actions .codex-section-action-btn,
+.codex-section-header:hover .builtin-section-actions .codex-section-action-btn {
+    opacity: 0.6;
+}
 .codex-section-action-btn:hover {
     background: var(--background-modifier-hover);
     color: var(--text-normal);
@@ -13583,6 +13646,55 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
    Obsidian's `setIcon()` writes on the SVG element. */
 .codex-section-actions .codex-section-action-btn .svg-icon,
 .codex-section-actions .codex-section-action-btn svg {
+    width: 14px;
+    height: 14px;
+}
+.codex-blank-profile-hint {
+    margin: 8px 0 16px;
+}
+.codex-blank-profile-name {
+    margin-bottom: 8px;
+}
+.codex-category-custom-section-block {
+    margin-bottom: 8px;
+}
+.codex-category-field-row.is-nested {
+    padding-left: 20px;
+    opacity: 0.95;
+}
+.codex-category-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 0.75em;
+}
+.codex-category-section-head h5 {
+    margin: 0;
+}
+.codex-category-section-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+.codex-category-field-add {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.codex-category-field-add:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+}
+.codex-category-field-add svg {
     width: 14px;
     height: 14px;
 }

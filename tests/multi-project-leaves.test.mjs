@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [mainTs, boardView, navigatorView, viewSwitcher, leafState, corkboard] = await Promise.all([
+const [mainTs, boardView, navigatorView, viewSwitcher, leafState, corkboard, codexTabs] = await Promise.all([
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/BoardView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/NavigatorView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../components/ViewSwitcher.ts', import.meta.url), 'utf8'),
     readFile(new URL('../utils/narrativeLabLeafState.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/CorkboardCanvasService.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../components/CodexCategoryTabs.ts', import.meta.url), 'utf8'),
 ]);
 
 test('NarrativeLab leaf state binds tabs to a project file', () => {
@@ -20,10 +21,25 @@ test('NarrativeLab leaf state binds tabs to a project file', () => {
 test('Open Project opens a per-project Board tab instead of reusing the first leaf', () => {
     assert.match(mainTs, /async openBoardForProject\(/);
     assert.match(mainTs, /workspace\.getLeaf\('tab'\)/);
+    assert.match(mainTs, /countProjectScopedLeaves/);
+    assert.match(mainTs, /hasScopedLeaves \? workspace\.getLeaf\('tab'\) : workspace\.getLeaf\(false\)/);
     assert.match(mainTs, /syncActiveProjectFromLeaf/);
     assert.match(mainTs, /bound && activePath && bound !== activePath/);
     assert.match(navigatorView, /openBoardForProject\(project\)/);
+    assert.match(navigatorView, /openProjectFromNavigator\(project\)/);
     assert.doesNotMatch(navigatorView, /activateView\(BOARD_VIEW_TYPE\)/);
+});
+
+test('Leaf project binding falls back to view.getBoundProjectFile', () => {
+    assert.match(leafState, /getBoundProjectFile/);
+});
+
+test('CodexCategoryTabs preserves project binding when switching to uncategorized', () => {
+    assert.match(codexTabs, /preservedNarrativeLabLeafState\(leaf\)/);
+    assert.doesNotMatch(
+        codexTabs.slice(codexTabs.indexOf('uncategorizedTab.addEventListener')),
+        /state:\s*\{\s*\}/,
+    );
 });
 
 test('BoardView persists project binding and skips foreign-project refresh', () => {
