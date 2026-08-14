@@ -4,7 +4,7 @@ import * as obsidian from 'obsidian';
 import { Scene } from '../models/Scene';
 import { SceneManager } from '../services/SceneManager';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { renderStructureModeSwitcher } from '../components/StructureModeSwitcher';
+import { renderStructureModeSwitcher, rememberStructureMode } from '../components/StructureModeSwitcher';
 import type SceneCardsPlugin from '../main';
 
 import { STORYLINE_VIEW_TYPE } from '../constants';
@@ -68,6 +68,7 @@ export class StorylineView extends ProjectBoundItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
@@ -101,8 +102,7 @@ export class StorylineView extends ProjectBoundItemView {
     private setViewMode(mode: PlotlineViewMode): void {
         if (this.plotlineViewMode === mode) return;
         this.plotlineViewMode = mode;
-        this.plugin.settings.lastStorylineViewMode = mode;
-        this.plugin.saveSettings();
+        rememberStructureMode(this.plugin, mode === 'list' ? 'plot-list' : 'subway');
         this.refresh();
     }
 
@@ -685,7 +685,7 @@ export class StorylineView extends ProjectBoundItemView {
 
                 // ── Scene title below node ──
                 const labelY1 = y + NODE_RADIUS + 16;
-                const labelText = `[${actStr}-${seqStr}] ${scene.title || 'Untitled'}`;
+                const labelText = `[${actStr}-${seqStr}] ${scene.title || t('Untitled')}`;
 
                 const sceneLabel = activeDocument.createElementNS(svgNS, 'text');
                 sceneLabel.setAttribute('x', String(x));
@@ -739,7 +739,7 @@ export class StorylineView extends ProjectBoundItemView {
     }
 
     private buildSubwayTooltip(scene: Scene, isArcPoint: boolean, actStr: string, seqStr: string): string {
-        const lines: string[] = [`[${actStr}-${seqStr}] ${scene.title || 'Untitled'}`];
+        const lines: string[] = [`[${actStr}-${seqStr}] ${scene.title || t('Untitled')}`];
         if (scene.subtitle?.trim()) lines.push(scene.subtitle.trim());
         if (scene.synopsis?.trim()) lines.push(`Synopsis: ${this.compactTooltipText(scene.synopsis, 220)}`);
         if (isArcPoint) lines.push('Arc Point');

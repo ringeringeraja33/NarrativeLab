@@ -75,6 +75,8 @@ export class NavigatorView extends ItemView {
     private progressBar: HTMLElement | null = null;
     private progressLabel: HTMLElement | null = null;
     private sortBtn: HTMLElement | null = null;
+    /** Debounce project/scene filter typing so large binders do not rebuild every key. */
+    private filterDebounceTimer: number | null = null;
     /** Last scene clicked in the binder (visual selection). */
     private selectedScenePath: string | null = null;
 
@@ -110,17 +112,48 @@ export class NavigatorView extends ItemView {
         setIcon(searchIcon, 'search');
         this.searchInput = searchWrap.createEl('input', {
             type: 'text',
-            placeholder: t('Filter scenes…'),
+            placeholder: t('Filter projects & scenes…'),
             cls: 'sl-nav-search',
         });
         this.searchInput.addEventListener('input', () => {
+            const next = this.searchInput?.value.toLowerCase() ?? '';
+            if (this.filterDebounceTimer !== null) window.clearTimeout(this.filterDebounceTimer);
+            this.filterDebounceTimer = window.setTimeout(() => {
+                this.filterDebounceTimer = null;
+                this.filterText = next;
+                // While filtering, keep the active project binder open so scene hits are visible.
+                if (this.filterText && this.sceneManager.activeProject) {
+                    this.collapsedNodes.delete(`project:${this.sceneManager.activeProject.filePath}`);
+                    this.collapsedNodes.delete('scenes');
+                    this.collapsedNodes.delete('notes');
+                    this.collapsedNodes.delete('research');
+                    this.collapsedActs.clear();
+                    this.collapsedChapters.clear();
+                }
+                this.renderList();
+            }, 160);
+        });
+        this.searchInput.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter') return;
+            if (this.filterDebounceTimer !== null) {
+                window.clearTimeout(this.filterDebounceTimer);
+                this.filterDebounceTimer = null;
+            }
             this.filterText = this.searchInput?.value.toLowerCase() ?? '';
+            if (this.filterText && this.sceneManager.activeProject) {
+                this.collapsedNodes.delete(`project:${this.sceneManager.activeProject.filePath}`);
+                this.collapsedNodes.delete('scenes');
+                this.collapsedNodes.delete('notes');
+                this.collapsedNodes.delete('research');
+                this.collapsedActs.clear();
+                this.collapsedChapters.clear();
+            }
             this.renderList();
         });
 
         this.sortBtn = toolbar.createDiv('sl-nav-icon-btn');
         setIcon(this.sortBtn, SORT_ICONS[this.sortMode]);
-        attachTooltip(this.sortBtn, t('Sort'));
+        attachTooltip(this.sortBtn, t('Sort scenes'));
         this.sortBtn.addEventListener('click', (e) => {
             const menu = new Menu();
             for (const mode of Object.keys(SORT_LABELS) as NavSortMode[]) {
@@ -158,7 +191,11 @@ export class NavigatorView extends ItemView {
     }
 
     async onClose(): Promise<void> {
-        // nothing to clean up
+        if (this.filterDebounceTimer !== null) {
+            window.clearTimeout(this.filterDebounceTimer);
+            this.filterDebounceTimer = null;
+        }
+        // nothing else to clean up
     }
 
     /**
@@ -396,13 +433,177 @@ export class NavigatorView extends ItemView {
         return { header, expanded, body };
     }
 
+    private binderTextMatches(value: string | undefined | null): boolean {
+        if (!this.filterText || !value) return false;
+        return value.toLowerCase().includes(this.filterText);
+    }
+
+    private sceneMatchesFilter(scene: Scene): boolean {
+        if (!this.filterText) return true;
+        return this.binderTextMatches(scene.title)
+            || this.binderTextMatches(scene.pov)
+            || this.binderTextMatches(scene.filePath)
+            || (scene.tags?.some(tag => this.binderTextMatches(tag)) ?? false);
+    }
+
+    private projectMatchesFilter(project: StoryLineProject): boolean {
+        if (!this.filterText) return true;
+        if (this.binderTextMatches(project.title) || this.binderTextMatches(project.filePath)) return true;
+        const active = this.sceneManager.activeProject;
+        if (!active || project.filePath !== active.filePath) return false;
+        if (this.sceneManager.getAllScenes().some(scene => this.sceneMatchesFilter(scene))) return true;
+        const posts = this.plugin.researchManager?.getAllPosts() ?? [];
+        return posts.some(post =>
+            this.binderTextMatches(post.title)
+            || post.tags.some(tag => this.binderTextMatches(tag))
+        );
+    }
+
+    private compareProjects(a: StoryLineProject, b: StoryLineProject): number {
+        switch (this.sortMode) {
+            case 'recent': {
+                const aFile = this.app.vault.getAbstractFileByPath(a.filePath);
+                const bFile = this.app.vault.getAbstractFileByPath(b.filePath);
+                const aMtime = (aFile instanceof TFile) ? aFile.stat.mtime : 0;
+                const bMtime = (bFile instanceof TFile) ? bFile.stat.mtime : 0;
+                if (aMtime !== bMtime) return bMtime - aMtime;
+                return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+            }
+            case 'title':
+            default:
+                return a.title.localeCompare(b.title, undefined, { sensitivity: 'base' });
+        }
+    }
+
+    private sortProjectList(projects: StoryLineProject[], active: StoryLineProject | null): StoryLineProject[] {
+        const sorted = projects.slice().sort((a, b) => this.compareProjects(a, b));
+        // Keep the open project easy to find unless the user explicitly sorted by title/recent.
+        if (active && this.sortMode !== 'title' && this.sortMode !== 'recent') {
+            const idx = sorted.findIndex(p => p.filePath === active.filePath);
+            if (idx > 0) {
+                const [item] = sorted.splice(idx, 1);
+                sorted.unshift(item);
+            }
+        }
+        return sorted;
+    }
+
+    /**
+     * Group binder roots: series folders (with member books) then standalone projects.
+     * Filter/sort apply to this tree — not only to scenes inside the active book.
+     */
+    private buildNavigatorRoots(projects: StoryLineProject[], active: StoryLineProject | null): Array<{
+        key: string;
+        label: string;
+        isSeries: boolean;
+        projects: StoryLineProject[];
+    }> {
+        type Root = { key: string; label: string; isSeries: boolean; projects: StoryLineProject[] };
+        const seriesRoots = new Map<string, Root>();
+        const standalone: StoryLineProject[] = [];
+
+        for (const project of projects) {
+            const seriesFolder = this.sceneManager.getSeriesFolderForProject(project);
+            if (!seriesFolder) {
+                standalone.push(project);
+                continue;
+            }
+            let root = seriesRoots.get(seriesFolder);
+            if (!root) {
+                root = {
+                    key: `series:${seriesFolder}`,
+                    label: seriesFolder.split('/').pop() || seriesFolder,
+                    isSeries: true,
+                    projects: [],
+                };
+                seriesRoots.set(seriesFolder, root);
+            }
+            root.projects.push(project);
+        }
+
+        const roots: Root[] = [
+            ...Array.from(seriesRoots.values()).map(root => ({
+                ...root,
+                projects: this.sortProjectList(root.projects, active),
+            })),
+            ...this.sortProjectList(standalone, active).map(project => ({
+                key: `project:${project.filePath}`,
+                label: project.title,
+                isSeries: false,
+                projects: [project],
+            })),
+        ];
+
+        // Prefer the group that contains the active project, then label order.
+        roots.sort((a, b) => {
+            const aActive = !!active && a.projects.some(p => p.filePath === active.filePath);
+            const bActive = !!active && b.projects.some(p => p.filePath === active.filePath);
+            if (aActive !== bActive) return aActive ? -1 : 1;
+            return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' });
+        });
+
+        if (!this.filterText) return roots;
+        return roots
+            .map(root => {
+                if (root.label.toLowerCase().includes(this.filterText)) return root;
+                const matched = root.projects.filter(p => this.projectMatchesFilter(p));
+                if (matched.length === 0) return null;
+                return { ...root, projects: matched };
+            })
+            .filter((root): root is Root => !!root);
+    }
+
+    private renderProjectRow(
+        parent: HTMLElement,
+        project: StoryLineProject,
+        active: StoryLineProject | null,
+        depth: number,
+    ): void {
+        const isActive = !!active && project.filePath === active.filePath;
+        const key = `project:${project.filePath}`;
+        const node = this.renderFolderHeader(parent, {
+            key,
+            label: project.title,
+            icon: isActive ? 'book-open' : 'book',
+            cls: isActive
+                ? 'sl-nav-project-root is-active-project'
+                : 'sl-nav-project-root is-inactive-project',
+            depth,
+            expandable: isActive,
+            onActivate: () => { void this.switchToProject(project); },
+            onContextMenu: (event) => {
+                showProjectNavigatorMenu(this.plugin, project, event);
+            },
+            trailing: (el) => {
+                const open = el.createSpan('sl-nav-folder-action is-always sl-nav-project-open');
+                setIcon(open, 'folder-open');
+                attachTooltip(open, t('Open Project'));
+                open.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void this.openProjectFromNavigator(project);
+                });
+                const more = el.createSpan('sl-nav-folder-action is-always sl-nav-project-more');
+                setIcon(more, 'ellipsis');
+                attachTooltip(more, t('Project menu'));
+                more.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    showProjectNavigatorMenu(this.plugin, project, event);
+                });
+            },
+        });
+
+        if (isActive && node.expanded && node.body) {
+            this.renderActiveProjectContents(node.body);
+        }
+    }
+
     private renderList(): void {
         if (!this.listEl) return;
         this.listEl.empty();
 
-        const projects = this.sceneManager.getProjects()
-            .slice()
-            .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
+        const projects = this.sceneManager.getProjects().slice();
         const active = this.sceneManager.activeProject;
         this.updateFilterExpansions(active);
 
@@ -412,50 +613,38 @@ export class NavigatorView extends ItemView {
             return;
         }
 
-        // Active project on top, then the rest alphabetically
-        const ordered = active
-            ? [active, ...projects.filter(p => p.filePath !== active.filePath)]
-            : projects;
+        const roots = this.buildNavigatorRoots(projects, active);
+        if (roots.length === 0) {
+            const empty = this.listEl.createDiv('sl-nav-empty');
+            empty.textContent = t('No projects or scenes match the current filter.');
+            return;
+        }
 
-        for (const project of ordered) {
-            const isActive = !!active && project.filePath === active.filePath;
-            const key = `project:${project.filePath}`;
-            const node = this.renderFolderHeader(this.listEl, {
-                key,
-                label: project.title,
-                icon: isActive ? 'book-open' : 'book',
-                cls: isActive
-                    ? 'sl-nav-project-root is-active-project'
-                    : 'sl-nav-project-root is-inactive-project',
-                depth: 0,
-                expandable: isActive,
-                onActivate: () => { void this.switchToProject(project); },
-                onContextMenu: (event) => {
-                    showProjectNavigatorMenu(this.plugin, project, event);
-                },
-                trailing: (el) => {
-                    const open = el.createSpan('sl-nav-folder-action is-always sl-nav-project-open');
-                    setIcon(open, 'folder-open');
-                    attachTooltip(open, t('Open Project'));
-                    open.addEventListener('click', (event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        void this.openProjectFromNavigator(project);
-                    });
-                    const more = el.createSpan('sl-nav-folder-action is-always sl-nav-project-more');
-                    setIcon(more, 'ellipsis');
-                    attachTooltip(more, t('Project menu'));
-                    more.addEventListener('click', (event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        showProjectNavigatorMenu(this.plugin, project, event);
-                    });
-                },
-            });
-
-            if (isActive && node.expanded && node.body) {
-                this.renderActiveProjectContents(node.body);
+        for (const root of roots) {
+            if (root.isSeries) {
+                // Keep series open while filtering so matched books stay visible.
+                if (this.filterText) this.collapsedNodes.delete(root.key);
+                const containsActive = !!active && root.projects.some(p => p.filePath === active.filePath);
+                if (containsActive) this.collapsedNodes.delete(root.key);
+                const seriesNode = this.renderFolderHeader(this.listEl, {
+                    key: root.key,
+                    label: root.label,
+                    icon: 'library',
+                    count: root.projects.length,
+                    depth: 0,
+                    cls: 'sl-nav-project-root sl-nav-series-root',
+                    expandable: true,
+                    onActivate: () => this.toggleNode(root.key),
+                });
+                if (!seriesNode.expanded || !seriesNode.body) continue;
+                for (const project of root.projects) {
+                    this.renderProjectRow(seriesNode.body, project, active, 1);
+                }
+                continue;
             }
+
+            const project = root.projects[0];
+            if (project) this.renderProjectRow(this.listEl, project, active, 0);
         }
     }
 
@@ -649,17 +838,19 @@ export class NavigatorView extends ItemView {
             scenes = scenes.filter(s => s.tags?.includes(this.plotlineFilter!));
         }
         if (this.filterText) {
-            scenes = scenes.filter(s =>
-                s.title.toLowerCase().includes(this.filterText) ||
-                (s.pov?.toLowerCase().includes(this.filterText)) ||
-                (s.tags?.some(tag => tag.toLowerCase().includes(this.filterText)))
-            );
+            scenes = scenes.filter(s => this.sceneMatchesFilter(s));
         }
         if (this.plotlineFilter && this.plotlineFilter !== UNASSIGNED_PLOTLINE_FILTER) {
+            // Plotline order is the baseline; user sort still reorders within that set
+            // (except reading/chapter modes, which keep manuscript order for the plotline).
             scenes = this.sceneManager.orderScenesForPlotline(this.plotlineFilter, scenes);
-            const pinned = scenes.filter(s => this.pinnedScenes.has(s.filePath));
-            const unpinned = scenes.filter(s => !this.pinnedScenes.has(s.filePath));
-            scenes = [...pinned, ...unpinned];
+            if (this.sortMode !== 'reading' && this.sortMode !== 'chapter') {
+                scenes = this.sortScenes(scenes);
+            } else {
+                const pinned = scenes.filter(s => this.pinnedScenes.has(s.filePath));
+                const unpinned = scenes.filter(s => !this.pinnedScenes.has(s.filePath));
+                scenes = [...pinned, ...unpinned];
+            }
         } else {
             scenes = this.sortScenes(scenes);
         }
@@ -792,6 +983,7 @@ export class NavigatorView extends ItemView {
         notes = notes.slice().sort((a, b) =>
             a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
         );
+        if (this.filterText && notes.length === 0) return;
 
         const notesNode = this.renderFolderHeader(parent, {
             key: 'notes',
@@ -907,6 +1099,7 @@ export class NavigatorView extends ItemView {
         posts = posts.slice().sort((a, b) =>
             a.title.localeCompare(b.title, undefined, { sensitivity: 'base' })
         );
+        if (this.filterText && posts.length === 0) return;
 
         const researchNode = this.renderFolderHeader(parent, {
             key: 'research',
@@ -1757,6 +1950,13 @@ export class NavigatorView extends ItemView {
                     if (actCmp !== 0) return actCmp;
                     const chapterCmp = compareActChapter(a.chapter, b.chapter);
                     if (chapterCmp !== 0) return chapterCmp;
+                    return (a.sequence ?? 9999) - (b.sequence ?? 9999);
+                }
+                case 'chapter': {
+                    const chapterCmp = compareActChapter(a.chapter, b.chapter);
+                    if (chapterCmp !== 0) return chapterCmp;
+                    const actCmp = compareActChapter(a.act, b.act);
+                    if (actCmp !== 0) return actCmp;
                     return (a.sequence ?? 9999) - (b.sequence ?? 9999);
                 }
                 case 'chronological': {

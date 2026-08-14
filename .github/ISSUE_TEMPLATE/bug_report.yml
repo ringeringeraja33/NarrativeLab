@@ -1,0 +1,81 @@
+name: Bug report
+description: Report a reproducible NarrativeLab problem.
+title: '[Bug] '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include private manuscript content, access tokens, or unredacted vault paths. Use the private security channel for vulnerabilities.
+  - type: input
+    id: plugin-version
+    attributes:
+      label: NarrativeLab version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: obsidian-version
+    attributes:
+      label: Obsidian version
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - iOS / iPadOS
+        - Android
+    validations:
+      required: true
+  - type: dropdown
+    id: language
+    attributes:
+      label: NarrativeLab interface language
+      options:
+        - English
+        - Simplified Chinese
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a small test project where possible.
+      placeholder: |
+        1. Open…
+        2. Select…
+        3. Observe…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs or screenshots
+      description: Remove personal paths, project names, and manuscript text.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I reproduced this on the latest release.
+          required: true
+        - label: I searched existing issues.
+          required: true
+        - label: I backed up the affected vault before destructive tests.
+          required: true

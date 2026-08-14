@@ -501,7 +501,10 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
             // Mirrors the universal field renderers so users get the same
             // widgets they're used to from `AddFieldModal`.
             const currentValue = (draft.custom && draft.custom[key]) || '';
-            const placeholderHint = def.placeholder || `Value for ${fname}`;
+            // User-authored placeholder stays verbatim; only the fallback chrome
+            // string goes through i18n (never overwrite a custom hint).
+            const placeholderHint = def.placeholder?.trim()
+                || t('Value for {field}', { field: fname });
             switch (def.type) {
                 case 'textarea': {
                     const ta = row.createEl('textarea', {

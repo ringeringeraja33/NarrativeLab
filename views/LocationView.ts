@@ -65,7 +65,6 @@ import {
     renderLibraryBrowseToolbar,
     renderLibraryModeToolbar,
 } from '../components/LibraryBrowseLayout';
-
 /**
  * Location View — hierarchical World → Location browser with inline editing.
  *
@@ -146,6 +145,7 @@ export class LocationView extends ProjectBoundItemView {
     getIcon(): string { return 'map-pin'; }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         rememberLibraryCategory(this.plugin, 'locations');
         const container = this.containerEl.children[1] as HTMLElement;
@@ -1099,24 +1099,24 @@ export class LocationView extends ProjectBoundItemView {
             const select = row.createEl('select', { cls: 'location-field-input dropdown' });
             select.createEl('option', { text: t(field.placeholder), value: '' });
             // Built-in types
-            for (const t of LOCATION_TYPES) {
-                const opt = select.createEl('option', { text: t, value: t.toLowerCase() });
-                if (String(value).toLowerCase() === t.toLowerCase()) opt.selected = true;
+            for (const typeName of LOCATION_TYPES) {
+                const opt = select.createEl('option', { text: t(typeName), value: typeName.toLowerCase() });
+                if (String(value).toLowerCase() === typeName.toLowerCase()) opt.selected = true;
             }
             // User-defined custom types
             const customTypes = this.plugin.settings.customLocationTypes ?? [];
             if (customTypes.length > 0) {
                 const sep = select.createEl('option', { text: '──────────', value: '' });
                 sep.disabled = true;
-                for (const t of customTypes) {
-                    const opt = select.createEl('option', { text: t, value: t.toLowerCase() });
-                    if (String(value).toLowerCase() === t.toLowerCase()) opt.selected = true;
+                for (const typeName of customTypes) {
+                    const opt = select.createEl('option', { text: typeName, value: typeName.toLowerCase() });
+                    if (String(value).toLowerCase() === typeName.toLowerCase()) opt.selected = true;
                 }
             }
             // Pre-existing value not in either list (legacy)
             const knownLower = [
-                ...LOCATION_TYPES.map(t => t.toLowerCase()),
-                ...customTypes.map(t => t.toLowerCase()),
+                ...LOCATION_TYPES.map(typeName => typeName.toLowerCase()),
+                ...customTypes.map(typeName => typeName.toLowerCase()),
             ];
             if (value && !knownLower.includes(String(value).toLowerCase())) {
                 const opt = select.createEl('option', { text: String(value), value: String(value) });
@@ -1312,7 +1312,7 @@ export class LocationView extends ProjectBoundItemView {
             const msInput = inputRow.createEl('input', {
                 cls: 'universal-multi-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : t('Type to add\u2026') },
+                attr: { placeholder: tpl.placeholder || t('Type to add\u2026') },
             });
             // Issue #102 — portal dropdown to <body> so position:fixed coords are
             // viewport-relative even when an ancestor uses transform/contain.
@@ -1406,7 +1406,7 @@ export class LocationView extends ProjectBoundItemView {
         } else if (tpl.type === 'textarea') {
             const textarea = row.createEl('textarea', {
                 cls: 'location-field-textarea',
-                attr: { placeholder: tpl.placeholder, rows: '3' },
+                attr: { placeholder: tpl.placeholder || '', rows: '3' },
             });
             textarea.value = value;
             textarea.addEventListener('input', () => {
@@ -1430,7 +1430,7 @@ export class LocationView extends ProjectBoundItemView {
             const input = row.createEl('input', {
                 cls: 'location-field-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder },
+                attr: { placeholder: tpl.placeholder || '' },
             });
             input.value = value;
             input.addEventListener('input', () => {

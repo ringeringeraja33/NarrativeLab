@@ -6,7 +6,7 @@ import { InspectorComponent } from '../components/Inspector';
 import { QuickAddModal } from '../components/QuickAddModal';
 import { BeatSheetApplyModal } from '../components/BeatSheetApplyModal';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { renderStructureModeSwitcher } from '../components/StructureModeSwitcher';
+import { renderStructureModeSwitcher, rememberStructureMode } from '../components/StructureModeSwitcher';
 import { enableDragToPan } from '../components/DragToPan';
 import type SceneCardsPlugin from '../main';
 
@@ -73,6 +73,7 @@ export class TimelineView extends ProjectBoundItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         this.timelineOrder = this.plugin.settings.timelineOrder === 'chronological' ? 'chronological' : 'reading';
         const container = this.containerEl.children[1] as HTMLElement;
@@ -254,9 +255,8 @@ export class TimelineView extends ProjectBoundItemView {
     private setSwimlaneMode(enabled: boolean): void {
         if (this.swimlaneMode === enabled) return;
         this.swimlaneMode = enabled;
-        this.plugin.settings.timelineSwimlaneMode = enabled;
+        rememberStructureMode(this.plugin, enabled ? 'tracks' : 'timeline');
         this.refresh();
-        void this.plugin.saveSettings();
     }
 
     private renderTimeline(container: HTMLElement): void {

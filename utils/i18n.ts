@@ -383,6 +383,7 @@ const ZH_CORE: Record<string, string> = {
     'Browse': '浏览',
     'Character Profiles': '角色档案',
     'Location Profiles': '地点档案',
+    'Uncategorized Profiles': '未分类档案',
     '{name} Profiles': '{name} 档案',
     'Move down': '下移',
 
@@ -906,6 +907,7 @@ What disrupts the status quo?`]: `## 钩子
     'Please enter a name': '请输入名称',
     'Double-click to open': '双击打开',
     'Click to hide entries not in “{book}”': '点击后仅显示“{book}”中的条目',
+    'Click to show all series entries': '点击显示系列中的所有条目',
     'Loading Base…': '正在加载 Base…',
     'Move up': '上移',
     'e.g. "Our heroes arrive in the capital…"': '例如：“主角一行抵达王都……”',

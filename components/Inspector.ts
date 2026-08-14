@@ -336,7 +336,7 @@ export class InspectorComponent {
             });
             const itemIcon = item.createSpan({ cls: 'inspector-status-icon' });
             obsidian.setIcon(itemIcon, cfg.icon);
-            item.createSpan({ text: cfg.label });
+            item.createSpan({ text: t(cfg.label) });
 
             item.addEventListener('click', () => {
                 statusMenu.setCssStyles({ display: 'none' });
@@ -813,6 +813,7 @@ export class InspectorComponent {
         const row = parent.createDiv('inspector-universal-field-row');
 
         const labelWrap = row.createDiv('inspector-universal-label-wrap');
+        // Player-authored universal field label — show as stored (do not t()).
         labelWrap.createEl('label', { cls: 'inspector-label', text: tpl.label });
 
         const editBtn = labelWrap.createEl('button', {
@@ -852,7 +853,7 @@ export class InspectorComponent {
             });
         } else if (tpl.type === 'dropdown') {
             const sel = row.createEl('select', { cls: 'inspector-universal-select' });
-            sel.createEl('option', { text: tpl.placeholder || '— Select —', value: '' });
+            sel.createEl('option', { text: tpl.placeholder || t('Select…'), value: '' });
             for (const opt of tpl.options) {
                 const o = sel.createEl('option', { text: opt, value: opt });
                 if (value === opt) o.selected = true;
@@ -1068,7 +1069,7 @@ export class InspectorComponent {
             });
             const iconEl = labelRow.createSpan();
             obsidian.setIcon(iconEl, catDef.icon);
-            labelRow.createSpan({ cls: 'inspector-label', text: `${catDef.label}:` });
+            labelRow.createSpan({ cls: 'inspector-label', text: `${t(catDef.label)}:` });
 
             const pillContainer = section.createDiv('inspector-chip-list');
 

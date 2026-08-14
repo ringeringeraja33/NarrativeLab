@@ -355,11 +355,11 @@ export class SceneCardComponent {
                 }
             }
 
-            return 'Note';
+            return t('Note');
         }
 
         const title = (scene.title || '').trim();
-        return title || 'Untitled';
+        return title || t('Untitled');
     }
 
     /**

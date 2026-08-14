@@ -29,6 +29,7 @@ import type SceneCardsPlugin from '../main';
 
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
+import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { renderLibraryArchiveFilterBar, collectEntityFilterKeys, collectArchiveFilterLabels, ARCHIVE_FILTER_HASHTAGS_KEY, buildArchiveFilterFieldOptions } from '../components/LibraryFilterChips';
 import { disposeNativeLibraryBase, renderNativeLibraryBase } from '../components/NativeLibraryBase';
@@ -59,8 +60,6 @@ import {
     mergeCharacterRelationTypes,
     upsertCustomCharacterRelationType,
 } from '../utils/storyGraphCharacterRelations';
-import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
-
 type ScenePresenceStats = { pov: number; present: number };
 
 /**
@@ -179,6 +178,7 @@ export class CharacterView extends ProjectBoundItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         rememberLibraryCategory(this.plugin, 'characters');
         const container = this.getViewRoot();
@@ -1805,7 +1805,7 @@ export class CharacterView extends ProjectBoundItemView {
 
         // Label with an edit icon
         const labelWrap = row.createDiv('character-universal-label-wrap');
-        labelWrap.createEl('label', { cls: 'character-field-label', text: t(tpl.label) });
+        labelWrap.createEl('label', { cls: 'character-field-label', text: tpl.label });
 
         const editBtn = labelWrap.createEl('span', {
             cls: 'character-universal-edit-btn',
@@ -1896,7 +1896,7 @@ export class CharacterView extends ProjectBoundItemView {
             const msInput = inputRow.createEl('input', {
                 cls: 'universal-multi-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : t('Type to add\u2026') },
+                attr: { placeholder: tpl.placeholder || t('Type to add\u2026') },
             });
             // Issue #102 — portal dropdown to <body> so position:fixed coords are
             // viewport-relative even when an ancestor uses transform/contain.
@@ -1974,7 +1974,7 @@ export class CharacterView extends ProjectBoundItemView {
             });
         } else if (tpl.type === 'dropdown') {
             const select = row.createEl('select', { cls: 'character-field-input dropdown' });
-            select.createEl('option', { text: tpl.placeholder ? t(tpl.placeholder) : t('Select…'), value: '' });
+            select.createEl('option', { text: tpl.placeholder || t('Select…'), value: '' });
 
             const dropdownOptions = [...tpl.options];
             if (tpl.folderSource) {
@@ -2005,7 +2005,7 @@ export class CharacterView extends ProjectBoundItemView {
         } else if (tpl.type === 'textarea') {
             const textarea = row.createEl('textarea', {
                 cls: 'character-field-textarea',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : '', rows: '2' },
+                attr: { placeholder: tpl.placeholder || '', rows: '2' },
             });
             textarea.value = value;
             const autoGrow = () => {
@@ -2036,7 +2036,7 @@ export class CharacterView extends ProjectBoundItemView {
             const input = row.createEl('input', {
                 cls: 'character-field-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : '' },
+                attr: { placeholder: tpl.placeholder || '' },
             });
             input.value = value;
             input.addEventListener('input', () => {

@@ -118,6 +118,7 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     async onOpen(): Promise<void> {
+        if (this.plugin) this.captureProjectBinding(this.plugin.sceneManager);
         // Render into the same inner container used by other views so styles match
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
@@ -447,14 +448,28 @@ export class PlotgridView extends ProjectBoundItemView {
                 // Any vault markdown still present (Research / arbitrary note)
                 if (this.resolveLinkedVaultFile(cell.linkedSceneId)) continue;
 
-                // Try to find a moved scene/note by filename
+                // Try to find a moved scene/note by filename — only inside this
+                // workbook's project tree so same-name notes in other books cannot
+                // steal the link.
                 const fileName = cell.linkedSceneId.split('/').pop();
                 if (!fileName) continue;
 
+                const projectPrefix = (this.loadedSystemFolder || this.getActiveSystemFolder())
+                    .replace(/[/\\]+System[/\\]?$/i, '')
+                    .replace(/\/+$/, '');
                 const allScenes = scMgr.getAllScenes();
-                const match = allScenes.find(s => s.filePath.endsWith('/' + fileName) || s.filePath === fileName);
-                if (match) {
-                    cell.linkedSceneId = match.filePath;
+                const scoped = projectPrefix
+                    ? allScenes.filter(s => {
+                        const path = s.filePath.replace(/\\/g, '/');
+                        return path === projectPrefix
+                            || path.startsWith(`${projectPrefix}/`);
+                    })
+                    : allScenes;
+                const matches = scoped.filter(s =>
+                    s.filePath.endsWith('/' + fileName) || s.filePath === fileName,
+                );
+                if (matches.length === 1) {
+                    cell.linkedSceneId = matches[0].filePath;
                     dirty = true;
                 }
                 // else: keep broken path — UI falls back to plain text, link preserved
@@ -491,8 +506,9 @@ export class PlotgridView extends ProjectBoundItemView {
                     // Active project changed — do not write the previous workbook into the new folder.
                     return;
                 }
-                // Pull latest Univer cells/sizes into memory before disk write —
-                // otherwise deferred pulls leave this.document stale and "save" drops edits.
+                // Always write to the folder this workbook was loaded from. If the
+                // global active project changed, path-scoped save keeps edits in
+                // the bound book instead of aborting or bleeding into another project.
                 if (this.univerHost) {
                     try {
                         this.univerHost.flush();
@@ -3365,7 +3381,7 @@ export class PlotgridView extends ProjectBoundItemView {
                     cls: 'inspector-scene-link',
                     text: linkedScene.title
                         || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
-                        || 'Untitled',
+                        || t('Untitled'),
                 });
                 sceneLink.setCssStyles({
                     display: 'block',
@@ -3594,7 +3610,7 @@ export class PlotgridView extends ProjectBoundItemView {
             const linkLabel = linkedScene
                 ? (linkedScene.title
                     || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
-                    || 'Untitled')
+                    || t('Untitled'))
                 : (linkedVaultFile?.basename
                     || linkedPath!.split('/').pop()?.replace(/\.md$/i, '')
                     || linkedPath!);

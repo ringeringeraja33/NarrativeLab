@@ -144,6 +144,7 @@ export class ManuscriptView extends ProjectBoundItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();

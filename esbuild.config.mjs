@@ -1,48 +1,30 @@
 import esbuild from "esbuild";
 import process from "process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync } from "fs";
-import { dirname, join } from "path";
+import { copyFileSync, existsSync, mkdirSync } from "fs";
+import { delimiter, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
-import { homedir } from "os";
 
 const prod = process.argv[2] === "production";
 const projectRoot = dirname(fileURLToPath(import.meta.url));
-const oneDrive = join(homedir(), "Library/CloudStorage/OneDrive-个人/My Library");
-const localVaultPlugin = join(homedir(), "Documents/Obsidian/.obsidian/plugins/narrative-lab");
 
-/** Vault plugin folders that should receive the built plugin files. */
-const DEPLOY_DIRS = [
-  localVaultPlugin,
-  join(oneDrive, "Projects/Game Design/.obsidian/plugins/narrative-lab"),
-  join(oneDrive, ".obsidian/plugins/narrative-lab"),
-].filter((dir) => existsSync(dirname(dir)) || existsSync(join(dirname(dir), "..")));
+/** Optional, path-delimited vault plugin folders that receive build outputs. */
+const DEPLOY_DIRS = (process.env.NARRATIVE_LAB_DEPLOY_DIRS ?? "")
+  .split(delimiter)
+  .map((dir) => dir.trim())
+  .filter(Boolean)
+  .map((dir) => resolve(dir));
 
 function deployPluginFiles() {
-  const files = ["main.js", "manifest.json", "styles.css", "plotgrid-univer.js"];
-  // Univer may emit CSS beside the chunk when using plugins; copy any plotgrid-univer*.css
-  let extras = [];
-  try {
-    extras = readdirSync(projectRoot).filter(
-      (name) => name.startsWith("plotgrid-univer") && name.endsWith(".css"),
-    );
-  } catch { /* ignore */ }
+  // These are the only files downloaded by an Obsidian community install.
+  const files = ["main.js", "manifest.json", "styles.css"];
   for (const dir of DEPLOY_DIRS) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    for (const file of [...files, ...extras]) {
+    for (const file of files) {
       const src = join(projectRoot, file);
       if (!existsSync(src)) continue;
       copyFileSync(src, join(dir, file));
     }
     console.log(`[deploy] → ${dir}`);
-  }
-}
-
-function rejectObsidianRuntimeImport(outputFile) {
-  const bundle = readFileSync(outputFile, "utf8");
-  if (/require\(["']obsidian["']\)/.test(bundle)) {
-    throw new Error(
-      "The lazy Univer bundle must not import Obsidian at runtime; inject Obsidian-backed UI through host options.",
-    );
   }
 }
 
@@ -105,39 +87,9 @@ const mainContext = await esbuild.context({
   ],
 });
 
-const univerContext = await esbuild.context({
-  ...shared,
-  entryPoints: [join(projectRoot, "services/plotgrid-univer-entry.ts")],
-  outfile: join(projectRoot, "plotgrid-univer.js"),
-  // CSS imported as text then injected at runtime by host if needed — also
-  // keep a side-effect import path: inject via banner.
-  banner: {
-    js: "try{if(typeof document!=='undefined'){window.__NL_UNIVER_CSS__=window.__NL_UNIVER_CSS__||[];}}catch(e){}",
-  },
-  plugins: [
-    {
-      name: "deploy-univer-chunk",
-      setup(build) {
-        build.onEnd((result) => {
-          if (result.errors.length === 0) {
-            try {
-              rejectObsidianRuntimeImport(join(projectRoot, "plotgrid-univer.js"));
-              deployPluginFiles();
-            } catch (err) {
-              console.warn("[deploy] skipped:", err instanceof Error ? err.message : err);
-            }
-          }
-        });
-      },
-    },
-  ],
-});
-
 if (prod) {
-  await Promise.all([mainContext.rebuild(), univerContext.rebuild()]);
-  rejectObsidianRuntimeImport(join(projectRoot, "plotgrid-univer.js"));
-  deployPluginFiles();
+  await mainContext.rebuild();
   process.exit(0);
 } else {
-  await Promise.all([mainContext.watch(), univerContext.watch()]);
+  await mainContext.watch();
 }

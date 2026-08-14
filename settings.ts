@@ -626,6 +626,11 @@ export interface SceneCardsSettings {
     lastLibraryContentMode: 'profile' | 'browse' | 'story-graph';
     /** Remembered Library category tab (characters, locations, or a codex id) */
     lastLibraryCategoryId: string;
+    /**
+     * Remembered Structure sub-tab:
+     * timeline / tracks (Timeline view) or plot-list / subway (Storyline view).
+     */
+    lastStructureMode: 'timeline' | 'tracks' | 'plot-list' | 'subway';
     /** Remembered Storyline (Plotlines) view mode from last session */
     lastStorylineViewMode: 'list' | 'subway';
     /** Remembered Storyline view sort mode from last session */
@@ -1027,6 +1032,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     lastBoardGroupBy: 'act',
     lastLibraryContentMode: 'profile',
     lastLibraryCategoryId: 'characters',
+    lastStructureMode: 'timeline',
     lastStorylineViewMode: 'subway',
     lastStorylineSortMode: 'reading-order',
     lastStorylineArcFilter: 'all',

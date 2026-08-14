@@ -8,6 +8,7 @@ import {
     NARRATIVE_LAB_PROJECT_FILE_STATE_KEY,
     narrativeLabLeafState,
 } from '../utils/narrativeLabLeafState';
+import type { SceneManager } from '../services/SceneManager';
 
 type ProjectIdentity = {
     filePath: string;
@@ -45,6 +46,11 @@ export abstract class ProjectBoundItemView extends ItemView {
     protected ensureProjectBinding(projectFile?: string | null): void {
         if (this.boundProjectFile || !projectFile?.trim()) return;
         this.boundProjectFile = normalizePath(projectFile);
+    }
+
+    /** Bind a leaf after project discovery when no project was available at construction time. */
+    protected captureProjectBinding(sceneManager: SceneManager): void {
+        this.ensureProjectBinding(sceneManager.activeProject?.filePath);
     }
 
     /** Resolve a stable title without reading another tab's active project. */

@@ -64,6 +64,7 @@ export class StatsView extends ProjectBoundItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
@@ -1495,7 +1496,7 @@ export class StatsView extends ProjectBoundItemView {
 
             if (sceneEchoes.length > 0) {
                 echoes.push({
-                    sceneTitle: scene.title || 'Untitled',
+                    sceneTitle: scene.title || t('Untitled'),
                     filePath: scene.filePath,
                     echoes: sceneEchoes.slice(0, 10),
                 });
@@ -1515,7 +1516,7 @@ export class StatsView extends ProjectBoundItemView {
 
             if (favourites.length > 0 || sceneEchoes.length > 0) {
                 perScene.push({
-                    sceneTitle: scene.title || 'Untitled',
+                    sceneTitle: scene.title || t('Untitled'),
                     filePath: scene.filePath,
                     favourites: favourites.sort((a, b) => (b.sceneRate / b.globalRate) - (a.sceneRate / a.globalRate)).slice(0, 8),
                     echoCount: sceneEchoes.length,

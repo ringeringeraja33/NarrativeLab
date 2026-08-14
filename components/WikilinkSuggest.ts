@@ -422,7 +422,7 @@ export class WikilinkSuggest {
 
     /** Floating hosts that sit above Obsidian chrome. */
     private resolveStackingHost(): HTMLElement | null {
-        return this.textareaEl.closest(
+        return this.textareaEl.closest<HTMLElement>(
             '.plot-grid-cell-editor-window, .modal, .vertical-tab-content',
         );
     }

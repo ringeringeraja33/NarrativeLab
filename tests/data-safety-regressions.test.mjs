@@ -132,6 +132,25 @@ test('series migrations journal transfers and roll back every move path', () => 
     assert.match(seriesManager, /rolling back series dissolve/);
 });
 
+test('series convert and dissolve open stacked child modals after the click settles', () => {
+    assert.match(mainTs, /function openStackedModal/);
+    assert.match(mainTs, /nl-stacked-modal/);
+    assert.match(mainTs, /convertBtn\.addEventListener\('click', \(event\) => \{[\s\S]*stopPropagation\(\)[\s\S]*convertProjectToSeries/);
+    assert.match(mainTs, /dissolveBtn\.addEventListener\('click', \(event\) => \{[\s\S]*stopPropagation\(\)[\s\S]*dissolveSeries/);
+    const convertFn = mainTs.slice(
+        mainTs.indexOf('private convertProjectToSeries'),
+        mainTs.indexOf('private async dissolveSeries'),
+    );
+    assert.match(convertFn, /openStackedModal\(modal\)/);
+    assert.doesNotMatch(convertFn, /modal\.open\(\)/);
+    const dissolveFn = mainTs.slice(
+        mainTs.indexOf('private async dissolveSeries'),
+        mainTs.indexOf('private async renameSeries'),
+    );
+    assert.match(dissolveFn, /openStackedModal\(modal\)/);
+    assert.match(styles, /\.modal-container\.nl-stacked-modal/);
+});
+
 test('failed project trash restores series metadata', () => {
     assert.match(sceneManager, /seriesMetadataRollback/);
     assert.match(sceneManager, /Failed to restore series metadata after project deletion failed/);
@@ -270,6 +289,7 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(save, /writeVaultBinaryResilient/);
     assert.match(save, /encodePlotGridXlsx/);
     assert.match(save, /ensureVaultFolder/);
+    assert.match(save, /projectFilePath\?:/);
     assert.match(save, /_reportedInvalidPlotGridXlsxPaths\.has\(path\)/);
     assert.equal((save.match(/new Notice\(/g) || []).length, 1, 'corrupt workbook warning is deduplicated');
     assert.match(mainTs, /getBasePath\?\./);
@@ -292,7 +312,7 @@ test('custom profile categories expose a working profile overview mode', () => {
     assert.match(codexView, /private renderOverviewModes\(parent: HTMLElement\)/);
     assert.match(libraryModeBar, /data-mode': 'profile'/);
     assert.match(codexView, /activeCategoryHasProfilePage/);
-    assert.match(codexView, /profileOverviewCategoryId = this\.activeCategory/);
+    assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile'\)/);
     assert.match(codexView, /showLayoutToggle: !this\.isProfileOverviewMode\(\)/);
     assert.match(codexView, /this\.isProfileOverviewMode\(\)\s*\? 'cards'/);
 });
@@ -389,7 +409,9 @@ test('plot-grid text keeps Markdown source and renders rich text with native wik
         univerHost.indexOf('function registerNarrativeLabContextMenu'),
         univerHost.indexOf('function linkedCellAt'),
     );
-    assert.doesNotMatch(contextMenu, /link-note|unlink-note|open-linked-note/);
+    assert.match(contextMenu, /link-note/);
+    assert.match(contextMenu, /unlink-note/);
+    assert.match(contextMenu, /connectedTitle|Connected notes|已连接笔记/);
     assert.match(markdownInput, /getHotkeys/);
     assert.match(markdownInput, /insert-wikilink/);
 });
@@ -405,4 +427,24 @@ test('NarrativeCanvas textareas inherit the configured Obsidian Markdown shortcu
     assert.match(canvasHost, /getMarkdownShortcutAction\(event\)/);
     assert.match(canvasHost, /hotkeyManager/);
     assert.match(canvasHost, /editor:insert-wikilink/);
+});
+
+test('project picker paints the cached list before a vault rescan', () => {
+    const picker = mainTs.slice(mainTs.indexOf('class ProjectSelectModal'), mainTs.indexOf('function openStackedModal'));
+    assert.match(picker, /getProjects\(\)/);
+    assert.match(picker, /fillSelect\(cached/);
+    assert.match(picker, /Scanning…/);
+    assert.match(picker, /void refreshSelect\(\)/);
+    const fillIdx = picker.indexOf('fillSelect(cached');
+    const scanIdx = picker.indexOf('void refreshSelect()');
+    assert.ok(fillIdx >= 0 && scanIdx > fillIdx);
+});
+
+test('project scan keeps the previous list until the new map is ready', () => {
+    assert.match(sceneManager, /scanProjectsInner/);
+    assert.match(sceneManager, /projectFromMetadataCache/);
+    assert.match(sceneManager, /this\.projects = next/);
+    assert.doesNotMatch(sceneManager, /this\.projects\.clear\(\)/);
+    assert.match(sceneManager, /getAbstractFileByPath\(path\) != null/);
+    assert.match(sceneManager, /_scanProjectsPromise/);
 });

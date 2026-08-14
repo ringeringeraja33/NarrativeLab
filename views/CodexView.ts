@@ -11,7 +11,6 @@ import { CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE } from '../con
 import { renderViewSwitcher } from '../components/ViewSwitcher';
 import { promptDeleteCategory, renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
-import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import {
     getLibraryContentMode,
@@ -51,6 +50,7 @@ import {
 } from '../components/CustomSectionsRenderer';
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { t } from '../utils/i18n';
+import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import {
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
@@ -195,6 +195,11 @@ export class CodexView extends ProjectBoundItemView {
     private listScroller: VirtualScroller<CodexListRow> | null = null;
     /** How many cards/table rows to show (grows via Load more) */
     private browseShown = LIBRARY_BROWSE_PAGE_SIZE;
+    /**
+     * When true and the active project belongs to a series, hide entries
+     * whose `books[]` field excludes the current book — same as Locations.
+     */
+    private bookFilterActive = false;
 
     // ── Auto-save state ────────────────────────────────
     private _saveTimer: number | null = null;
@@ -229,6 +234,7 @@ export class CodexView extends ProjectBoundItemView {
     getIcon(): string { return 'book-open'; }
 
     async onOpen(): Promise<void> {
+        this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
@@ -261,13 +267,9 @@ export class CodexView extends ProjectBoundItemView {
         ) {
             this.activeCategory = remembered;
             this.selectedEntry = null;
-            this.profileOverviewCategoryId = getLibraryContentMode(this.plugin) === 'profile'
-                ? remembered
-                : null;
         } else {
             this.activeCategory = '';
             this.selectedEntry = null;
-            this.profileOverviewCategoryId = null;
         }
 
         if (this.rootContainer !== container || !container.isConnected) return;
@@ -297,9 +299,6 @@ export class CodexView extends ProjectBoundItemView {
     setActiveCategory(categoryId: string): void {
         this.activeCategory = categoryId;
         this.selectedEntry = null;
-        this.profileOverviewCategoryId = getLibraryContentMode(this.plugin) === 'profile'
-            ? categoryId
-            : null;
         this.activeTagFilters.clear();
         this.browseShown = LIBRARY_BROWSE_PAGE_SIZE;
         rememberLibraryCategory(this.plugin, categoryId || UNCATEGORIZED_CATEGORY_ID);
@@ -406,19 +405,7 @@ export class CodexView extends ProjectBoundItemView {
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
-            renderBeforeModeActions: this.selectedEntry || this.activeCategory !== UNCATEGORIZED_CATEGORY_ID
-                ? undefined
-                : (actions) => {
-                const newUncategorizedBtn = actions.createEl('button', {
-                    cls: 'character-mode-btn codex-new-uncategorized-tab',
-                    attr: { type: 'button', 'aria-label': t('New uncategorized entry') },
-                });
-                const icon = newUncategorizedBtn.createSpan();
-                obsidian.setIcon(icon, 'file-plus-2');
-                newUncategorizedBtn.createSpan({ text: t('New uncategorized entry') });
-                newUncategorizedBtn.addEventListener('click', () => this.promptNewUncategorizedEntry());
-            },
-            // Custom Categories button is always rendered by renderCodexCategoryTabs.
+            // New uncategorized lives in the browse toolbar (inside this tab), like Locations.
         });
 
         // ── Content area ───────────────────────────────
@@ -442,7 +429,7 @@ export class CodexView extends ProjectBoundItemView {
     }
 
     // ══════════════════════════════════════════════════
-    //  Overview — heading + search + card grid
+    //  Overview — search + card grid (no redundant heading)
     // ══════════════════════════════════════════════════
 
     private renderOverview(container: HTMLElement): void {
@@ -530,13 +517,14 @@ export class CodexView extends ProjectBoundItemView {
                 this.renderList(listContainer);
             },
             onNew: this.activeCategory === UNCATEGORIZED_CATEGORY_ID
-                ? undefined
+                ? () => this.promptNewUncategorizedEntry()
                 : () => this.promptNewEntry(),
             newLabel: t('New'),
             onLayoutChange: () => {
                 this.browseShown = LIBRARY_BROWSE_PAGE_SIZE;
                 this.renderList(listContainer);
             },
+            // Profile / Uncategorized gallery is card-only, like Location Profiles.
             showLayoutToggle: !this.isProfileOverviewMode(),
             renderTrailingActions: (actionsEl) => this.renderOverviewModes(actionsEl),
         });
@@ -705,6 +693,17 @@ export class CodexView extends ProjectBoundItemView {
             });
         }
 
+        if (this.bookFilterActive) {
+            const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
+            if (currentBook) {
+                const lower = currentBook.toLowerCase();
+                entries = entries.filter(e => {
+                    if (!e.books || e.books.length === 0) return true;
+                    return e.books.some(b => b.toLowerCase() === lower);
+                });
+            }
+        }
+
         // Sort
         entries = [...entries].sort((a, b) => {
             switch (this.sortBy) {
@@ -797,7 +796,10 @@ export class CodexView extends ProjectBoundItemView {
                     cls: 'mod-cta',
                     text: t('Create first {kind}', { kind: t(catDef.label).toLowerCase().replace(/s$/, '') }),
                 });
-                createBtn.addEventListener('click', () => this.promptNewEntry());
+                createBtn.addEventListener('click', () => {
+                    if (catDef.id === UNCATEGORIZED_CATEGORY_ID) this.promptNewUncategorizedEntry();
+                    else this.promptNewEntry();
+                });
             }
             return;
         }
@@ -857,7 +859,9 @@ export class CodexView extends ProjectBoundItemView {
     }
 
     private activeCategoryHasProfilePage(): boolean {
-        if (!this.activeCategory || this.activeCategory === UNCATEGORIZED_CATEGORY_ID) return false;
+        if (!this.activeCategory) return false;
+        // Card gallery like Location Profiles — not the per-entry field schema.
+        if (this.activeCategory === UNCATEGORIZED_CATEGORY_ID) return true;
         return this.plugin.settings.codexCustomCategories
             ?.find(category => category.id === this.activeCategory)
             ?.hasProfilePage === true;
@@ -1079,7 +1083,7 @@ export class CodexView extends ProjectBoundItemView {
                 const field = catDef.categories.flatMap(c => c.fields).find(f => f.key === key);
                 const on = columns.includes(key);
                 menu.addItem(item => item
-                    .setTitle(field?.label || key)
+                    .setTitle(t(field?.label || key))
                     .setChecked(on)
                     .onClick(async () => {
                         const next = on ? columns.filter(c => c !== key) : [...columns, key];
@@ -1685,6 +1689,8 @@ export class CodexView extends ProjectBoundItemView {
 
         // Label with an edit icon
         const labelWrap = row.createDiv('codex-universal-label-wrap');
+        // User-authored universal field labels stay verbatim — never t(), or a
+        // rename that happens to match a dictionary key would be overwritten.
         labelWrap.createEl('label', { cls: 'codex-field-label', text: tpl.label });
 
         const editBtn = labelWrap.createEl('span', {
@@ -1771,7 +1777,7 @@ export class CodexView extends ProjectBoundItemView {
             const msInput = inputRow.createEl('input', {
                 cls: 'universal-multi-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder ? t(tpl.placeholder) : t('Type to add\u2026') },
+                attr: { placeholder: tpl.placeholder || t('Type to add\u2026') },
             });
             // Issue #102 — portal dropdown to <body> so position:fixed coords are
             // relative to the viewport even when an ancestor uses `transform`,
@@ -1881,7 +1887,7 @@ export class CodexView extends ProjectBoundItemView {
         } else if (tpl.type === 'textarea') {
             const textarea = row.createEl('textarea', {
                 cls: 'codex-field-textarea',
-                attr: { placeholder: tpl.placeholder, rows: '2' },
+                attr: { placeholder: tpl.placeholder || '', rows: '2' },
             });
             textarea.value = value;
             const autoGrow = () => {
@@ -1911,7 +1917,7 @@ export class CodexView extends ProjectBoundItemView {
             const input = row.createEl('input', {
                 cls: 'codex-field-input',
                 type: 'text',
-                attr: { placeholder: tpl.placeholder },
+                attr: { placeholder: tpl.placeholder || '' },
             });
             input.value = value;
             input.addEventListener('input', () => {

@@ -279,7 +279,7 @@ export default class SceneCardsPlugin extends Plugin {
     private _suppressVaultRefreshPaths = new Set<string>();
     /** Coalesce concurrent full / light view refreshes. */
     private _refreshOpenViewsPromise: Promise<void> | null = null;
-    private _refreshViewsOnlyPromise: Promise<void> | null = null;
+    private _pendingOpenViewsRefresh: 'none' | 'views' | 'full' = 'none';
     /** Coalesce concurrent Library/entity reloads (Codex + Characters + Locations). */
     private _reloadEntitiesPromise: Promise<boolean> | null = null;
     /** A vault structure event arrived while a Library reload was in progress. */
@@ -3420,12 +3420,28 @@ export default class SceneCardsPlugin extends Plugin {
             ? normalizePath(this.sceneManager.activeProject.filePath)
             : null;
 
-        if (leaves.length > 0) {
-            // Prefer a leaf already bound to the active project (multi-project tabs).
-            leaf = (activePath
-                ? leaves.find(item => getLeafNarrativeLabProjectFile(item) === activePath)
-                : null) ?? leaves[0];
-        } else {
+        if (leaves.length > 0 && activePath) {
+            // Reuse only this project's leaf. Falling back to leaves[0] here
+            // silently replaced another open project's content and title.
+            leaf = leaves.find(item => getLeafNarrativeLabProjectFile(item) === activePath) ?? null;
+            if (!leaf) {
+                // Adopt one legacy, unbound leaf once; never adopt a leaf that
+                // already belongs to another project.
+                leaf = leaves.find(item => !getLeafNarrativeLabProjectFile(item)) ?? null;
+                if (leaf) {
+                    const previous = (leaf.getViewState()?.state || {}) as Record<string, unknown>;
+                    await leaf.setViewState({
+                        type: viewType,
+                        active: true,
+                        state: narrativeLabLeafState(activePath, previous),
+                    });
+                }
+            }
+        } else if (leaves.length > 0) {
+            leaf = leaves[0] ?? null;
+        }
+
+        if (!leaf) {
             // Never replace another project's open tab — open beside it instead.
             const hasScopedLeaves = this.countProjectScopedLeaves() > 0;
             leaf = hasScopedLeaves ? workspace.getLeaf('tab') : workspace.getLeaf(false);
@@ -3485,25 +3501,43 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /** If the focused leaf is bound to another project, switch the active project. */
-    private _syncingProjectFromLeaf = false;
-    private async syncActiveProjectFromLeaf(leaf: WorkspaceLeaf | null): Promise<void> {
-        if (!leaf || this._syncingProjectFromLeaf) return;
-        const bound = getLeafNarrativeLabProjectFile(leaf);
-        if (!bound) return;
-        const activePath = this.sceneManager.activeProject?.filePath
-            ? normalizePath(this.sceneManager.activeProject.filePath)
-            : null;
-        if (activePath === bound) return;
-        const project = this.sceneManager.getProjects()
-            .find(p => normalizePath(p.filePath) === bound);
-        if (!project) return;
-        this._syncingProjectFromLeaf = true;
-        try {
-            await this.sceneManager.setActiveProject(project);
-        } catch (err) {
-            console.warn('[NarrativeLab] Failed to sync active project from leaf:', err);
-        } finally {
-            this._syncingProjectFromLeaf = false;
+    private _pendingProjectLeaf: WorkspaceLeaf | null = null;
+    private _projectLeafSyncPromise: Promise<void> | null = null;
+    private syncActiveProjectFromLeaf(leaf: WorkspaceLeaf | null): Promise<void> {
+        if (!leaf) return Promise.resolve();
+        // Coalesce rapid tab focus changes to the latest leaf. The previous
+        // boolean guard discarded the later project and left UI/data mismatched.
+        this._pendingProjectLeaf = leaf;
+        if (!this._projectLeafSyncPromise) {
+            this._projectLeafSyncPromise = this.drainProjectLeafSyncQueue()
+                .finally(() => {
+                    this._projectLeafSyncPromise = null;
+                    if (this._pendingProjectLeaf) {
+                        void this.syncActiveProjectFromLeaf(this._pendingProjectLeaf);
+                    }
+                });
+        }
+        return this._projectLeafSyncPromise;
+    }
+
+    private async drainProjectLeafSyncQueue(): Promise<void> {
+        while (this._pendingProjectLeaf) {
+            const requestedLeaf = this._pendingProjectLeaf;
+            this._pendingProjectLeaf = null;
+            const bound = getLeafNarrativeLabProjectFile(requestedLeaf);
+            if (!bound) continue;
+            const activePath = this.sceneManager.activeProject?.filePath
+                ? normalizePath(this.sceneManager.activeProject.filePath)
+                : null;
+            if (activePath === bound) continue;
+            const project = this.sceneManager.getProjects()
+                .find(p => normalizePath(p.filePath) === bound);
+            if (!project) continue;
+            try {
+                await this.sceneManager.setActiveProject(project);
+            } catch (err) {
+                console.warn('[NarrativeLab] Failed to sync active project from leaf:', err);
+            }
         }
     }
 
@@ -4549,11 +4583,7 @@ export default class SceneCardsPlugin extends Plugin {
      * Refresh all open Scene Cards views
      */
     async refreshOpenViews(): Promise<void> {
-        if (this._refreshOpenViewsPromise) return this._refreshOpenViewsPromise;
-        this._refreshOpenViewsPromise = this.doRefreshOpenViews(true).finally(() => {
-            this._refreshOpenViewsPromise = null;
-        });
-        return this._refreshOpenViewsPromise;
+        return this.enqueueOpenViewsRefresh(true);
     }
 
     /**
@@ -4561,12 +4591,34 @@ export default class SceneCardsPlugin extends Plugin {
      * and full wikilink rescan (scene index already updated via handleFileChange).
      */
     async refreshViewsOnly(): Promise<void> {
-        if (this._refreshOpenViewsPromise) return this._refreshOpenViewsPromise;
-        if (this._refreshViewsOnlyPromise) return this._refreshViewsOnlyPromise;
-        this._refreshViewsOnlyPromise = this.doRefreshOpenViews(false).finally(() => {
-            this._refreshViewsOnlyPromise = null;
-        });
-        return this._refreshViewsOnlyPromise;
+        return this.enqueueOpenViewsRefresh(false);
+    }
+
+    /** Coalesce refresh storms without dropping changes that arrive mid-refresh. */
+    private enqueueOpenViewsRefresh(full: boolean): Promise<void> {
+        if (full || this._pendingOpenViewsRefresh === 'none') {
+            this._pendingOpenViewsRefresh = full ? 'full' : 'views';
+        }
+        if (!this._refreshOpenViewsPromise) {
+            this._refreshOpenViewsPromise = this.drainOpenViewsRefreshQueue()
+                .finally(() => {
+                    this._refreshOpenViewsPromise = null;
+                    if (this._pendingOpenViewsRefresh !== 'none') {
+                        void this.enqueueOpenViewsRefresh(
+                            this._pendingOpenViewsRefresh === 'full',
+                        );
+                    }
+                });
+        }
+        return this._refreshOpenViewsPromise;
+    }
+
+    private async drainOpenViewsRefreshQueue(): Promise<void> {
+        while (this._pendingOpenViewsRefresh !== 'none') {
+            const requested = this._pendingOpenViewsRefresh;
+            this._pendingOpenViewsRefresh = 'none';
+            await this.doRefreshOpenViews(requested === 'full');
+        }
     }
 
     private async doRefreshOpenViews(full: boolean): Promise<void> {
@@ -4613,6 +4665,7 @@ export default class SceneCardsPlugin extends Plugin {
         const activePath = this.sceneManager.activeProject?.filePath
             ? normalizePath(this.sceneManager.activeProject.filePath)
             : null;
+        const refreshTasks: Promise<void>[] = [];
         for (const viewType of viewTypes) {
             const leaves = this.app.workspace.getLeavesOfType(viewType);
             for (const leaf of leaves) {
@@ -4622,21 +4675,24 @@ export default class SceneCardsPlugin extends Plugin {
                 if (bound && (!activePath || bound !== activePath)) {
                     continue;
                 }
-                const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
-                if (view && typeof view.refresh === 'function') {
-                    try {
-                        await Promise.resolve(view.refresh());
-                    } catch { /* non-fatal per view */ }
-                }
-                // Keep in-view toolbar title in sync even when a view's refresh()
-                // only rebuilds content (e.g. Board corkboard) and skips the toolbar.
-                leaf.view.containerEl
-                    .querySelectorAll('.story-line-view-title')
-                    .forEach(el => { el.textContent = projectLabel; });
-                // Update the tab title so it reflects the new project name immediately
-                (leaf as unknown as { updateHeader?: () => void }).updateHeader?.();
+                refreshTasks.push((async () => {
+                    const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
+                    if (view && typeof view.refresh === 'function') {
+                        try {
+                            await Promise.resolve(view.refresh());
+                        } catch { /* non-fatal per view */ }
+                    }
+                    // Keep in-view toolbar title in sync even when a view's refresh()
+                    // only rebuilds content (e.g. Board corkboard) and skips the toolbar.
+                    leaf.view.containerEl
+                        .querySelectorAll('.story-line-view-title')
+                        .forEach(el => { el.textContent = projectLabel; });
+                    // Update the tab title so it reflects the project immediately.
+                    (leaf as unknown as { updateHeader?: () => void }).updateHeader?.();
+                })());
             }
         }
+        await Promise.allSettled(refreshTasks);
     }
 
     /** Refresh only open Plot Grid leaves (external datasheet.xlsx edits). */
@@ -5517,6 +5573,43 @@ class ProjectSelectModal extends Modal {
         const select = list.createEl('select', { cls: 'project-select-dropdown' });
         select.addEventListener('keydown', (e: KeyboardEvent) => e.stopPropagation());
 
+        const fillSelect = (projects: StoryLineProject[], emptyLabel?: string) => {
+            if (!select.isConnected) return;
+            const previous = select.value;
+            select.empty();
+            if (projects.length === 0) {
+                const opt = select.createEl('option', { text: emptyLabel ?? t('No projects found') });
+                opt.setAttr('disabled', 'true');
+                return;
+            }
+            const rootPath = this.plugin.settings.storyLineRoot;
+            for (const p of projects) {
+                const isCustom = !p.filePath.startsWith(rootPath + '/');
+                const parentDir = p.filePath.substring(0, p.filePath.lastIndexOf('/'));
+                const label = isCustom ? `${p.title}  (${parentDir})` : p.title;
+                const opt = select.createEl('option', { text: label });
+                opt.setAttr('value', p.filePath);
+            }
+            const active = this.plugin.sceneManager.activeProject;
+            const preferred = previous
+                || (active && projects.some((p: StoryLineProject) => p.filePath === active.filePath) ? active.filePath : '');
+            select.value = projects.some((p: StoryLineProject) => p.filePath === preferred)
+                ? preferred
+                : projects[0].filePath;
+        };
+
+        const refreshSelect = async (noticeOnError = false) => {
+            try {
+                await this.plugin.sceneManager.scanProjects();
+                fillSelect(this.plugin.sceneManager.getProjects());
+            } catch (err) {
+                if (this.plugin.sceneManager.getProjects().length === 0) {
+                    fillSelect([], t('Error loading projects'));
+                }
+                if (noticeOnError) new Notice(t('Failed to refresh projects: ') + String(err));
+            }
+        };
+
         const actions = contentEl.createDiv({ cls: 'project-actions project-actions-primary' });
         const openSelected = async (destination: 'board' | 'canvas'): Promise<void> => {
             const val = select.value;
@@ -5566,23 +5659,7 @@ class ProjectSelectModal extends Modal {
                 this.close();
                 return;
             }
-            try {
-                await this.plugin.sceneManager.scanProjects();
-                const projects = this.plugin.sceneManager.getProjects();
-                // repopulate select
-                select.empty();
-                for (const p of projects) {
-                    const rootPath = this.plugin.settings.storyLineRoot;
-                    const isCustom = !p.filePath.startsWith(rootPath + '/');
-                    const parentDir = p.filePath.substring(0, p.filePath.lastIndexOf('/'));
-                    const label = isCustom ? `${p.title}  (${parentDir})` : p.title;
-                    const opt = select.createEl('option', { text: label });
-                    opt.setAttr('value', p.filePath);
-                }
-                if (projects.length > 0) select.value = projects[0].filePath;
-            } catch (err) {
-                new Notice(t('Failed to refresh projects: ') + String(err));
-            }
+            await refreshSelect(true);
         });
 
         const cancel = managementActions.createEl('button', { text: t('Cancel'), cls: 'mod-quiet project-actions-cancel' });
@@ -5611,26 +5688,22 @@ class ProjectSelectModal extends Modal {
             });
             fileList.createDiv({ text: t('Scanning…') });
 
-            // Inspect all Markdown files; project manifests may live anywhere.
             const projectFiles: { path: string; title: string }[] = [];
             try {
-                const adapter = this.app.vault.adapter;
-
-                const checkFile = async (filePath: string) => {
-                    if (!filePath.endsWith('.md')) return;
-                    try {
-                        const content = await adapter.read(filePath);
-                        const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-                        if (!fmMatch) return;
-                        if (!/^type:\s*(?:narrative-lab|storyline)\s*$/m.test(fmMatch[1])) return;
-                        // Extract title from frontmatter
-                        const titleMatch = fmMatch[1].match(/^title:\s*(.+)/m);
-                        const title = titleMatch ? titleMatch[1].trim() : filePath.split('/').pop()?.replace(/\.md$/i, '') ?? filePath;
-                        projectFiles.push({ path: filePath, title });
-                    } catch { /* unreadable */ }
-                };
-
-                for (const file of this.app.vault.getMarkdownFiles()) await checkFile(file.path);
+                const known = this.plugin.sceneManager.getProjects();
+                if (known.length > 0) {
+                    for (const p of known) projectFiles.push({ path: p.filePath, title: p.title });
+                } else {
+                    for (const file of this.app.vault.getMarkdownFiles()) {
+                        const cache = this.app.metadataCache.getFileCache(file);
+                        const type = cache?.frontmatter?.type;
+                        if (type !== 'narrative-lab' && type !== 'storyline') continue;
+                        const title = typeof cache?.frontmatter?.title === 'string' && cache.frontmatter.title
+                            ? cache.frontmatter.title
+                            : file.basename;
+                        projectFiles.push({ path: file.path, title });
+                    }
+                }
             } catch { /* vault index may still be loading */ }
             projectFiles.sort((a, b) => a.title.localeCompare(b.title));
 
@@ -5684,33 +5757,27 @@ class ProjectSelectModal extends Modal {
             browseModal.open();
         });
 
-        // initial population
-        (async () => {
-            try {
-                await this.plugin.sceneManager.scanProjects();
-                const projects = this.plugin.sceneManager.getProjects();
-                if (projects.length === 0) {
-                    select.createEl('option', { text: t('No projects found') }).setAttribute('disabled', 'true');
-                }
-                for (const p of projects) {
-                    const rootPath = this.plugin.settings.storyLineRoot;
-                    const isCustom = !p.filePath.startsWith(rootPath + '/');
-                    const parentDir = p.filePath.substring(0, p.filePath.lastIndexOf('/'));
-                    const label = isCustom ? `${p.title}  (${parentDir})` : p.title;
-                    const opt = select.createEl('option', { text: label });
-                    opt.setAttr('value', p.filePath);
-                }
-                if (projects.length > 0) {
-                    const active = this.plugin.sceneManager.activeProject;
-                    select.value = (active && projects.some((p: StoryLineProject) => p.filePath === active.filePath))
-                        ? active.filePath
-                        : projects[0].filePath;
-                }
-            } catch (err) {
-                select.createEl('option', { text: t('Error loading projects') }).setAttribute('disabled', 'true');
-            }
-        })();
+        // Paint the already-scanned list immediately; refresh in the background.
+        const cached = this.plugin.sceneManager.getProjects();
+        fillSelect(cached, cached.length === 0 ? t('Scanning…') : undefined);
+        void refreshSelect();
     }
+}
+
+/**
+ * Open a second modal above an already-open one.
+ * Opening synchronously inside a click handler lets the same mouseup hit the
+ * new dim overlay and immediately close the child — Convert / Dissolve looked dead.
+ */
+function openStackedModal(modal: Modal): void {
+    window.setTimeout(() => {
+        modal.open();
+        const shell = modal.containerEl.closest<HTMLElement>('.modal-container');
+        if (shell) {
+            shell.addClass('nl-stacked-modal');
+        }
+        modal.containerEl.addClass('nl-stacked-modal-content');
+    }, 0);
 }
 
 /**
@@ -5764,8 +5831,13 @@ class SeriesManagementModal extends Modal {
                 const convertBtn = row.createEl('button', {
                     text: t('Convert to Series…'),
                     cls: 'sl-series-convert-btn',
+                    attr: { type: 'button' },
                 });
-                convertBtn.addEventListener('click', () => this.convertProjectToSeries(project));
+                convertBtn.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    this.convertProjectToSeries(project);
+                });
             }
         }
 
@@ -5839,8 +5911,13 @@ class SeriesManagementModal extends Modal {
             const dissolveBtn = addRow.createEl('button', {
                 text: t('Convert series to standalone projects…'),
                 cls: 'sl-series-add-btn sl-series-dissolve-btn',
+                attr: { type: 'button' },
             });
-            dissolveBtn.addEventListener('click', () => this.dissolveSeries(folder, meta));
+            dissolveBtn.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                void this.dissolveSeries(folder, meta);
+            });
         }
     }
 
@@ -5886,7 +5963,7 @@ class SeriesManagementModal extends Modal {
                     new Notice(error instanceof Error ? error.message : String(error), 10000);
                 }
             }));
-        modal.open();
+        openStackedModal(modal);
     }
 
     private async dissolveSeries(folder: string, meta: SeriesMetadata): Promise<void> {
@@ -5908,7 +5985,7 @@ class SeriesManagementModal extends Modal {
                     modal.close();
                     resolve(true);
                 }));
-            modal.open();
+            openStackedModal(modal);
         });
         if (!confirmed) return;
 
@@ -5986,7 +6063,7 @@ class SeriesManagementModal extends Modal {
                 });
             });
 
-        modal.open();
+        openStackedModal(modal);
     }
 
     private async reorderBook(folder: string, meta: SeriesMetadata, fromIndex: number, toIndex: number) {
@@ -6019,7 +6096,7 @@ class SeriesManagementModal extends Modal {
             new Setting(m.contentEl)
                 .addButton((btn: ButtonComponent) => btn.setButtonText(t('Remove')).setClass('mod-warning').onClick(() => { m.close(); resolve(true); }))
                 .addButton((btn: ButtonComponent) => btn.setButtonText(t('Cancel')).onClick(() => { m.close(); resolve(false); }));
-            m.open();
+            openStackedModal(m);
         });
         if (!confirm) return;
 
@@ -6109,7 +6186,7 @@ class SeriesManagementModal extends Modal {
                     }
                 });
             });
-        modal.open();
+        openStackedModal(modal);
     }
 
     private async renameBook(folder: string, _meta: SeriesMetadata, bookName: string) {
@@ -6157,7 +6234,7 @@ class SeriesManagementModal extends Modal {
                 });
             });
 
-        modal.open();
+        openStackedModal(modal);
     }
 
     private async addBookToSeries(folder: string, meta: SeriesMetadata) {
@@ -6210,7 +6287,7 @@ class SeriesManagementModal extends Modal {
                 });
             });
 
-        modal.open();
+        openStackedModal(modal);
     }
 }
 /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars, no-useless-escape -- end of file-wide suppression block opened at line 1 */

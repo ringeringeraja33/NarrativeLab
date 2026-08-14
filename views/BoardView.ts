@@ -280,10 +280,10 @@ export class BoardView extends ItemView {
                 groupContainer.createSpan({ text: t('Group by: ') });
                 const groupSelect = groupContainer.createEl('select', { cls: 'dropdown' });
                 const groupOptions: { value: BoardGroupBy; label: string }[] = [
-                    { value: 'act', label: 'Act' },
-                    { value: 'chapter', label: 'Chapter' },
-                    { value: 'status', label: 'Status' },
-                    { value: 'pov', label: 'POV' },
+                    { value: 'act', label: t('Act') },
+                    { value: 'chapter', label: t('Chapter') },
+                    { value: 'status', label: t('Status') },
+                    { value: 'pov', label: t('POV') },
                 ];
                 // Append user-defined scene custom fields (dropdown / multi-select only)
                 if (this.plugin.fieldTemplates) {

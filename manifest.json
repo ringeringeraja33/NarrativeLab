@@ -1,9 +1,10 @@
 {
   "id": "narrative-lab",
   "name": "NarrativeLab",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "minAppVersion": "1.12.7",
-  "description": "A unified narrative workspace with a recursive Library database and Narrative Canvas.",
+  "description": "Plan, draft, and manage narrative projects with structured scenes, a recursive Library, spreadsheets, and Narrative Canvas.",
   "author": "ringeringeraja33",
+  "authorUrl": "https://github.com/ringeringeraja33",
   "isDesktopOnly": false
 }

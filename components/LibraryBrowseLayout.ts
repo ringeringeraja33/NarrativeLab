@@ -496,7 +496,7 @@ function openLibraryPropertiesPopover(
             checkbox.checked = selected.has(option.key);
             const icon = row.createSpan('library-properties-type-icon');
             obsidian.setIcon(icon, option.type === 'formula' ? 'sigma' : option.type === 'file' ? 'file' : 'text');
-            row.createSpan({ cls: 'library-properties-label', text: option.label });
+            row.createSpan({ cls: 'library-properties-label', text: t(option.label) });
 
             const edit = row.createEl('button', {
                 cls: 'library-properties-edit',
@@ -628,7 +628,7 @@ export function renderLibraryBrowseToolbar(
         const menu = new Menu();
         for (const opt of opts.sortOptions) {
             menu.addItem(item => item
-                .setTitle(opt.label)
+                .setTitle(t(opt.label))
                 .setChecked(opt.value === opts.sortBy)
                 .onClick(() => opts.onSortChange(opt.value)));
         }
