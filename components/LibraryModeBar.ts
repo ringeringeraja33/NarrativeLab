@@ -1,7 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-redundant-type-constituents -- Obsidian's dynamic API requires compatibility assertions; matching enable at end of file */
 /**
- * Library content mode (Browse / Story Graph) — shared across Characters,
- * Locations, and Codex category pages.
+ * Library content mode shared across Characters, Locations, and Codex pages.
+ * Story Graph is rendered as the first category-level tab; profile and browse
+ * controls stay inside the active category.
  */
 import * as obsidian from 'obsidian';
 import { Menu, Modal, Notice, Setting, TFile, normalizePath } from 'obsidian';
@@ -150,15 +151,12 @@ export function setStoryGraphFilters(plugin: SceneCardsPlugin, filters: StoryGra
     (plugin as SceneCardsPlugin & { libraryStoryGraphFilters?: StoryGraphFilterState }).libraryStoryGraphFilters = { ...filters };
 }
 
-/**
- * Browse / Story Graph toggle — sits on the shared Library chrome bar.
- */
+/** Profile / Browse toggle rendered inside the active Library category. */
 export function renderLibraryModeToggle(
     parent: HTMLElement,
     plugin: SceneCardsPlugin,
     onChange: () => void,
     profileMode?: LibraryProfileModeAction,
-    options?: { showStoryGraph?: boolean },
 ): HTMLElement | null {
     if (isMobile && !profileMode) return null;
 
@@ -191,21 +189,6 @@ export function renderLibraryModeToggle(
         setLibraryContentMode(plugin, 'browse');
         onChange();
     });
-
-    if (!isMobile && options?.showStoryGraph !== false) {
-        const graphBtn = toggle.createEl('button', {
-            cls: `character-mode-btn ${mode === 'story-graph' ? 'active' : ''}`,
-            attr: { 'data-mode': 'story-graph', 'aria-label': t('Story Graph') },
-        });
-        const graphIcon = graphBtn.createSpan();
-        obsidian.setIcon(graphIcon, 'share-2');
-        graphBtn.createSpan({ text: t(' Story Graph') });
-        graphBtn.addEventListener('click', () => {
-            if (getLibraryContentMode(plugin) === 'story-graph') return;
-            setLibraryContentMode(plugin, 'story-graph');
-            onChange();
-        });
-    }
 
     return toggle;
 }

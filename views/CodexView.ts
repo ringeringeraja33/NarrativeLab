@@ -902,7 +902,6 @@ export class CodexView extends ProjectBoundItemView {
                     },
                 }
                 : undefined,
-            { showStoryGraph: false },
         );
     }
 

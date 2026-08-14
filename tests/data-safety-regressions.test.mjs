@@ -376,7 +376,8 @@ test('Story Graph is the first peer tab while profile and browse modes stay in t
     assert.match(characterView, /activeId: storyGraphActive \? 'story-graph' : 'characters-pseudo'[\s\S]*?renderLeadingTabs:[\s\S]*?renderLibraryStoryGraphAction/);
     assert.match(locationView, /activeId: storyGraphActive \? 'story-graph' : 'locations-pseudo'[\s\S]*?renderLeadingTabs:[\s\S]*?renderLibraryStoryGraphAction/);
     assert.match(codexView, /activeId: storyGraphActive \? 'story-graph' : this\.activeCategory \|\| ''[\s\S]*?renderLeadingTabs:[\s\S]*?renderLibraryStoryGraphAction/);
-    assert.match(codexView, /\{ showStoryGraph: false \}/);
+    assert.doesNotMatch(libraryModeBar, /options\?: \{ showStoryGraph\?: boolean \}/);
+    assert.doesNotMatch(libraryModeBar, /options\?\.showStoryGraph/);
     assert.doesNotMatch(categoryTabs, /renderFarRightActions/);
     assert.doesNotMatch(styles, /\.codex-category-far-actions/);
     assert.match(styles, /\.codex-category-tabs\s*\{[^}]*justify-content:\s*flex-start/s);
