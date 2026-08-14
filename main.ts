@@ -3408,6 +3408,17 @@ export default class SceneCardsPlugin extends Plugin {
         return n;
     }
 
+    /** Find an already-open NarrativeLab main-area tab for one project. */
+    private findProjectScopedLeaf(projectFile: string): WorkspaceLeaf | null {
+        const normalized = normalizePath(projectFile);
+        for (const viewType of SceneCardsPlugin.PROJECT_SCOPED_VIEW_TYPES) {
+            const leaf = this.app.workspace.getLeavesOfType(viewType)
+                .find(item => getLeafNarrativeLabProjectFile(item) === normalized);
+            if (leaf) return leaf;
+        }
+        return null;
+    }
+
     /**
      * Activate a view type in the workspace
      */
@@ -3460,14 +3471,19 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
-     * Open (or focus) a Board tab bound to a specific project.
-     * Other project-bound Board tabs stay open and are not remounted.
+     * Open a project without duplicating its existing NarrativeLab tab.
+     * Prefer its Board tab; otherwise focus any main-area tab already bound to it.
+     * A new Board tab is created only when that project has no open tab.
      */
     async openBoardForProject(project: StoryLineProject): Promise<void> {
         const projectFile = normalizePath(project.filePath);
         const { workspace } = this.app;
         const boards = workspace.getLeavesOfType(BOARD_VIEW_TYPE);
         let leaf = boards.find(item => getLeafNarrativeLabProjectFile(item) === projectFile) ?? null;
+
+        if (!leaf) {
+            leaf = this.findProjectScopedLeaf(projectFile);
+        }
 
         if (!leaf) {
             // getLeaf(false) reuses the active leaf — that silently replaces a
@@ -3480,13 +3496,6 @@ export default class SceneCardsPlugin extends Plugin {
                 type: BOARD_VIEW_TYPE,
                 active: true,
                 state: narrativeLabLeafState(projectFile),
-            });
-        } else {
-            const prev = (leaf.getViewState()?.state || {}) as Record<string, unknown>;
-            await leaf.setViewState({
-                type: BOARD_VIEW_TYPE,
-                active: true,
-                state: narrativeLabLeafState(projectFile, prev),
             });
         }
 

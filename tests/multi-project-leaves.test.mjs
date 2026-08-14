@@ -32,8 +32,11 @@ test('NarrativeLab leaf state binds tabs to a project file', () => {
     assert.match(leafState, /preservedNarrativeLabLeafState/);
 });
 
-test('Open Project opens a per-project Board tab instead of reusing the first leaf', () => {
+test('Open Project reuses the same project tab and opens a new tab only for another project', () => {
     assert.match(mainTs, /async openBoardForProject\(/);
+    assert.match(mainTs, /private findProjectScopedLeaf\(projectFile: string\)/);
+    assert.match(mainTs, /getLeafNarrativeLabProjectFile\(item\) === normalized/);
+    assert.match(mainTs, /leaf = this\.findProjectScopedLeaf\(projectFile\)/);
     assert.match(mainTs, /workspace\.getLeaf\('tab'\)/);
     assert.match(mainTs, /countProjectScopedLeaves/);
     assert.match(mainTs, /hasScopedLeaves \? workspace\.getLeaf\('tab'\) : workspace\.getLeaf\(false\)/);
