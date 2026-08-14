@@ -38,7 +38,8 @@ test('late System and datasheet saves verify the original project manifest', () 
     assert.match(mainTs, /isDeletedProjectPath\(normalized\)/);
     assert.match(mainTs, /writeSystemJsonSafely\(filename, filePath, data, projectFilePath!/);
     assert.match(mainTs, /if \(!await this\.projectExistsForWrite\(projectFilePath\)\) return;/);
-    assert.match(mainTs, /savePlotGridSafely\([\s\S]*projectFilePath!/);
+    assert.match(mainTs, /savePlotGridSafely\([\s\S]*projectFilePath\)/);
+    assert.match(mainTs, /savePlotGridSafely\([\s\S]*if \(!await this\.projectExistsForWrite\(projectFilePath\)\) return;/);
 });
 
 test('a zero-project rescan cannot retain a stale active project', () => {

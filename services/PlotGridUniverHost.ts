@@ -60,6 +60,7 @@ import {
     mergeUniverCellDataIntoDocument,
     moveConceptGridAxis,
     preserveConceptGridAxisSizes,
+    spliceConceptGridAxis,
 } from './PlotGridXlsxCodec';
 
 export { cellRequiresMarkdownEditor } from '../utils/plotGridCellEdit';
@@ -464,6 +465,14 @@ type AxisMoveMutation = {
     };
 };
 
+type AxisStructureMutation = {
+    id?: string;
+    params?: {
+        subUnitId?: string;
+        range?: { startRow?: number; endRow?: number; startColumn?: number; endColumn?: number };
+    };
+};
+
 function dimensionAt(value: number | Record<number, number> | undefined, index: number): number | undefined {
     return typeof value === 'number' ? value : value?.[index];
 }
@@ -543,6 +552,41 @@ function applyAxisMoveMutation(doc: ConceptGridDocument, command: unknown): Conc
         return moveConceptGridAxis(doc, params.subUnitId, 'columns', from, end - from + 1, target);
     }
     return null;
+}
+
+/** Keep stable row/column ids aligned with Univer native insert/delete actions. */
+function applyAxisStructureMutation(doc: ConceptGridDocument, command: unknown): ConceptGridDocument | null {
+    const { id, params } = command as AxisStructureMutation;
+    if (!params?.subUnitId || !params.range) return null;
+
+    let axis: 'rows' | 'columns';
+    let action: 'insert' | 'remove';
+    let start: number | undefined;
+    let end: number | undefined;
+    if (id === 'sheet.mutation.insert-row' || id === 'sheet.mutation.remove-rows') {
+        axis = 'rows';
+        action = id === 'sheet.mutation.insert-row' ? 'insert' : 'remove';
+        start = params.range.startRow;
+        end = params.range.endRow;
+    } else if (id === 'sheet.mutation.insert-col' || id === 'sheet.mutation.remove-col') {
+        axis = 'columns';
+        action = id === 'sheet.mutation.insert-col' ? 'insert' : 'remove';
+        start = params.range.startColumn;
+        end = params.range.endColumn;
+    } else {
+        return null;
+    }
+    if (start == null || end == null || end < start) return null;
+
+    const next = spliceConceptGridAxis(
+        doc,
+        params.subUnitId,
+        axis,
+        action,
+        start,
+        end - start + 1,
+    );
+    return next === doc ? null : next;
 }
 
 /**
@@ -814,6 +858,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let dimPullTimer = 0;
     let pendingAfterEdit = false;
     let pendingSetDoc: ConceptGridDocument | null = null;
+    let pendingClearMissing = false;
+    let pendingMergeDimensions = false;
     let schedulePull: (opts?: { clearMissing?: boolean; mergeDimensions?: boolean }) => void = () => { /* assigned below */ };
 
     const isEditorBusy = () => {
@@ -888,6 +934,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     };
     schedulePull = (pullOpts = {}) => {
         if (disposed) return;
+        pendingClearMissing ||= pullOpts.clearMissing === true;
+        pendingMergeDimensions ||= pullOpts.mergeDimensions === true;
         if (isEditorBusy()) {
             pendingAfterEdit = true;
             return;
@@ -898,8 +946,6 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             return;
         }
         if (timer) window.clearTimeout(timer);
-        const clearMissing = pullOpts.clearMissing === true;
-        const mergeDimensions = pullOpts.mergeDimensions === true;
         // Keep this short: a long debounce left edits only in Univer while vault
         // refresh / tab close could reload or save a stale NarrativeLab document.
         timer = window.setTimeout(() => {
@@ -908,6 +954,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 pendingAfterEdit = true;
                 return;
             }
+            const clearMissing = pendingClearMissing;
+            const mergeDimensions = pendingMergeDimensions;
+            pendingClearMissing = false;
+            pendingMergeDimensions = false;
             pullFromUniver(false, { clearMissing, mergeDimensions });
         }, 80);
     };
@@ -1019,6 +1069,21 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     } else if (isDimensionCommand(id)) {
                         scheduleDimensionPull();
                     }
+                    return;
+                }
+
+                const structured = applyAxisStructureMutation(liveDoc, command);
+                if (structured) {
+                    liveDoc = structured;
+                    contentFp = conceptGridContentFingerprint(liveDoc);
+                    // Publish the new stable axis ids immediately. The following
+                    // pull deliberately starts from the parent's authoritative
+                    // document, so it must already include this splice.
+                    opts.onDocumentChange(liveDoc);
+                    // Native row/column insertion produces sparse blank buckets.
+                    // Clearing omitted cells is safe after the structural mutation
+                    // settles and prevents old content from duplicating into them.
+                    schedulePull({ clearMissing: true, mergeDimensions: true });
                     return;
                 }
 
@@ -1163,7 +1228,14 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             cellEditing = false;
             composing = false;
             // Final commit: read live axis sizes from Univer (drag has finished).
-            try { pullFromUniver(true, { clearMissing: false, mergeDimensions: true }); } catch { /* ignore */ }
+            try {
+                pullFromUniver(true, {
+                    clearMissing: pendingClearMissing,
+                    mergeDimensions: true,
+                });
+            } catch { /* ignore */ }
+            pendingClearMissing = false;
+            pendingMergeDimensions = false;
             disposed = true;
             for (const d of disposers) {
                 try { d(); } catch { /* ignore */ }
@@ -1280,10 +1352,14 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 dimPullTimer = 0;
             }
             flushPendingDimensionNotify();
-            // clearMissing:false — forced flush snapshots are often sparse and
-            // must not blank cells that were merely omitted from the dump.
+            // Forced snapshots are normally sparse and keep omitted cells. A
+            // completed axis splice explicitly upgrades this to clearMissing:true
+            // so newly inserted blank rows/columns cannot inherit old content.
             // mergeDimensions:true — capture finished resize gesture sizes.
-            pullFromUniver(true, { clearMissing: false, mergeDimensions: true });
+            const clearMissing = pendingClearMissing;
+            pendingClearMissing = false;
+            pendingMergeDimensions = false;
+            pullFromUniver(true, { clearMissing, mergeDimensions: true });
         },
         focus: () => {
             opts.container.querySelector<HTMLElement>('[contenteditable], canvas, .univer-workbook')?.focus?.();

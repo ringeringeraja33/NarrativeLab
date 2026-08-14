@@ -9,7 +9,11 @@
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE } from '../constants';
-import { rememberLibraryCategory } from './LibraryModeBar';
+import {
+    getLibraryContentMode,
+    rememberLibraryCategory,
+    setLibraryContentMode,
+} from './LibraryModeBar';
 import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import {
     applyCategoryFolderLabels,
@@ -39,8 +43,10 @@ export interface CodexTabsOptions {
     renderBeforeModeActions?: (container: HTMLElement) => void;
     /** Optional trailing category-management controls. */
     renderAfterModeActions?: (container: HTMLElement) => void;
-    /** Optional action pinned to the far right of the category row. */
-    renderFarRightActions?: (container: HTMLElement) => void;
+    /** Optional peer tabs rendered before every Library category. */
+    renderLeadingTabs?: (container: HTMLElement) => void;
+    /** Called immediately before a Library category is activated. */
+    onCategoryActivate?: (categoryId: string) => void;
     /** Called after a successful tab/folder rename (views should re-render) */
     onCategoriesChanged?: () => void;
     /** Show the Custom Categories gear button (default true). */
@@ -58,19 +64,31 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         leaf,
         plugin,
         onCategoriesChanged,
+        onCategoryActivate,
         renderBeforeModeActions,
         renderAfterModeActions,
-        renderFarRightActions,
+        renderLeadingTabs,
         showManageCategories = true,
     } = opts;
 
     const tabs = parent.createDiv('codex-category-tabs');
+    renderLeadingTabs?.(tabs);
     const renderedTabs: Array<{ id: string; el: HTMLButtonElement }> = [];
     const hiddenFixed = new Set(plugin.settings.libraryHiddenFixedCategories || []);
     const categoryOverrides = plugin.settings.codexCustomCategories || [];
     const overrideFor = (id: string) => categoryOverrides.find(category => category.id === id);
     const charName = resolveLibraryCategoryLabel(plugin, 'characters', 'Characters');
     const locName = resolveLibraryCategoryLabel(plugin, 'locations', 'Locations');
+    const activateCategory = (categoryId: string): void => {
+        rememberLibraryCategory(plugin, categoryId);
+        if (getLibraryContentMode(plugin) === 'story-graph') {
+            setLibraryContentMode(
+                plugin,
+                isLibraryCategoryProfilePageEnabled(plugin, categoryId) ? 'profile' : 'browse',
+            );
+        }
+        onCategoryActivate?.(categoryId);
+    };
 
     // ── Characters pseudo-tab ──
     if (!hiddenFixed.has('characters')) {
@@ -82,7 +100,10 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         obsidian.setIcon(charIcon, overrideFor('characters')?.icon || 'users');
         charTab.createSpan({ cls: 'codex-tab-label', text: charName });
         if (activeId !== 'characters-pseudo') {
-            charTab.addEventListener('click', () => switchTo(leaf, plugin, CHARACTER_VIEW_TYPE, 'characters'));
+            charTab.addEventListener('click', () => {
+                activateCategory('characters');
+                switchTo(leaf, plugin, CHARACTER_VIEW_TYPE, 'characters');
+            });
         }
         attachRenameMenu(charTab, plugin, 'characters', onCategoriesChanged);
         renderedTabs.push({ id: 'characters', el: charTab });
@@ -98,7 +119,10 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         obsidian.setIcon(locIcon, overrideFor('locations')?.icon || 'map-pin');
         locTab.createSpan({ cls: 'codex-tab-label', text: locName });
         if (activeId !== 'locations-pseudo') {
-            locTab.addEventListener('click', () => switchTo(leaf, plugin, LOCATION_VIEW_TYPE, 'locations'));
+            locTab.addEventListener('click', () => {
+                activateCategory('locations');
+                switchTo(leaf, plugin, LOCATION_VIEW_TYPE, 'locations');
+            });
         }
         attachRenameMenu(locTab, plugin, 'locations', onCategoriesChanged);
         renderedTabs.push({ id: 'locations', el: locTab });
@@ -136,7 +160,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
 
         if (!isActive) {
             tab.addEventListener('click', () => {
-                rememberLibraryCategory(plugin, cat.id);
+                activateCategory(cat.id);
                 // Already on CodexView — switch category without remounting the leaf
                 if (leaf.view?.getViewType?.() === CODEX_VIEW_TYPE) {
                     const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
@@ -228,6 +252,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         });
         if (!uncategorizedActive) {
             uncategorizedTab.addEventListener('click', () => {
+                activateCategory(UNCATEGORIZED_CATEGORY_ID);
                 if (leaf.view?.getViewType?.() === CODEX_VIEW_TYPE) {
                     const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
                     view.setActiveCategory?.(UNCATEGORIZED_CATEGORY_ID);
@@ -250,11 +275,6 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
             });
         }
         if (categoryActions) tabs.insertBefore(uncategorizedTab, categoryActions);
-    }
-
-    if (renderFarRightActions) {
-        const farRightActions = tabs.createDiv('codex-category-far-actions');
-        renderFarRightActions(farRightActions);
     }
 
     return tabs;

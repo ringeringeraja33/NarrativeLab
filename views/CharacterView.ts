@@ -191,6 +191,7 @@ export class CharacterView extends ProjectBoundItemView {
         if (!this.plugin.entitiesFresh()) {
             await this.plugin.reloadEntities();
         }
+        if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
@@ -298,21 +299,31 @@ export class CharacterView extends ProjectBoundItemView {
 
         // ── Codex category tabs + Browse / Story Graph ──
         // New Character lives in the browse toolbar (inside this tab), not the project header.
+        const storyGraphActive = !this.selectedCharacter
+            && this.characterOverviewMode === 'story-graph'
+            && !isMobile;
         renderCodexCategoryTabs(container, {
-            activeId: 'characters-pseudo',
+            activeId: storyGraphActive ? 'story-graph' : 'characters-pseudo',
             leaf: this.leaf,
             plugin: this.plugin,
-            renderFarRightActions: !this.selectedCharacter
-                ? (actions) => renderLibraryStoryGraphAction(
-                    actions,
-                    this.characterOverviewMode === 'story-graph',
-                    () => {
-                        this.characterOverviewMode = 'story-graph';
-                        setLibraryContentMode(this.plugin, 'story-graph');
-                        if (this.rootContainer) this.renderView(this.rootContainer);
-                    },
-                )
-                : undefined,
+            renderLeadingTabs: (tabs) => renderLibraryStoryGraphAction(
+                tabs,
+                storyGraphActive,
+                () => {
+                    this.selectedCharacter = null;
+                    this.characterOverviewMode = 'story-graph';
+                    setLibraryContentMode(this.plugin, 'story-graph');
+                    if (this.rootContainer) this.renderView(this.rootContainer);
+                },
+            ),
+            onCategoryActivate: (categoryId) => {
+                if (categoryId !== 'characters') return;
+                this.selectedCharacter = null;
+                this.characterOverviewMode = getLibraryContentMode(this.plugin) === 'browse'
+                    ? 'base'
+                    : 'editor';
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },

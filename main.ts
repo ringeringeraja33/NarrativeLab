@@ -60,6 +60,7 @@ import {
     legacySystemPlotGridXlsxPath,
     plotGridFolderPath,
     plotGridNlMetaPath,
+    plotGridNlMetaStructureMatchesDocument,
     plotGridXlsxNeedsRewrite,
     plotGridXlsxPath,
     serializePlotGridNlMeta,
@@ -2957,18 +2958,21 @@ export default class SceneCardsPlugin extends Plugin {
      */
     async savePlotGrid(
         data: ConceptGridDocument | PlotGridData,
-        options: { allowEmptyOverwrite?: boolean } = {},
+        options: { allowEmptyOverwrite?: boolean; projectFilePath?: string } = {},
     ): Promise<void> {
-        const projectFilePath = this.sceneManager.activeProject?.filePath;
+        const projectFilePath = normalizePath(
+            options.projectFilePath || this.sceneManager.activeProject?.filePath || '',
+        );
         if (!await this.projectExistsForWrite(projectFilePath)) return;
-        const baseFolder = this.getProjectBaseFolder();
-        const libraryFolder = this.getProjectLibraryFolder();
-        const systemFolder = this.getProjectSystemFolder();
+        const baseFolder = normalizePath(deriveProjectFoldersFromFilePath(projectFilePath).baseFolder);
+        const libraryFolder = normalizePath(`${baseFolder}/Library`);
+        const systemFolder = normalizePath(`${baseFolder}/System`);
         const filePath = normalizePath(plotGridXlsxPath(baseFolder));
+        const writeOptions = { allowEmptyOverwrite: options.allowEmptyOverwrite };
         const previous = this._systemJsonWriteQueues.get(filePath) ?? Promise.resolve();
         const pending = previous
             .catch(() => undefined)
-            .then(() => this.savePlotGridSafely(data, options, baseFolder, libraryFolder, systemFolder, filePath, projectFilePath!));
+            .then(() => this.savePlotGridSafely(data, writeOptions, baseFolder, libraryFolder, systemFolder, filePath, projectFilePath));
         this._systemJsonWriteQueues.set(filePath, pending);
         try {
             await pending;
@@ -2998,28 +3002,18 @@ export default class SceneCardsPlugin extends Plugin {
         const metaPath = normalizePath(plotGridNlMetaPath(systemFolder));
         const existed = await adapter.exists(path);
 
-        // Guard: never overwrite a file that has content with empty data
-        if (!options.allowEmptyOverwrite && isConceptGridDocumentEmpty(document) && existed) {
-            try {
-                const existing = await adapter.readBinary(path);
-                let sidecarMeta = null as ReturnType<typeof tryParseNlMeta>;
-                if (await adapter.exists(metaPath)) {
-                    sidecarMeta = tryParseNlMeta(await adapter.read(metaPath));
-                }
-                const parsed = await decodePlotGridXlsx(existing, { meta: sidecarMeta });
-                if (!isConceptGridDocumentEmpty(parsed)) {
-                    return;
-                }
-            } catch {
-                // Unreadable xlsx — never silently replace with empty; keep the corrupt file.
-                await this.backupCorruptPlotGridXlsx(path);
-                this._invalidPlotGridXlsxPaths.add(path);
-                if (!this._reportedInvalidPlotGridXlsxPaths.has(path)) {
-                    this._reportedInvalidPlotGridXlsxPaths.add(path);
-                    new Notice(t('Could not read datasheet.xlsx — empty save blocked. Reset Grid or fix the file to continue.'));
-                }
-                return;
+        // A healthy, loaded workbook may legitimately become empty after the user
+        // clears cells or removes rows/columns. Only block an empty overwrite when
+        // this exact path failed to decode and the view is therefore a fallback.
+        if (!options.allowEmptyOverwrite
+            && isConceptGridDocumentEmpty(document)
+            && existed
+            && this._invalidPlotGridXlsxPaths.has(path)) {
+            if (!this._reportedInvalidPlotGridXlsxPaths.has(path)) {
+                this._reportedInvalidPlotGridXlsxPaths.add(path);
+                new Notice(t('Could not read datasheet.xlsx — empty save blocked. Reset Grid or fix the file to continue.'));
             }
+            return;
         }
 
         // Explicit empty overwrite (Reset Grid) still backs up a corrupt original first.
@@ -3172,14 +3166,18 @@ export default class SceneCardsPlugin extends Plugin {
      * Move legacy System/plotgrid.xlsx into Library/datasheet.xlsx without opening the grid.
      * Safe to call on project switch so every project migrates even if Concept Grid stays closed.
      */
-    async migratePlotGridToLibraryIfNeeded(): Promise<void> {
+    async migratePlotGridToLibraryIfNeeded(projectFilePath?: string): Promise<void> {
         try {
-            const projectFilePath = this.sceneManager.activeProject?.filePath;
-            if (!await this.projectExistsForWrite(projectFilePath)) return;
-            const baseFolder = this.getProjectBaseFolder();
+            const targetProjectFile = normalizePath(
+                projectFilePath || this.sceneManager.activeProject?.filePath || '',
+            );
+            if (!await this.projectExistsForWrite(targetProjectFile)) return;
+            const baseFolder = normalizePath(
+                deriveProjectFoldersFromFilePath(targetProjectFile).baseFolder,
+            );
             if (!baseFolder) return;
-            const libraryFolder = this.getProjectLibraryFolder();
-            const systemFolder = this.getProjectSystemFolder();
+            const libraryFolder = normalizePath(`${baseFolder}/Library`);
+            const systemFolder = normalizePath(`${baseFolder}/System`);
             const adapter = this.app.vault.adapter;
             const canonical = normalizePath(plotGridXlsxPath(baseFolder));
             if (await adapter.exists(canonical)) {
@@ -3213,14 +3211,18 @@ export default class SceneCardsPlugin extends Plugin {
      * (+ System/datasheet.nlmeta.json). Migrates legacy System plotgrid files,
      * Library/datasheet.nlmeta.json, and embedded `_nl_meta` sheets.
      */
-    async loadPlotGrid(): Promise<ConceptGridDocument | null> {
-        const projectFilePath = this.sceneManager.activeProject?.filePath;
-        if (!await this.projectExistsForWrite(projectFilePath)) return null;
-        await this.migratePlotGridToLibraryIfNeeded();
+    async loadPlotGrid(projectFilePath?: string): Promise<ConceptGridDocument | null> {
+        const targetProjectFile = normalizePath(
+            projectFilePath || this.sceneManager.activeProject?.filePath || '',
+        );
+        if (!await this.projectExistsForWrite(targetProjectFile)) return null;
+        await this.migratePlotGridToLibraryIfNeeded(targetProjectFile);
         try {
-            const baseFolder = this.getProjectBaseFolder();
-            const libraryFolder = this.getProjectLibraryFolder();
-            const systemFolder = this.getProjectSystemFolder();
+            const baseFolder = normalizePath(
+                deriveProjectFoldersFromFilePath(targetProjectFile).baseFolder,
+            );
+            const libraryFolder = normalizePath(`${baseFolder}/Library`);
+            const systemFolder = normalizePath(`${baseFolder}/System`);
             const adapter = this.app.vault.adapter;
             const xlsxPath = normalizePath(plotGridXlsxPath(baseFolder));
             const metaPath = normalizePath(plotGridNlMetaPath(systemFolder));
@@ -3291,6 +3293,8 @@ export default class SceneCardsPlugin extends Plugin {
                     const missingCanonicalSidecar = !await adapter.exists(metaPath)
                         || (!!sidecar.path && sidecar.path !== metaPath);
                     const doc = await decodePlotGridXlsx(bin, { meta });
+                    const staleCanonicalSidecar = !!meta
+                        && !plotGridNlMetaStructureMatchesDocument(meta, doc);
                     this._invalidPlotGridXlsxPaths.delete(xlsxPath);
                     this._reportedInvalidPlotGridXlsxPaths.delete(xlsxPath);
                     void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
@@ -3302,8 +3306,10 @@ export default class SceneCardsPlugin extends Plugin {
                     if (structuralRepair && docFilled >= xlsxFilled && (docFilled > 0 || xlsxFilled === 0)) {
                         await settleCanonical(doc);
                         new Notice(t('Repaired datasheet.xlsx for Excel/Univer interop. NarrativeLab metadata is in System/datasheet.nlmeta.json.'));
-                    } else if (missingCanonicalSidecar && (docFilled > 0 || (doc.pages.some(p => (p.rows?.length ?? 0) > 0)))) {
-                        // Sidecar move / create must not re-encode a healthy xlsx.
+                    } else if ((missingCanonicalSidecar || staleCanonicalSidecar)
+                        && (docFilled > 0 || (doc.pages.some(p => (p.rows?.length ?? 0) > 0)))) {
+                        // Sidecar move/create/structural repair must not re-encode
+                        // a healthy xlsx. The workbook is the visible source of truth.
                         await this.ensureVaultFolder(systemFolder);
                         await this.writeVaultTextResilient(metaPath, serializePlotGridNlMeta(doc));
                         if (legacyLibraryMetaPath !== metaPath && await adapter.exists(legacyLibraryMetaPath)) {

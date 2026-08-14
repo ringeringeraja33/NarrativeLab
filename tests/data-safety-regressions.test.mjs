@@ -297,10 +297,47 @@ test('custom profile categories expose a working profile overview mode', () => {
     assert.match(codexView, /this\.isProfileOverviewMode\(\)\s*\? 'cards'/);
 });
 
-test('Library profile and browse modes sit in the toolbar while Story Graph stays at category-row right', () => {
+test('async embedded views cannot repaint or leak after navigation', async () => {
+    const [manuscript, notesView, infoPanel, inspector, researchView, plotgridView] = await Promise.all([
+        readFile(new URL('../views/ManuscriptView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/NotesView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/InfoPanel.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/Inspector.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/ResearchView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8'),
+    ]);
+
+    assert.match(manuscript, /editorMountGeneration\+\+/);
+    assert.match(manuscript, /mountGeneration !== this\.editorMountGeneration/);
+    assert.match(manuscript, /leaf\.detach\(\);[\s\S]*?this\.mountingPaths\.delete\(filePath\)/);
+
+    assert.match(notesView, /editorMountGeneration\+\+/);
+    assert.match(notesView, /mountGeneration !== this\.editorMountGeneration/);
+    assert.match(notesView, /this\.currentNotesPath !== notesPath/);
+
+    assert.match(infoPanel, /mountGeneration !== this\.notesMountGeneration/);
+    assert.match(infoPanel, /this\.notesLeaf !== notesLeaf \|\| this\.notesPath !== notesPath/);
+
+    assert.match(inspector, /await obsidian\.MarkdownRenderer\.render/);
+    assert.match(inspector, /renderGeneration !== this\.notesRenderGeneration/);
+    assert.doesNotMatch(inspector, /foundIdx = lines\.indexOf\(line\)/);
+
+    assert.match(researchView, /mountGeneration !== this\.mountGeneration \|\| !host\.isConnected/);
+    assert.match(boardView, /mountGeneration !== this\.corkboardMountGeneration/);
+    assert.match(boardView, /this\.boardMode === 'corkboard'/);
+
+    for (const view of [characterView, locationView, codexView, boardView, manuscript, statsView]) {
+        assert.match(view, /this\.rootContainer !== container \|\| !container\.isConnected/);
+    }
+    assert.match(plotgridView, /await this\.loadData\(\);[\s\S]*?if \(!container\.isConnected\) return;/);
+});
+
+test('Story Graph is the first peer tab while profile and browse modes stay in the toolbar', () => {
     assert.doesNotMatch(categoryTabs, /renderLibraryModeToggle/);
-    assert.match(categoryTabs, /renderFarRightActions\?: \(container: HTMLElement\) => void/);
+    assert.match(categoryTabs, /renderLeadingTabs\?: \(container: HTMLElement\) => void/);
+    assert.match(categoryTabs, /const tabs = parent\.createDiv\('codex-category-tabs'\);\s*renderLeadingTabs\?\.\(tabs\);\s*const renderedTabs/);
     assert.match(categoryTabs, /tabs\.insertBefore\(uncategorizedTab, categoryActions\)/);
+    assert.match(categoryTabs, /getLibraryContentMode\(plugin\) === 'story-graph'[\s\S]*?setLibraryContentMode/);
     assert.match(libraryBrowseLayout, /renderTrailingActions\?: \(actionsEl: HTMLElement\) => void/);
     assert.match(libraryBrowseLayout, /toolbar\.createDiv\('library-browse-mode-actions'\)/);
     assert.match(libraryBrowseLayout, /export function renderLibraryModeToolbar/);
@@ -310,13 +347,20 @@ test('Library profile and browse modes sit in the toolbar while Story Graph stay
     assert.match(characterView, /renderLibraryModeToolbar\(content, actions => this\.renderCharacterOverviewModes\(actions\)\)/);
     assert.match(locationView, /renderLibraryModeToolbar\(content, actions => this\.renderLocationOverviewModes\(actions\)\)/);
     assert.match(codexView, /renderLibraryModeToolbar\(content, actions => this\.renderOverviewModes\(actions\)\)/);
-    assert.match(styles, /\.library-browse-mode-actions\s*\{[^}]*margin-left:\s*auto/s);
+    assert.match(styles, /\.library-browse-toolbar\s*\{[^}]*justify-content:\s*flex-start/s);
+    assert.match(styles, /\.library-browse-mode-actions\s*\{[^}]*margin-left:\s*0/s);
+    assert.match(styles, /\.library-browse-toolbar \.library-layout-toggle\s*\{[^}]*margin-left:\s*0/s);
     assert.match(libraryModeBar, /export function renderLibraryStoryGraphAction/);
-    assert.match(characterView, /renderFarRightActions:[\s\S]*?renderLibraryStoryGraphAction/);
-    assert.match(locationView, /renderFarRightActions:[\s\S]*?renderLibraryStoryGraphAction/);
-    assert.match(codexView, /renderFarRightActions:[\s\S]*?renderLibraryStoryGraphAction/);
+    assert.match(libraryModeBar, /cls: `codex-tab library-story-graph-tab/);
+    assert.match(libraryModeBar, /createSpan\(\{ cls: 'codex-tab-icon' \}\)/);
+    assert.match(characterView, /activeId: storyGraphActive \? 'story-graph' : 'characters-pseudo'[\s\S]*?renderLeadingTabs:[\s\S]*?renderLibraryStoryGraphAction/);
+    assert.match(locationView, /activeId: storyGraphActive \? 'story-graph' : 'locations-pseudo'[\s\S]*?renderLeadingTabs:[\s\S]*?renderLibraryStoryGraphAction/);
+    assert.match(codexView, /activeId: storyGraphActive \? 'story-graph' : this\.activeCategory \|\| ''[\s\S]*?renderLeadingTabs:[\s\S]*?renderLibraryStoryGraphAction/);
     assert.match(codexView, /\{ showStoryGraph: false \}/);
-    assert.match(styles, /\.codex-category-far-actions\s*\{[^}]*margin-left:\s*auto/s);
+    assert.doesNotMatch(categoryTabs, /renderFarRightActions/);
+    assert.doesNotMatch(styles, /\.codex-category-far-actions/);
+    assert.match(styles, /\.codex-category-tabs\s*\{[^}]*justify-content:\s*flex-start/s);
+    assert.match(styles, /\.codex-category-tabs \.library-story-graph-tab\s*\{[^}]*margin-left:\s*0/s);
     assert.match(styles, /\.codex-category-tabs \.codex-category-actions\s*\{[^}]*border-left:/s);
 });
 

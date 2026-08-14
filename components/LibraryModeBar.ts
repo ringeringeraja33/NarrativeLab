@@ -210,7 +210,7 @@ export function renderLibraryModeToggle(
     return toggle;
 }
 
-/** Render the Story Graph action independently in the category row. */
+/** Render Story Graph as a peer of the Library category tabs. */
 export function renderLibraryStoryGraphAction(
     parent: HTMLElement,
     active: boolean,
@@ -218,12 +218,12 @@ export function renderLibraryStoryGraphAction(
 ): HTMLButtonElement | null {
     if (isMobile) return null;
     const button = parent.createEl('button', {
-        cls: `character-mode-btn library-story-graph-tab ${active ? 'active' : ''}`,
+        cls: `codex-tab library-story-graph-tab ${active ? 'active' : ''}`,
         attr: { type: 'button', 'data-mode': 'story-graph', 'aria-label': t('Story Graph') },
     });
-    const icon = button.createSpan();
+    const icon = button.createSpan({ cls: 'codex-tab-icon' });
     obsidian.setIcon(icon, 'share-2');
-    button.createSpan({ text: t(' Story Graph') });
+    button.createSpan({ cls: 'codex-tab-label', text: t('Story Graph') });
     button.addEventListener('click', () => {
         if (active) return;
         onClick();
@@ -509,10 +509,14 @@ export function renderLibraryStoryGraph(
     plugin: SceneCardsPlugin,
     onRefresh: () => void,
 ): StoryGraph {
-    container.empty();
-    container.addClass('story-graph-page');
-    container.createEl('h3', { cls: 'story-graph-title', text: t('Story Graph') });
-    container.createEl('p', {
+    // Keep sibling Library chrome (Profiles / Base) intact. The graph owns a
+    // dedicated page host, just as the native Base owns only its embed host.
+    container.removeClass('story-graph-page', 'is-story-graph-fullscreen');
+    container.querySelectorAll(':scope > .library-story-graph-host')
+        .forEach(element => element.remove());
+    const page = container.createDiv('library-story-graph-host story-graph-page');
+    page.createEl('h3', { cls: 'story-graph-title', text: t('Story Graph') });
+    page.createEl('p', {
         cls: 'setting-item-description story-graph-description',
         text: t('Body wikilinks are default references. Right-click an edge to set a category (written to frontmatter), focus strands, or delete the link entirely (clears body + frontmatter on both notes).'),
     });
@@ -541,14 +545,14 @@ export function renderLibraryStoryGraph(
         await pruneOrphanStoryRefs(plugin, docPaths, wikilinkKeys);
     })();
 
-    const graphContainer = container.createDiv('story-graph-container');
+    const graphContainer = page.createDiv('story-graph-container');
     let focusHost: HTMLElement | null = null;
     const openFocus = (edge: StoryGraphFocusEdge) => {
         if (focusHost) {
             focusHost.remove();
             focusHost = null;
         }
-        focusHost = container.createDiv('story-graph-focus-host');
+        focusHost = page.createDiv('story-graph-focus-host');
         openStoryGraphRelationFocus(
             focusHost,
             plugin,

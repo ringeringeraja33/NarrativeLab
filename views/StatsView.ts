@@ -72,6 +72,7 @@ export class StatsView extends ProjectBoundItemView {
         this.rootContainer = container;
 
         await this.sceneManager.ensureInitialized();
+        if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 

@@ -102,6 +102,8 @@ export class BoardView extends ItemView {
     private corkboardVisibilityKey = '';
     /** Serialize native corkboard sync/mount so a later write cannot leave a stale live view. */
     private corkboardHostSyncChain: Promise<void> = Promise.resolve();
+    /** Invalidates native Canvas mounts after a board mode/render change. */
+    private corkboardMountGeneration = 0;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -193,10 +195,12 @@ export class BoardView extends ItemView {
         this.rootContainer = container;
 
         await this.sceneManager.initialize();
+        if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
     async onClose(): Promise<void> {
+        this.corkboardMountGeneration++;
         if (this.corkboardInteractionCleanup) {
             this.corkboardInteractionCleanup();
             this.corkboardInteractionCleanup = null;
@@ -232,6 +236,7 @@ export class BoardView extends ItemView {
      * Render the entire board view
      */
     private renderView(container: HTMLElement): void {
+        this.corkboardMountGeneration++;
         this.teardownNativeCorkboardCanvas();
         this.ensureCorkboardLayoutLoaded();
         container.empty();
@@ -569,6 +574,7 @@ export class BoardView extends ItemView {
      */
     private renderBoard(): void {
         if (!this.boardEl) return;
+        this.corkboardMountGeneration++;
         this.teardownNativeCorkboardCanvas();
         this.boardEl.removeClass('story-line-corkboard');
         this.boardEl.removeClass('is-native-canvas-host');
@@ -621,6 +627,7 @@ export class BoardView extends ItemView {
      */
     private renderCorkboard(): void {
         if (!this.boardEl) return;
+        const mountGeneration = ++this.corkboardMountGeneration;
         for (const vs of this.scrollers) vs.destroy();
         this.scrollers = [];
 
@@ -629,7 +636,7 @@ export class BoardView extends ItemView {
             return;
         }
 
-        void this.ensureNativeCorkboardHost();
+        void this.ensureNativeCorkboardHost(mountGeneration);
     }
 
     private getVisibleCorkboardPaths(): string[] {
@@ -1217,41 +1224,51 @@ export class BoardView extends ItemView {
         }
     }
 
-    private async ensureNativeCorkboardHost(): Promise<void> {
+    private async ensureNativeCorkboardHost(
+        mountGeneration = this.corkboardMountGeneration,
+    ): Promise<void> {
         const run = async (): Promise<void> => {
-            await this.ensureNativeCorkboardHostUnqueued();
+            await this.ensureNativeCorkboardHostUnqueued(mountGeneration);
         };
         const queued = this.corkboardHostSyncChain.then(run, run);
         this.corkboardHostSyncChain = queued.then(() => undefined, () => undefined);
         await queued;
     }
 
-    private async ensureNativeCorkboardHostUnqueued(): Promise<void> {
-        if (!this.boardEl) return;
+    private async ensureNativeCorkboardHostUnqueued(mountGeneration: number): Promise<void> {
+        const boardEl = this.boardEl;
+        const isCurrent = () => mountGeneration === this.corkboardMountGeneration
+            && this.boardMode === 'corkboard'
+            && this.boardEl === boardEl
+            && !!boardEl?.isConnected;
+        if (!boardEl || !isCurrent()) return;
 
         if (this.corkboardInteractionCleanup) {
             this.corkboardInteractionCleanup();
             this.corkboardInteractionCleanup = null;
         }
 
-        if (!this.boardEl.hasClass('is-native-canvas-host') || !this.corkboardCanvasHostEl?.isConnected) {
+        if (!boardEl.hasClass('is-native-canvas-host') || !this.corkboardCanvasHostEl?.isConnected) {
             this.teardownNativeCorkboardCanvas();
-            this.boardEl.empty();
-            this.boardEl.addClass('story-line-corkboard');
-            this.boardEl.addClass('is-native-canvas-host');
-            this.corkboardCanvasHostEl = this.boardEl.createDiv('story-line-corkboard-native-host');
+            boardEl.empty();
+            boardEl.addClass('story-line-corkboard');
+            boardEl.addClass('is-native-canvas-host');
+            this.corkboardCanvasHostEl = boardEl.createDiv('story-line-corkboard-native-host');
         }
 
         try {
             const synced = await this.syncNativeCorkboardFile();
+            if (!isCurrent()) return;
             if (!synced.file) throw new Error('No active project Canvas folder');
             await this.mountNativeCorkboardCanvas(
                 this.corkboardCanvasHostEl!,
                 synced.file,
-                { forceReload: synced.membershipChanged },
+                { forceReload: synced.membershipChanged, mountGeneration },
             );
+            if (!isCurrent()) return;
             this.pruneLiveCorkboardToVisible(synced.visible);
         } catch (err) {
+            if (!isCurrent()) return;
             console.error('[NarrativeLab] Native corkboard Canvas failed:', err);
             const originalPreserved = err instanceof Error
                 && err.message.includes('original file was not changed');
@@ -1259,12 +1276,18 @@ export class BoardView extends ItemView {
                 // Last resort: ephemeral WorkspaceLeaf constructor (unofficial).
                 try {
                     const synced = await this.syncNativeCorkboardFile();
-                    if (!synced.file || !this.boardEl) throw err;
-                    this.boardEl.empty();
-                    this.boardEl.addClass('story-line-corkboard');
-                    this.boardEl.addClass('is-native-canvas-host');
-                    this.corkboardCanvasHostEl = this.boardEl.createDiv('story-line-corkboard-native-host');
-                    await this.mountNativeCorkboardCanvasViaLeafCtor(this.corkboardCanvasHostEl, synced.file);
+                    if (!isCurrent()) return;
+                    if (!synced.file) throw err;
+                    boardEl.empty();
+                    boardEl.addClass('story-line-corkboard');
+                    boardEl.addClass('is-native-canvas-host');
+                    this.corkboardCanvasHostEl = boardEl.createDiv('story-line-corkboard-native-host');
+                    await this.mountNativeCorkboardCanvasViaLeafCtor(
+                        this.corkboardCanvasHostEl,
+                        synced.file,
+                        mountGeneration,
+                    );
+                    if (!isCurrent()) return;
                     this.pruneLiveCorkboardToVisible(synced.visible);
                     return;
                 } catch (err2) {
@@ -1274,9 +1297,9 @@ export class BoardView extends ItemView {
             this.corkboardNativeFailed = true;
             this.teardownNativeCorkboardCanvas();
             this.corkboardCanvasHostEl = null;
-            this.boardEl.empty();
-            this.boardEl.removeClass('is-native-canvas-host');
-            const banner = this.boardEl.createDiv('story-line-corkboard-native-fallback');
+            boardEl.empty();
+            boardEl.removeClass('is-native-canvas-host');
+            const banner = boardEl.createDiv('story-line-corkboard-native-fallback');
             banner.createEl('p', {
                 text: originalPreserved
                     ? t('The corkboard Canvas is unreadable. NarrativeLab did not change it. Repair or restore the .canvas file, then reload the view.')
@@ -1292,7 +1315,11 @@ export class BoardView extends ItemView {
     }
 
     /** Unofficial fallback when WorkspaceSplit embedding is unavailable. */
-    private async mountNativeCorkboardCanvasViaLeafCtor(host: HTMLElement, file: TFile): Promise<void> {
+    private async mountNativeCorkboardCanvasViaLeafCtor(
+        host: HTMLElement,
+        file: TFile,
+        mountGeneration = this.corkboardMountGeneration,
+    ): Promise<void> {
         this.teardownNativeCorkboardCanvas();
         host.empty();
 
@@ -1310,6 +1337,10 @@ export class BoardView extends ItemView {
             state: { file: file.path },
             active: false,
         });
+        if (mountGeneration !== this.corkboardMountGeneration || !host.isConnected) {
+            leaf.detach();
+            return;
+        }
         const view = leaf.view as (InstanceType<typeof ItemView> & {
             containerEl?: HTMLElement;
             canvas?: { zoomToFit?: () => void };
@@ -1337,6 +1368,11 @@ export class BoardView extends ItemView {
         }
 
         window.setTimeout(() => {
+            if (
+                mountGeneration !== this.corkboardMountGeneration
+                || this.corkboardCanvasLeaf !== leaf
+                || !host.isConnected
+            ) return;
             this.kickNativeCorkboardLayout();
             try { view?.canvas?.zoomToFit?.(); } catch { /* best effort */ }
             this.installCorkboardCanvasParkHook(leaf);
@@ -1347,8 +1383,10 @@ export class BoardView extends ItemView {
     private async mountNativeCorkboardCanvas(
         host: HTMLElement,
         file: TFile,
-        opts?: { forceReload?: boolean },
+        opts?: { forceReload?: boolean; mountGeneration?: number },
     ): Promise<void> {
+        const mountGeneration = opts?.mountGeneration ?? this.corkboardMountGeneration;
+        if (mountGeneration !== this.corkboardMountGeneration || !host.isConnected) return;
         if (!opts?.forceReload
             && this.corkboardCanvasLeaf
             && this.corkboardCanvasFilePath === file.path) {
@@ -1385,6 +1423,12 @@ export class BoardView extends ItemView {
                 await deferredLeaf.loadIfDeferred();
             }
 
+            if (mountGeneration !== this.corkboardMountGeneration || !host.isConnected) {
+                leaf.detach();
+                splitEl.remove();
+                return;
+            }
+
             const viewType = leaf.view?.getViewType?.();
             if (viewType !== 'canvas') {
                 throw new Error(`Expected canvas view, got ${viewType ?? 'none'}`);
@@ -1404,6 +1448,11 @@ export class BoardView extends ItemView {
             }
 
             window.setTimeout(() => {
+                if (
+                    mountGeneration !== this.corkboardMountGeneration
+                    || this.corkboardCanvasLeaf !== leaf
+                    || !host.isConnected
+                ) return;
                 this.kickNativeCorkboardLayout();
                 const view = leaf?.view as { canvas?: { zoomToFit?: () => void } } | null;
                 try { view?.canvas?.zoomToFit?.(); } catch { /* best effort */ }

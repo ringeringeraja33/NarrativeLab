@@ -39,6 +39,7 @@ import {
     type MarkdownInputAction,
 } from '../utils/markdownInput';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
+import { deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 
 // Use the shared view-type constant from `constants.ts` so the ViewSwitcher
 // can correctly detect and style the active tab.
@@ -90,6 +91,8 @@ export class PlotgridView extends ProjectBoundItemView {
     private univerViewStateSig = '';
     /** System/ folder the in-memory document was loaded from — used to block cross-project saves. */
     private loadedSystemFolder: string | null = null;
+    /** Project manifest this workbook belongs to; disk I/O never follows another active tab. */
+    private loadedProjectFile: string | null = null;
     /** Floating cell editors keyed by cell id (multiple may be open at once). */
     private cellEditorWindows = new Map<string, HTMLElement & {
         __nlCellEditorCleanup?: () => void;
@@ -133,6 +136,7 @@ export class PlotgridView extends ProjectBoundItemView {
         this.univerLoadFailed = false;
         this.univerLoadError = null;
         await this.loadData();
+        if (!container.isConnected) return;
 
         this.buildLayout(container);
         this.renderPageSidebar();
@@ -210,52 +214,37 @@ export class PlotgridView extends ProjectBoundItemView {
 
     /** Flush Univer into memory and write datasheet.xlsx for the bound System folder. */
     private async persistBoundPlotGrid(): Promise<void> {
-        const folder = this.loadedSystemFolder;
-        try {
-            this.univerHost?.flush();
-            if (this.univerHost) {
-                this.document = normalizeConceptGridDocument(this.univerHost.getDocument());
-                this.bindActivePage();
-            }
-        } catch { /* ignore */ }
+        const projectFile = this.loadedProjectFile;
+        this.closeAllCellEditors();
+        this.flushUniverIntoDocument();
         this.cancelPendingSave();
-        if (!folder || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
-        const current = this.getActiveSystemFolder();
-        if (current && current !== folder) return;
+        if (!projectFile || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
         try {
-            await this.plugin.savePlotGrid(this.document);
+            await this.plugin.savePlotGrid(this.document, { projectFilePath: projectFile });
         } catch (error) {
             console.error('[NarrativeLab] Plot Grid persist failed:', error);
         }
     }
 
     async onClose(): Promise<void> {
-        // Commit Univer edits, then persist to the folder this view was bound to.
-        const folder = this.loadedSystemFolder;
-        try {
-            this.univerHost?.flush();
-            if (this.univerHost) {
-                this.document = normalizeConceptGridDocument(this.univerHost.getDocument());
-                this.bindActivePage();
-            }
-        } catch { /* ignore */ }
+        // Floating Markdown drafts must enter the model before Univer's final pull.
+        const projectFile = this.loadedProjectFile;
+        this.closeAllCellEditors();
+        this.flushUniverIntoDocument();
         this.cancelPendingSave();
-        if (folder && this.plugin && typeof this.plugin.savePlotGrid === 'function') {
-            const current = this.getActiveSystemFolder();
-            if (!current || current === folder) {
-                try {
-                    await this.plugin.savePlotGrid(this.document);
-                } catch (error) {
-                    console.error('[NarrativeLab] Final Plot Grid save failed:', error);
-                }
+        if (projectFile && this.plugin && typeof this.plugin.savePlotGrid === 'function') {
+            try {
+                await this.plugin.savePlotGrid(this.document, { projectFilePath: projectFile });
+            } catch (error) {
+                console.error('[NarrativeLab] Final Plot Grid save failed:', error);
             }
         }
         this.disposeUniverHost({ persist: false });
-        this.closeAllCellEditors();
         // disposeUniverHost performs one last pull; the explicit save above is
         // authoritative, so do not leave a second autosave running after close.
         this.cancelPendingSave();
         this.loadedSystemFolder = null;
+        this.loadedProjectFile = null;
     }
 
     private closeAllCellEditors(): void {
@@ -290,11 +279,30 @@ export class PlotgridView extends ProjectBoundItemView {
         return t('Cell editor');
     }
 
+    private getTargetProjectFile(): string {
+        return this.getBoundProjectFile()
+            || this.loadedProjectFile
+            || this.plugin?.sceneManager?.activeProject?.filePath
+            || '';
+    }
+
     private getActiveSystemFolder(): string {
+        const projectFile = this.getTargetProjectFile();
+        return projectFile
+            ? `${deriveProjectFoldersFromFilePath(projectFile).baseFolder}/System`
+            : '';
+    }
+
+    /** Commit the active native sheet into the authoritative NL document. */
+    private flushUniverIntoDocument(): void {
+        const host = this.univerHost;
+        if (!host) return;
         try {
-            return this.plugin?.getProjectSystemFolder?.() ?? '';
-        } catch {
-            return '';
+            host.flush();
+            this.document = normalizeConceptGridDocument(host.getDocument());
+            this.bindActivePage();
+        } catch (error) {
+            console.warn('[NarrativeLab] Could not flush spreadsheet state:', error);
         }
     }
 
@@ -334,15 +342,15 @@ export class PlotgridView extends ProjectBoundItemView {
             window.clearTimeout(this.saveDebounce);
             this.saveDebounce = null;
         }
-        this.saveBusyRetries = 0;
     }
 
     private async loadData() {
         try {
+            const projectFile = this.getTargetProjectFile();
             const folder = this.getActiveSystemFolder();
-            const projectChanged = this.loadedSystemFolder != null
-                && folder.length > 0
-                && this.loadedSystemFolder !== folder;
+            const projectChanged = this.loadedProjectFile != null
+                && projectFile.length > 0
+                && this.loadedProjectFile !== projectFile;
             if (projectChanged) {
                 // Never flush the previous project's pending autosave into the new System/ folder.
                 // Persist the outgoing workbook first — dispose alone used to cancel the
@@ -350,7 +358,6 @@ export class PlotgridView extends ProjectBoundItemView {
                 await this.persistBoundPlotGrid();
                 this.univerLoadFailed = false;
                 this.univerLoadError = null;
-                this.closeAllCellEditors();
                 this.disposeUniverHost({ persist: false });
                 this.hideCellInspector();
                 this.undoStack = [];
@@ -358,7 +365,7 @@ export class PlotgridView extends ProjectBoundItemView {
 
             let loaded: ConceptGridDocument | null = null;
             if (this.plugin && typeof this.plugin.loadPlotGrid === 'function') {
-                loaded = await this.plugin.loadPlotGrid();
+                loaded = await this.plugin.loadPlotGrid(projectFile);
             } else {
                 loaded = null;
             }
@@ -366,6 +373,7 @@ export class PlotgridView extends ProjectBoundItemView {
                 ? normalizeConceptGridDocument(loaded)
                 : createEmptyConceptGridDocument();
             this.bindActivePage();
+            this.loadedProjectFile = projectFile || this.loadedProjectFile;
             this.loadedSystemFolder = folder || this.loadedSystemFolder;
             // Auto-repair broken linkedSceneId paths (e.g. after project migration)
             this.repairLinkedScenePaths();
@@ -455,29 +463,21 @@ export class PlotgridView extends ProjectBoundItemView {
         if (dirty) this.scheduleSave();
     }
 
-    /** How many times autosave deferred because Univer reported editor-busy. */
-    private saveBusyRetries = 0;
-
     private scheduleSave() {
         const plugin = this.plugin;
         if (!plugin) return;
         // Never autosave while Univer's in-cell editor / IME is live — writing the
         // vault triggers refreshPlotGridViews and remounts the workbook mid-keystroke.
-        // After ~5s of busy stalls, force a flush+save so edits are not stranded.
+        // Closing/switching the view performs an explicit final flush, so autosave
+        // must never force-close a user who is still typing a long cell value.
         if (this.univerHost?.isEditorBusy()) {
-            this.saveBusyRetries += 1;
-            if (this.saveBusyRetries < 25) {
-                if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
-                this.saveDebounce = window.setTimeout(() => this.scheduleSave(), 200);
-                return;
-            }
-            try { this.univerHost.flush(); } catch { /* ignore */ }
-            this.saveBusyRetries = 0;
-        } else {
-            this.saveBusyRetries = 0;
+            if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
+            this.saveDebounce = window.setTimeout(() => this.scheduleSave(), 250);
+            return;
         }
         // Capture the System/ folder this in-memory document belongs to.
         const folderAtSchedule = this.loadedSystemFolder || this.getActiveSystemFolder();
+        const projectAtSchedule = this.loadedProjectFile || this.getTargetProjectFile();
         if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
         // debounce and call plugin-level save API if available
         const timerId = window.setTimeout(async () => {
@@ -500,7 +500,9 @@ export class PlotgridView extends ProjectBoundItemView {
                         this.bindActivePage();
                     } catch { /* ignore */ }
                 }
-                if (typeof plugin.savePlotGrid === 'function') await plugin.savePlotGrid(this.document);
+                if (typeof plugin.savePlotGrid === 'function') {
+                    await plugin.savePlotGrid(this.document, { projectFilePath: projectAtSchedule });
+                }
             } catch (error) {
                 // The plugin-level writer already retries transient file locks.
                 // Keep the failure observable without showing repeated toasts.
@@ -752,6 +754,8 @@ export class PlotgridView extends ProjectBoundItemView {
 
     private switchPage(pageId: string): void {
         if (!this.document.pages.some(p => p.id === pageId)) return;
+        this.flushUniverIntoDocument();
+        if (!this.document.pages.some(p => p.id === pageId)) return;
         this.document.activePageId = pageId;
         this.bindActivePage();
         try {
@@ -787,7 +791,7 @@ export class PlotgridView extends ProjectBoundItemView {
 
     /** Move a worksheet before/after another worksheet and persist the new page order. */
     private reorderPage(sourcePageId: string, targetPageId: string, placeAfter: boolean): void {
-        try { this.univerHost?.flush(); } catch { /* keep the last in-memory document */ }
+        this.flushUniverIntoDocument();
         const source = this.document.pages.find(page => page.id === sourcePageId);
         if (!source || sourcePageId === targetPageId) return;
         const remaining = this.document.pages.filter(page => page.id !== sourcePageId);
@@ -837,12 +841,14 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     private createPage(): void {
+        this.flushUniverIntoDocument();
         const page = createEmptyConceptGridPage(t('Page {n}', { n: this.document.pages.length + 1 }));
         this.document.pages.push(page);
         this.switchPage(page.id);
     }
 
     private duplicatePage(pageId: string): void {
+        this.flushUniverIntoDocument();
         const source = this.document.pages.find(p => p.id === pageId);
         if (!source) return;
         const copy = cloneConceptGridPage(source, `${source.title} ${t('copy')}`);
@@ -852,6 +858,7 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     private renamePage(pageId: string): void {
+        this.flushUniverIntoDocument();
         const page = this.document.pages.find(p => p.id === pageId);
         if (!page) return;
         const applyTitle = (next: string): void => {
@@ -951,6 +958,7 @@ export class PlotgridView extends ProjectBoundItemView {
             message: t('Delete page "{title}"? This cannot be undone.', { title: page.title }),
             confirmLabel: t('Delete'),
             onConfirm: () => {
+                this.flushUniverIntoDocument();
                 const index = this.document.pages.findIndex(p => p.id === pageId);
                 if (index < 0) return;
                 this.document.pages.splice(index, 1);
@@ -1506,7 +1514,10 @@ export class PlotgridView extends ProjectBoundItemView {
                     page.zoom = 1;
                     this.data = page;
                     this.univerStructureSig = '';
-                    void this.plugin?.savePlotGrid?.(this.document, { allowEmptyOverwrite: true });
+                    void this.plugin?.savePlotGrid?.(this.document, {
+                        allowEmptyOverwrite: true,
+                        projectFilePath: this.loadedProjectFile || this.getTargetProjectFile(),
+                    });
                     this.renderGrid({ forcePush: true });
                 },
             });
@@ -1727,7 +1738,7 @@ export class PlotgridView extends ProjectBoundItemView {
         if (existing) this.cellEditorWindows.delete(cellKey);
 
         const editorApp = this.app;
-        const sourcePath = this.plugin?.sceneManager?.activeProject?.filePath || '';
+        const sourcePath = this.getTargetProjectFile();
         // Structural link draft; content lives in the textarea and autosaves.
         let editorLinkedSceneId: string | undefined = cell.linkedSceneId;
         let autosaveTimer: number | null = null;
@@ -2233,15 +2244,14 @@ export class PlotgridView extends ProjectBoundItemView {
     }
     async refresh(): Promise<void> {
         try {
-            const folder = this.getActiveSystemFolder();
-            const projectChanged = this.loadedSystemFolder != null
-                && folder.length > 0
-                && this.loadedSystemFolder !== folder;
+            const projectFile = this.getTargetProjectFile();
+            const projectChanged = this.loadedProjectFile != null
+                && projectFile.length > 0
+                && this.loadedProjectFile !== projectFile;
 
             if (projectChanged) {
                 // Always reload on project switch — never skip for pending saves / focus.
                 await this.persistBoundPlotGrid();
-                this.closeAllCellEditors();
                 this.disposeUniverHost({ persist: false });
             } else {
                 // Pull pending Univer edits into memory before deciding whether disk
@@ -2253,18 +2263,18 @@ export class PlotgridView extends ProjectBoundItemView {
                     if (this.univerHost.isEditorBusy()) return;
                     try { this.univerHost.flush(); } catch { /* ignore */ }
                 }
-            // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
-            if (this.saveDebounce) return;
+                // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
+                if (this.saveDebounce) return;
                 // Pending sync after flush should have scheduled save; still guard.
                 if (this.univerHost?.hasPendingSync()) return;
                 // Floating Markdown editors mount on <body> — vault refresh must not wipe them.
                 for (const win of this.cellEditorWindows.values()) {
                     if (win.isConnected) return;
                 }
-            // If a cell is being edited, skip refresh to avoid destroying the textarea
-            if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
-            // If any input/textarea in the grid or inspector is focused, skip refresh to avoid losing edits
-            if (this.wrapperEl?.querySelector('input:focus, textarea:focus')) return;
+                // If a cell is being edited, skip refresh to avoid destroying the textarea.
+                if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
+                // Focused inputs in the grid or inspector still own uncommitted drafts.
+                if (this.wrapperEl?.querySelector('input:focus, textarea:focus')) return;
                 // Univer in-cell / formula editor or IME — remounting clears composition.
                 if (this.univerHost?.isEditorBusy()) return;
                 if (this.scrollAreaEl?.querySelector('[contenteditable="true"]:focus, textarea:focus, input:focus')) return;

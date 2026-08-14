@@ -28,6 +28,8 @@ export class ResearchView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private manager: ResearchManager;
     private rootEl: HTMLElement | null = null;
+    /** Prevents an older scan from repainting a newer/detached host. */
+    private mountGeneration = 0;
 
     // UI state
     private searchQuery = '';
@@ -61,7 +63,10 @@ export class ResearchView extends ProjectBoundItemView {
         await this.mountInto(container);
     }
 
-    async onClose(): Promise<void> {}
+    async onClose(): Promise<void> {
+        this.mountGeneration++;
+        this.rootEl = null;
+    }
 
     /**
      * Render the Research panel into an arbitrary host element.
@@ -69,16 +74,20 @@ export class ResearchView extends ProjectBoundItemView {
      * sidebar's Research tab (embedded mount).
      */
     async mountInto(host: HTMLElement): Promise<void> {
+        const mountGeneration = ++this.mountGeneration;
         await this.manager.scan();
+        if (mountGeneration !== this.mountGeneration || !host.isConnected) return;
         host.addClass('sl-research-panel');
         this.rootEl = host;
         this.render();
     }
 
     refresh(): void {
+        const mountGeneration = ++this.mountGeneration;
+        const host = this.rootEl;
         this.manager.scan().then(() => {
-            if (this.rootEl) {
-                this.rootEl.empty();
+            if (mountGeneration === this.mountGeneration && host?.isConnected && this.rootEl === host) {
+                host.empty();
                 this.render();
             }
         });

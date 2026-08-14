@@ -23,3 +23,16 @@ test('Navigator restores Notes and Scenes but opens Research collapsed', () => {
     assert.doesNotMatch(navigatorView, /REMEMBERED_PRIMARY_SECTIONS = \[[^\]]*research/);
     assert.match(mainTs, /section === 'notes' \|\| section === 'scenes'/);
 });
+
+test('Navigator search and filters reveal matching file ancestors transiently', () => {
+    assert.match(navigatorView, /private autoExpandedNodes: Set<string> = new Set\(\)/);
+    assert.match(navigatorView, /private updateFilterExpansions\(activeProject: StoryLineProject \| null \| undefined\)/);
+    assert.match(navigatorView, /this\.updateFilterExpansions\(active\)/);
+    assert.match(navigatorView, /this\.autoExpandedNodes\.add\('notes'\)/);
+    assert.match(navigatorView, /this\.autoExpandedNodes\.add\('scenes'\)/);
+    assert.match(navigatorView, /this\.autoExpandedNodes\.add\('research'\)/);
+    assert.match(navigatorView, /this\.autoExpandedNodes\.add\(`project:\$\{activeProject\.filePath\}`\)/);
+    assert.match(navigatorView, /!this\.autoExpandedActs\.has\(actKey\)/);
+    assert.match(navigatorView, /!this\.autoExpandedChapters\.has\(chKey\)/);
+    assert.match(navigatorView, /this\.collapsedNodes\.has\(key\) && !this\.autoExpandedNodes\.has\(key\)/);
+});

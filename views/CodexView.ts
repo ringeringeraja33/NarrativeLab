@@ -270,6 +270,7 @@ export class CodexView extends ProjectBoundItemView {
             this.profileOverviewCategoryId = null;
         }
 
+        if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
@@ -385,21 +386,23 @@ export class CodexView extends ProjectBoundItemView {
         renderViewSwitcher(toolbar, CODEX_VIEW_TYPE, this.plugin, this.leaf);
 
         // Same tab bar placement as CharacterView / LocationView (outside content)
+        const storyGraphActive = !this.selectedEntry
+            && getLibraryContentMode(this.plugin) === 'story-graph'
+            && !isMobile;
         renderCodexCategoryTabs(container, {
-            activeId: this.activeCategory || '',
+            activeId: storyGraphActive ? 'story-graph' : this.activeCategory || '',
             leaf: this.leaf,
             plugin: this.plugin,
-            renderFarRightActions: !this.selectedEntry
-                ? (actions) => renderLibraryStoryGraphAction(
-                    actions,
-                    getLibraryContentMode(this.plugin) === 'story-graph',
-                    () => {
-                        this.profileOverviewCategoryId = null;
-                        setLibraryContentMode(this.plugin, 'story-graph');
-                        if (this.rootContainer) this.renderView(this.rootContainer);
-                    },
-                )
-                : undefined,
+            renderLeadingTabs: (tabs) => renderLibraryStoryGraphAction(
+                tabs,
+                storyGraphActive,
+                () => {
+                    this.selectedEntry = null;
+                    this.profileOverviewCategoryId = null;
+                    setLibraryContentMode(this.plugin, 'story-graph');
+                    if (this.rootContainer) this.renderView(this.rootContainer);
+                },
+            ),
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },

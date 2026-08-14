@@ -23,6 +23,8 @@ export class NotesView extends ItemView {
     private currentNotesPath: string | null = null;
     private saveTimer: number | null = null;
     private emptyEl: HTMLElement | null = null;
+    /** Invalidates an embedded editor that finishes opening after a scene switch. */
+    private editorMountGeneration = 0;
 
     constructor(leaf: WorkspaceLeaf, _plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -154,6 +156,7 @@ export class NotesView extends ItemView {
         });
         addBtn.addEventListener('click', async () => {
             const path = await this.sceneManager.getOrCreateSceneNotesFile(scene);
+            if (this.currentScenePath !== scene.filePath || !placeholder.isConnected) return;
             await this.mountNotesEditor(path);
             this.refreshEmptyState();
         });
@@ -200,6 +203,7 @@ export class NotesView extends ItemView {
         if (this.currentNotesPath === notesPath && this.editorLeaf) return;
 
         this.detachEditor();
+        const mountGeneration = this.editorMountGeneration;
         this.currentNotesPath = notesPath;
 
         const file = this.app.vault.getAbstractFileByPath(notesPath);
@@ -207,13 +211,31 @@ export class NotesView extends ItemView {
 
         this.editorHost.empty();
 
+        const host = this.editorHost;
         const split = new (WorkspaceSplit as unknown as new (workspace: unknown, dir: string) => WorkspaceSplit)(this.app.workspace, 'vertical');
         const splitEl: HTMLElement = (split as unknown as { containerEl: HTMLElement }).containerEl;
         splitEl.addClass('sl-notes-embedded-split');
-        this.editorHost.appendChild(splitEl);
+        host.appendChild(splitEl);
 
         const leaf = this.app.workspace.createLeafInParent(split, 0);
-        await leaf.openFile(file, { state: { mode: 'source', source: false } });
+        try {
+            await leaf.openFile(file, { state: { mode: 'source', source: false } });
+        } catch (error) {
+            leaf.detach();
+            if (mountGeneration === this.editorMountGeneration) {
+                console.error('[NarrativeLab] Failed to open Notes editor:', error);
+            }
+            return;
+        }
+        if (
+            mountGeneration !== this.editorMountGeneration
+            || this.currentNotesPath !== notesPath
+            || this.editorHost !== host
+            || !host.isConnected
+        ) {
+            leaf.detach();
+            return;
+        }
         this.editorLeaf = leaf;
         this.attachAutosave(splitEl, leaf, file);
     }
@@ -254,6 +276,7 @@ export class NotesView extends ItemView {
     }
 
     private detachEditor(): void {
+        this.editorMountGeneration++;
         if (this.saveTimer !== null) {
             window.clearTimeout(this.saveTimer);
             this.saveTimer = null;

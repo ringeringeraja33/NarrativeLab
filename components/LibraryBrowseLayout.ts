@@ -731,7 +731,7 @@ export function renderLibraryBrowseToolbar(
     return { root, searchInput, chipHost };
 }
 
-/** Keep content-mode controls in the same right-aligned toolbar position. */
+/** Keep content-mode controls in the same left-aligned toolbar position. */
 export function renderLibraryModeToolbar(
     parent: HTMLElement,
     renderActions: (actionsEl: HTMLElement) => void,

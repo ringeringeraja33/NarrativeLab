@@ -62,6 +62,10 @@ export class NavigatorView extends ItemView {
     private collapsedChapters: Set<string> = new Set();
     /** Collapsed binder nodes: project:{path} | plotlines | drafts | scenes | draft:{id} | act:… | chapter:… */
     private collapsedNodes: Set<string> = new Set(['plotlines', 'research']);
+    /** Search/filter-only expansion; manual collapse state remains untouched. */
+    private autoExpandedNodes: Set<string> = new Set();
+    private autoExpandedActs: Set<string> = new Set();
+    private autoExpandedChapters: Set<string> = new Set();
     /** Active scene drag path — browsers hide dataTransfer.getData() during dragover. */
     private draggingScenePath: string | null = null;
 
@@ -202,7 +206,83 @@ export class NavigatorView extends ItemView {
     }
 
     private isCollapsed(key: string): boolean {
-        return this.collapsedNodes.has(key);
+        return this.collapsedNodes.has(key) && !this.autoExpandedNodes.has(key);
+    }
+
+    /**
+     * Reveal every ancestor of matching files without changing the user's
+     * remembered collapse choices. Clearing search/filter restores them.
+     */
+    private updateFilterExpansions(activeProject: StoryLineProject | null | undefined): void {
+        this.autoExpandedNodes.clear();
+        this.autoExpandedActs.clear();
+        this.autoExpandedChapters.clear();
+
+        if (
+            this.plotlineFilter
+            && this.plotlineFilter !== UNASSIGNED_PLOTLINE_FILTER
+            && !this.sceneManager.getPlotlines().includes(this.plotlineFilter)
+        ) {
+            this.plotlineFilter = null;
+        }
+        if (!activeProject || (!this.filterText && !this.plotlineFilter)) return;
+
+        const query = this.filterText;
+        const matchesSceneSearch = (scene: Scene): boolean => !query
+            || scene.title.toLowerCase().includes(query)
+            || !!scene.pov?.toLowerCase().includes(query)
+            || !!scene.tags?.some(tag => tag.toLowerCase().includes(query));
+        const matchesSimpleSearch = (title: string, tags: string[]): boolean => !query
+            || title.toLowerCase().includes(query)
+            || tags.some(tag => tag.toLowerCase().includes(query));
+
+        const notes = this.sceneManager.getAllScenes().filter(scene =>
+            scene.corkboardNote
+            && !scene.inactive
+            && matchesSimpleSearch(scene.title, scene.tags || [])
+        );
+
+        let scenes = this.sceneManager.getScenesForDraft();
+        if (this.plotlineFilter === UNASSIGNED_PLOTLINE_FILTER) {
+            scenes = scenes.filter(scene => !scene.tags || scene.tags.length === 0);
+        } else if (this.plotlineFilter) {
+            scenes = scenes.filter(scene => scene.tags?.includes(this.plotlineFilter!));
+        }
+        scenes = scenes.filter(matchesSceneSearch);
+
+        const research = (this.plugin.researchManager?.getAllPosts() || []).filter(post =>
+            matchesSimpleSearch(post.title, post.tags)
+        );
+
+        if (notes.length > 0) this.autoExpandedNodes.add('notes');
+        if (research.length > 0) this.autoExpandedNodes.add('research');
+        if (scenes.length > 0) {
+            this.autoExpandedNodes.add('scenes');
+            if (this.plotlineFilter) this.autoExpandedNodes.add('plotlines');
+            if (this.sortMode === 'reading') {
+                for (const scene of scenes) {
+                    this.autoExpandedActs.add(
+                        scene.act !== undefined && scene.act !== null && scene.act !== ''
+                            ? `act:${String(scene.act)}`
+                            : '__ungrouped__',
+                    );
+                }
+            } else if (this.sortMode === 'chapter') {
+                for (const scene of scenes) {
+                    this.autoExpandedChapters.add(
+                        scene.chapter !== undefined
+                            && scene.chapter !== null
+                            && String(scene.chapter).trim() !== ''
+                            ? `Chapter ${scene.chapter}`
+                            : 'Unassigned',
+                    );
+                }
+            }
+        }
+
+        if (notes.length > 0 || scenes.length > 0 || research.length > 0) {
+            this.autoExpandedNodes.add(`project:${activeProject.filePath}`);
+        }
     }
 
     /** Restore Notes / Scenes, while Research always starts collapsed on view open. */
@@ -324,6 +404,7 @@ export class NavigatorView extends ItemView {
             .slice()
             .sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }));
         const active = this.sceneManager.activeProject;
+        this.updateFilterExpansions(active);
 
         if (projects.length === 0) {
             const empty = this.listEl.createDiv('sl-nav-empty');
@@ -1373,7 +1454,8 @@ export class NavigatorView extends ItemView {
 
         for (const [actKey, actScenes] of groups) {
             const actLabel = labels.get(actKey) ?? actKey;
-            const isCollapsed = this.collapsedActs.has(actKey);
+            const isCollapsed = this.collapsedActs.has(actKey)
+                && !this.autoExpandedActs.has(actKey);
 
             const header = parent.createDiv('sl-nav-act-header');
             this.setNavDepth(header, depth);
@@ -1422,7 +1504,8 @@ export class NavigatorView extends ItemView {
         }
 
         for (const [chKey, chScenes] of groups) {
-            const isCollapsed = this.collapsedChapters.has(chKey);
+            const isCollapsed = this.collapsedChapters.has(chKey)
+                && !this.autoExpandedChapters.has(chKey);
 
             const header = parent.createDiv('sl-nav-chapter-header');
             this.setNavDepth(header, depth);

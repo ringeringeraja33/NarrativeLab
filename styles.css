@@ -9441,6 +9441,12 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     min-height: 0;
 }
 
+.library-story-graph-host {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 0;
+}
+
 .story-graph-page.is-story-graph-fullscreen {
     position: fixed;
     inset: 0;
@@ -12696,6 +12702,7 @@ body /* Clamp title on mobile too, in case it's very long */
 }
 .library-browse-toolbar {
     gap: 6px;
+    justify-content: flex-start;
 }
 .library-browse-actions {
     display: inline-flex;
@@ -12761,13 +12768,13 @@ body /* Clamp title on mobile too, in case it's very long */
     display: none;
 }
 .library-browse-toolbar .library-layout-toggle {
-    margin-left: auto;
+    margin-left: 0;
 }
 .library-browse-mode-actions {
     display: inline-flex;
     align-items: stretch;
     flex-shrink: 0;
-    margin-left: auto;
+    margin-left: 0;
 }
 .library-browse-mode-actions .library-mode-toggle {
     margin-left: 0;
@@ -13110,12 +13117,16 @@ body /* Clamp title on mobile too, in case it's very long */
     display: flex;
     flex-wrap: wrap;
     flex-shrink: 0;
+    justify-content: flex-start;
     gap: 2px;
     padding: 2px 12px 0;
     border-bottom: 1px solid var(--background-modifier-border);
     margin: 0;
     align-items: stretch;
     box-sizing: border-box;
+}
+.codex-category-tabs .library-story-graph-tab {
+    margin-left: 0;
 }
 
 /* Divider before the left-aligned category-management group. */
@@ -13129,26 +13140,6 @@ body /* Clamp title on mobile too, in case it's very long */
     align-self: stretch;
     flex-shrink: 0;
     gap: 2px;
-}
-.codex-category-far-actions {
-    display: inline-flex;
-    align-items: stretch;
-    align-self: stretch;
-    flex-shrink: 0;
-    margin-left: auto;
-}
-.codex-category-far-actions .character-mode-btn {
-    min-height: 30px;
-    margin: 0 0 -1px;
-}
-.codex-category-far-actions .character-mode-btn span:first-child {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-}
-.codex-category-far-actions .character-mode-btn svg {
-    width: 14px;
-    height: 14px;
 }
 .codex-category-actions .character-mode-btn span:first-child {
     display: inline-flex;

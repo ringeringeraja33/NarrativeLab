@@ -28,6 +28,9 @@ export class InspectorComponent {
     private onStatusChange: (scene: Scene, newStatus: SceneStatus) => void;
     /** Host Component required by MarkdownRenderer (Inspector is not an ItemView). */
     private markdownHost = new Component();
+    /** Prevents stale notes reads/renders from repainting a newer scene. */
+    private notesRenderGeneration = 0;
+    private notesSuggest: WikilinkSuggest | null = null;
 
     /**
      * Format intensity value for display (-10 to +10)
@@ -94,6 +97,9 @@ export class InspectorComponent {
      * Hide inspector
      */
     hide(): void {
+        this.notesRenderGeneration++;
+        this.notesSuggest?.destroy();
+        this.notesSuggest = null;
         this.currentScene = null;
         this.container.setCssStyles({ display: 'none' });
     }
@@ -105,6 +111,9 @@ export class InspectorComponent {
         const scene = this.currentScene;
         if (!scene) return;
 
+        this.notesRenderGeneration++;
+        this.notesSuggest?.destroy();
+        this.notesSuggest = null;
         this.container.empty();
         this.container.addClass('story-line-inspector');
 
@@ -1268,8 +1277,16 @@ export class InspectorComponent {
      * Checkboxes are interactive in preview mode.
      */
     private async renderInspectorNotesLive(container: HTMLElement, scene: Scene): Promise<void> {
+        const renderGeneration = ++this.notesRenderGeneration;
+        this.notesSuggest?.destroy();
+        this.notesSuggest = null;
         container.empty();
         const notesText = await this.getCurrentSceneNotesText(scene);
+        if (
+            renderGeneration !== this.notesRenderGeneration
+            || this.currentScene?.filePath !== scene.filePath
+            || !container.isConnected
+        ) return;
         scene.notes = notesText || undefined;
 
         if (!notesText) {
@@ -1284,19 +1301,29 @@ export class InspectorComponent {
 
         // Rendered markdown preview
         const previewEl = container.createDiv('inspector-notes-live is-preview');
-        void obsidian.MarkdownRenderer.render(
+        await obsidian.MarkdownRenderer.render(
             this.plugin.app,
             notesText,
             previewEl,
             scene.filePath,
             this.markdownHost,
         );
+        if (
+            renderGeneration !== this.notesRenderGeneration
+            || this.currentScene?.filePath !== scene.filePath
+            || !previewEl.isConnected
+        ) return;
 
         // Click on preview → switch to editor (but not on links/checkboxes)
         previewEl.addEventListener('click', (e) => {
             const target = e.target as HTMLElement;
             if (target.tagName === 'A' || target.tagName === 'INPUT') return;
             void this.getCurrentSceneNotesText(scene).then((currentNotes) => {
+                if (
+                    renderGeneration !== this.notesRenderGeneration
+                    || this.currentScene?.filePath !== scene.filePath
+                    || !container.isConnected
+                ) return;
                 this.renderInspectorNotesEditor(container, scene, currentNotes);
             });
         });
@@ -1312,11 +1339,12 @@ export class InspectorComponent {
                 const lines = notes.split('\n');
                 let lineIdx = 0;
                 let foundIdx = -1;
-                for (const line of lines) {
+                for (let index = 0; index < lines.length; index++) {
+                    const line = lines[index];
                     const match = line.match(/^(\s*-\s*)\[([ xX])\]/);
                     if (match) {
                         if (previewEl.querySelectorAll('input[type="checkbox"]')[lineIdx] === checkbox) {
-                            foundIdx = lines.indexOf(line);
+                            foundIdx = index;
                             break;
                         }
                         lineIdx++;
@@ -1328,13 +1356,18 @@ export class InspectorComponent {
                     await this.sceneManager.updateScene(scene.filePath, { notes: newNotes });
                     scene.notes = newNotes;
                     await this.sceneManager.writeSceneNotes(scene, newNotes ? `${newNotes}\n` : '');
-                    void this.renderInspectorNotesLive(container, scene);
+                    if (this.currentScene?.filePath === scene.filePath && container.isConnected) {
+                        void this.renderInspectorNotesLive(container, scene);
+                    }
                 }
             });
         });
     }
 
     private renderInspectorNotesEditor(container: HTMLElement, scene: Scene, currentNotes: string): void {
+        this.notesRenderGeneration++;
+        this.notesSuggest?.destroy();
+        this.notesSuggest = null;
         container.empty();
         const editorEl = container.createDiv('inspector-notes-live is-editing');
 
@@ -1346,9 +1379,7 @@ export class InspectorComponent {
 
         // Issue #84 — attach a wikilink autocomplete (`[[…]]`) so users
         // can quickly link to other notes from the comments field.
-        const suggest = new WikilinkSuggest({ app: this.plugin.app, textareaEl: textarea });
-        // Tear down the dropdown when the inspector re-renders.
-        this.plugin.register(() => suggest.destroy());
+        this.notesSuggest = new WikilinkSuggest({ app: this.plugin.app, textareaEl: textarea });
 
         // Auto-focus
         window.requestAnimationFrame(() => textarea.focus());
@@ -1360,7 +1391,9 @@ export class InspectorComponent {
             await this.sceneManager.updateScene(scene.filePath, { notes: trimmed || undefined });
             scene.notes = trimmed || undefined;
             await this.sceneManager.writeSceneNotes(scene, trimmed ? `${trimmed}\n` : '');
-            void this.renderInspectorNotesLive(container, scene);
+            if (this.currentScene?.filePath === scene.filePath && container.isConnected) {
+                void this.renderInspectorNotesLive(container, scene);
+            }
         });
 
         // Escape to finish editing

@@ -53,6 +53,8 @@ export class ManuscriptView extends ProjectBoundItemView {
     private editorResizeObservers: Map<string, ResizeObserver> = new Map();
     /** Paths currently being mounted (prevents duplicate async mounts) */
     private mountingPaths: Set<string> = new Set();
+    /** Invalidates editors whose async open finishes after a remount/close. */
+    private editorMountGeneration = 0;
     private _hasActiveFocus = false;
     /** Prevents refresh() from running during initial mount sequence */
     private _isMounting = false;
@@ -150,6 +152,7 @@ export class ManuscriptView extends ProjectBoundItemView {
         this.rootContainer = container;
 
         await this.sceneManager.initialize();
+        if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
@@ -187,6 +190,7 @@ export class ManuscriptView extends ProjectBoundItemView {
     }
 
     private detachAllEmbedded(): void {
+        this.editorMountGeneration++;
         for (const [, leaf] of this.embeddedLeaves) {
             leaf.detach();
         }
@@ -537,6 +541,7 @@ export class ManuscriptView extends ProjectBoundItemView {
     private async mountEditor(container: HTMLElement, filePath: string): Promise<void> {
         if (this.embeddedLeaves.has(filePath) || this.mountingPaths.has(filePath)) return;
         this.mountingPaths.add(filePath);
+        const mountGeneration = this.editorMountGeneration;
 
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (!(file instanceof TFile)) {
@@ -550,10 +555,11 @@ export class ManuscriptView extends ProjectBoundItemView {
         // don't render reliably. Fall back to static rendered markdown.
         if (isPhone || isTablet) {
             this.mountingPaths.delete(filePath);
-            await this.mountReadOnlyPreview(container, filePath);
+            await this.mountReadOnlyPreview(container, filePath, mountGeneration);
             return;
         }
 
+        let leaf: WorkspaceLeaf | null = null;
         try {
             // Create a detached WorkspaceSplit to host the embedded leaf
             const split = new (WorkspaceSplit as unknown as new (workspace: unknown, dir: string) => WorkspaceSplit)(this.app.workspace, 'vertical');
@@ -565,13 +571,24 @@ export class ManuscriptView extends ProjectBoundItemView {
             // chain has a viewport for CM6 to render into.
             splitEl.setCssStyles({ height: '300px' });
 
-            const leaf = this.app.workspace.createLeafInParent(split, 0);
+            leaf = this.app.workspace.createLeafInParent(split, 0);
 
             await leaf.openFile(file, {
                 state: { mode: 'source', source: false },
             });
 
-            this.embeddedLeaves.set(filePath, leaf);
+            if (
+                mountGeneration !== this.editorMountGeneration
+                || !container.isConnected
+                || container.dataset.scenePath !== filePath
+            ) {
+                leaf.detach();
+                this.mountingPaths.delete(filePath);
+                return;
+            }
+
+            const mountedLeaf = leaf;
+            this.embeddedLeaves.set(filePath, mountedLeaf);
             this.mountingPaths.delete(filePath);
 
             // Fold Properties only in this embed (cheap). CSS covers first paint.
@@ -586,7 +603,7 @@ export class ManuscriptView extends ProjectBoundItemView {
             }, true);
 
             // Inject the atomic-links extension into the CM6 editor
-            this.injectAtomicExtension(leaf);
+            this.injectAtomicExtension(mountedLeaf);
 
             // Measurement strategy:
             //   Read cm-content's actual rendered DOM height. Because we set
@@ -604,7 +621,7 @@ export class ManuscriptView extends ProjectBoundItemView {
             let syncing = false;
             const syncHeight = () => {
                 if (syncing) return;
-                const cm = this.getCmView(leaf);
+                const cm = this.getCmView(mountedLeaf);
                 if (!cm) return;
                 syncing = true;
                 cm.requestMeasure({
@@ -704,9 +721,11 @@ export class ManuscriptView extends ProjectBoundItemView {
                 });
             }
         } catch (err) {
+            leaf?.detach();
             this.mountingPaths.delete(filePath);
+            if (mountGeneration !== this.editorMountGeneration || !container.isConnected) return;
             console.warn('NarrativeLab: embedded editor failed, falling back to preview', err);
-            await this.mountReadOnlyPreview(container, filePath);
+            await this.mountReadOnlyPreview(container, filePath, mountGeneration);
         }
     }
 
@@ -714,12 +733,22 @@ export class ManuscriptView extends ProjectBoundItemView {
     private async mountReadOnlyPreview(
         container: HTMLElement,
         filePath: string,
+        mountGeneration = this.editorMountGeneration,
     ): Promise<void> {
+        if (mountGeneration !== this.editorMountGeneration || !container.isConnected) return;
         const scene = this.sceneManager.getScene(filePath);
         const text = (scene?.body ?? '').trim();
         if (text) {
             const previewEl = container.createDiv('sl-manuscript-preview');
             await MarkdownRenderer.render(this.app, text, previewEl, filePath, this);
+            if (
+                mountGeneration !== this.editorMountGeneration
+                || !previewEl.isConnected
+                || container.dataset.scenePath !== filePath
+            ) {
+                previewEl.remove();
+                return;
+            }
             // Issue #226 — French (and other) typography uses non-breaking
             // spaces (U+00A0) inside guillemets « ». markdown-it HTML-encodes
             // U+00A0 as the literal entity string "&nbsp;". When that string

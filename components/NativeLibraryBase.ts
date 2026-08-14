@@ -914,7 +914,8 @@ function schedulePersistLiveLayout(state: NativeBaseEmbedState): void {
         state.persistTimer = null;
         if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
         const snapshot = snapshotBasesViewLayout(state.liveView);
-        void persistLayoutSnapshot(state.plugin, state.basePath, state.categoryId, snapshot);
+        void persistLayoutSnapshot(state.plugin, state.basePath, state.categoryId, snapshot)
+            .catch(error => console.warn('[NarrativeLab] Failed to persist live Base layout:', error));
     }, 250);
 }
 
@@ -1385,7 +1386,11 @@ export async function renderNativeLibraryBase(
     const state = activeEmbeds.get(owner)!;
     const generation = state.generation;
 
-    container.empty();
+    // The caller may place the Profiles / Base mode switch beside this embed.
+    // Replace only an earlier Base host; clearing the whole content pane here
+    // removes that sibling control and strands the user on the Base page.
+    container.querySelectorAll(':scope > .library-native-base-embed')
+        .forEach(element => element.remove());
     const host = container.createDiv('library-native-base-embed markdown-rendered');
     const loading = host.createDiv({ cls: 'library-native-base-loading', text: t('Loading Base…') });
     let resolved: { basePath: string; folderPath: string } | null;

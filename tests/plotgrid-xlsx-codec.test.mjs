@@ -301,6 +301,95 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.deepEqual(columnsMoved.pages[0].columns.map(column => column.id), ['c2', 'c1']);
         assert.equal(columnsMoved.pages[0].cells['r2-c2'].linkedSceneId, 'Notes/B.md');
 
+        // Native Univer row/column splices must update stable NL axes before
+        // sparse cellData is merged, otherwise blank rows retain old values and
+        // the following rows appear duplicated after reopening the view.
+        const rowInserted = codec.spliceConceptGridAxis(reorderDoc, 'page-1', 'rows', 'insert', 2, 1);
+        assert.equal(rowInserted.pages[0].rows.length, 3);
+        assert.equal(rowInserted.pages[0].rows[0].id, 'r1');
+        assert.equal(rowInserted.pages[0].rows[1].label, '');
+        assert.equal(rowInserted.pages[0].rows[2].id, 'r2');
+        const rowMerged = codec.mergeUniverCellDataIntoDocument(rowInserted, 'page-1', {
+            0: { 0: { v: '' }, 1: { v: 'C1' }, 2: { v: 'C2' } },
+            1: { 0: { v: 'R1' }, 1: { v: 'A' } },
+            // Worksheet row 2 is intentionally sparse/blank.
+            3: { 0: { v: 'R2' }, 2: { v: 'B' } },
+        }, undefined, undefined, undefined, { clearMissing: true });
+        const insertedRowId = rowMerged.pages[0].rows[1].id;
+        assert.equal(rowMerged.pages[0].cells[`${insertedRowId}-c1`], undefined);
+        assert.equal(rowMerged.pages[0].cells['r2-c2'].content, 'B');
+        const rowWorkbook = codec.documentToUniverWorkbookData(rowMerged);
+        assert.equal(rowWorkbook.sheets['page-1'].cellData[2][2].v, '');
+        assert.equal(rowWorkbook.sheets['page-1'].cellData[3][2].v, 'B');
+        const rowRemoved = codec.spliceConceptGridAxis(rowMerged, 'page-1', 'rows', 'remove', 2, 1);
+        assert.deepEqual(rowRemoved.pages[0].rows.map(row => row.id), ['r1', 'r2']);
+
+        // If xlsx saved first and the sidecar is one debounce behind, decode
+        // must recover the live blank row instead of mapping stale row ids by
+        // position (which produced duplicate rows on the next view mount).
+        const staleMeta = codec.buildNlMetaForDocument(reorderDoc);
+        const liveRowBook = new ExcelJS.Workbook();
+        const liveRowSheet = liveRowBook.addWorksheet('Reorder');
+        liveRowSheet.getCell(1, 2).value = 'C1';
+        liveRowSheet.getCell(1, 3).value = 'C2';
+        liveRowSheet.getCell(2, 1).value = 'R1';
+        liveRowSheet.getCell(2, 2).value = 'A';
+        liveRowSheet.getRow(3).height = 24;
+        liveRowSheet.getCell(4, 1).value = 'R2';
+        liveRowSheet.getCell(4, 3).value = 'B';
+        const recoveredStructure = await codec.decodePlotGridXlsx(
+            await liveRowBook.xlsx.writeBuffer(),
+            { meta: staleMeta },
+        );
+        assert.equal(recoveredStructure.pages[0].rows.length, 3);
+        assert.equal(recoveredStructure.pages[0].rows[0].id, 'r1');
+        assert.equal(recoveredStructure.pages[0].rows[1].label, '');
+        assert.equal(recoveredStructure.pages[0].rows[2].id, 'r2');
+        assert.equal(recoveredStructure.pages[0].cells['r1-c1'].content, 'A');
+        assert.equal(recoveredStructure.pages[0].cells['r2-c2'].content, 'B');
+        assert.equal(codec.plotGridNlMetaStructureMatchesDocument(staleMeta, recoveredStructure), false);
+        assert.equal(codec.plotGridNlMetaStructureMatchesDocument(
+            codec.buildNlMetaForDocument(recoveredStructure),
+            recoveredStructure,
+        ), true);
+
+        const liveTrimmedBook = new ExcelJS.Workbook();
+        const liveTrimmedSheet = liveTrimmedBook.addWorksheet('Reorder');
+        liveTrimmedSheet.getCell(1, 2).value = 'C2';
+        liveTrimmedSheet.getCell(2, 1).value = 'R2';
+        liveTrimmedSheet.getCell(2, 2).value = 'B';
+        const recoveredTrimmed = await codec.decodePlotGridXlsx(
+            await liveTrimmedBook.xlsx.writeBuffer(),
+            { meta: staleMeta },
+        );
+        assert.deepEqual(recoveredTrimmed.pages[0].columns.map(column => column.id), ['c2']);
+        assert.deepEqual(recoveredTrimmed.pages[0].rows.map(row => row.id), ['r2']);
+        assert.equal(recoveredTrimmed.pages[0].cells['r2-c2'].content, 'B');
+
+        const columnInserted = codec.spliceConceptGridAxis(reorderDoc, 'page-1', 'columns', 'insert', 2, 1);
+        assert.equal(columnInserted.pages[0].columns.length, 3);
+        assert.equal(columnInserted.pages[0].columns[0].id, 'c1');
+        assert.equal(columnInserted.pages[0].columns[1].label, '');
+        assert.equal(columnInserted.pages[0].columns[2].id, 'c2');
+        const insertedColumnId = columnInserted.pages[0].columns[1].id;
+        const columnWithTransientCell = {
+            ...columnInserted,
+            pages: [{
+                ...columnInserted.pages[0],
+                cells: {
+                    ...columnInserted.pages[0].cells,
+                    [`r1-${insertedColumnId}`]: {
+                        id: `r1-${insertedColumnId}`,
+                        content: 'temporary', bgColor: '', textColor: '', bold: false, italic: false, align: 'left',
+                    },
+                },
+            }],
+        };
+        const columnRemoved = codec.spliceConceptGridAxis(columnWithTransientCell, 'page-1', 'columns', 'remove', 2, 1);
+        assert.deepEqual(columnRemoved.pages[0].columns.map(column => column.id), ['c1', 'c2']);
+        assert.equal(columnRemoved.pages[0].cells[`r1-${insertedColumnId}`], undefined);
+        assert.equal(columnRemoved.pages[0].cells['r2-c2'].linkedSceneId, 'Notes/B.md');
+
         const normalizedIds = codec.mergeUniverCellDataIntoDocument({
             ...reorderDoc,
             pages: [{
@@ -416,6 +505,12 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /\.bak`|jsonPath.*bak|rename\(jsonPath/);
     assert.match(mainTs, /writeVaultBinaryResilient/);
     assert.match(mainTs, /backupCorruptPlotGridXlsx|_invalidPlotGridXlsxPaths/);
+    assert.match(mainTs, /healthy, loaded workbook may legitimately become empty/);
+    assert.match(mainTs, /isConceptGridDocumentEmpty\(document\)[\s\S]*?_invalidPlotGridXlsxPaths\.has\(path\)/);
+    assert.match(mainTs, /options: \{ allowEmptyOverwrite\?: boolean; projectFilePath\?: string \}/);
+    assert.match(mainTs, /deriveProjectFoldersFromFilePath\(projectFilePath\)\.baseFolder/);
+    assert.match(mainTs, /loadPlotGrid\(projectFilePath\?: string\)/);
+    assert.match(mainTs, /migratePlotGridToLibraryIfNeeded\(targetProjectFile\)/);
     assert.match(mainTs, /__.+\\.csv\$/);
     assert.doesNotMatch(mainTs, /PlotGridCsvSync/);
 });
@@ -464,8 +559,18 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.doesNotMatch(view, /openActivePageCsv|plotGridCsvSync|Open page CSV/);
     // Cross-project isolation: track System folder and abort mismatched autosaves
     assert.match(view, /loadedSystemFolder/);
+    assert.match(view, /loadedProjectFile/);
+    assert.match(view, /getBoundProjectFile\(\)/);
     assert.match(view, /folderAtSchedule/);
     assert.match(view, /projectChanged/);
+    assert.match(view, /projectFilePath: projectAtSchedule/);
+    assert.match(view, /loadPlotGrid\(projectFile\)/);
+    // Every destructive/structural navigation commits native edits first.
+    assert.match(view, /private switchPage[\s\S]*?this\.flushUniverIntoDocument\(\)/);
+    assert.match(view, /private duplicatePage[\s\S]*?this\.flushUniverIntoDocument\(\)/);
+    assert.match(view, /private createPage[\s\S]*?this\.flushUniverIntoDocument\(\)/);
+    // Floating Markdown drafts must flush before the final close save.
+    assert.match(view, /async onClose[\s\S]*?this\.closeAllCellEditors\(\);\s*this\.flushUniverIntoDocument\(\);[\s\S]*?savePlotGrid/);
 });
 
 test('worksheet tabs support persistent drag ordering and reliable inline rename', async () => {
@@ -543,6 +648,11 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(codecSrc, /rowData\[0\]/);
     assert.match(codecSrc, /columnData\[0\]/);
     assert.match(host, /applyAxisMoveMutation/);
+    assert.match(host, /applyAxisStructureMutation/);
+    assert.match(host, /sheet\.mutation\.insert-row/);
+    assert.match(host, /sheet\.mutation\.remove-rows/);
+    assert.match(host, /sheet\.mutation\.insert-col/);
+    assert.match(host, /sheet\.mutation\.remove-col/);
     assert.match(host, /sheet\.mutation\.move-rows/);
     assert.match(host, /sheet\.mutation\.move-columns/);
     assert.match(host, /sheet\.mutation\.set-worksheet-row-height/);
@@ -559,7 +669,8 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(host, /hasPendingSync/);
     assert.match(host, /tryCommitCellEditor|executeCommand\?\.\('sheet\.operation\.set-cell-edit-visible'/);
     assert.match(host, /clearMissing/);
-    assert.match(host, /clearMissing:\s*false/);
+    assert.match(host, /pendingClearMissing/);
+    assert.match(host, /schedulePull\(\{ clearMissing: true, mergeDimensions: true \}\)/);
     assert.match(host, /mergeDimensions:\s*true/);
     assert.match(host, /mergeDimensions === true/);
     assert.match(host, /preserveConceptGridAxisSizes/);
@@ -569,7 +680,8 @@ test('embedded Univer host exposes the legacy grid view controls', async () => {
     assert.match(view, /univerHost\?\.isEditorBusy\(\)/);
     assert.match(view, /hasPendingSync\(\)/);
     assert.match(view, /Never autosave while Univer/);
-    assert.match(view, /saveBusyRetries/);
+    assert.doesNotMatch(view, /saveBusyRetries/);
+    assert.match(view, /must never force-close a user who is still typing/);
     assert.match(view, /univerHost\.flush\(\)/);
     assert.match(view, /cellEditorWindows\.values\(\)/);
     assert.match(view, /Own autosave \/ no-op disk echo/);

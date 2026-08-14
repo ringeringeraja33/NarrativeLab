@@ -25,6 +25,8 @@ export class InfoPanelComponent {
     private notesLeaf: obsidian.WorkspaceLeaf | null = null;
     private notesPath: string | null = null;
     private notesSaveTimer: number | null = null;
+    /** Invalidates notes editors whose async mount finishes after a scene switch. */
+    private notesMountGeneration = 0;
     /** Host Component required by MarkdownRenderer (InfoPanel is not an ItemView). */
     private markdownHost = new Component();
 
@@ -78,13 +80,17 @@ export class InfoPanelComponent {
     async refreshNotesFromDisk(): Promise<void> {
         if (!this.notesLeaf || !this.notesPath || this.isNotesEditorFocused()) return;
 
-        const file = this.plugin.app.vault.getAbstractFileByPath(this.notesPath);
+        const notesLeaf = this.notesLeaf;
+        const notesPath = this.notesPath;
+
+        const file = this.plugin.app.vault.getAbstractFileByPath(notesPath);
         if (!(file instanceof obsidian.TFile)) return;
 
-        const editor = (this.notesLeaf.view as unknown as { editor?: obsidian.Editor })?.editor;
+        const editor = (notesLeaf.view as unknown as { editor?: obsidian.Editor })?.editor;
         if (!editor) return;
 
         const diskValue = await this.plugin.app.vault.read(file);
+        if (this.notesLeaf !== notesLeaf || this.notesPath !== notesPath) return;
         if (editor.getValue() !== diskValue) {
             editor.setValue(diskValue);
         }
@@ -246,6 +252,7 @@ export class InfoPanelComponent {
     }
 
     private async mountNotesEditor(container: HTMLElement, scene: Scene): Promise<void> {
+        const mountGeneration = ++this.notesMountGeneration;
         container.empty();
         // Issue #200 — read-only lookup so mounting the Notes tab doesn't
         // create an empty notes file. The file is created lazily when the
@@ -262,6 +269,7 @@ export class InfoPanelComponent {
             const placeholder = container.createDiv({ cls: 'sl-info-notes-placeholder', text: t('Click to add notes…') });
             placeholder.addEventListener('click', () => {
                 void this.sceneManager.getOrCreateSceneNotesFile(scene).then((path) => {
+                    if (this.currentScene?.filePath !== scene.filePath || !placeholder.isConnected) return;
                     this.notesPath = path;
                     void this.mountNotesEditor(container, scene);
                 });
@@ -270,9 +278,19 @@ export class InfoPanelComponent {
         }
 
         const raw = await this.plugin.app.vault.read(file);
+        if (
+            mountGeneration !== this.notesMountGeneration
+            || this.currentScene?.filePath !== scene.filePath
+            || !container.isConnected
+        ) return;
         const cleaned = this.stripRedundantNotesHeadings(raw, scene);
         if (cleaned !== raw) {
             await this.plugin.app.vault.modify(file, cleaned);
+            if (
+                mountGeneration !== this.notesMountGeneration
+                || this.currentScene?.filePath !== scene.filePath
+                || !container.isConnected
+            ) return;
         }
 
         const split = new (obsidian.WorkspaceSplit as unknown as new (workspace: unknown, dir: string) => obsidian.WorkspaceSplit)(this.plugin.app.workspace, 'vertical');
@@ -281,7 +299,23 @@ export class InfoPanelComponent {
         container.appendChild(splitEl);
 
         const leaf = this.plugin.app.workspace.createLeafInParent(split, 0);
-        await leaf.openFile(file, { state: { mode: 'source', source: false } });
+        try {
+            await leaf.openFile(file, { state: { mode: 'source', source: false } });
+        } catch (error) {
+            leaf.detach();
+            if (mountGeneration === this.notesMountGeneration) {
+                console.error('[NarrativeLab] Failed to open Info notes editor:', error);
+            }
+            return;
+        }
+        if (
+            mountGeneration !== this.notesMountGeneration
+            || this.currentScene?.filePath !== scene.filePath
+            || !container.isConnected
+        ) {
+            leaf.detach();
+            return;
+        }
         this.notesLeaf = leaf;
         this.attachNotesAutosave(splitEl, leaf, file);
         window.requestAnimationFrame(() => this.hideEmbeddedNotesHeadings(splitEl));
@@ -365,6 +399,7 @@ export class InfoPanelComponent {
     }
 
     private detachNotesEditor(): void {
+        this.notesMountGeneration++;
         if (this.notesSaveTimer !== null) {
             window.clearTimeout(this.notesSaveTimer);
             this.notesSaveTimer = null;
@@ -379,7 +414,8 @@ export class InfoPanelComponent {
      * Click to edit (textarea), blur to save & return to preview.
      * Checkboxes are interactive in preview mode.
      */
-    private renderNotesLive(container: HTMLElement, scene: Scene): void {
+    private async renderNotesLive(container: HTMLElement, scene: Scene): Promise<void> {
+        const renderGeneration = ++this.notesMountGeneration;
         container.empty();
 
         if (!scene.notes) {
@@ -394,13 +430,18 @@ export class InfoPanelComponent {
 
         // Rendered markdown preview
         const previewEl = container.createDiv('sl-info-notes-live is-preview');
-        void obsidian.MarkdownRenderer.render(
+        await obsidian.MarkdownRenderer.render(
             this.plugin.app,
             scene.notes,
             previewEl,
             scene.filePath,
             this.markdownHost,
         );
+        if (
+            renderGeneration !== this.notesMountGeneration
+            || this.currentScene?.filePath !== scene.filePath
+            || !previewEl.isConnected
+        ) return;
 
         // Click on preview → switch to editor (but not on links/checkboxes)
         previewEl.addEventListener('click', (e) => {
@@ -420,11 +461,12 @@ export class InfoPanelComponent {
                 const lines = notes.split('\n');
                 let lineIdx = 0;
                 let foundIdx = -1;
-                for (const line of lines) {
+                for (let index = 0; index < lines.length; index++) {
+                    const line = lines[index];
                     const match = line.match(/^(\s*-\s*)\[([ xX])\]/);
                     if (match) {
                         if (previewEl.querySelectorAll('input[type="checkbox"]')[lineIdx] === checkbox) {
-                            foundIdx = lines.indexOf(line);
+                            foundIdx = index;
                             break;
                         }
                         lineIdx++;
@@ -436,7 +478,9 @@ export class InfoPanelComponent {
                     await this.sceneManager.updateScene(scene.filePath, { notes: newNotes });
                     scene.notes = newNotes;
                     await this.sceneManager.writeSceneNotes(scene, newNotes ? `${newNotes}\n` : '');
-                    this.renderNotesLive(container, scene);
+                    if (this.currentScene?.filePath === scene.filePath && container.isConnected) {
+                        void this.renderNotesLive(container, scene);
+                    }
                 }
             });
         });
@@ -462,7 +506,9 @@ export class InfoPanelComponent {
             await this.sceneManager.updateScene(scene.filePath, { notes: trimmed || undefined });
             scene.notes = trimmed || undefined;
             await this.sceneManager.writeSceneNotes(scene, trimmed ? `${trimmed}\n` : '');
-            this.renderNotesLive(container, scene);
+            if (this.currentScene?.filePath === scene.filePath && container.isConnected) {
+                void this.renderNotesLive(container, scene);
+            }
         });
 
         // Escape to finish editing

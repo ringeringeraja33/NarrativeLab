@@ -158,6 +158,7 @@ export class LocationView extends ProjectBoundItemView {
         if (!this.plugin.entitiesFresh()) {
             await this.plugin.reloadEntities();
         }
+        if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
@@ -183,21 +184,31 @@ export class LocationView extends ProjectBoundItemView {
         renderViewSwitcher(toolbar, LOCATION_VIEW_TYPE, this.plugin, this.leaf);
 
         // ── Codex category tabs + Location Profiles / Browse / Story Graph ──
+        const storyGraphActive = !this.selectedItem
+            && this.locationOverviewMode === 'story-graph'
+            && !isMobile;
         renderCodexCategoryTabs(container, {
-            activeId: 'locations-pseudo',
+            activeId: storyGraphActive ? 'story-graph' : 'locations-pseudo',
             leaf: this.leaf,
             plugin: this.plugin,
-            renderFarRightActions: !this.selectedItem
-                ? (actions) => renderLibraryStoryGraphAction(
-                    actions,
-                    this.locationOverviewMode === 'story-graph',
-                    () => {
-                        this.locationOverviewMode = 'story-graph';
-                        setLibraryContentMode(this.plugin, 'story-graph');
-                        if (this.rootContainer) this.renderView(this.rootContainer);
-                    },
-                )
-                : undefined,
+            renderLeadingTabs: (tabs) => renderLibraryStoryGraphAction(
+                tabs,
+                storyGraphActive,
+                () => {
+                    this.selectedItem = null;
+                    this.locationOverviewMode = 'story-graph';
+                    setLibraryContentMode(this.plugin, 'story-graph');
+                    if (this.rootContainer) this.renderView(this.rootContainer);
+                },
+            ),
+            onCategoryActivate: (categoryId) => {
+                if (categoryId !== 'locations') return;
+                this.selectedItem = null;
+                this.locationOverviewMode = getLibraryContentMode(this.plugin) === 'browse'
+                    ? 'base'
+                    : 'editor';
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },

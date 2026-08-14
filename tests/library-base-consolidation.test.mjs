@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [nativeLibraryBase, storyLineProject, sceneManager, entityFileCache, codexManager, characterManager, locationManager, transactions] = await Promise.all([
+const [nativeLibraryBase, storyLineProject, sceneManager, entityFileCache, codexManager, characterManager, locationManager, transactions, characterView, locationView, codexView] = await Promise.all([
     readFile(new URL('../components/NativeLibraryBase.ts', import.meta.url), 'utf8'),
     readFile(new URL('../models/StoryLineProject.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/SceneManager.ts', import.meta.url), 'utf8'),
@@ -11,7 +11,11 @@ const [nativeLibraryBase, storyLineProject, sceneManager, entityFileCache, codex
     readFile(new URL('../services/CharacterManager.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/LocationManager.ts', import.meta.url), 'utf8'),
     readFile(new URL('../utils/libraryCategoryTransactions.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../views/CharacterView.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../views/LocationView.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../views/CodexView.ts', import.meta.url), 'utf8'),
 ]);
+const libraryModeBar = await readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8');
 
 test('canonical Library Base lives under Library/library.base', () => {
     assert.match(storyLineProject, /LIBRARY_BASE_FILENAME = 'library\.base'/);
@@ -26,6 +30,30 @@ test('category tabs embed a view fragment instead of switching Base files', () =
     assert.match(nativeLibraryBase, /!\[\[\$\{linkPath\}#\$\{linkView\}\]\]/);
     assert.match(nativeLibraryBase, /function getLibraryBasePath/);
     assert.doesNotMatch(nativeLibraryBase, /function getNativeBasePath/);
+});
+
+test('native Base keeps the sibling Profiles / Base switch available', () => {
+    const renderBody = nativeLibraryBase.slice(
+        nativeLibraryBase.indexOf('export async function renderNativeLibraryBase'),
+        nativeLibraryBase.indexOf('// Hook the live Bases view'),
+    );
+    assert.doesNotMatch(renderBody, /container\.empty\(\)/);
+    assert.match(renderBody, /:scope > \.library-native-base-embed/);
+    for (const view of [characterView, locationView, codexView]) {
+        assert.match(view, /renderLibraryModeToolbar\(container,/);
+        assert.match(view, /renderNativeLibraryBase\(\s*container,/);
+    }
+});
+
+test('Story Graph keeps the sibling Profiles / Base switch available', () => {
+    const renderBody = libraryModeBar.slice(
+        libraryModeBar.indexOf('export function renderLibraryStoryGraph'),
+        libraryModeBar.indexOf('function showRelationEdgeMenu'),
+    );
+    assert.doesNotMatch(renderBody, /container\.empty\(\)/);
+    assert.match(renderBody, /library-story-graph-host story-graph-page/);
+    assert.match(renderBody, /const page = container\.createDiv/);
+    assert.match(renderBody, /page\.createDiv\('story-graph-container'\)/);
 });
 
 test('new projects no longer create an empty Bases folder', () => {

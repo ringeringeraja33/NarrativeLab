@@ -936,16 +936,124 @@ export async function decodePlotGridXlsx(
         usedIds.add(stableId);
 
         const pageMeta = meta?.pages?.[stableId] || meta?.pages?.[pageId];
-        const columns: ColumnMeta[] = pageMeta?.columns?.length
+        let columns: ColumnMeta[] = pageMeta?.columns?.length
             ? pageMeta.columns.map(c => ({ ...c }))
             : [];
-        const rows: RowMeta[] = pageMeta?.rows?.length
+        let rows: RowMeta[] = pageMeta?.rows?.length
             ? pageMeta.rows.map(r => ({ ...r }))
             : [];
 
         // Discover grid size from sheet
         const rowCount = Math.max(sheet.rowCount || 0, rows.length + 1);
         const colCount = Math.max(sheet.columnCount || 0, columns.length + 1);
+
+        // The visible xlsx is authoritative for structure. A fast page switch
+        // can leave the sidecar one save behind after native row/column splices;
+        // align old stable ids to live headers/content instead of truncating the
+        // workbook back to stale metadata extents.
+        const liveColumnCount = Math.max(0, (sheet.columnCount || 0) - 1);
+        if (columns.length > 0 && liveColumnCount !== columns.length) {
+            const candidates = columns;
+            const used = new Set<number>();
+            const usedIds = new Set(candidates.map(column => column.id));
+            const nextId = (index: number): string => {
+                let id = `col-xlsx-${Date.now().toString(36)}-${index}`;
+                while (usedIds.has(id)) id += 'x';
+                usedIds.add(id);
+                return id;
+            };
+            columns = Array.from({ length: liveColumnCount }, (_, index) => {
+                const label = cellValueText(sheet.getCell(1, index + 2).value).trim();
+                const matches = candidates
+                    .map((column, candidateIndex) => ({ column, candidateIndex }))
+                    .filter(candidate => !used.has(candidate.candidateIndex)
+                        && candidate.column.label.trim() === label)
+                    .sort((a, b) => Math.abs(a.candidateIndex - index) - Math.abs(b.candidateIndex - index));
+                const match = matches[0];
+                const liveWidth = sheet.getColumn(index + 2).width;
+                if (match) {
+                    used.add(match.candidateIndex);
+                    return {
+                        ...match.column,
+                        label,
+                        width: typeof liveWidth === 'number' && liveWidth > 0
+                            ? Math.round(liveWidth * 8)
+                            : match.column.width,
+                    };
+                }
+                return {
+                    id: nextId(index),
+                    label,
+                    width: typeof liveWidth === 'number' && liveWidth > 0
+                        ? Math.round(liveWidth * 8)
+                        : 120,
+                    bgColor: '',
+                    sourceType: 'manual',
+                };
+            });
+        }
+
+        const liveRowCount = Math.max(0, (sheet.rowCount || 0) - 1);
+        if (rows.length > 0 && liveRowCount !== rows.length) {
+            const candidates = rows;
+            const used = new Set<number>();
+            const usedIds = new Set(candidates.map(row => row.id));
+            const visibleMetaCell = (row: RowMeta, column: ColumnMeta): string => {
+                const saved = pageMeta?.cells?.[cellKey(row.id, column.id)];
+                const source = saved?.content || saved?.markdownSource || '';
+                return plotGridSourceToUniverRichText(source).displayText.trim();
+            };
+            const metaSignature = (row: RowMeta): string => JSON.stringify([
+                row.label.trim(),
+                ...columns.map(column => visibleMetaCell(row, column)),
+            ]);
+            const liveSignature = (index: number): string => JSON.stringify([
+                cellValueText(sheet.getCell(index + 2, 1).value).trim(),
+                ...columns.map((_, columnIndex) => (
+                    cellValueText(sheet.getCell(index + 2, columnIndex + 2).value).trim()
+                )),
+            ]);
+            const nextId = (index: number): string => {
+                let id = `row-xlsx-${Date.now().toString(36)}-${index}`;
+                while (usedIds.has(id)) id += 'x';
+                usedIds.add(id);
+                return id;
+            };
+            rows = Array.from({ length: liveRowCount }, (_, index) => {
+                const signature = liveSignature(index);
+                const parsed = JSON.parse(signature) as string[];
+                const label = parsed[0] || '';
+                let matchIndex = candidates.findIndex((candidate, candidateIndex) => (
+                    !used.has(candidateIndex) && metaSignature(candidate) === signature
+                ));
+                if (matchIndex < 0 && label) {
+                    matchIndex = candidates.findIndex((candidate, candidateIndex) => (
+                        !used.has(candidateIndex) && candidate.label.trim() === label
+                    ));
+                }
+                const liveHeight = sheet.getRow(index + 2).height;
+                if (matchIndex >= 0) {
+                    used.add(matchIndex);
+                    const match = candidates[matchIndex];
+                    return {
+                        ...match,
+                        label,
+                        height: typeof liveHeight === 'number' && liveHeight > 0
+                            ? Math.round(liveHeight / 0.75)
+                            : match.height,
+                    };
+                }
+                return {
+                    id: nextId(index),
+                    label,
+                    height: typeof liveHeight === 'number' && liveHeight > 0
+                        ? Math.round(liveHeight / 0.75)
+                        : 32,
+                    bgColor: '',
+                    sourceType: 'manual',
+                };
+            });
+        }
 
         // If meta missing column/row defs, rebuild from header labels
         if (columns.length === 0) {
@@ -954,7 +1062,7 @@ export async function decodePlotGridXlsx(
                 if (!label && ci > 2) continue;
                 columns.push({
                     id: `col-${ci - 2}-${Date.now().toString(36)}`,
-                    label: label || `Col ${ci - 1}`,
+                    label,
                     width: 120,
                     bgColor: '',
                 });
@@ -970,7 +1078,7 @@ export async function decodePlotGridXlsx(
                 if (!label && !hasData && ri > 2) continue;
                 rows.push({
                     id: `row-${ri - 2}-${Date.now().toString(36)}`,
-                    label: label || `Row ${ri - 1}`,
+                    label,
                     height: 32,
                     bgColor: '',
                 });
@@ -1491,6 +1599,97 @@ export function moveConceptGridAxis(
     } else {
         const moved = page.columns.splice(from, worksheetCount);
         page.columns.splice(Math.max(0, Math.min(page.columns.length, insertion)), 0, ...moved);
+    }
+    return doc;
+}
+
+/** Whether a sidecar describes the same visible page/axis structure as a document. */
+export function plotGridNlMetaStructureMatchesDocument(
+    meta: PlotGridNlMeta | null | undefined,
+    raw: unknown,
+): boolean {
+    if (!meta) return false;
+    const doc = normalizeConceptGridDocument(raw);
+    const metaPageIds = Object.keys(meta.pages || {});
+    if (metaPageIds.length !== doc.pages.length) return false;
+    for (const page of doc.pages) {
+        const saved = meta.pages?.[page.id];
+        if (!saved) return false;
+        if ((meta.pageIds || {})[page.title] !== page.id) return false;
+        if ((saved.rows || []).map(row => row.id).join('\n')
+            !== (page.rows || []).map(row => row.id).join('\n')) return false;
+        if ((saved.columns || []).map(column => column.id).join('\n')
+            !== (page.columns || []).map(column => column.id).join('\n')) return false;
+    }
+    return true;
+}
+
+export type ConceptGridAxisSpliceAction = 'insert' | 'remove';
+
+/**
+ * Mirror Univer's native row/column insert and remove mutations in the
+ * NarrativeLab model. Worksheet index 0 is the semantic header axis, so body
+ * rows/columns begin at index 1.
+ */
+export function spliceConceptGridAxis(
+    raw: ConceptGridDocument,
+    sheetId: string,
+    axis: 'rows' | 'columns',
+    action: ConceptGridAxisSpliceAction,
+    worksheetStart: number,
+    worksheetCount: number,
+): ConceptGridDocument {
+    if (!Number.isInteger(worksheetStart) || !Number.isInteger(worksheetCount)
+        || worksheetStart < 1 || worksheetCount < 1) return raw;
+
+    const sourcePage = raw.pages.find(item => item.id === sheetId);
+    if (!sourcePage) return raw;
+    const sourceItems = axis === 'rows' ? sourcePage.rows : sourcePage.columns;
+    const modelStart = worksheetStart - 1;
+
+    // Inserting into Univer's unused reserved tail does not change the visible
+    // NarrativeLab extent. Removing there is likewise a no-op.
+    if (action === 'insert' ? modelStart > sourceItems.length : modelStart >= sourceItems.length) {
+        return raw;
+    }
+
+    const doc = structuredClone(raw);
+    const page = doc.pages.find(item => item.id === sheetId)!;
+    const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+    if (action === 'insert') {
+        if (axis === 'rows') {
+            const inserted: RowMeta[] = Array.from({ length: worksheetCount }, (_, index) => ({
+                id: `row-${nonce}-${index}`,
+                label: '',
+                height: 32,
+                bgColor: '',
+                sourceType: 'manual',
+            }));
+            page.rows.splice(modelStart, 0, ...inserted);
+        } else {
+            const inserted: ColumnMeta[] = Array.from({ length: worksheetCount }, (_, index) => ({
+                id: `col-${nonce}-${index}`,
+                label: '',
+                width: 120,
+                bgColor: '',
+                sourceType: 'manual',
+            }));
+            page.columns.splice(modelStart, 0, ...inserted);
+        }
+        return doc;
+    }
+
+    if (axis === 'rows') {
+        const removed = page.rows.splice(modelStart, worksheetCount);
+        for (const row of removed) {
+            for (const column of page.columns) delete page.cells[cellKey(row.id, column.id)];
+        }
+    } else {
+        const removed = page.columns.splice(modelStart, worksheetCount);
+        for (const column of removed) {
+            for (const row of page.rows) delete page.cells[cellKey(row.id, column.id)];
+        }
     }
     return doc;
 }
