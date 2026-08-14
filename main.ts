@@ -5,7 +5,6 @@ import { asRecord, isRecord } from './utils/narrow';
 import {
     getLeafNarrativeLabProjectFile,
     narrativeLabLeafState,
-    preservedNarrativeLabLeafState,
 } from './utils/narrativeLabLeafState';
 import type { FilterPreset } from './models/Scene';
 import { SceneManager } from './services/SceneManager';
@@ -641,8 +640,7 @@ export default class SceneCardsPlugin extends Plugin {
                     projects,
                     project => this.sceneManager.isProjectInValidSeries(project),
                     async (project) => {
-                        await this.sceneManager.setActiveProject(project);
-                        this.refreshOpenViews();
+                        await this.openBoardForProject(project);
                         new Notice(t('Switched to "{title}"', { title: project.title }));
                     },
                 );
@@ -1208,9 +1206,6 @@ export default class SceneCardsPlugin extends Plugin {
     private getFrontmatterDisplayMode(): 'collapse' | 'hide' | 'visible' {
         const mode = this.settings.frontmatterDisplay;
         if (mode === 'hide' || mode === 'visible' || mode === 'collapse') return mode;
-        // Legacy boolean (kept for migration from hideFrontmatter)
-        const legacyHide = (this.settings as { hideFrontmatter?: boolean }).hideFrontmatter;
-        if (legacyHide === false) return 'visible';
         return 'collapse';
     }
 
@@ -1747,6 +1742,7 @@ export default class SceneCardsPlugin extends Plugin {
         const ownData = (await this.loadData()) as Record<string, unknown> | null;
         let migratedData: Record<string, unknown> = ownData && typeof ownData === 'object' ? { ...ownData } : {};
         let importedLegacySettings = false;
+        let removedObsoleteSettings = false;
         const configDir = this.app.vault.configDir;
         const readPluginData = async (pluginId: string): Promise<Record<string, unknown> | null> => {
             const path = normalizePath(`${configDir}/plugins/${pluginId}/data.json`);
@@ -1794,6 +1790,18 @@ export default class SceneCardsPlugin extends Plugin {
             migratedData.frontmatterDisplay = migratedData.hideFrontmatter === true
                 ? 'hide'
                 : 'collapse';
+        }
+        for (const key of [
+            'hideFrontmatter',
+            'lastStorylineArcFilter',
+            'showWarnings',
+            'characterTaglineField',
+            'sharedCodex',
+        ]) {
+            if (key in migratedData) {
+                delete migratedData[key];
+                removedObsoleteSettings = true;
+            }
         }
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, migratedData);
@@ -1844,7 +1852,7 @@ export default class SceneCardsPlugin extends Plugin {
             && this.settings.frontmatterDisplay !== 'collapse') {
             this.settings.frontmatterDisplay = 'collapse';
         }
-        if (importedLegacySettings) await this.saveData(migratedData);
+        if (importedLegacySettings || removedObsoleteSettings) await this.saveData(migratedData);
         // Issue #73 — propagate the wikilink-writer toggle to MetadataParser
         setWriteSceneFieldsAsWikilinks(this.settings.writeFieldsAsWikilinks !== false);
         // Issue #78 — propagate wordcount-exclusion toggles to MetadataParser
@@ -2374,13 +2382,6 @@ export default class SceneCardsPlugin extends Plugin {
             }
         }
         return base;
-    }
-
-    /**
-     * Return the Library/ folder path for the active project.
-     */
-    getProjectLibraryFolder(): string {
-        return normalizePath(`${this.getProjectBaseFolder()}/Library`);
     }
 
     /**
@@ -3747,20 +3748,6 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
-     * Switch the current NarrativeLab leaf in-place to a different view type.
-     * Kept as a utility; the ViewSwitcher now uses the leaf reference directly.
-     */
-    async activateViewInPlace(viewType: string): Promise<void> {
-        const leaf = this.app.workspace.getLeaf(false);
-        await leaf.setViewState({
-            type: viewType,
-            active: true,
-            state: preservedNarrativeLabLeafState(leaf),
-        });
-        this.app.workspace.revealLeaf(leaf);
-    }
-
-    /**
      * Open the Quick Add modal
      */
     private openQuickAdd(): void {
@@ -4316,30 +4303,11 @@ export default class SceneCardsPlugin extends Plugin {
         await canvas.openCanvas?.();
     }
 
-    /** Open the per-project NCanvas manager (preferred over the vault-wide canvas picker). */
-    async openNarrativeCanvasPicker(): Promise<void> {
-        this.openNCanvasManager();
-    }
-
-    /** If Canvas is already visible, follow a NarrativeLab project switch automatically. */
+    /** Keep an already-open Canvas leaf aligned with the newly active project. */
     async syncNarrativeCanvasToActiveProject(): Promise<void> {
         if (!this.canvasModule) return;
         if (this.app.workspace.getLeavesOfType(NARRATIVE_CANVAS_VIEW_TYPE).length === 0) return;
         await this.openNarrativeCanvas();
-    }
-
-    /** Open Narrative Canvas and switch to the built-in Library panel (shared with ncanvas sidebar). */
-    async openNarrativeCanvasLibrary(): Promise<void> {
-        await this.openNarrativeCanvas();
-        const canvasApp = (window as unknown as { NarrativeCanvasApp?: { executeCommand?: (id: string) => unknown } }).NarrativeCanvasApp;
-        try {
-            const result = canvasApp?.executeCommand?.('open-characters');
-            if (result && typeof (result as Promise<unknown>).catch === 'function') {
-                await (result as Promise<unknown>);
-            }
-        } catch (error) {
-            console.error('NarrativeLab: could not open Narrative Canvas library panel.', error);
-        }
     }
 
     /**
@@ -4556,35 +4524,6 @@ export default class SceneCardsPlugin extends Plugin {
             return fm?.type ?? null;
         } catch {
             return null;
-        }
-    }
-
-    /**
-     * Force all open Board views to reload corkboard positions from SceneManager
-     * on their next refresh. Call this after programmatically updating board.json
-     * (e.g. snapshot restore) so the local map picks up the new data.
-     */
-    invalidateCorkboardCache(): void {
-        const leaves = this.app.workspace.getLeavesOfType(BOARD_VIEW_TYPE);
-        for (const leaf of leaves) {
-            const view = leaf.view as unknown as unknown as Record<string, unknown>;
-            if (typeof view?.invalidateCorkboardLayout === 'function') {
-                (view as unknown as { invalidateCorkboardLayout(): void }).invalidateCorkboardLayout();
-            }
-        }
-    }
-
-    /**
-     * Flush any pending corkboard position writes so SceneManager has the
-     * latest positions. Call before capturing a snapshot.
-     */
-    async flushCorkboardPositions(): Promise<void> {
-        const leaves = this.app.workspace.getLeavesOfType(BOARD_VIEW_TYPE);
-        for (const leaf of leaves) {
-            const view = leaf.view as unknown as unknown as Record<string, unknown>;
-            if (typeof view?.flushPendingCorkboardPersist === 'function') {
-                await (view as unknown as { flushPendingCorkboardPersist(): Promise<void> }).flushPendingCorkboardPersist();
-            }
         }
     }
 

@@ -45,6 +45,12 @@ test('Open Project reuses the same project tab and opens a new tab only for anot
     assert.match(navigatorView, /openBoardForProject\(project\)/);
     assert.match(navigatorView, /openProjectFromNavigator\(project\)/);
     assert.doesNotMatch(navigatorView, /activateView\(BOARD_VIEW_TYPE\)/);
+    const switchProject = mainTs.slice(
+        mainTs.indexOf("id: 'switch-project'"),
+        mainTs.indexOf("id: 'manage-ncanvas-files'"),
+    );
+    assert.match(switchProject, /openBoardForProject\(project\)/);
+    assert.doesNotMatch(switchProject, /setActiveProject\(project\)/);
 });
 
 test('Leaf project binding falls back to view.getBoundProjectFile', () => {
@@ -111,11 +117,6 @@ test('Project-scoped main tabs display only the project name', () => {
 test('Structure and Library in-place switches cannot erase the project binding', () => {
     assert.match(structureSwitcher, /preservedNarrativeLabLeafState\(leaf\)/);
     assert.match(codexView, /preservedNarrativeLabLeafState\(this\.leaf\)/);
-    const activateInPlace = mainTs.slice(
-        mainTs.indexOf('async activateViewInPlace('),
-        mainTs.indexOf('async openQuickAdd('),
-    );
-    assert.match(activateInPlace, /preservedNarrativeLabLeafState\(leaf\)/);
     assert.doesNotMatch(structureSwitcher, /state:\s*\{\}/);
 });
 

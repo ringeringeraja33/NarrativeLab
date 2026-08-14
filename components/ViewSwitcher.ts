@@ -158,13 +158,6 @@ export function renderViewSwitcher(
         }
     }
 
-    // Strip any leftover bottom-right dock from older builds.
-    const host = container.closest('.view-content')
-        || container.closest('.story-line-board-container, .codex-view, .character-view, .location-view, .plot-grid-root, .story-line-manuscript-root')
-        || container.parentElement;
-    host?.querySelectorAll('.nl-corner-actions').forEach((el) => el.remove());
-    host?.removeClass('nl-has-corner-actions');
-
     // Stats / Converter / Playmode — sibling of the tab strip (not nested),
     // so they never collide with primary tabs or the filter row below.
     container.querySelectorAll(':scope > .story-line-view-actions').forEach((el) => el.remove());

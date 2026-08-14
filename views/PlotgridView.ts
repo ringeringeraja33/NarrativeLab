@@ -21,16 +21,11 @@ import {
 import { conceptGridContentFingerprint } from '../services/PlotGridXlsxCodec';
 import { cellRequiresMarkdownEditor } from '../utils/plotGridCellEdit';
 import { SceneManager } from '../services/SceneManager';
-import { CharacterManager } from '../services/CharacterManager';
-import { InspectorComponent } from '../components/Inspector';
-import { LinkScanner } from '../services/LinkScanner';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
 import { isMobile } from '../components/MobileAdapter';
 import { PLOTGRID_VIEW_TYPE } from '../constants';
-import { resolveTagColor, getPlotlineHSL, contrastTextColor } from '../settings';
 import { attachTooltip } from '../components/Tooltip';
 import type SceneCardsPlugin from '../main';
-import { Scene } from '../models/Scene';
 import { openConfirmModal } from '../components/ConfirmModal';
 import { WikilinkSuggest } from '../components/WikilinkSuggest';
 import {
@@ -40,10 +35,6 @@ import {
 } from '../utils/markdownInput';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 import { deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
-
-// Use the shared view-type constant from `constants.ts` so the ViewSwitcher
-// can correctly detect and style the active tab.
-// (Local legacy constant removed.)
 
 // Basic Plot Grid implementation (ground-up) following the supplied guide.
 // This file implements the core model, rendering, editing, and persistence.
@@ -68,20 +59,9 @@ export class PlotgridView extends ProjectBoundItemView {
     private wrapperEl: HTMLDivElement | null = null;
     private scrollAreaEl: HTMLDivElement | null = null;
     private canvasEl: HTMLDivElement | null = null;
-    /** Active cell (focus); kept in sync with selFocus for inspector / legacy callers */
+    /** Active data cell, kept in sync with Univer selection. */
     private selectedRow: number | null = null;
     private selectedCol: number | null = null;
-    /** Rectangular selection: anchor corner + focus (active) corner */
-    private selAnchor: { r: number; c: number } | null = null;
-    private selFocus: { r: number; c: number } | null = null;
-    private isSelecting = false;
-    private selectPointerId: number | null = null;
-    private inspectorComponent: InspectorComponent | null = null;
-    private inspectorEl: HTMLElement | null = null;
-    /** Simple undo stack for plot grid cell operations (active page only) */
-    private undoStack: PlotGridData[] = [];
-    private static readonly MAX_UNDO = 20;
-
     /** Embedded Univer Sheets is the canonical grid UI. */
     private univerHost: PlotGridUniverHost | null = null;
     private univerMountPromise: Promise<void> | null = null;
@@ -188,7 +168,6 @@ export class PlotgridView extends ProjectBoundItemView {
             if (touched) {
                 this.scheduleSave();
                 this.renderGrid({ forcePush: true });
-                this.refreshOpenCellInspector();
             }
         }));
     }
@@ -360,8 +339,6 @@ export class PlotgridView extends ProjectBoundItemView {
                 this.univerLoadFailed = false;
                 this.univerLoadError = null;
                 this.disposeUniverHost({ persist: false });
-                this.hideCellInspector();
-                this.undoStack = [];
             }
 
             let loaded: ConceptGridDocument | null = null;
@@ -532,47 +509,6 @@ export class PlotgridView extends ProjectBoundItemView {
         this.saveDebounce = timerId;
     }
 
-    /** Push a deep clone of the current grid data onto the undo stack. */
-    private pushPlotGridUndo(): void {
-        const snapshot: PlotGridData = {
-            rows: this.data.rows.map(r => ({ ...r })),
-            columns: this.data.columns.map(c => ({ ...c })),
-            cells: {},
-            zoom: this.data.zoom,
-            stickyHeaders: this.data.stickyHeaders,
-            frozenColumns: this.data.frozenColumns,
-            frozenRows: this.data.frozenRows,
-        };
-        for (const [k, v] of Object.entries(this.data.cells)) {
-            snapshot.cells[k] = { ...v };
-        }
-        this.undoStack.push(snapshot);
-        if (this.undoStack.length > PlotgridView.MAX_UNDO) {
-            this.undoStack.shift();
-        }
-    }
-
-    /** Pop the last undo snapshot and restore it. */
-    undoPlotGridMove(): void {
-        if (this.undoStack.length === 0) {
-            new Notice(t('Nothing to undo on the plot grid.'));
-            return;
-        }
-        const snapshot = this.undoStack.pop()!;
-        const page = this.getActivePage();
-        page.rows = snapshot.rows;
-        page.columns = snapshot.columns;
-        page.cells = snapshot.cells;
-        page.zoom = snapshot.zoom;
-        page.stickyHeaders = snapshot.stickyHeaders;
-        page.frozenColumns = snapshot.frozenColumns;
-        page.frozenRows = snapshot.frozenRows;
-        this.data = page;
-        this.scheduleSave();
-        this.renderGrid({ forcePush: true });
-        new Notice(t('Plot grid move undone.'));
-    }
-
     private buildLayout(container: HTMLElement) {
         this.bodyEl = container.createDiv('concept-grid-body');
         this.bodyEl.setCssStyles({
@@ -594,18 +530,10 @@ export class PlotgridView extends ProjectBoundItemView {
             minHeight: '0',
             overflow: 'hidden',
         });
-        // make focusable for keyboard navigation
-        this.wrapperEl.tabIndex = 0;
-        this.wrapperEl.addEventListener('keydown', (e) => this.onKeyDown(e as KeyboardEvent));
-        // Drag-select: track pointer across cells (capture may leave the original cell)
-        this.registerDomEvent(activeDocument, 'pointermove', (e: PointerEvent) => this.onSelectPointerMove(e));
-        this.registerDomEvent(activeDocument, 'pointerup', (e: PointerEvent) => this.onSelectPointerUp(e));
-        this.registerDomEvent(activeDocument, 'pointercancel', (e: PointerEvent) => this.onSelectPointerUp(e));
-
         const toolbar = this.wrapperEl.createDiv('story-line-toolbar plot-grid-toolbar');
         toolbar.setCssStyles({ flex: '0 0 auto' });
 
-        // Work row: grid scroll + docked cell inspector side-by-side (no overlay).
+        // Work row containing the Univer sheet.
         const workArea = this.wrapperEl.createDiv('plot-grid-work-area');
 
         this.scrollAreaEl = workArea.createDiv('plot-grid-scroll-area');
@@ -623,27 +551,6 @@ export class PlotgridView extends ProjectBoundItemView {
             width: '100%',
             boxSizing: 'border-box',
         });
-
-        // Docked inspector — shrinks the grid instead of covering cells
-        this.inspectorEl = workArea.createDiv('story-line-inspector-panel pg-cell-inspector');
-        this.inspectorEl.setCssStyles({ display: 'none' });
-        const sceneManager = this.plugin?.sceneManager as SceneManager | undefined;
-        if (sceneManager && this.plugin) {
-            this.inspectorComponent = new InspectorComponent(
-                this.inspectorEl,
-                this.plugin,
-                sceneManager,
-                {
-                    onEdit: (scene) => this.openScene(scene),
-                    onDelete: (scene) => this.deleteScene(scene),
-                    onRefresh: () => this.renderGrid(),
-                    onStatusChange: async (scene, status) => {
-                        await sceneManager.updateScene(scene.filePath, { status });
-                        this.renderGrid();
-                    },
-                }
-            );
-        }
 
         // Excel-style worksheet tabs along the bottom edge
         this.sidebarEl = this.bodyEl.createDiv('concept-grid-sheet-bar');
@@ -778,9 +685,6 @@ export class PlotgridView extends ProjectBoundItemView {
             this.univerHost?.setActiveSheet(pageId);
             this.univerHost?.syncMeta(this.document);
         } catch { /* ignore an unavailable host during initial mount */ }
-        this.undoStack = [];
-        this.clearSelection();
-        this.hideCellInspector();
         this.scheduleSave();
         if (!this.updatePageTabSelection()) this.renderPageSidebar();
         this.renderToolbar();
@@ -847,12 +751,6 @@ export class PlotgridView extends ProjectBoundItemView {
                 this.univerHost?.setActiveCell(page.id, rowIndex + 1, colIndex + 1);
                 this.univerHost?.focus();
             } catch { /* best effort */ }
-            const htmlCell = this.canvasEl?.querySelector(
-                `.plot-grid-cell[data-row="${rowIndex}"][data-col="${colIndex}"]`,
-            ) as HTMLElement | null;
-            htmlCell?.scrollIntoView({ block: 'center', inline: 'nearest' });
-            htmlCell?.addClass('is-appearance-flash');
-            window.setTimeout(() => htmlCell?.removeClass('is-appearance-flash'), 1600);
         }, 80);
     }
 
@@ -984,7 +882,6 @@ export class PlotgridView extends ProjectBoundItemView {
                     this.document.activePageId = next.id;
                 }
                 this.bindActivePage();
-                this.undoStack = [];
                 this.scheduleSave();
                 this.renderPageSidebar();
                 this.renderToolbar();
@@ -1431,9 +1328,6 @@ export class PlotgridView extends ProjectBoundItemView {
                         }
                         this.selectedRow = info.row > 0 ? info.row - 1 : null;
                         this.selectedCol = info.col > 0 ? info.col - 1 : null;
-                        this.selFocus = (this.selectedRow != null && this.selectedCol != null)
-                            ? { r: this.selectedRow, c: this.selectedCol }
-                            : null;
                     },
                 });
                 if (mountGen !== this.univerMountGeneration) {
@@ -1474,7 +1368,7 @@ export class PlotgridView extends ProjectBoundItemView {
         const panel = this.canvasEl.createDiv('plot-grid-univer-error');
         panel.createEl('h3', { text: t('Spreadsheet failed to load') });
         panel.createEl('p', {
-            text: t('NarrativeLab did not replace Univer with the legacy grid. Try loading it again.'),
+            text: t('The spreadsheet could not initialize. Try loading it again.'),
         });
         if (this.univerLoadError instanceof Error && this.univerLoadError.message) {
             panel.createEl('code', { text: this.univerLoadError.message });
@@ -1609,9 +1503,7 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     private openConnectedNote(path: string): void {
-        const linkedScene = this.plugin?.sceneManager?.getScene(path);
-        if (linkedScene) this.openScene(linkedScene);
-        else this.openVaultFile(path);
+        this.openVaultFile(path);
     }
 
     private appendConnectedNotesMenuItems(menu: Menu): void {
@@ -1778,7 +1670,6 @@ export class PlotgridView extends ProjectBoundItemView {
             } else {
                 try { this.univerHost?.refreshLinkMarkers(); } catch { /* ignore */ }
             }
-            this.refreshOpenCellInspector();
         };
         const scheduleAutosave = (): void => {
             if (autosaveTimer) window.clearTimeout(autosaveTimer);
@@ -2287,9 +2178,7 @@ export class PlotgridView extends ProjectBoundItemView {
                 for (const win of this.cellEditorWindows.values()) {
                     if (win.isConnected) return;
                 }
-                // If a cell is being edited, skip refresh to avoid destroying the textarea.
-                if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) return;
-                // Focused inputs in the grid or inspector still own uncommitted drafts.
+                // Focused inputs in the grid still own uncommitted drafts.
                 if (this.wrapperEl?.querySelector('input:focus, textarea:focus')) return;
                 // Univer in-cell / formula editor or IME — remounting clears composition.
                 if (this.univerHost?.isEditorBusy()) return;
@@ -2325,680 +2214,6 @@ export class PlotgridView extends ProjectBoundItemView {
         } catch (e) {
             // non-fatal
         }
-    }
-
-    private getSelectionRect(): { r0: number; r1: number; c0: number; c1: number } | null {
-        if (!this.selAnchor || !this.selFocus) return null;
-        return {
-            r0: Math.min(this.selAnchor.r, this.selFocus.r),
-            r1: Math.max(this.selAnchor.r, this.selFocus.r),
-            c0: Math.min(this.selAnchor.c, this.selFocus.c),
-            c1: Math.max(this.selAnchor.c, this.selFocus.c),
-        };
-    }
-
-    private forEachSelectedCell(fn: (r: number, c: number, key: string, cell: CellData) => void): void {
-        const rect = this.getSelectionRect();
-        if (!rect) return;
-        for (let r = rect.r0; r <= rect.r1; r++) {
-            for (let c = rect.c0; c <= rect.c1; c++) {
-                const row = this.data.rows[r];
-                const col = this.data.columns[c];
-                if (!row || !col) continue;
-                const key = `${row.id}-${col.id}`;
-                const cell = this.data.cells[key];
-                if (cell) fn(r, c, key, cell);
-            }
-        }
-    }
-
-    private setSelection(anchor: { r: number; c: number } | null, focus: { r: number; c: number } | null): void {
-        this.selAnchor = anchor;
-        this.selFocus = focus;
-        if (focus) {
-            this.selectedRow = focus.r;
-            this.selectedCol = focus.c;
-        } else {
-            this.selectedRow = null;
-            this.selectedCol = null;
-        }
-        this.applySelectionVisuals();
-    }
-
-    private clearSelection(): void {
-        this.isSelecting = false;
-        this.selectPointerId = null;
-        this.setSelection(null, null);
-    }
-
-    private applySelectionVisuals() {
-        if (!this.canvasEl) return;
-        this.canvasEl.querySelectorAll('.plot-grid-cell.in-selection, .plot-grid-cell.is-active, .plot-grid-cell.selected').forEach(n => {
-            n.classList.remove('in-selection', 'is-active', 'selected');
-        });
-        this.canvasEl.querySelectorAll('.plot-grid-row-header.selected, .plot-grid-col-header.selected').forEach(n => {
-            n.classList.remove('selected');
-        });
-
-        const rect = this.getSelectionRect();
-        if (!rect) return;
-
-        for (let r = rect.r0; r <= rect.r1; r++) {
-            for (let c = rect.c0; c <= rect.c1; c++) {
-                const el = this.getCellElement(r, c);
-                if (el) el.classList.add('in-selection');
-            }
-            const rowHeader = this.canvasEl.querySelectorAll('.plot-grid-row-header')[r] as HTMLElement | undefined;
-            if (rowHeader) rowHeader.classList.add('selected');
-        }
-        for (let c = rect.c0; c <= rect.c1; c++) {
-            const colHeader = this.canvasEl.querySelectorAll('.plot-grid-col-header')[c] as HTMLElement | undefined;
-            if (colHeader) colHeader.classList.add('selected');
-        }
-
-        const activeR = this.selectedRow ?? this.selFocus?.r;
-        const activeC = this.selectedCol ?? this.selFocus?.c;
-        if (activeR != null && activeC != null) {
-            const active = this.getCellElement(activeR, activeC);
-            if (active) {
-                active.classList.add('is-active', 'selected');
-            }
-        }
-    }
-
-    private selectCell(el: HTMLElement, extend = false) {
-        const r = Number(el.getAttribute('data-row'));
-        const c = Number(el.getAttribute('data-col'));
-        if (Number.isNaN(r) || Number.isNaN(c)) return;
-        if (extend && this.selAnchor) {
-            this.setSelection(this.selAnchor, { r, c });
-        } else {
-            this.setSelection({ r, c }, { r, c });
-        }
-        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }
-
-    private getCellElement(row: number, col: number): HTMLElement | null {
-        return (this.canvasEl?.querySelector(`.plot-grid-cell[data-row="${row}"][data-col="${col}"]`) as HTMLElement) ?? null;
-    }
-
-    private cellCoordsFromPoint(clientX: number, clientY: number): { r: number; c: number } | null {
-        const el = activeDocument.elementFromPoint(clientX, clientY) as HTMLElement | null;
-        const cell = el?.closest?.('.plot-grid-cell') as HTMLElement | null;
-        if (!cell || !this.canvasEl?.contains(cell)) return null;
-        const r = Number(cell.getAttribute('data-row'));
-        const c = Number(cell.getAttribute('data-col'));
-        if (Number.isNaN(r) || Number.isNaN(c)) return null;
-        return { r, c };
-    }
-
-    private onSelectPointerMove(ev: PointerEvent): void {
-        if (!this.isSelecting) return;
-        if (this.selectPointerId !== null && ev.pointerId !== this.selectPointerId) return;
-        const coords = this.cellCoordsFromPoint(ev.clientX, ev.clientY);
-        if (!coords || !this.selAnchor) return;
-        if (this.selFocus && this.selFocus.r === coords.r && this.selFocus.c === coords.c) return;
-        this.setSelection(this.selAnchor, coords);
-    }
-
-    private onSelectPointerUp(ev: PointerEvent): void {
-        if (!this.isSelecting) return;
-        if (this.selectPointerId !== null && ev.pointerId !== this.selectPointerId) return;
-        this.isSelecting = false;
-        this.selectPointerId = null;
-        this.refreshSelectionInspector();
-    }
-
-    private moveSelection(dx: number, dy: number, extend = false) {
-        if (!this.selFocus) {
-            if (this.data.rows.length > 0 && this.data.columns.length > 0) {
-                this.setSelection({ r: 0, c: 0 }, { r: 0, c: 0 });
-            }
-            this.refreshSelectionInspector();
-            return;
-        }
-        const nr = Math.max(0, Math.min(this.data.rows.length - 1, this.selFocus.r + dy));
-        const nc = Math.max(0, Math.min(this.data.columns.length - 1, this.selFocus.c + dx));
-        if (extend && this.selAnchor) {
-            this.setSelection(this.selAnchor, { r: nr, c: nc });
-        } else {
-            this.setSelection({ r: nr, c: nc }, { r: nr, c: nc });
-        }
-        const el = this.getCellElement(nr, nc);
-        if (el) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        this.refreshSelectionInspector();
-    }
-
-    private beginEditAtFocus(seedChar?: string): void {
-        if (this.selectedRow === null || this.selectedCol === null) return;
-        const el = this.getCellElement(this.selectedRow, this.selectedCol);
-        const row = this.data.rows[this.selectedRow];
-        const column = this.data.columns[this.selectedCol];
-        if (!row || !column) return;
-        const key = `${row.id}-${column.id}`;
-        const cell = this.data.cells[key];
-        if (el && cell) this.enterEditMode(el, cell, el.querySelector('div') as HTMLElement, seedChar);
-    }
-
-    private clearSelectionContents(): void {
-        const rect = this.getSelectionRect();
-        if (!rect) return;
-        this.pushPlotGridUndo();
-        this.forEachSelectedCell((_r, _c, _key, cell) => {
-            cell.content = '';
-            cell.manualContent = true;
-        });
-        this.scheduleSave();
-        this.renderGrid();
-    }
-
-    private selectionToTsv(): string {
-        const rect = this.getSelectionRect();
-        if (!rect) return '';
-        const lines: string[] = [];
-        for (let r = rect.r0; r <= rect.r1; r++) {
-            const cols: string[] = [];
-            for (let c = rect.c0; c <= rect.c1; c++) {
-                const row = this.data.rows[r];
-                const col = this.data.columns[c];
-                const cell = row && col ? this.data.cells[`${row.id}-${col.id}`] : undefined;
-                const text = (cell?.content || '').replace(/\r\n/g, '\n').replace(/\t/g, ' ');
-                cols.push(text);
-            }
-            lines.push(cols.join('\t'));
-        }
-        return lines.join('\n');
-    }
-
-    private async copySelectionToClipboard(): Promise<void> {
-        const tsv = this.selectionToTsv();
-        if (!tsv && !this.getSelectionRect()) return;
-        try {
-            await navigator.clipboard.writeText(tsv);
-        } catch {
-            // Fallback for restricted clipboard APIs
-            const ta = activeDocument.createElement('textarea');
-            ta.value = tsv;
-            ta.classList.add('pg-clipboard-helper');
-            activeDocument.body.appendChild(ta);
-            ta.select();
-            try {
-                // execCommand remains the only sync fallback when Clipboard API is blocked
-                // eslint-disable-next-line @typescript-eslint/no-deprecated
-                activeDocument.execCommand('copy');
-            } catch { /* noop */ }
-            ta.remove();
-        }
-    }
-
-    private async cutSelectionToClipboard(): Promise<void> {
-        await this.copySelectionToClipboard();
-        this.clearSelectionContents();
-    }
-
-    private async pasteTsvFromClipboard(): Promise<void> {
-        if (!this.selFocus) return;
-        let text = '';
-        try {
-            text = await navigator.clipboard.readText();
-        } catch {
-            new Notice(t('Could not read clipboard'));
-            return;
-        }
-        if (text == null) return;
-        // Normalize line endings; keep trailing empty row only if present as final \n after content
-        const normalized = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-        if (!normalized) return;
-        const rows = normalized.split('\n');
-        // Drop a single trailing empty line from Excel-style copies
-        if (rows.length > 1 && rows[rows.length - 1] === '') rows.pop();
-        if (!rows.length) return;
-
-        this.pushPlotGridUndo();
-        const startR = this.selFocus.r;
-        const startC = this.selFocus.c;
-        let maxCols = 1;
-        for (let i = 0; i < rows.length; i++) {
-            const tr = startR + i;
-            if (tr >= this.data.rows.length) break;
-            const sourceRow = rows[i];
-            if (sourceRow === undefined) continue;
-            const cols = sourceRow.split('\t');
-            maxCols = Math.max(maxCols, cols.length);
-            for (let j = 0; j < cols.length; j++) {
-                const tc = startC + j;
-                if (tc >= this.data.columns.length) break;
-                const row = this.data.rows[tr];
-                const col = this.data.columns[tc];
-                if (!row || !col) continue;
-                const cell = this.data.cells[`${row.id}-${col.id}`];
-                if (!cell) continue;
-                cell.content = cols[j] ?? '';
-                cell.manualContent = true;
-            }
-        }
-        const pastedRows = Math.min(rows.length, this.data.rows.length - startR);
-        const pastedCols = Math.min(maxCols, this.data.columns.length - startC);
-        const endR = startR + Math.max(1, pastedRows) - 1;
-        const endC = startC + Math.max(1, pastedCols) - 1;
-        this.setSelection({ r: startR, c: startC }, { r: endR, c: endC });
-        this.scheduleSave();
-        this.renderGrid();
-    }
-
-    private onKeyDown(e: KeyboardEvent) {
-        if (!this.wrapperEl) return;
-        // Embedded Univer owns keyboard + IME. Intercepting keys (arrows, type-to-edit,
-        // clipboard shortcuts) steals focus from the sheet editor and makes the
-        // candidate window jump / vanish.
-        if (this.univerHost) return;
-        const target = e.target as HTMLElement | null;
-        // Inputs/textareas handle their own keys (do not intercept).
-        if (target?.closest('input, textarea, [contenteditable="true"]')) {
-            return;
-        }
-        if (this.canvasEl?.querySelector('.plot-grid-cell.editing')) {
-            return;
-        }
-        // Header rename: if focus was stolen by the wrapper, give keystrokes back.
-        const headerInput = this.canvasEl?.querySelector(
-            '.plot-grid-header-editing input',
-        ) as HTMLInputElement | null;
-        if (headerInput) {
-            headerInput.focus();
-            if (
-                e.key.length === 1
-                && !e.ctrlKey && !e.metaKey && !e.altKey
-                && !e.isComposing
-            ) {
-                e.preventDefault();
-                const start = headerInput.selectionStart ?? headerInput.value.length;
-                const end = headerInput.selectionEnd ?? headerInput.value.length;
-                headerInput.value =
-                    headerInput.value.slice(0, start) + e.key + headerInput.value.slice(end);
-                const pos = start + e.key.length;
-                headerInput.setSelectionRange(pos, pos);
-            } else if (e.key === 'Enter') {
-                e.preventDefault();
-                headerInput.blur();
-            } else if (e.key === 'Escape') {
-                e.preventDefault();
-                headerInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-            }
-            return;
-        }
-
-        const mod = e.ctrlKey || e.metaKey;
-
-        if (mod && (e.key === 'a' || e.key === 'A')) {
-            e.preventDefault();
-            if (this.data.rows.length && this.data.columns.length) {
-                this.setSelection(
-                    { r: 0, c: 0 },
-                    { r: this.data.rows.length - 1, c: this.data.columns.length - 1 },
-                );
-                this.refreshSelectionInspector();
-            }
-            return;
-        }
-        if (mod && (e.key === 'c' || e.key === 'C')) {
-            e.preventDefault();
-            void this.copySelectionToClipboard();
-            return;
-        }
-        if (mod && (e.key === 'x' || e.key === 'X')) {
-            e.preventDefault();
-            void this.cutSelectionToClipboard();
-            return;
-        }
-        if (mod && (e.key === 'v' || e.key === 'V')) {
-            e.preventDefault();
-            void this.pasteTsvFromClipboard();
-            return;
-        }
-        if (mod && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
-            e.preventDefault();
-            this.undoPlotGridMove();
-            return;
-        }
-
-        switch (e.key) {
-            case 'ArrowRight':
-                e.preventDefault(); this.moveSelection(1, 0, e.shiftKey); break;
-            case 'ArrowLeft':
-                e.preventDefault(); this.moveSelection(-1, 0, e.shiftKey); break;
-            case 'ArrowDown':
-                e.preventDefault(); this.moveSelection(0, 1, e.shiftKey); break;
-            case 'ArrowUp':
-                e.preventDefault(); this.moveSelection(0, -1, e.shiftKey); break;
-            case 'Tab':
-                e.preventDefault(); this.moveSelection(e.shiftKey ? -1 : 1, 0, false); break;
-            case 'Enter':
-                e.preventDefault();
-                if (this.beginSelectedHeaderEdit()) break;
-                this.beginEditAtFocus();
-                break;
-            case 'F2':
-                e.preventDefault();
-                if (this.beginSelectedHeaderEdit()) break;
-                this.beginEditAtFocus();
-                break;
-            case 'Delete':
-            case 'Backspace':
-                e.preventDefault();
-                this.clearSelectionContents();
-                break;
-            default: {
-                // Type-to-edit: printable character replaces cell/header content
-                if (mod || e.altKey) break;
-                if (e.key.length === 1 && !e.isComposing) {
-                    e.preventDefault();
-                    if (this.beginSelectedHeaderEdit(e.key)) break;
-                    this.beginEditAtFocus(e.key);
-                }
-                break;
-            }
-        }
-    }
-
-    /** True when the current selection is an entire column (header click). */
-    private isFullColumnSelection(): number | null {
-        const rect = this.getSelectionRect();
-        if (!rect || this.data.rows.length === 0) return null;
-        if (rect.c0 === rect.c1 && rect.r0 === 0 && rect.r1 === this.data.rows.length - 1) {
-            return rect.c0;
-        }
-        return null;
-    }
-
-    /** True when the current selection is an entire row (header click). */
-    private isFullRowSelection(): number | null {
-        const rect = this.getSelectionRect();
-        if (!rect || this.data.columns.length === 0) return null;
-        if (rect.r0 === rect.r1 && rect.c0 === 0 && rect.c1 === this.data.columns.length - 1) {
-            return rect.r0;
-        }
-        return null;
-    }
-
-    /** Start renaming the selected row/column header; returns true if handled. */
-    private beginSelectedHeaderEdit(seedChar?: string): boolean {
-        const colIdx = this.isFullColumnSelection();
-        if (colIdx !== null) {
-            this.beginHeaderLabelEdit('col', colIdx, seedChar);
-            return true;
-        }
-        const rowIdx = this.isFullRowSelection();
-        if (rowIdx !== null) {
-            this.beginHeaderLabelEdit('row', rowIdx, seedChar);
-            return true;
-        }
-        return false;
-    }
-
-    /** Inline rename for a row or column header label. */
-    private beginHeaderLabelEdit(
-        kind: 'col' | 'row',
-        index: number,
-        seedChar?: string,
-    ): void {
-        if (!this.canvasEl) return;
-        const selector = kind === 'col' ? '.plot-grid-col-header' : '.plot-grid-row-header';
-        const headers = this.canvasEl.querySelectorAll(selector);
-        const el = headers[index] as HTMLElement | undefined;
-        if (!el) return;
-
-        const target = kind === 'col' ? this.data.columns[index] : this.data.rows[index];
-        if (!target) return;
-
-        // Avoid nesting editors / fighting drag-reorder while typing.
-        if (el.querySelector('input')) return;
-        el.draggable = false;
-        el.addClass('plot-grid-header-editing');
-
-        // Same as cell edit: wrapper must not steal focus/keystrokes while renaming.
-        if (this.wrapperEl) this.wrapperEl.tabIndex = -1;
-
-        const inp = activeDocument.createElement('input');
-        inp.type = 'text';
-        inp.value = seedChar !== undefined ? seedChar : (target.label || '');
-        inp.setAttr('aria-label', kind === 'col' ? t('Rename Column') : t('Rename Row'));
-        inp.setCssStyles({
-            width: '100%',
-            height: '100%',
-            minHeight: '28px',
-            boxSizing: 'border-box',
-            margin: '0',
-            border: 'none',
-            outline: '2px solid var(--interactive-accent)',
-            background: 'var(--background-primary)',
-            color: 'var(--text-normal)',
-            font: 'inherit',
-            textAlign: 'center',
-            zIndex: '30',
-            position: 'relative',
-            pointerEvents: 'auto',
-        });
-        el.empty();
-        el.appendChild(inp);
-
-        let finished = false;
-        const restoreFocusability = () => {
-            if (this.wrapperEl) this.wrapperEl.tabIndex = 0;
-        };
-        const finish = (commit: boolean) => {
-            if (finished) return;
-            finished = true;
-            restoreFocusability();
-            if (commit) {
-                const next = inp.value.trim();
-                if (next) target.label = next;
-                this.scheduleSave();
-            }
-            this.renderGrid();
-            // Restore grid keyboard nav after rename.
-            window.requestAnimationFrame(() => {
-                this.wrapperEl?.focus({ preventScroll: true });
-            });
-        };
-
-        const stop = (event: Event) => event.stopPropagation();
-        inp.addEventListener('mousedown', stop);
-        inp.addEventListener('mouseup', stop);
-        inp.addEventListener('click', stop);
-        inp.addEventListener('dblclick', stop);
-        inp.addEventListener('pointerdown', stop);
-        inp.addEventListener('keydown', (ke) => {
-            ke.stopPropagation();
-            if (ke.key === 'Enter') {
-                ke.preventDefault();
-                finish(true);
-            } else if (ke.key === 'Escape') {
-                ke.preventDefault();
-                finish(false);
-            }
-        });
-        // Defer blur-commit so clicking another header doesn't race with focus restore.
-        inp.addEventListener('blur', () => {
-            window.setTimeout(() => {
-                if (finished) return;
-                // Still focused inside this editor (e.g. IME) — don't commit yet.
-                if (activeDocument.activeElement === inp) return;
-                finish(true);
-            }, 0);
-        });
-
-        window.requestAnimationFrame(() => {
-            inp.focus();
-            if (seedChar !== undefined) {
-                const len = inp.value.length;
-                inp.setSelectionRange(len, len);
-            } else {
-                inp.select();
-            }
-        });
-    }
-
-
-    /** Render Markdown into a Concept Grid cell (or other preview host). */
-    private async renderMarkdownInto(el: HTMLElement, markdown: string, sourcePath = ''): Promise<void> {
-        el.empty();
-        if (!markdown.trim()) return;
-        await MarkdownRenderer.render(this.app, markdown, el, sourcePath, this);
-    }
-
-    /** Open a scene file in a new tab */
-    private async openScene(scene: Scene): Promise<void> {
-        const file = this.app.vault.getAbstractFileByPath(scene.filePath);
-        if (file instanceof TFile) {
-            const leaf = this.app.workspace.getLeaf('tab');
-            await leaf.openFile(file, { state: { mode: 'source', source: false } });
-        } else {
-            new Notice(t('Could not find file: {path}', { path: scene.filePath }));
-        }
-    }
-
-    /** Delete a scene and refresh the grid */
-    private async deleteScene(scene: Scene): Promise<void> {
-        const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
-        if (!scMgr) return;
-        await scMgr.deleteScene(scene.filePath);
-        // Keep linkedSceneId so convert/relink can inherit the relationship.
-        // Cell falls back to plain-text UI while the file is missing.
-        for (const c of Object.values(this.data.cells)) {
-            if (c.linkedSceneId !== scene.filePath) continue;
-            if (scene.corkboardNote) {
-                const body = (scene.body || '').trim();
-                if (body && !(c.content || '').trim()) {
-                    c.content = body;
-                    c.manualContent = true;
-                }
-            }
-        }
-        this.scheduleSave();
-        this.renderGrid();
-        // Rebuild cell details so the Note/Scene tab disappears immediately
-        this.refreshOpenCellInspector();
-    }
-
-    /**
-     * If the cell-details panel is open, rebuild it from the current selection.
-     * Used after delete/unlink so the Note/Scene tab is removed at once.
-     */
-    private refreshOpenCellInspector(): void {
-        if (!this.inspectorEl) return;
-        if (this.inspectorEl.style.display === 'none') return;
-        this.refreshSelectionInspector();
-    }
-
-    /** Show single- or multi-cell details for the current rectangular selection. */
-    private refreshSelectionInspector(): void {
-        if (!this.inspectorEl) return;
-        const items: Array<{ r: number; c: number; key: string; cell: CellData }> = [];
-        this.forEachSelectedCell((r, c, key, cell) => {
-            items.push({ r, c, key, cell });
-        });
-        if (items.length === 0) {
-            this.hideCellInspector();
-            return;
-        }
-        if (items.length === 1) {
-            const item = items[0];
-            if (!item) return;
-            this.showCellInspector(item.r, item.c, item.cell);
-            return;
-        }
-        this.showMultiCellInspector(items);
-    }
-
-    private enterEditMode(cellEl: HTMLElement, cell: CellData, _contentEl: HTMLElement, seedChar?: string) {
-        cellEl.classList.add('editing');
-        cellEl.empty();
-        const ta = cellEl.createEl('textarea');
-        // Type-to-edit replaces content with the typed character; F2/Enter keeps existing text
-        ta.value = seedChar !== undefined ? seedChar : (cell.content || '');
-        ta.placeholder = t('Markdown supported…');
-        ta.setCssStyles({
-            width: '100%',
-            height: '100%',
-            border: 'none',
-            padding: '6px 8px',
-            boxSizing: 'border-box',
-            resize: 'none',
-            background: 'transparent',
-            color: 'inherit',
-            font: 'inherit',
-            outline: 'none',
-        });
-        // Prevent clicks inside textarea from propagating to cell/wrapper
-        ta.addEventListener('mousedown', (e) => e.stopPropagation());
-        ta.addEventListener('click', (e) => e.stopPropagation());
-        ta.addEventListener('dblclick', (e) => e.stopPropagation());
-
-        // Remove wrapper focusability while editing so it can't steal focus
-        if (this.wrapperEl) this.wrapperEl.tabIndex = -1;
-
-        let committed = false;
-        const restoreFocusability = () => {
-            if (this.wrapperEl) this.wrapperEl.tabIndex = 0;
-        };
-        const commit = () => {
-            if (committed) return;
-            committed = true;
-            restoreFocusability();
-            cell.content = ta.value;
-            // Mark as manually edited so sync won't overwrite
-            cell.manualContent = true;
-                this.scheduleSave();
-                this.renderGrid();
-        };
-        const cancel = () => {
-            if (committed) return;
-            committed = true;
-            restoreFocusability();
-            this.renderGrid();
-        };
-
-        // Use requestAnimationFrame + focus to guarantee it happens after the current event cycle
-        window.requestAnimationFrame(() => {
-            ta.focus();
-            const len = ta.value.length;
-            ta.setSelectionRange(len, len);
-        });
-
-        ta.addEventListener('keydown', (e) => {
-            e.stopPropagation();
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                cancel();
-            } else if (e.key === 'Tab') {
-                e.preventDefault();
-                // commit and move to next cell
-                commit();
-                const curR = Number(cellEl.getAttribute('data-row'));
-                const curC = Number(cellEl.getAttribute('data-col'));
-                let nr = curR;
-                let nc = curC + (e.shiftKey ? -1 : 1);
-                if (nc >= this.data.columns.length) { nc = 0; nr = Math.min(this.data.rows.length - 1, curR + 1); }
-                if (nc < 0) { nc = Math.max(0, this.data.columns.length - 1); nr = Math.max(0, curR - 1); }
-                window.setTimeout(() => {
-                    const newEl = this.getCellElement(nr, nc);
-                    const row = this.data.rows[nr];
-                    const column = this.data.columns[nc];
-                    if (!row || !column) return;
-                    const key = `${row.id}-${column.id}`;
-                    const newCell = this.data.cells[key];
-                    if (newEl && newCell) { this.selectCell(newEl); this.enterEditMode(newEl, newCell, newEl.querySelector('div') as HTMLElement); }
-                }, 20);
-            } else if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || (e.key === 'Enter' && !e.shiftKey)) {
-                e.preventDefault();
-                commit();
-            }
-        });
-
-        ta.addEventListener('blur', () => {
-            commit();
-        });
     }
 
     /** First non-empty line of cell text, used as a file title. */
@@ -3095,7 +2310,6 @@ export class PlotgridView extends ProjectBoundItemView {
         try { this.univerHost?.syncMeta(this.document); } catch { /* ignore */ }
         this.scheduleSave();
         this.renderGrid({ forcePush: true });
-        this.refreshOpenCellInspector();
     }
 
     private unlinkCell(cellKey: string): void {
@@ -3129,7 +2343,6 @@ export class PlotgridView extends ProjectBoundItemView {
         try { this.univerHost?.syncMeta(this.document); } catch { /* ignore */ }
         this.scheduleSave();
         if (!this.univerHost) this.renderGrid();
-        this.refreshOpenCellInspector();
     }
 
     private openVaultFile(path: string): void {
@@ -3268,570 +2481,6 @@ export class PlotgridView extends ProjectBoundItemView {
         if (typeof this.data.frozenRows !== 'number') this.data.frozenRows = 1;
     }
 
-    // ────────────────────────────────────────────────────
-    //  Cell Inspector — shows characters, locations,
-    //  tags, and linked scene info for the selected cell(s)
-    // ────────────────────────────────────────────────────
-
-    /** Stack compact detail cards for every cell in a multi-cell selection. */
-    private showMultiCellInspector(
-        items: Array<{ r: number; c: number; key: string; cell: CellData }>,
-    ): void {
-        if (!this.inspectorEl) return;
-
-        if (this.inspectorComponent) this.inspectorComponent.hide();
-
-        const el = this.inspectorEl;
-        el.empty();
-        this.openCellInspectorPanel();
-        el.addClass('story-line-inspector');
-
-        const header = el.createDiv('inspector-header');
-        header.createEl('h3', { text: t('Cell Details ({n})', { n: items.length }) });
-        const closeBtn = header.createEl('button', { cls: 'clickable-icon inspector-close', text: '×' });
-        closeBtn.addEventListener('click', () => this.hideCellInspector());
-
-        const stack = el.createDiv('pg-multi-cell-stack');
-        const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
-        const focusR = this.selFocus?.r ?? this.selectedRow;
-        const focusC = this.selFocus?.c ?? this.selectedCol;
-
-        for (const item of items) {
-            const { r: rowIndex, c: colIndex, key: cellKey } = item;
-            const row = this.data.rows[rowIndex];
-            const col = this.data.columns[colIndex];
-            const getCell = (): CellData => this.data.cells[cellKey] ?? item.cell;
-
-            const card = stack.createDiv('pg-multi-cell-card');
-            if (focusR === rowIndex && focusC === colIndex) {
-                card.addClass('is-active');
-            }
-
-            const title = card.createDiv('pg-multi-cell-card-title');
-            title.createSpan({
-                text: `${row?.label || t('Row {n}', { n: rowIndex + 1 })} · ${col?.label || t('Col {n}', { n: colIndex + 1 })}`,
-            });
-
-            const textSection = card.createDiv('inspector-section');
-            textSection.createSpan({ cls: 'inspector-label', text: t('Content:') });
-            const textArea = textSection.createEl('textarea', { cls: 'inspector-cell-textarea' });
-            textArea.value = getCell().content || '';
-            textArea.rows = 4;
-            installObsidianMarkdownShortcuts(this.app, textArea);
-            textArea.setCssStyles({
-                width: '100%',
-                resize: 'vertical',
-                marginTop: '4px',
-                padding: '6px 8px',
-                border: '1px solid var(--background-modifier-border)',
-                borderRadius: '4px',
-                background: 'var(--background-primary)',
-                color: 'var(--text-normal)',
-                font: 'inherit',
-                fontSize: '13px',
-            });
-
-            const scanContainer = card.createDiv('inspector-scan-results');
-            this.updateCellInspectorScan(scanContainer, getCell());
-
-            let textSaveTimer: number | null = null;
-            let mdPreviewTimer: number | null = null;
-            const syncCellMarkdownPreview = () => {
-                const gridCellEl = this.getCellElement(rowIndex, colIndex);
-                const contentDiv = gridCellEl?.querySelector('.plot-grid-cell-content') as HTMLElement | null;
-                if (!contentDiv) return;
-                void this.renderMarkdownInto(contentDiv, textArea.value || '');
-            };
-            textArea.addEventListener('input', () => {
-                const liveCell = getCell();
-                liveCell.content = textArea.value;
-                liveCell.manualContent = true;
-                if (mdPreviewTimer) window.clearTimeout(mdPreviewTimer);
-                mdPreviewTimer = window.setTimeout(syncCellMarkdownPreview, 120);
-                if (textSaveTimer) window.clearTimeout(textSaveTimer);
-                textSaveTimer = window.setTimeout(() => {
-                    this.scheduleSave();
-                    this.updateCellInspectorScan(scanContainer, liveCell);
-                }, 600);
-            });
-            textArea.addEventListener('blur', () => {
-                if (textSaveTimer) { window.clearTimeout(textSaveTimer); textSaveTimer = null; }
-                if (mdPreviewTimer) { window.clearTimeout(mdPreviewTimer); mdPreviewTimer = null; }
-                const liveCell = getCell();
-                liveCell.content = textArea.value;
-                liveCell.manualContent = true;
-                syncCellMarkdownPreview();
-                this.updateCellInspectorScan(scanContainer, liveCell);
-                this.scheduleSave();
-            });
-
-            const liveForLink = getCell();
-            const linkedScene = (liveForLink.linkedSceneId && scMgr)
-                ? scMgr.getScene(liveForLink.linkedSceneId)
-                : undefined;
-            const isLinkedNote = !!(linkedScene && linkedScene.corkboardNote);
-
-            if (linkedScene) {
-                const linkSection = card.createDiv('inspector-section');
-                linkSection.createSpan({
-                    cls: 'inspector-label',
-                    text: isLinkedNote ? t('Linked Note:') : t('Linked Scene:'),
-                });
-                const sceneLink = linkSection.createEl('a', {
-                    cls: 'inspector-scene-link',
-                    text: linkedScene.title
-                        || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
-                        || t('Untitled'),
-                });
-                sceneLink.setCssStyles({
-                    display: 'block',
-                    marginTop: '4px',
-                    cursor: 'pointer',
-                    color: 'var(--text-accent)',
-                });
-                sceneLink.addEventListener('click', () => {
-                    const f = this.app.vault.getAbstractFileByPath(linkedScene.filePath) as TFile | null;
-                    if (f) this.app.workspace.getLeaf('tab').openFile(f, { state: { mode: 'source', source: false } });
-                });
-                const unlinkBtn = linkSection.createEl('button', {
-                    text: isLinkedNote ? t('Unlink Note') : t('Unlink Scene'),
-                    attr: { type: 'button' },
-                });
-                unlinkBtn.setCssStyles({ marginTop: '6px' });
-                unlinkBtn.addEventListener('click', () => {
-                    const c = this.data.cells[cellKey];
-                    if (c) c.linkedSceneId = undefined;
-                    this.scheduleSave();
-                    this.renderGrid();
-                    this.refreshSelectionInspector();
-                });
-            }
-        }
-    }
-
-    private showCellInspector(rowIndex: number, colIndex: number, cell: CellData): void {
-        if (!this.inspectorEl) return;
-
-        // Hide the scene-inspector if it was showing
-        if (this.inspectorComponent) this.inspectorComponent.hide();
-
-        const el = this.inspectorEl;
-        el.empty();
-        this.openCellInspectorPanel();
-        el.addClass('story-line-inspector');
-
-        const row = this.data.rows[rowIndex];
-        const col = this.data.columns[colIndex];
-
-        // Stable key so we can always resolve the canonical cell in this.data
-        const cellKey = `${row?.id}-${col?.id}`;
-        const getCell = (): CellData => this.data.cells[cellKey] ?? cell;
-
-        // Resolve linked scene / vault file from live cell data
-        const scMgr = this.plugin?.sceneManager as SceneManager | undefined;
-        const liveForLink = this.data.cells[cellKey] ?? cell;
-        const linkedPath = liveForLink.linkedSceneId;
-        const linkedScene = (linkedPath && scMgr) ? scMgr.getScene(linkedPath) : undefined;
-        const linkedVaultFile = this.resolveLinkedVaultFile(linkedPath);
-        const isLinkedNote = !!(linkedScene && linkedScene.corkboardNote);
-        // Any linked path counts — not only NL Notes/Scenes (Research / arbitrary .md too)
-        const hasVaultLink = !!linkedPath;
-
-        // ── Header ──
-        const header = el.createDiv('inspector-header');
-        header.createEl('h3', { text: t('Cell Details') });
-        const closeBtn = header.createEl('button', { cls: 'clickable-icon inspector-close', text: '×' });
-        closeBtn.addEventListener('click', () => this.hideCellInspector());
-
-        // ── Tab bar (only when a scene/note is linked) ──
-        let cellBody: HTMLElement;
-        let sceneBody: HTMLElement | null = null;
-        let cellInspectorInstance: InspectorComponent | null = null;
-
-        if (linkedScene) {
-            const tabBar = el.createDiv('sl-cell-tab-bar');
-            const cellTab = tabBar.createDiv({ cls: 'sl-cell-tab sl-cell-tab-active', text: t('Cell') });
-            const sceneTab = tabBar.createDiv({
-                cls: 'sl-cell-tab',
-                text: isLinkedNote ? t('Note') : t('Scene'),
-            });
-
-            // Small dot on Scene tab to indicate linked scene
-            sceneTab.createSpan({ cls: 'sl-cell-tab-dot' });
-
-            cellBody = el.createDiv('sl-cell-tab-body');
-            sceneBody = el.createDiv('sl-cell-tab-body');
-            sceneBody.setCssStyles({ display: 'none' });
-
-            const switchTab = (active: 'cell' | 'scene') => {
-                if (active === 'cell') {
-                    cellTab.addClass('sl-cell-tab-active');
-                    sceneTab.removeClass('sl-cell-tab-active');
-                    cellBody.setCssStyles({ display: '' });
-                    sceneBody!.setCssStyles({ display: 'none' });
-                } else {
-                    cellTab.removeClass('sl-cell-tab-active');
-                    sceneTab.addClass('sl-cell-tab-active');
-                    cellBody.setCssStyles({ display: 'none' });
-                    sceneBody!.setCssStyles({ display: '' });
-                    // Lazy-render scene inspector on first switch
-                                    if (!cellInspectorInstance && scMgr && this.plugin) {
-                                        cellInspectorInstance = new InspectorComponent(
-                                            sceneBody!,
-                                            this.plugin,
-                                            scMgr,
-                                            {
-                                                onEdit: (scene) => this.openScene(scene),
-                                                onDelete: (scene) => { void this.deleteScene(scene); },
-                                                onRefresh: () => {
-                                                    this.renderGrid();
-                                                    this.refreshOpenCellInspector();
-                                                },
-                                                onStatusChange: async (scene, status) => {
-                                                    await scMgr.updateScene(scene.filePath, { status });
-                                                    this.renderGrid();
-                                                },
-                                            }
-                                        );
-                                        cellInspectorInstance.show(linkedScene);
-                                    }
-                }
-            };
-
-            cellTab.addEventListener('click', () => switchTab('cell'));
-            sceneTab.addEventListener('click', () => switchTab('scene'));
-        } else {
-            cellBody = el.createDiv('sl-cell-tab-body');
-        }
-
-        // ── Cell tab content ──
-
-        // Row / Column label
-        const posSection = cellBody.createDiv('inspector-section');
-        posSection.createSpan({ cls: 'inspector-label', text: t('Row: ') });
-        posSection.createSpan({ text: row?.label || t('Row {n}', { n: rowIndex + 1 }) });
-        const colSection = cellBody.createDiv('inspector-section');
-        colSection.createSpan({ cls: 'inspector-label', text: t('Column: ') });
-        colSection.createSpan({ text: col?.label || t('Col {n}', { n: colIndex + 1 }) });
-
-        // ── Cell text (editable) ──
-        const textSection = cellBody.createDiv('inspector-section');
-        textSection.createSpan({ cls: 'inspector-label', text: t('Content:') });
-        const textArea = textSection.createEl('textarea', { cls: 'inspector-cell-textarea' });
-        textArea.value = cell.content || '';
-        textArea.rows = 8;
-        installObsidianMarkdownShortcuts(this.app, textArea);
-        textArea.setCssStyles({
-            width: '100%',
-            resize: 'vertical',
-            marginTop: '4px',
-            padding: '6px 8px',
-            border: '1px solid var(--background-modifier-border)',
-            borderRadius: '4px',
-            background: 'var(--background-primary)',
-            color: 'var(--text-normal)',
-            font: 'inherit',
-            fontSize: '13px',
-        });
-
-        // ── Scan results container ──
-        const scanContainer = cellBody.createDiv('inspector-scan-results');
-        this.updateCellInspectorScan(scanContainer, cell);
-
-        let textSaveTimer: number | null = null;
-        let mdPreviewTimer: number | null = null;
-        const syncCellMarkdownPreview = () => {
-            if (this.selectedRow === null || this.selectedCol === null) return;
-            const gridCellEl = this.getCellElement(this.selectedRow, this.selectedCol);
-            const contentDiv = gridCellEl?.querySelector('.plot-grid-cell-content') as HTMLElement | null;
-            if (!contentDiv) return;
-            void this.renderMarkdownInto(contentDiv, textArea.value || '');
-        };
-        textArea.addEventListener('input', () => {
-            const liveCell = getCell();
-            liveCell.content = textArea.value;
-            liveCell.manualContent = true;
-            cell.content = textArea.value;
-            cell.manualContent = true;
-            // Live-preview Markdown in the grid cell (do NOT use textContent — that strips formatting).
-            if (mdPreviewTimer) window.clearTimeout(mdPreviewTimer);
-            mdPreviewTimer = window.setTimeout(syncCellMarkdownPreview, 120);
-            if (textSaveTimer) window.clearTimeout(textSaveTimer);
-            textSaveTimer = window.setTimeout(() => {
-                this.scheduleSave();
-                this.updateCellInspectorScan(scanContainer, liveCell);
-            }, 600);
-        });
-        textArea.addEventListener('blur', () => {
-            if (textSaveTimer) { window.clearTimeout(textSaveTimer); textSaveTimer = null; }
-            if (mdPreviewTimer) { window.clearTimeout(mdPreviewTimer); mdPreviewTimer = null; }
-            const liveCell = getCell();
-            liveCell.content = textArea.value;
-            liveCell.manualContent = true;
-            cell.content = textArea.value;
-            cell.manualContent = true;
-            syncCellMarkdownPreview();
-            this.updateCellInspectorScan(scanContainer, liveCell);
-                this.scheduleSave();
-        });
-
-        // ── Linked note / scene + actions ──
-        const linkSection = cellBody.createDiv('inspector-section');
-        const actions = linkSection.createDiv('pg-cell-link-actions');
-
-        const syncTextarea = () => {
-            const liveCell = getCell();
-            liveCell.content = textArea.value;
-            liveCell.manualContent = true;
-            return liveCell;
-        };
-
-        const makeAccentBtn = (
-            parent: HTMLElement,
-            label: string,
-            title: string,
-            onClick: () => void | Promise<void>,
-        ) => {
-            const btn = parent.createEl('button', {
-                cls: 'mod-cta pg-cell-cta-btn',
-                text: label,
-                attr: { type: 'button', title },
-            });
-            btn.addEventListener('click', () => { void onClick(); });
-            return btn;
-        };
-
-        if (linkedScene || hasVaultLink) {
-            const treatAsNote = isLinkedNote || !linkedScene;
-            linkSection.createSpan({
-                cls: 'inspector-label',
-                text: treatAsNote ? t('Linked Note:') : t('Linked Scene:'),
-            });
-            const linkLabel = linkedScene
-                ? (linkedScene.title
-                    || linkedScene.filePath.split('/').pop()?.replace(/\.md$/i, '')
-                    || t('Untitled'))
-                : (linkedVaultFile?.basename
-                    || linkedPath!.split('/').pop()?.replace(/\.md$/i, '')
-                    || linkedPath!);
-            const sceneLink = linkSection.createEl('a', {
-                cls: 'inspector-scene-link',
-                text: linkedVaultFile || linkedScene
-                    ? linkLabel
-                    : `${linkLabel} (${t('Linked file not found')})`,
-            });
-            sceneLink.setCssStyles({
-                display: 'block',
-                marginTop: '4px',
-                cursor: 'pointer',
-                color: 'var(--text-accent)',
-            });
-            linkSection.appendChild(actions);
-            sceneLink.addEventListener('click', () => {
-                this.openVaultFile((linkedScene?.filePath || linkedPath) as string);
-            });
-
-            const unlinkBtn = actions.createEl('button', {
-                text: treatAsNote ? t('Unlink Note') : t('Unlink Scene'),
-                attr: {
-                    type: 'button',
-                    title: treatAsNote
-                        ? t('Keep the note file; only remove it from this cell')
-                        : t('Keep the scene file; only remove it from this cell'),
-                },
-            });
-            unlinkBtn.addEventListener('click', () => {
-                this.unlinkCell(cellKey);
-                this.refreshOpenCellInspector();
-                if (treatAsNote) new Notice(t('Note unlinked from cell'));
-            });
-        } else {
-            // Unlinked — open the same Markdown editor used by the toolbar.
-            const linkRow = actions.createDiv('pg-cell-link-row');
-            makeAccentBtn(linkRow, t('Open cell editor'), t('Type [[ to search vault notes'), () => {
-                syncTextarea();
-                    const c = this.ensureCellInData(this.data.cells[cellKey] ?? cell);
-                this.openCellMarkdownEditor(c, { insertWikilink: true });
-            });
-        }
-
-        // Convert stays available for plain/linked cells (link path is inherited / replaced).
-        const convertGroup = actions.createDiv('pg-cell-convert-group');
-        makeAccentBtn(
-            convertGroup,
-            t('Convert to Notes'),
-            t('Create a Notes/ file from this cell and link it'),
-            async () => {
-                const liveCell = syncTextarea();
-                if (!this.cellConvertBody(liveCell)) {
-                    new Notice(t('Add some content before converting'));
-                    textArea.focus();
-                    return;
-                }
-                await this.convertCellToNotes(liveCell);
-                this.showCellInspector(rowIndex, colIndex, this.data.cells[cellKey] ?? liveCell);
-            },
-        );
-        makeAccentBtn(
-            convertGroup,
-            t('Convert to Scene'),
-            t('Create a Scenes/ file from this cell and link it'),
-            async () => {
-                const liveCell = syncTextarea();
-                if (!this.cellConvertBody(liveCell)) {
-                    new Notice(t('Add some content before converting'));
-                    textArea.focus();
-                    return;
-                }
-                await this.convertCellToScene(liveCell);
-                this.showCellInspector(rowIndex, colIndex, this.data.cells[cellKey] ?? liveCell);
-            },
-        );
-        makeAccentBtn(
-            convertGroup,
-            t('Convert to Research'),
-            t('Create a Research/ file from this cell and link it'),
-            async () => {
-                const liveCell = syncTextarea();
-                if (!this.cellConvertBody(liveCell)) {
-                    new Notice(t('Add some content before converting'));
-                    textArea.focus();
-                    return;
-                }
-                await this.convertCellToResearch(liveCell);
-                this.showCellInspector(rowIndex, colIndex, this.data.cells[cellKey] ?? liveCell);
-            },
-        );
-    }
-
-    /**
-     * Scan cell content for characters, locations, and #tags,
-     * then render the results into the given container element.
-     */
-    private updateCellInspectorScan(container: HTMLElement, cell: CellData): void {
-        container.empty();
-
-        const text = cell.content || '';
-        if (!text.trim()) return;
-
-        const scanner = this.plugin?.linkScanner as LinkScanner | undefined;
-        if (!scanner) return;
-
-        const result = scanner.scanText(text);
-
-        // ── Characters found ──
-        if (result.characters.length > 0) {
-            const section = container.createDiv('inspector-section');
-            section.createSpan({ cls: 'inspector-label', text: t('Characters:') });
-            const chipList = section.createDiv('inspector-chip-list');
-            chipList.setCssStyles({
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '4px',
-                marginTop: '4px',
-            });
-            // Deduplicate via alias map
-            const aliasMap = (this.plugin?.characterManager as CharacterManager | undefined)
-                ?.buildAliasMap(this.plugin?.settings.characterAliases) ?? new Map<string, string>();
-            const seen = new Set<string>();
-            for (const name of result.characters) {
-                const canonical = aliasMap.get(name.toLowerCase()) || name;
-                const key = canonical.toLowerCase();
-                if (seen.has(key)) continue;
-                seen.add(key);
-                const chip = chipList.createSpan({ cls: 'inspector-chip', text: canonical });
-                chip.setCssStyles({
-                    padding: '2px 10px',
-                    borderRadius: '10px',
-                    fontSize: '12px',
-                    background: 'var(--background-modifier-border)',
-                    cursor: 'pointer',
-                    color: 'var(--text-normal)',
-                });
-                chip.addEventListener('click', () => {
-                    // Try to open the character file
-                    const charMgr = this.plugin?.characterManager as CharacterManager | undefined;
-                    const char = charMgr?.getAllCharacters().find(c => c.name.toLowerCase() === key);
-                    if (char) {
-                        const f = this.app.vault.getAbstractFileByPath(char.filePath) as TFile | null;
-                        if (f) this.app.workspace.getLeaf('tab').openFile(f, { state: { mode: 'source', source: false } });
-                    }
-                });
-            }
-        }
-
-        // ── Locations found ──
-        if (result.locations.length > 0) {
-            const section = container.createDiv('inspector-section');
-            section.createSpan({ cls: 'inspector-label', text: t('Locations:') });
-            const chipList = section.createDiv('inspector-chip-list');
-            chipList.setCssStyles({
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '4px',
-                marginTop: '4px',
-            });
-            // Deduplicate locations
-            const seen = new Set<string>();
-            for (const name of result.locations) {
-                const key = name.toLowerCase();
-                if (seen.has(key)) continue;
-                seen.add(key);
-                const chip = chipList.createSpan({ cls: 'inspector-chip', text: name });
-                chip.setCssStyles({
-                    padding: '2px 10px',
-                    borderRadius: '10px',
-                    fontSize: '12px',
-                    background: 'var(--background-modifier-border)',
-                    color: 'var(--text-normal)',
-                });
-            }
-        }
-
-        // ── Tags found ──
-        if (result.tags.length > 0) {
-            const section = container.createDiv('inspector-section');
-            section.createSpan({ cls: 'inspector-label', text: t('Tags:') });
-            const tagList = section.createDiv('inspector-tag-list');
-            tagList.setCssStyles({
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '4px',
-                marginTop: '4px',
-            });
-            const tagColors = this.plugin?.settings.tagColors || {};
-            const scheme = this.plugin?.settings.colorScheme || 'mocha';
-            const allTagsSorted = [...result.tags].sort();
-            for (const tag of result.tags) {
-                const chip = tagList.createSpan({ cls: 'inspector-tag-chip', text: `#${tag}` });
-                chip.setCssStyles({
-                    padding: '2px 8px',
-                    borderRadius: '10px',
-                    fontSize: '12px',
-                });
-                const chipColor = resolveTagColor(tag, allTagsSorted.indexOf(tag), scheme, tagColors, getPlotlineHSL(this.plugin!.settings));
-                chip.setCssStyles({
-                    background: chipColor,
-                    color: contrastTextColor(chipColor),
-                });
-            }
-        }
-    }
-
-    /** Show the docked inspector beside the grid (flex row, not overlay). */
-    private openCellInspectorPanel(): void {
-        if (!this.inspectorEl) return;
-        this.inspectorEl.setCssStyles({ display: 'flex' });
-        this.wrapperEl?.addClass('is-inspector-open');
-    }
-
-    private hideCellInspector(): void {
-        if (this.inspectorEl) {
-            this.inspectorEl.empty();
-            this.inspectorEl.setCssStyles({ display: 'none' });
-        }
-        this.wrapperEl?.removeClass('is-inspector-open');
-    }
 }
 
 export default PlotgridView;

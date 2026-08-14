@@ -3,7 +3,7 @@ export const VIEWS_ZH: Record<string, string> = {
     'Plot Grid': '表格',
     'Concept Grid pages': '表格页面',
     'Spreadsheet failed to load': '表格加载失败',
-    'NarrativeLab did not replace Univer with the legacy grid. Try loading it again.': 'NarrativeLab 未切换到旧表格。请重试加载 Univer。',
+    'The spreadsheet could not initialize. Try loading it again.': '表格无法初始化，请重试加载。',
     'Reload spreadsheet': '重新加载表格',
     'Pages': '页面',
     'Page': '页面',
@@ -28,7 +28,6 @@ export const VIEWS_ZH: Record<string, string> = {
     'copy': '副本',
     'Markdown supported…': '支持 Markdown…',
     'NarrativeLab Navigator': 'NarrativeLab 导航器',
-    'NarrativeLab Help': 'NarrativeLab 帮助',
     'Scene Notes': '场景笔记',
     'Scene Details': '场景详情',
     'Scene Synopsis': '场景梗概',
@@ -542,8 +541,7 @@ export const VIEWS_ZH: Record<string, string> = {
     'Pin to top': '置顶',
     'Open in new tab': '在新标签页中打开',
 
-    // Help, notes, details, and synopsis views
-    'Help content is unavailable.': '帮助内容不可用。',
+    // Notes, details, and synopsis views
     'Open notes file in separate tab': '在单独的标签页中打开笔记文件',
     'Open notes file': '打开笔记文件',
     'Open a scene file to edit its notes here.': '打开场景文件后，可在此编辑其笔记。',

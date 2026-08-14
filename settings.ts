@@ -635,8 +635,6 @@ export interface SceneCardsSettings {
     lastStorylineViewMode: 'list' | 'subway';
     /** Remembered Storyline view sort mode from last session */
     lastStorylineSortMode: 'alpha' | 'scenes-desc' | 'scenes-asc' | 'reading-order';
-    /** Remembered Storyline view Arc Point filter from last session */
-    lastStorylineArcFilter: 'all' | 'scenes' | 'arcPoints';
     /** Remembered Storyline subway tag-pill visibility from last session */
     lastStorylineShowTagPills: boolean;
     /** Remembered Timeline order from last session */
@@ -686,7 +684,6 @@ export interface SceneCardsSettings {
 
     // Advanced
     enablePlotHoleDetection: boolean;
-    showWarnings: boolean;
 
     // Scene templates
     sceneTemplates: SceneTemplate[];
@@ -779,9 +776,6 @@ export interface SceneCardsSettings {
     // e.g. { "sven": "Sven Andersson" } — user-defined via "Link to…" in Characters view
     characterAliases: Record<string, string>;
 
-    // Which character field to show as the tagline on cards ('auto' = personality → occupation → age)
-    characterTaglineField: string;
-
     // Character names to hide from the "no profile yet" list (lowercased)
     ignoredCharacters: string[];
 
@@ -791,11 +785,9 @@ export interface SceneCardsSettings {
      * - hide: fully hide the properties block
      * - visible: leave properties expanded / as Obsidian shows them
      *
-     * Legacy `hideFrontmatter` is migrated on load.
+     * Legacy `hideFrontmatter` is migrated and removed on load.
      */
     frontmatterDisplay: 'collapse' | 'hide' | 'visible';
-    /** @deprecated Use frontmatterDisplay. Kept for migration only. */
-    hideFrontmatter?: boolean;
 
     /**
      * Show only the icon (not the text label) on each view-switcher tab
@@ -925,8 +917,6 @@ export interface SceneCardsSettings {
     codexSidebarCategories: string[];
     /** Series name — groups projects that share a common universe / codex */
     series: string;
-    /** Optional vault-relative path to a shared Library folder for series */
-    sharedCodex: string;
     /** Extra vault-relative folder paths to scan for NarrativeLab entities */
     extraFolders: string[];
 
@@ -1035,7 +1025,6 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     lastStructureMode: 'timeline',
     lastStorylineViewMode: 'subway',
     lastStorylineSortMode: 'reading-order',
-    lastStorylineArcFilter: 'all',
     lastStorylineShowTagPills: true,
     timelineOrder: 'reading',
     timelineSwimlaneMode: false,
@@ -1066,7 +1055,6 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     customLocationTypes: [],
 
     enablePlotHoleDetection: true,
-    showWarnings: true,
 
     sceneTemplates: [],
     structureTemplates: [],
@@ -1090,8 +1078,6 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     storyGraphFocusBundles: {},
 
     characterAliases: {},
-
-    characterTaglineField: 'auto',
 
     ignoredCharacters: [],
 
@@ -1135,7 +1121,6 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     /** Which codex category IDs should appear in the Scene Inspector sidebar */
     codexSidebarCategories: [] as string[],
     series: '',
-    sharedCodex: '',
     extraFolders: [],
 
     hiddenFields: {},
@@ -2552,16 +2537,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                 .setValue(this.plugin.settings.enablePlotHoleDetection)
                 .onChange(async (value) => {
                     this.plugin.settings.enablePlotHoleDetection = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(advancedBody)
-            .setName(t('Show warnings'))
-            .setDesc(t('Display warning notifications'))
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.showWarnings)
-                .onChange(async (value) => {
-                    this.plugin.settings.showWarnings = value;
                     await this.plugin.saveSettings();
                 }));
 

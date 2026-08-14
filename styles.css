@@ -2365,204 +2365,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     margin: 8px 0;
 }
 
-/* --- Inspector Panel --- */
-.story-line-plotgrid-container {
-    height: 100%;
-    width: 100%;
-    background: var(--background-primary);
-    overflow: auto;
-    display: flex;
-    flex-direction: column;
-    padding: 0; /* ensure full-width usage */
-}
-
-.story-line-plotgrid-main {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    padding: 16px 8px;
-    overflow: auto;
-}
-
-.story-line-plotgrid-wrap {
-    display: grid;
-    grid-template-columns: 200px repeat(auto-fit, minmax(160px, 1fr));
-    grid-auto-rows: 120px;
-    gap: 2px;
-    background: var(--background-secondary);
-    border-radius: 8px;
-    box-shadow: var(--sl-shadow-sm);
-    margin: 0; /* align left and use full width */
-    width: 100%;
-    box-sizing: border-box;
-}
-
-/* Selection styling for headers */
-.plotgrid-col-header.selected,
-.plotgrid-row-header.selected {
-    background: var(--interactive-accent);
-    color: var(--text-on-accent, var(--sl-badge-text));
-}
-
-/* Remove any dotted placeholder visuals */
-.plotgrid-corner.plotgrid-corner, .plotgrid-col-header.plotgrid-col-header, .plotgrid-row-header.plotgrid-row-header, .plotgrid-cell.plotgrid-cell {
-    background-image: none;
-}
-
-.plotgrid-row-resizer {
-    position: absolute;
-    left: 0;
-    bottom: 0;
-    height: 8px;
-    width: 100%;
-    cursor: row-resize;
-    z-index: 5;
-}
-
-/* Make selected cell clear */
-.plotgrid-cell.selected {
-    outline: 3px solid var(--sl-focus-ring);
-    outline-offset: -3px;
-}
-
-.plotgrid-col-title, .plotgrid-row-title {
-    border: none;
-    background: transparent;
-    font-weight: 600;
-    font-size: 0.95em;
-}
-
-.plotgrid-col-title:focus, .plotgrid-row-title:focus {
-    outline: 2px dashed var(--interactive-accent);
-}
-
-.plotgrid-corner {
-    background: var(--background-secondary);
-    border-bottom: 1px solid var(--sc-card-border);
-    border-right: 1px solid var(--sc-card-border);
-    min-width: 60px;
-    min-height: 40px;
-}
-
-.plotgrid-col-header {
-    background: var(--background-secondary);
-    border-bottom: 1px solid var(--sc-card-border);
-    border-right: 1px solid var(--sc-card-border);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    min-width: 120px;
-    font-weight: 600;
-    position: relative;
-}
-
-.plotgrid-row-header {
-    background: var(--background-secondary);
-    border-right: 1px solid var(--sc-card-border);
-    border-bottom: 1px solid var(--sc-card-border);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 8px;
-    min-height: 40px;
-    font-weight: 600;
-    position: relative;
-}
-
-.plotgrid-cell {
-    background: var(--background-primary);
-    border: 1px solid var(--sc-card-border);
-    min-width: 120px;
-    min-height: 40px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-    transition: background 0.2s;
-    cursor: pointer;
-}
-.plot-grid-cell .plotgrid-cell textarea, .plot-grid-cell .plotgrid-cell input[type="text"] {
-    width: 100%;
-    height: 100%;
-    border: none;
-    padding: 8px;
-    font-size: 0.95em;
-    background: transparent;
-    resize: none;
-    box-sizing: border-box;
-}
-
-.plotgrid-handle {
-    width: 18px;
-    height: 18px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: grab;
-    margin-left: 6px;
-    background: rgba(0,0,0,0.04);
-    border-radius: 4px;
-}
-
-.plotgrid-handle svg {
-    width: 16px;
-    height: 16px;
-    fill: currentColor;
-}
-
-.plotgrid-col-resizer {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 8px;
-    height: 100%;
-    cursor: col-resize;
-    z-index: 5;
-}
-.plotgrid-cell-content {
-    width: 100%;
-    text-align: center;
-    font-size: 0.95em;
-    color: var(--sc-text);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.plotgrid-cell.drag-over {
-    background: var(--interactive-accent);
-    color: var(--text-on-accent, var(--sl-badge-text));
-    outline: 2px dashed var(--interactive-accent);
-    outline-offset: -2px;
-}
-.plotgrid-col-header input[type="color"],
-.plotgrid-row-header input[type="color"] {
-    margin-left: 6px;
-    border: none;
-    background: none;
-    width: 22px;
-    height: 22px;
-    padding: 0;
-    cursor: pointer;
-}
-.plotgrid-col-header button,
-.plotgrid-row-header button {
-    margin-left: 6px;
-    background: none;
-    border: none;
-    color: var(--sc-text-muted);
-    font-size: 1.2em;
-    cursor: pointer;
-    padding: 0 4px;
-    border-radius: 4px;
-    transition: background 0.15s;
-}
-.plotgrid-col-header button:hover,
-.plotgrid-row-header button:hover {
-    background: var(--background-modifier-hover);
-    color: var(--sc-accent);
-}
 .story-line-inspector-panel.story-line-inspector-panel {
     position: absolute;
     right: 0;
@@ -2599,31 +2401,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     line-height: 1;
     padding: 2px 6px;
     cursor: pointer;
-}
-
-.pg-multi-cell-stack {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
-
-.pg-multi-cell-card {
-    padding: 10px 12px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    background: var(--background-secondary);
-}
-
-.pg-multi-cell-card.is-active {
-    border-color: var(--interactive-accent);
-    box-shadow: inset 0 0 0 1px var(--interactive-accent);
-}
-
-.pg-multi-cell-card-title {
-    font-weight: 600;
-    font-size: 13px;
-    margin-bottom: 8px;
-    color: var(--text-normal);
 }
 
 /* Per-project NCanvas manager */
@@ -4061,49 +3838,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     padding-bottom: 4px;
 }
 
-.character-scene-section {
-    margin-bottom: 24px;
-}
-
-.character-scene-section h4 {
-    color: var(--sc-text-muted);
-    font-size: 0.9em;
-    margin-bottom: 8px;
-}
-
-.character-scene-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 8px;
-}
-
-.character-scene-card {
-    padding: 8px 12px;
-    background: var(--sc-card-bg);
-    border: 1px solid var(--sc-card-border);
-    border-radius: var(--sc-radius);
-    cursor: pointer;
-    font-size: 0.85em;
-    transition: background 0.15s;
-}
-
-.character-scene-card:hover {
-    background: var(--sc-card-hover);
-}
-
-.character-scene-card .scene-id {
-    font-family: var(--font-monospace);
-    font-size: 0.9em;
-    color: var(--sc-text-muted);
-    font-weight: 600;
-}
-
-.character-scene-card .scene-status-badge {
-    float: right;
-    display: inline-flex;
-    align-items: center;
-}
-
 .scene-status-badge svg {
     width: 14px;
     height: 14px;
@@ -4153,13 +3887,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .character-progress-label {
     font-size: 0.82em;
     color: var(--sc-text-muted);
-}
-
-.character-stats {
-    margin-top: 20px;
-    padding: 12px;
-    background: var(--background-secondary);
-    border-radius: var(--sc-radius);
 }
 
 /* Character gap detection */
@@ -4229,33 +3956,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .arc-scene-label {
     font-size: 8px;
     fill: var(--sc-text-faint);
-}
-
-.character-arc-legend {
-    margin-top: 6px;
-}
-
-.character-arc-legend-text {
-    font-size: 0.75em;
-    color: var(--sc-text-faint);
-    font-style: italic;
-}
-
-.character-arc-hint {
-    margin-top: 16px;
-    padding: 12px;
-    background: var(--background-secondary);
-    border-radius: var(--sc-radius);
-}
-
-.character-arc-hint h4 {
-    margin: 0 0 4px;
-    font-size: 0.9em;
-}
-
-.character-arc-hint-text {
-    font-size: 0.82em;
-    color: var(--sc-text-faint);
 }
 
 .character-overview-progress-row {
@@ -4545,12 +4245,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .character-empty-state h4 { margin: 0 0 8px; }
 .character-empty-state p { font-size: 0.85em; max-width: 360px; }
 
-/* New character button */
-.character-add-btn {
-    font-size: 0.82em;
-    white-space: nowrap;
-}
-
 /* ?? Mode Toggle (Grid / Map) ?? */
 .character-mode-toggle {
     display: flex;
@@ -4605,8 +4299,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     gap: 12px;
     flex-shrink: 0;
 }
-
-/* .character-back-btn ??Legacy, replaced by .codex-nav-back-link */
 
 .character-detail-header-right {
     display: flex;
@@ -4671,20 +4363,6 @@ button.library-profile-orientation-btn.is-active:hover,
     height: 14px;
     flex: 0 0 14px;
 }
-
-.character-delete-btn,
-.character-open-btn {
-    background: none;
-    border: 1px solid var(--background-modifier-border);
-    cursor: pointer;
-    padding: 4px 6px;
-    border-radius: 4px;
-    display: inline-flex;
-    align-items: center;
-    color: var(--sc-text-muted);
-}
-.character-delete-btn:hover { color: var(--text-error); border-color: var(--text-error); }
-.character-open-btn:hover { color: var(--sc-accent); border-color: var(--sc-accent); }
 
 /* Detail shell: fill pane so the board can scroll horizontally */
 .character-detail--board,
@@ -5387,50 +5065,10 @@ button.library-profile-orientation-btn.is-active:hover,
     gap: 6px;
     width: 100%;
 }
-.character-tag-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-    min-height: 24px;
-}
-.character-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 2px 8px;
-    border-radius: 12px;
-    background: var(--background-modifier-hover);
-    color: var(--sc-text);
-    font-size: 0.82em;
-    font-weight: 500;
-    line-height: 1.5;
-}
-.character-tag-remove {
-    cursor: pointer;
-    opacity: 0.5;
-    font-size: 1.1em;
-    line-height: 1;
-    padding: 0 2px;
-}
-.character-tag-remove:hover {
-    opacity: 1;
-    color: var(--text-error);
-}
-.character-tag-add-row {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-/* show-notes-btn removed ??replaced by .sl-toggle-wrap */
 .story-line-filters-container.is-corkboard-mode .story-line-sort,
 .story-line-filters-container.is-kanban-mode .story-line-sort {
     display: none;
 }
-.character-tag-select {
-    flex: 1;
-    min-width: 0;
-}
-
 /* Relation builder layout: stack items vertically and keep add-row width aligned */
 .relation-builder-list {
     display: flex;
@@ -5551,8 +5189,7 @@ button.library-profile-orientation-btn.is-active:hover,
 }
 
 /* Defensive fallback for Win11/Electron arrow tiling in relationships pickers */
-.story-line-character-container.story-line-character-container .character-field-input.dropdown,
-.story-line-character-container.story-line-character-container .character-tag-select {
+.story-line-character-container.story-line-character-container .character-field-input.dropdown {
     background-image: none;
 }
 
@@ -5560,29 +5197,6 @@ button.library-profile-orientation-btn.is-active:hover,
 .story-line-timeline-container.story-line-timeline-container select,
 .story-line-location-container.story-line-location-container select {
     background-image: none;
-}
-
-.character-tag-add-btn {
-    flex-shrink: 0;
-    width: 28px;
-    height: 28px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    background: none;
-    border: 1px dashed var(--background-modifier-border);
-    color: var(--sc-text-muted);
-    cursor: pointer;
-    padding: 0;
-}
-.character-tag-add-btn:hover {
-    border-color: var(--sc-accent);
-    color: var(--sc-accent);
-}
-.character-tag-add-btn svg {
-    width: 14px;
-    height: 14px;
 }
 
 /* ?? Image Gallery Carousel ?? */
@@ -6020,12 +5634,6 @@ button.library-profile-orientation-btn.is-active:hover,
 .character-side-plotgrid-scene:hover {
     color: var(--text-accent-hover, var(--text-accent));
 }
-.plot-grid-cell.is-appearance-flash {
-    outline: 2px solid var(--interactive-accent);
-    outline-offset: -2px;
-    box-shadow: inset 0 0 0 999px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
-}
-
 /* POV badge in scene list */
 .character-pov-badge {
     font-size: 0.65em;
@@ -8129,125 +7737,6 @@ button.library-profile-orientation-btn.is-active:hover,
     flex: 0 0 auto;
 }
 
-/* Corner cell (top-left) */
-.plot-grid-corner {
-    grid-column: 1 / 2;
-    grid-row: 1 / 2;
-    position: sticky;
-    top: 0; left: 0; z-index: 12;
-    background: var(--background-secondary);
-    border-bottom: 1px solid var(--background-modifier-border);
-    border-right: 1px solid var(--background-modifier-border);
-    display:flex; align-items:center; justify-content:center; padding:6px;
-}
-
-/* Column headers */
-.plot-grid-col-header {
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    padding:6px 8px;
-    position:relative;
-    user-select:none;
-    border:1px solid var(--sl-border-subtle);
-    min-width:80px;
-    box-sizing:border-box;
-}
-.plot-grid-col-header:hover { background: var(--background-modifier-hover); }
-.plot-grid-col-header.plot-grid-header-editing,
-.plot-grid-row-header.plot-grid-header-editing {
-    padding: 0;
-    cursor: text;
-}
-.plot-grid-col-header.plot-grid-header-editing input,
-.plot-grid-row-header.plot-grid-header-editing input {
-    pointer-events: auto;
-}
-
-.plot-col-resize-handle {
-    position:absolute; right:0; top:0; bottom:0; width:6px; cursor:col-resize; z-index:20; background:transparent;
-}
-
-/* Row headers */
-.plot-grid-row-header {
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    padding:6px 8px;
-    position:relative;
-    user-select:none;
-    border:1px solid var(--sl-border-subtle);
-    min-height:40px;
-    box-sizing:border-box;
-}
-.plot-grid-row-header:hover { background: var(--background-modifier-hover); }
-
-.plot-row-resize-handle {
-    position:absolute; left:0; right:0; bottom:0; height:6px; cursor:row-resize; z-index:20; background:transparent;
-}
-
-/* Cells */
-.plot-grid-cell {
-    text-align: center;
-    padding:6px 8px;
-    box-sizing:border-box;
-    border:1px solid var(--background-modifier-border);
-    white-space:pre-wrap;
-    overflow:hidden;
-    position:relative;
-    display:flex; flex-direction:column; justify-content:flex-start;
-    background: var(--background-primary);
-}
-.plot-grid-cell .plot-grid-linked-badge {
-    position:absolute; top:6px; right:6px; font-size:14px; cursor:pointer;
-}
-.plot-grid-linked-subtitle { position:absolute; top:26px; right:6px; font-size:11px; color:var(--text-muted); }
-
-.plot-grid-cell .plot-grid-cell-content { pointer-events:none; }
-
-.plot-grid-cell.editing { padding:0; }
-.plot-grid-cell.editing textarea { width:100%; height:100%; border:none; padding:8px; box-sizing:border-box; resize:none; background:transparent; }
-
-/* The POV character pill inside a Plot Grid cell's tag row. The cell
-   background itself stays untouched; only this single pill is tinted amber
-   so the eye can find the POV character at a glance. */
-.pg-codex-tag.pg-codex-tag-pov {
-    background: #F5D491;
-    color: #2a2010;
-    font-weight: 600;
-}
-
-/* Selection visuals — rect range + active cell (Excel-like) */
-.plot-grid-cell.in-selection {
-    background: color-mix(in srgb, var(--interactive-accent) 14%, var(--background-primary));
-}
-.plot-grid-cell.in-selection:not(.is-active):not(.selected) {
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--interactive-accent) 40%, transparent);
-}
-.plot-grid-cell.is-active,
-.plot-grid-cell.selected {
-    box-shadow: inset 0 0 0 2px var(--interactive-accent);
-    z-index: 1;
-}
-.plot-grid-row-header.selected { box-shadow: inset 4px 0 0 var(--interactive-accent); }
-.plot-grid-col-header.selected { box-shadow: inset 0 4px 0 var(--interactive-accent); }
-
-/* Off-screen helper for clipboard fallback when Clipboard API is unavailable */
-.pg-clipboard-helper {
-    position: fixed;
-    left: -9999px;
-    top: 0;
-    opacity: 0;
-    pointer-events: none;
-}
-
-/* Formatting toolbar small tweaks */
-.plot-grid-toolbar button { padding:6px 10px; border-radius:6px; border:1px solid transparent; background:transparent; cursor:pointer; }
-.plot-grid-toolbar button:hover { background:var(--background-modifier-hover); }
-
-/* Empty state inside canvas */
-.plot-grid-empty { grid-column:1/-1; grid-row:1/-1; display:flex; align-items:center; justify-content:center; padding:24px; color:var(--text-muted); }
-
 /* Concept Grid: Excel-style worksheet tabs along the bottom */
 .story-line-board-container:has(> .concept-grid-body),
 .plot-grid-root:has(.concept-grid-body) {
@@ -8636,10 +8125,6 @@ body.nl-wikilink-picker-open .plot-grid-cell-editor-window {
     color: var(--text-muted);
     font-size: var(--font-ui-smaller);
 }
-.plot-grid-cell-editor-actions {
-    display: flex;
-    gap: 8px;
-}
 .plot-grid-cell-editor-resize-handle {
     position: absolute;
     right: 0;
@@ -8660,85 +8145,8 @@ body.nl-wikilink-picker-open .plot-grid-cell-editor-window {
     border-bottom: 2px solid var(--text-faint);
 }
 
-/* Legacy modal class kept for safety if an old build still opens Modal */
-.plot-grid-cell-editor-modal {
-    width: min(1120px, calc(100vw - 48px));
-    max-width: 1120px;
-    height: min(760px, calc(100vh - 56px));
-    max-height: 760px;
-}
-.plot-grid-cell-editor-modal .modal-content {
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    height: 100%;
-    padding: 0;
-}
-
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered {
-    width: 100%;
-    height: 100%;
-    overflow: auto;
-    white-space: normal;
-    text-align: inherit;
-    line-height: 1.35;
-    font-size: 0.95em;
-}
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered p {
-    margin: 0 0 0.35em;
-}
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered p:last-child {
-    margin-bottom: 0;
-}
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered ul,
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered ol {
-    margin: 0.2em 0 0.35em;
-    padding-left: 1.25em;
-}
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered a {
-    pointer-events: auto;
-}
-/* Ensure inline Markdown styles are visible (CJK fonts often ignore bold weight alone). */
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered strong,
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered b {
-    font-weight: var(--bold-weight, 700);
-    -webkit-text-stroke: 0.25px currentColor;
-}
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered em,
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered i {
-    font-style: italic;
-}
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered code {
-    font-family: var(--font-monospace);
-    font-size: 0.9em;
-    padding: 0.05em 0.3em;
-    border-radius: 3px;
-    background: var(--code-background, var(--background-modifier-hover));
-}
-.plot-grid-cell .plot-grid-cell-content.markdown-rendered del {
-    text-decoration: line-through;
-    opacity: 0.85;
-}
-.plot-grid-cell.editing textarea {
-    font-family: var(--font-text, var(--font-interface));
-    line-height: 1.4;
-}
-
-/* Drag handle look */
-/* Flash helper (used by JS inline) */
-.plot-grid-flash {
-    transition: background-color 160ms ease;
-}
-
-/* Make color input tiny and unobtrusive when used */
-.plot-grid-col-header input[type="color"], .plot-grid-row-header input[type="color"] { width:20px; height:20px; padding:0; border:none; background:transparent; margin-left:6px; cursor:pointer; }
-
 /* Responsive */
 @media (max-width: 720px) {
-    .plot-grid-cell-editor-modal {
-        width: calc(100vw - 16px);
-        height: calc(100vh - 24px);
-    }
     .plot-grid-cell-editor-meta {
         align-items: flex-start;
         flex-direction: column;
@@ -8748,102 +8156,7 @@ body.nl-wikilink-picker-open .plot-grid-cell-editor-window {
     .plot-grid-cell-editor-preview {
         padding: 18px;
     }
-    .plot-grid-col-header { min-width: 90px; padding:4px; }
     .plot-grid-toolbar { gap:6px; padding:6px; }
-}
-
-/* ?? PlotGrid: Mini Scene Card inside cells ?? */
-.plot-grid-mini-card {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 2px 0;
-    width: 100%;
-}
-
-.pg-mini-title-row {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    overflow: hidden;
-    min-width: 0;
-}
-
-.pg-mini-status-icon {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    width: 14px;
-    height: 14px;
-}
-.pg-mini-status-icon svg {
-    width: 14px;
-    height: 14px;
-}
-
-.pg-mini-title {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-weight: 600;
-    font-size: 12px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    line-height: 1.3;
-}
-
-.pg-mini-meta {
-    font-size: 10px;
-    color: var(--text-muted);
-    overflow: hidden;
-    margin-top: 2px;
-}
-
-.pg-mini-desc {
-    display: -webkit-box;
-    line-clamp: 3;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    line-height: 1.3;
-    font-style: italic;
-}
-
-/* Sticky-note styled cell in plotgrid */
-.pg-cell-note.pg-cell-note {
-    justify-content: flex-start;
-    background: transparent;
-}
-.pg-cell-note-label {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    font-weight: 600;
-    opacity: 0.55;
-    margin-bottom: 2px;
-    color: inherit;
-}
-.pg-cell-note-icon {
-    display: inline-flex;
-    align-items: center;
-    width: 13px;
-    height: 13px;
-}
-.pg-cell-note-icon svg {
-    width: 13px;
-    height: 13px;
-}
-.pg-cell-note-body {
-    font-size: 13px;
-    line-height: 1.4;
-    color: inherit;
-    white-space: pre-wrap;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 8;
-    line-clamp: 8;
-    -webkit-box-orient: vertical;
 }
 
 /* Origin label on corkboard sticky notes (from plotgrid auto-note) */
@@ -8871,168 +8184,6 @@ body.nl-wikilink-picker-open .plot-grid-cell-editor-window {
     height: 12px;
 }
 
-/* Drop target highlight when dragging a scene card over a cell */
-.plot-grid-cell.plot-grid-cell.plot-grid-drop-target {
-    outline: 2px dashed var(--interactive-accent);
-    outline-offset: -2px;
-    background: rgba(var(--interactive-accent-rgb, 99, 135, 210), 0.08);
-}
-
-/* ?? PlotGrid: Act/Chapter Dividers ?? */
-.plot-grid-divider {
-    display: flex;
-    align-items: center;
-    padding: 0 12px;
-    gap: 6px;
-    font-weight: 600;
-    border-bottom: 1px solid var(--sl-border-subtle, var(--background-modifier-border));
-    user-select: none;
-    overflow: hidden;
-    white-space: nowrap;
-}
-.plot-grid-divider-act {
-    background: var(--background-modifier-border);
-    font-size: 13px;
-    color: var(--text-normal);
-}
-.plot-grid-divider-chapter {
-    background: var(--background-modifier-hover);
-    font-size: 12px;
-    color: var(--text-muted);
-}
-.plot-grid-divider-icon {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    opacity: 0.6;
-}
-.plot-grid-divider-icon svg {
-    width: 14px;
-    height: 14px;
-}
-.plot-grid-divider-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* ??? Cell Inspector Tabs ???????????????????????????????????? */
-.sl-cell-tab-bar {
-    display: flex;
-    gap: 0;
-    margin: 4px -12px 0;
-    padding: 0;
-    border-bottom: 1px solid var(--background-modifier-border);
-}
-
-.sl-cell-tab {
-    position: relative;
-    flex: 1;
-    text-align: center;
-    padding: 10px 18px 8px;
-    cursor: pointer;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-muted);
-    background: var(--background-secondary);
-    border: 1px solid var(--background-modifier-border);
-    border-bottom: none;
-    border-top: 3px solid transparent;
-    margin-bottom: -1px;
-    transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
-    user-select: none;
-}
-
-.sl-cell-tab:first-child {
-    border-left: none;
-}
-
-.sl-cell-tab:last-child {
-    border-right: none;
-}
-
-.sl-cell-tab:hover:not(.sl-cell-tab-active) {
-    color: var(--text-normal);
-    background: var(--background-modifier-hover);
-}
-
-.sl-cell-tab-active {
-    color: var(--interactive-accent);
-    background: var(--background-primary);
-    border-top-color: var(--interactive-accent);
-    font-weight: 600;
-}
-
-.sl-cell-tab-dot {
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--interactive-accent);
-    margin-left: 6px;
-    vertical-align: middle;
-}
-
-.sl-cell-tab-body {
-    padding-top: 8px;
-    padding-bottom: 24px;
-}
-
-/* Hide the InspectorComponent's own header/close when embedded in a tab */
-.sl-cell-tab-body > .story-line-inspector > .inspector-header {
-    display: none;
-}
-
-/* PlotGrid cell inspector — docked beside the grid, never overlays cells */
-.plot-grid-wrapper .story-line-inspector-panel.pg-cell-inspector,
-.plot-grid-wrapper.is-inspector-open .story-line-inspector-panel.pg-cell-inspector {
-    position: relative !important;
-    inset: auto !important;
-    right: auto !important;
-    top: auto !important;
-    bottom: auto !important;
-    left: auto !important;
-    flex: 0 0 300px;
-    width: 300px;
-    max-width: min(340px, 40%);
-    height: auto !important;
-    max-height: none;
-    align-self: stretch;
-    z-index: 2;
-    overflow-x: hidden;
-    overflow-y: auto;
-    box-shadow: none;
-    flex-direction: column;
-    min-height: 0;
-}
-
-.plot-grid-wrapper .story-line-inspector-panel.pg-cell-inspector {
-    display: none;
-}
-
-.plot-grid-wrapper.is-inspector-open .story-line-inspector-panel.pg-cell-inspector {
-    display: flex !important;
-}
-
-/* Cell inspector CTAs — link alone, convert buttons grouped below */
-.pg-cell-link-actions {
-    display: flex;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 10px;
-    margin-top: 8px;
-}
-.pg-cell-link-row {
-    display: flex;
-}
-.pg-cell-convert-group {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding-top: 10px;
-    border-top: 1px solid var(--background-modifier-border);
-}
-.pg-cell-link-actions button.mod-cta.pg-cell-cta-btn,
-.pg-cell-link-actions button.mod-cta,
 .story-line-inspector-panel button.mod-cta {
     display: inline-flex !important;
     align-items: center !important;
@@ -11249,114 +10400,6 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     height: 16px;
 }
 
-/* ????????????????????????????????????????????????????????
-   Help View ??right-split documentation pane
-   ????????????????????????????????????????????????????????*/
-
-.storyline-help-container {
-    height: 100%;
-    overflow-y: auto;
-    overflow-x: hidden;
-    -webkit-overflow-scrolling: touch;
-}
-
-.storyline-help-content {
-    padding: 16px 20px 40px;
-    max-width: 100%;
-    font-size: 14px;
-    line-height: 1.6;
-}
-
-/* Headings */
-.storyline-help-content h1 {
-    font-size: 1.5em;
-    margin-top: 0;
-    border-bottom: 1px solid var(--background-modifier-border);
-    padding-bottom: 8px;
-}
-.storyline-help-content h2 {
-    font-size: 1.25em;
-    margin-top: 24px;
-    border-bottom: 1px solid var(--background-modifier-border);
-    padding-bottom: 6px;
-}
-.storyline-help-content h3 {
-    font-size: 1.1em;
-    margin-top: 20px;
-}
-.storyline-help-content h4 {
-    font-size: 1em;
-    margin-top: 16px;
-}
-
-/* Tables ??horizontally scrollable in narrow pane */
-.storyline-help-content table {
-    display: block;
-    overflow-x: auto;
-    white-space: nowrap;
-    border-collapse: collapse;
-    font-size: 13px;
-    margin: 12px 0;
-    max-width: 100%;
-}
-.storyline-help-content th,
-.storyline-help-content td {
-    padding: 6px 10px;
-    border: 1px solid var(--background-modifier-border);
-    text-align: left;
-    white-space: normal;
-    min-width: 60px;
-}
-.storyline-help-content th {
-    background: var(--background-secondary);
-    font-weight: 600;
-}
-
-/* Code blocks */
-.storyline-help-content code {
-    font-size: 12px;
-    padding: 2px 4px;
-    border-radius: 3px;
-    background: var(--background-secondary);
-}
-.storyline-help-content pre {
-    overflow-x: auto;
-    padding: 10px 12px;
-    border-radius: 4px;
-    font-size: 12px;
-    background: var(--background-secondary);
-}
-
-/* TOC links */
-.storyline-help-content ul a,
-.storyline-help-content ol a {
-    color: var(--text-accent);
-    text-decoration: none;
-}
-.storyline-help-content ul a:hover,
-.storyline-help-content ol a:hover {
-    text-decoration: underline;
-}
-
-/* Horizontal rules */
-.storyline-help-content hr {
-    border: none;
-    border-top: 1px solid var(--background-modifier-border);
-    margin: 24px 0;
-}
-
-/* Lists */
-.storyline-help-content li {
-    margin-bottom: 4px;
-}
-
-/* Error fallback */
-.storyline-help-error {
-    padding: 20px;
-    color: var(--text-muted);
-    font-style: italic;
-}
-
 /* ============================================
    Mobile Support (iOS / iPadOS / Android)
    ============================================ */
@@ -11493,8 +10536,7 @@ body /* Clamp title on mobile too, in case it's very long */
 
 /* ?? Inspector as bottom sheet on mobile ????????????? */
 
-.sl-mobile .story-line-inspector-panel,
-.sl-mobile .plot-grid-wrapper .story-line-inspector-panel.pg-cell-inspector {
+.sl-mobile .story-line-inspector-panel {
     width: 100%;
     max-width: none;
     flex: none;
@@ -16368,16 +15410,14 @@ body.sl-focus-active-global .titlebar {
 .sl-inspector-panel.is-active:not(.sl-inspector-embed) {
     padding: 8px 10px 32px;
 }
-/* Embedded full-views: no panel-level padding ??the inner view classes
-   (e.g. `.sl-research-panel`, `.storyline-help-container`) own their own
-   padding, identical to when they're mounted as standalone views. */
+/* Embedded full-views: no panel-level padding; the inner view owns its own
+   padding, identical to when mounted as a standalone view. */
 .sl-inspector-panel.is-active.sl-inspector-embed {
     overflow-y: auto;
 }
 /* Bottom breathing room for the embedded scroll containers so the last
    item is fully visible when scrolled to the end. */
-.sl-inspector-panel.is-active.sl-inspector-embed > .sl-research-panel,
-.sl-inspector-panel.is-active.sl-inspector-embed > .storyline-help-container {
+.sl-inspector-panel.is-active.sl-inspector-embed > .sl-research-panel {
     padding-bottom: 40px;
 }
 .sl-inspector-shortcut {

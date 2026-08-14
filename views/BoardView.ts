@@ -2949,20 +2949,6 @@ export class BoardView extends ItemView {
         };
     }
 
-    /** Force BoardView to reload corkboard positions from SceneManager on next refresh. */
-    invalidateCorkboardLayout(): void {
-        this.corkboardLoadedProjectFile = '__invalidated__';
-    }
-
-    /** Flush any pending corkboard position writes to SceneManager immediately. */
-    async flushPendingCorkboardPersist(): Promise<void> {
-        if (this.corkboardPersistTimer) {
-            window.clearTimeout(this.corkboardPersistTimer);
-            this.corkboardPersistTimer = null;
-            await this.persistCorkboardLayout();
-        }
-    }
-
     private ensureCorkboardLayoutLoaded(): void {
         const projectPath = this.resolveCorkboardProjectFile();
         if (projectPath === this.corkboardLoadedProjectFile) return;

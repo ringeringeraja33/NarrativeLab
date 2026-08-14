@@ -258,7 +258,6 @@ const ZH_CORE: Record<string, string> = {
 
     'Scene {n}': '场景 {n}',
     'Project: {title}': '项目：{title}',
-    'Open help': '打开帮助',
     'Open navigator': '打开导航器',
     'Drafts': '草稿',
     'New draft': '新建草稿',
@@ -880,8 +879,6 @@ What disrupts the status quo?`]: `## 钩子
     'Advanced': '高级',
     'Enable plot hole detection': '启用情节漏洞检测',
     'Show warnings for potential plot holes': '显示潜在情节漏洞的警告',
-    'Show warnings': '显示警告',
-    'Display warning notifications': '显示警告通知',
     'Additional Source Folders (Experimental)': '其他源文件夹（实验性）',
     '⚠ Experimental — back up your files before linking external folders. Files in linked folders may be modified when you edit entities in NarrativeLab.': '⚠ 实验性功能 — 链接外部文件夹前请备份文件。在 NarrativeLab 中编辑实体时，链接文件夹中的文件可能会被修改。',
     'Point NarrativeLab to any folder in your vault. All .md files inside will be scanned and automatically sorted by their frontmatter type: field.': '选择仓库中的任意文件夹。NarrativeLab 会扫描其中所有 .md 文件，并按 YAML 属性中的 `type` 字段自动分类。',

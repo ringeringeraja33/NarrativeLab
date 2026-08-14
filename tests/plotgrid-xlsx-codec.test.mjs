@@ -497,7 +497,6 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /System\/datasheet\.nlmeta\.json|datasheet\.nlmeta\.json/);
     assert.match(mainTs, /legacySystemPlotGridXlsxPath/);
     assert.match(mainTs, /legacyPlotGridFolderXlsxPath|cleanupLegacyPlotGridArtifacts/);
-    assert.match(mainTs, /getProjectLibraryFolder/);
     assert.match(mainTs, /migratePlotGridToLibraryIfNeeded/);
     assert.match(mainTs, /Library\/datasheet\.xlsx|datasheet\.xlsx/);
     assert.match(mainTs, /encodePlotGridXlsx/);
@@ -612,7 +611,7 @@ test('wikilink suggestions follow the textarea caret inside editor modals', asyn
     assert.doesNotMatch(suggest, /top:\s*`\$\{Math\.round\(rect\.bottom/);
 });
 
-test('embedded Univer host exposes the legacy grid view controls', async () => {
+test('embedded Univer host exposes the NarrativeLab grid controls', async () => {
     const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
     const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
     const codecSrc = await readFile(new URL('../services/PlotGridXlsxCodec.ts', import.meta.url), 'utf8');
