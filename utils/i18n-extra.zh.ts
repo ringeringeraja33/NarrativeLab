@@ -1,5 +1,6 @@
 /** Auto-curated ZH strings for remaining UI chrome. */
 export const EXTRA_ZH: Record<string, string> = {
+    'Search notes…': '搜索笔记…',
     ' (custom)': '（自定义）',
     ' Gone for {count} scenes between "{from}" and "{to}"': ' 在「{from}」与「{to}」之间缺席 {count} 个场景',
     '"{key}" is reserved by NarrativeLab. Choose a different key.': '「{key}」是 NarrativeLab 保留键，请换一个名称。',
@@ -29,7 +30,13 @@ export const EXTRA_ZH: Record<string, string> = {
     'Color: {label}': '颜色：{label}',
     'Comma-separated list of choices.': '以逗号分隔的选项列表。',
     'Could not access the file dialog. Desktop only.': '无法打开文件对话框。仅桌面端可用。',
+    'Could not change profile layout: {err}': '无法更改档案页布局：{err}',
     'Could not find file: {path}': '找不到文件：{path}',
+    'Horizontal': '横式',
+    'Horizontal layout': '横式布局',
+    'Profile layout': '档案页布局',
+    'Vertical': '竖式',
+    'Vertical layout': '竖式布局',
     'Created {name}': '已创建 {name}',
     'Current:': '当前：',
     'Define your own metadata fields that appear on every scene\'s Inspector. Useful for Story Grid functions, Truby aspects, beat-sheet labels, genre conventions, and any other scene tagging your method requires. Dropdown and multi-select fields can also be used to filter and group scenes on the Board.': '自定义会出现在每个场景 Inspector 中的元数据字段。适合 Story Grid 功能、Truby 要素、节拍表标签、类型惯例，以及你方法里需要的任何场景标记。下拉与多选字段也可用于白板筛选与分组。',
@@ -174,7 +181,6 @@ export const EXTRA_ZH: Record<string, string> = {
     'character sheet': '角色资料表',
     'entry': '条目',
     'After: {label}': '在「{label}」之后',
-    'Dropdown': '下拉',
     'Time & Order — {title}': '时间与顺序 — {title}',
     'Type "{text}" to enable the Delete button.': '输入「{text}」以启用删除按钮。',
     'Unlinked "{alias}"': '已取消关联「{alias}」',

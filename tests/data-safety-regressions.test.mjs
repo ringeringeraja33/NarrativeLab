@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, locationView, mainTs, styles, validator, statsView] = await Promise.all([
+const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudit, templateCenter, applyModal, quickAdd, characterView, storyGraph, nativeLibraryBase, libraryCategorySync, codexView, libraryModeBar, libraryBrowseLayout, locationView, mainTs, styles, validator, statsView] = await Promise.all([
     readFile(new URL('../services/CorkboardCanvasService.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/BoardView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/SeriesManager.ts', import.meta.url), 'utf8'),
@@ -18,6 +18,7 @@ const [corkboard, boardView, seriesManager, sceneManager, categoryTabs, i18nAudi
     readFile(new URL('../services/LibraryCategorySync.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/CodexView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../components/LibraryBrowseLayout.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/LocationView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
@@ -274,10 +275,10 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(mainTs, /getBasePath\?\./);
 });
 
-test('editable Base field and Library category names stay language-neutral', () => {
+test('editable Base field names stay neutral while preset category labels localize', () => {
     assert.match(nativeLibraryBase, /propertyConfig\.displayName = key/);
     assert.match(nativeLibraryBase, /ensureRawNotePropertyDisplayNames\(config/);
-    assert.match(libraryCategorySync, /return english;/);
+    assert.match(libraryCategorySync, /return t\(english\);/);
     assert.doesNotMatch(
         libraryCategorySync.slice(
             libraryCategorySync.indexOf('export function resolveLibraryCategoryLabel'),
@@ -288,12 +289,35 @@ test('editable Base field and Library category names stay language-neutral', () 
 });
 
 test('custom profile categories expose a working profile overview mode', () => {
-    assert.match(categoryTabs, /profileMode\?: LibraryProfileModeAction/);
+    assert.match(codexView, /private renderOverviewModes\(parent: HTMLElement\)/);
     assert.match(libraryModeBar, /data-mode': 'profile'/);
     assert.match(codexView, /activeCategoryHasProfilePage/);
     assert.match(codexView, /profileOverviewCategoryId = this\.activeCategory/);
     assert.match(codexView, /showLayoutToggle: !this\.isProfileOverviewMode\(\)/);
     assert.match(codexView, /this\.isProfileOverviewMode\(\)\s*\? 'cards'/);
+});
+
+test('Library profile and browse modes sit in the toolbar while Story Graph stays at category-row right', () => {
+    assert.doesNotMatch(categoryTabs, /renderLibraryModeToggle/);
+    assert.match(categoryTabs, /renderFarRightActions\?: \(container: HTMLElement\) => void/);
+    assert.match(categoryTabs, /tabs\.insertBefore\(uncategorizedTab, categoryActions\)/);
+    assert.match(libraryBrowseLayout, /renderTrailingActions\?: \(actionsEl: HTMLElement\) => void/);
+    assert.match(libraryBrowseLayout, /toolbar\.createDiv\('library-browse-mode-actions'\)/);
+    assert.match(libraryBrowseLayout, /export function renderLibraryModeToolbar/);
+    assert.match(characterView, /renderTrailingActions: \(actionsEl\) => this\.renderCharacterOverviewModes\(actionsEl\)/);
+    assert.match(locationView, /renderTrailingActions: \(actionsEl\) => this\.renderLocationOverviewModes\(actionsEl\)/);
+    assert.match(codexView, /renderTrailingActions: \(actionsEl\) => this\.renderOverviewModes\(actionsEl\)/);
+    assert.match(characterView, /renderLibraryModeToolbar\(content, actions => this\.renderCharacterOverviewModes\(actions\)\)/);
+    assert.match(locationView, /renderLibraryModeToolbar\(content, actions => this\.renderLocationOverviewModes\(actions\)\)/);
+    assert.match(codexView, /renderLibraryModeToolbar\(content, actions => this\.renderOverviewModes\(actions\)\)/);
+    assert.match(styles, /\.library-browse-mode-actions\s*\{[^}]*margin-left:\s*auto/s);
+    assert.match(libraryModeBar, /export function renderLibraryStoryGraphAction/);
+    assert.match(characterView, /renderFarRightActions:[\s\S]*?renderLibraryStoryGraphAction/);
+    assert.match(locationView, /renderFarRightActions:[\s\S]*?renderLibraryStoryGraphAction/);
+    assert.match(codexView, /renderFarRightActions:[\s\S]*?renderLibraryStoryGraphAction/);
+    assert.match(codexView, /\{ showStoryGraph: false \}/);
+    assert.match(styles, /\.codex-category-far-actions\s*\{[^}]*margin-left:\s*auto/s);
+    assert.match(styles, /\.codex-category-tabs \.codex-category-actions\s*\{[^}]*border-left:/s);
 });
 
 test('plot-grid text keeps Markdown source and renders rich text with native wikilinks', async () => {
@@ -306,9 +330,13 @@ test('plot-grid text keeps Markdown source and renders rich text with native wik
     assert.match(plotgrid, /openCellMarkdownEditor/);
     assert.match(plotgrid, /new WikilinkSuggest/);
     assert.match(plotgrid, /MarkdownRenderer\.render/);
-    assert.match(plotgrid, /commit\(this\.textarea\.value\)/);
+    assert.match(plotgrid, /const value = textarea\.value/);
+    assert.match(plotgrid, /liveCell\.content = value/);
+    assert.match(plotgrid, /textarea\.addEventListener\('input',[\s\S]*scheduleAutosave\(\)/);
+    assert.match(plotgrid, /flushAutosave[\s\S]*persistDraft\(\{ pushGrid: true \}\)/);
     assert.doesNotMatch(plotgrid, /openNoteLinkModal|openSceneLinkModal/);
-    assert.doesNotMatch(univerHost, /onCellRender|canvasMarkdownSegments|fillRect\(/);
+    assert.doesNotMatch(univerHost, /canvasMarkdownSegments|fillText\(/);
+    assert.match(univerHost, /onCellRender[\s\S]*drawTinyLinkIcon/);
     assert.match(univerHost, /--link-color/);
     assert.match(codec, /plotGridSourceToUniverRichText/);
     assert.match(codec, /PLOTGRID_SOURCE_FIELD/);

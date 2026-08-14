@@ -8,11 +8,12 @@ import type { WritingTracker } from '../services/WritingTracker';
 
 import { STATS_VIEW_TYPE } from '../constants';
 import { applyMobileClass } from '../components/MobileAdapter';
-import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { WorkspaceLeaf } from 'obsidian';
 import { Scene, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import { getActDisplayLabel } from '../utils/actChapter';
 import { t } from '../utils/i18n';
 import { PlotWarning, Validator } from '../services/Validator';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
     tokenizeWords,
     splitSentences,
@@ -32,7 +33,7 @@ import {
 /**
  * Statistics Dashboard View
  */
-export class StatsView extends ItemView {
+export class StatsView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private rootContainer: HTMLElement | null = null;
@@ -46,6 +47,7 @@ export class StatsView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
+        this.ensureProjectBinding(sceneManager.activeProject?.filePath);
     }
 
     getViewType(): string {
@@ -53,7 +55,7 @@ export class StatsView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.resolveProjectTitle(this.sceneManager.getProjects(), this.sceneManager.activeProject);
         return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
     }
 

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ButtonComponent, ItemView, Menu, MenuItem, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
+import { ButtonComponent, Menu, MenuItem, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { Scene } from '../models/Scene';
 import { SceneManager } from '../services/SceneManager';
@@ -14,6 +14,7 @@ import { resolveTagColor, getPlotlineHSL, contrastTextColor } from '../settings'
 import { attachTooltip } from '../components/Tooltip';
 import { compareScenesByActChapter, getActDisplayLabel } from '../utils/actChapter';
 import { t } from '../utils/i18n';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 type SortMode = 'alpha' | 'scenes-desc' | 'scenes-asc' | 'reading-order';
 type PlotlineViewMode = 'list' | 'subway';
@@ -29,7 +30,7 @@ type PlotlineViewMode = 'list' | 'subway';
  * Each plotline can be renamed, deleted, and scenes can be
  * assigned or removed via click menus.
  */
-export class StorylineView extends ItemView {
+export class StorylineView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private rootContainer: HTMLElement | null = null;
@@ -45,6 +46,7 @@ export class StorylineView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
+        this.ensureProjectBinding(sceneManager.activeProject?.filePath);
         // Restore last used Storyline view state
         const s = plugin.settings;
         this.plotlineViewMode = s.lastStorylineViewMode || 'subway';
@@ -57,7 +59,7 @@ export class StorylineView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.resolveProjectTitle(this.sceneManager.getProjects(), this.sceneManager.activeProject);
         return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
     }
 

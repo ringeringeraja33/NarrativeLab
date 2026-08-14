@@ -11,7 +11,6 @@ export const MAIN_ZH: Record<string, string> = {
     "+ Save current": "+ 保存当前筛选",
     "Active": "启用",
     "Add custom field": "添加自定义字段",
-    "Add field": "添加字段",
     "Add Field to Section": "向分区添加字段",
     "Add character…": "添加角色…",
     "Add plotline…": "添加情节线…",

@@ -89,4 +89,17 @@ test('libraryProfileLayoutFromUnknown requires useful payload', () => {
     assert.ok(parsed);
     assert.deepEqual(parsed.hiddenFields.character, ['fears']);
     assert.deepEqual(emptyLibraryProfileLayout().characterCustomSections, []);
+    assert.deepEqual(emptyLibraryProfileLayout().profileOrientations, {});
+});
+
+test('profile orientation defaults to horizontal and persists per category', async () => {
+    const {
+        getLibraryProfileOrientation,
+        setLibraryProfileOrientation,
+    } = mod;
+    const settings = { profileOrientations: {} };
+    assert.equal(getLibraryProfileOrientation(settings, 'evomon'), 'horizontal');
+    await setLibraryProfileOrientation(settings, 'evomon', 'vertical', async () => {});
+    assert.equal(getLibraryProfileOrientation(settings, 'evomon'), 'vertical');
+    assert.equal(getLibraryProfileOrientation(settings, 'character'), 'horizontal');
 });

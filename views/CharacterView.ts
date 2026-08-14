@@ -8,6 +8,7 @@ import { isMobile, applyMobileClass } from '../components/MobileAdapter';
 import {
     getLibraryContentMode,
     rememberLibraryCategory,
+    renderLibraryStoryGraphAction,
     renderLibraryStoryGraph,
     setLibraryContentMode,
 } from '../components/LibraryModeBar';
@@ -33,18 +34,21 @@ import { renderLibraryArchiveFilterBar, collectEntityFilterKeys, collectArchiveF
 import { disposeNativeLibraryBase, renderNativeLibraryBase } from '../components/NativeLibraryBase';
 import {
     renderLibraryBrowseToolbar,
+    renderLibraryModeToolbar,
 } from '../components/LibraryBrowseLayout';
-import { ItemView, Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
+import { Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
 import { CHARACTER_CATEGORIES, CHARACTER_ROLES, CHARACTER_TAGLINE_FIELD_KEYS, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractAllCharacterTags, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations, resolveCharacterCardSnippet } from '../models/Character';
 import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { seedUiLanguage, t } from '../utils/i18n';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
     filterRemovedBuiltinFields,
     getHiddenFieldKeys,
+    getLibraryProfileOrientation,
     isBuiltinSectionRemoved,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
@@ -55,6 +59,7 @@ import {
     mergeCharacterRelationTypes,
     upsertCustomCharacterRelationType,
 } from '../utils/storyGraphCharacterRelations';
+import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
 
 type ScenePresenceStats = { pov: number; present: number };
 
@@ -64,7 +69,7 @@ type ScenePresenceStats = { pov: number; present: number };
  * Overview mode: grid of compact character cards (name, role, scene count).
  * Detail mode: full character profile with collapsible sections and editable fields.
  */
-export class CharacterView extends ItemView {
+export class CharacterView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private characterManager: CharacterManager;
@@ -97,8 +102,8 @@ export class CharacterView extends ItemView {
     private searchText: string = '';
     /** Characters-specific top-level interface: card profiles, native browse, or graph. */
     private characterOverviewMode: 'editor' | 'base' | 'story-graph';
-    private browseSearchOpen = true;
-    private browseFilterOpen = true;
+    private browseSearchOpen = false;
+    private browseFilterOpen = false;
     private _searchTimer: number | null = null;
     /** Current sort mode for the overview grid */
     private sortBy: 'name' | 'modified' | 'created' | 'role' = 'name';
@@ -136,6 +141,7 @@ export class CharacterView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
+        this.ensureProjectBinding(sceneManager.activeProject?.filePath);
         // Use the plugin's shared CharacterManager so entries scanned from
         // Additional Source Folders (which are added to the plugin-level
         // manager) are visible here too. Previously each view created its
@@ -157,7 +163,7 @@ export class CharacterView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.resolveProjectTitle(this.sceneManager.getProjects(), this.sceneManager.activeProject);
         return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
     }
 
@@ -266,6 +272,7 @@ export class CharacterView extends ItemView {
         if (this.selectedCharacter) {
             this.renderCharacterDetail(content);
         } else if (this.characterOverviewMode === 'story-graph' && !isMobile) {
+            renderLibraryModeToolbar(content, actions => this.renderCharacterOverviewModes(actions));
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -295,9 +302,16 @@ export class CharacterView extends ItemView {
             activeId: 'characters-pseudo',
             leaf: this.leaf,
             plugin: this.plugin,
-            showModeToggle: false,
-            renderBeforeModeActions: !this.selectedCharacter
-                ? (actions) => this.renderCharacterOverviewModes(actions)
+            renderFarRightActions: !this.selectedCharacter
+                ? (actions) => renderLibraryStoryGraphAction(
+                    actions,
+                    this.characterOverviewMode === 'story-graph',
+                    () => {
+                        this.characterOverviewMode = 'story-graph';
+                        setLibraryContentMode(this.plugin, 'story-graph');
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    },
+                )
                 : undefined,
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
@@ -314,6 +328,7 @@ export class CharacterView extends ItemView {
         if (this.selectedCharacter) {
             this.renderCharacterDetail(content);
         } else if (this.characterOverviewMode === 'story-graph' && !isMobile) {
+            renderLibraryModeToolbar(content, actions => this.renderCharacterOverviewModes(actions));
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -326,13 +341,12 @@ export class CharacterView extends ItemView {
         // Match the shared Library Browse / Story Graph underline tabs.
         const toggle = parent.createDiv('library-mode-toggle character-mode-toggle');
         const modes: Array<{
-            id: 'editor' | 'base' | 'story-graph';
+            id: 'editor' | 'base';
             label: string;
             icon: string;
         }> = [
             { id: 'editor', label: 'Character Profiles', icon: 'contact-round' },
             { id: 'base', label: 'Browse', icon: 'layout-grid' },
-            { id: 'story-graph', label: 'Story Graph', icon: 'share-2' },
         ];
         for (const mode of modes) {
             const button = toggle.createEl('button', {
@@ -347,11 +361,7 @@ export class CharacterView extends ItemView {
                 this.characterOverviewMode = mode.id;
                 setLibraryContentMode(
                     this.plugin,
-                    mode.id === 'story-graph'
-                        ? 'story-graph'
-                        : mode.id === 'base'
-                            ? 'browse'
-                            : 'profile',
+                    mode.id === 'base' ? 'browse' : 'profile',
                 );
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -363,6 +373,7 @@ export class CharacterView extends ItemView {
     private renderCharacterOverview(container: HTMLElement): void {
         container.empty();
         if (this.characterOverviewMode === 'base') {
+            renderLibraryModeToolbar(container, actions => this.renderCharacterOverviewModes(actions));
             void renderNativeLibraryBase(container, this.plugin, 'characters', this);
             return;
         }
@@ -404,6 +415,7 @@ export class CharacterView extends ItemView {
             // Character Profiles is card-only; Browse (native Base) owns table/list.
             showLayoutToggle: false,
             onLayoutChange: () => this.renderCharacterOverview(container),
+            renderTrailingActions: (actionsEl) => this.renderCharacterOverviewModes(actionsEl),
             appendExtra: (actionsEl) => {
                 const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
                 const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
@@ -1145,7 +1157,10 @@ export class CharacterView extends ItemView {
 
     private renderCharacterDetail(container: HTMLElement): void {
         container.empty();
-        container.addClass('character-detail--board');
+        container.removeClass('character-detail--board', 'character-detail--vertical');
+        const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, 'character');
+        const horizontalProfile = profileOrientation === 'horizontal';
+        container.addClass(horizontalProfile ? 'character-detail--board' : 'character-detail--vertical');
         const selectedPath = this.selectedCharacter ? normalizePath(this.selectedCharacter) : '';
         const basename = selectedPath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
         let character =
@@ -1174,11 +1189,13 @@ export class CharacterView extends ItemView {
             this._lastSavedRelations = normalizeCharacterRelations(selected.relations).map(r => ({ ...r }));
         }
 
-        // Board mode shows every section as a column — expand built-ins / custom.
-        for (const cat of CHARACTER_CATEGORIES) this.collapsedSections.delete(cat.title);
-        this.collapsedSections.delete('Custom Fields');
-        for (const key of [...this.collapsedSections]) {
-            if (key.startsWith('custom-section::character::')) this.collapsedSections.delete(key);
+        // Horizontal mode shows every section as a column — expand built-ins / custom.
+        if (horizontalProfile) {
+            for (const cat of CHARACTER_CATEGORIES) this.collapsedSections.delete(cat.title);
+            this.collapsedSections.delete('Custom Fields');
+            for (const key of [...this.collapsedSections]) {
+                if (key.startsWith('custom-section::character::')) this.collapsedSections.delete(key);
+            }
         }
 
         // Back + actions
@@ -1195,6 +1212,14 @@ export class CharacterView extends ItemView {
         });
 
         const headerRight = header.createDiv('character-detail-header-right');
+
+        renderLibraryProfileOrientationToggle(headerRight, {
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            save: () => this.plugin.saveSettings(),
+            beforeChange: () => this.flushPendingSave(),
+            onChanged: () => this.rerenderCharacterDetail(),
+        });
 
         mountLibraryEntityBoardAction(headerRight, {
             plugin: this.plugin,
@@ -1290,9 +1315,13 @@ export class CharacterView extends ItemView {
             }
         }
 
-        // Layout: horizontal section board + sticky side rail
-        const layout = container.createDiv('character-detail-layout character-detail-layout--board');
-        const formPanel = layout.createDiv('character-detail-form character-detail-board-track');
+        // Layout: horizontal board columns, or stacked sections with side rail.
+        const layout = container.createDiv(
+            `character-detail-layout ${horizontalProfile ? 'character-detail-layout--board' : 'character-detail-layout--vertical'}`,
+        );
+        const formPanel = layout.createDiv(
+            `character-detail-form${horizontalProfile ? ' character-detail-board-track' : ' character-detail-vertical-track'}`,
+        );
         const sidePanel = layout.createDiv('character-detail-side');
         const commitFocusedField = (event: Event) => {
             const tagName = (event.target as { tagName?: string } | null)?.tagName?.toLowerCase();
@@ -1304,14 +1333,16 @@ export class CharacterView extends ItemView {
 
         // Wheel on the board gutter / headers pans columns; column bodies keep vertical scroll.
         // Shift+wheel always pans horizontally.
-        formPanel.addEventListener('wheel', (e) => {
-            if (e.deltaY === 0) return;
-            if (formPanel.scrollWidth <= formPanel.clientWidth + 1) return;
-            const inColumnBody = !!(e.target as HTMLElement | null)?.closest?.('.character-section-body');
-            if (inColumnBody && !e.shiftKey) return;
-            e.preventDefault();
-            formPanel.scrollLeft += e.deltaY + e.deltaX;
-        }, { passive: false });
+        if (horizontalProfile) {
+            formPanel.addEventListener('wheel', (e) => {
+                if (e.deltaY === 0) return;
+                if (formPanel.scrollWidth <= formPanel.clientWidth + 1) return;
+                const inColumnBody = !!(e.target as HTMLElement | null)?.closest?.('.character-section-body');
+                if (inColumnBody && !e.shiftKey) return;
+                e.preventDefault();
+                formPanel.scrollLeft += e.deltaY + e.deltaX;
+            }, { passive: false });
+        }
 
         // ── Form sections as board columns (+ interleaved custom sections) ──
         // Eagerly fill only the first columns; remaining column fields load when
@@ -1325,13 +1356,13 @@ export class CharacterView extends ItemView {
                 continue;
             }
             this.renderCategory(formPanel, category, draft, {
-                board: true,
-                eager: i < 2,
+                board: horizontalProfile,
+                eager: horizontalProfile ? i < 2 : true,
             });
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
-        this.renderCustomFields(formPanel, draft, { board: true });
+        this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
         renderAddCustomSectionButton(formPanel, customHost);
         renderRemovedBuiltinSectionsToggle(formPanel, {
             settings: this.plugin.settings,

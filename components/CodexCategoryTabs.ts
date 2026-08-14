@@ -9,7 +9,7 @@
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE } from '../constants';
-import { renderLibraryModeToggle, rememberLibraryCategory, type LibraryProfileModeAction } from './LibraryModeBar';
+import { rememberLibraryCategory } from './LibraryModeBar';
 import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import {
     applyCategoryFolderLabels,
@@ -35,16 +35,12 @@ export interface CodexTabsOptions {
     leaf: obsidian.WorkspaceLeaf;
     /** Plugin instance */
     plugin: SceneCardsPlugin;
-    /** Show Browse / Story Graph toggle on the right of the tab bar */
-    showModeToggle?: boolean;
-    /** Called when Browse / Story Graph mode changes */
-    onModeChange?: () => void;
-    /** Optional profile-page mode placed beside Browse / Story Graph. */
-    profileMode?: LibraryProfileModeAction;
-    /** Optional controls rendered immediately before Browse / Story Graph. */
+    /** Optional leading category-management controls. */
     renderBeforeModeActions?: (container: HTMLElement) => void;
-    /** Optional controls rendered immediately after Browse / Story Graph. */
+    /** Optional trailing category-management controls. */
     renderAfterModeActions?: (container: HTMLElement) => void;
+    /** Optional action pinned to the far right of the category row. */
+    renderFarRightActions?: (container: HTMLElement) => void;
     /** Called after a successful tab/folder rename (views should re-render) */
     onCategoriesChanged?: () => void;
     /** Show the Custom Categories gear button (default true). */
@@ -54,19 +50,17 @@ export interface CodexTabsOptions {
 /**
  * Render the Codex category tab bar into `parent`.
  * Includes Characters, Locations, and all user-defined codex categories.
- * Optionally appends the Library Browse / Story Graph mode toggle.
+ * Content-mode controls are rendered in the toolbar below this category row.
  */
 export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOptions): HTMLElement {
     const {
         activeId,
         leaf,
         plugin,
-        showModeToggle,
-        onModeChange,
-        profileMode,
         onCategoriesChanged,
         renderBeforeModeActions,
         renderAfterModeActions,
+        renderFarRightActions,
         showManageCategories = true,
     } = opts;
 
@@ -185,19 +179,16 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     for (const item of renderedTabs) tabs.appendChild(item.el);
     attachTabReordering(tabs, renderedTabs, plugin, onCategoriesChanged);
 
-    // Mode / Custom Categories sit immediately left of Uncategorized — not
-    // pushed to the far right — so they stay beside the category strip.
+    // Category-management actions remain beside the category strip.
+    let categoryActions: HTMLElement | null = null;
     if (
-        (showModeToggle !== false && onModeChange)
-        || renderBeforeModeActions
+        renderBeforeModeActions
         || renderAfterModeActions
         || showManageCategories
     ) {
         const actions = tabs.createDiv('codex-category-actions');
+        categoryActions = actions;
         renderBeforeModeActions?.(actions);
-        if (showModeToggle !== false && onModeChange) {
-            renderLibraryModeToggle(actions, plugin, onModeChange, profileMode);
-        }
         renderAfterModeActions?.(actions);
         if (showManageCategories) {
             const manageCategoriesBtn = actions.createEl('button', {
@@ -216,7 +207,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
         }
     }
 
-    // Uncategorized remains a fixed definition and, when shown, is always last.
+    // Uncategorized follows the existing categories, before the divider/actions.
     if (!hiddenFixed.has(UNCATEGORIZED_CATEGORY_ID)) {
         const uncategorizedActive = activeId === UNCATEGORIZED_CATEGORY_ID;
         const uncategorizedOverride = overrideFor(UNCATEGORIZED_CATEGORY_ID);
@@ -258,6 +249,12 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
                 }
             });
         }
+        if (categoryActions) tabs.insertBefore(uncategorizedTab, categoryActions);
+    }
+
+    if (renderFarRightActions) {
+        const farRightActions = tabs.createDiv('codex-category-far-actions');
+        renderFarRightActions(farRightActions);
     }
 
     return tabs;

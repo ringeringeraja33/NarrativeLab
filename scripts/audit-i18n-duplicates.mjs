@@ -43,6 +43,10 @@ const shadowed = records.filter(record => lastByKey.get(record.key) !== record);
 
 if (!process.argv.includes('--fix')) {
     console.log(`${shadowed.length} shadowed entries across ${new Set(shadowed.map(item => item.key)).size} keys`);
+    for (const record of shadowed) {
+        const winner = lastByKey.get(record.key);
+        console.log(`- ${JSON.stringify(record.key)}: ${record.relativePath}:${record.index + 1} -> ${winner.relativePath}:${winner.index + 1}`);
+    }
     process.exitCode = shadowed.length > 0 ? 1 : 0;
 } else {
     for (const record of shadowed) record.lines[record.index] = null;

@@ -418,6 +418,7 @@ export interface ProjectPresetTemplate {
         categoryOrder: string[];
         hiddenFixedCategories: string[];
         deletedPresetCategories: string[];
+        presetSeedVersion?: number;
     };
     fieldTemplates?: Array<Record<string, unknown>>;
     /** Per-Library-category profile field names. */

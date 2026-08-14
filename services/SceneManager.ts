@@ -87,6 +87,8 @@ export class SceneManager implements ISceneStore {
     private plugin: SceneCardsPlugin;
     private scenes: Map<string, Scene> = new Map();
     private projects: Map<string, StoryLineProject> = new Map();
+    /** Project roots removed outside NarrativeLab. Writes beneath these paths stay blocked until a manifest is discovered again. */
+    private deletedProjectRoots = new Set<string>();
     private initialized = false;
     private initializePromise: Promise<void> | null = null;
     private _activeProject: StoryLineProject | null = null;
@@ -171,6 +173,71 @@ export class SceneManager implements ISceneStore {
     /** Get the currently active project (may be null) */
     get activeProject(): StoryLineProject | null {
         return this._activeProject;
+    }
+
+    /** True when a late autosave is still targeting a project removed from disk. */
+    isDeletedProjectPath(path: string): boolean {
+        const normalized = normalizePath(path);
+        for (const root of this.deletedProjectRoots) {
+            if (normalized === root || normalized.startsWith(`${root}/`)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Invalidate projects whose manifest was deleted, or whose containing folder
+     * disappeared. This method deliberately performs all state changes before its
+     * caller starts any asynchronous refresh, closing the autosave/recreate race.
+     */
+    handleProjectTreeDelete(
+        deletedPath: string,
+        isFolder: boolean,
+    ): { changed: boolean; activeProjectRemoved: boolean; removedProjectFiles: string[] } {
+        const deleted = normalizePath(deletedPath);
+        if (!deleted) return { changed: false, activeProjectRemoved: false, removedProjectFiles: [] };
+
+        const matches = (projectFile: string | undefined): boolean => {
+            if (!projectFile) return false;
+            const file = normalizePath(projectFile);
+            return file === deleted || (isFolder && file.startsWith(`${deleted}/`));
+        };
+
+        const removedProjectFiles = new Set<string>();
+        for (const [filePath, project] of this.projects) {
+            if (!matches(project.filePath)) continue;
+            removedProjectFiles.add(normalizePath(project.filePath));
+            this.projects.delete(filePath);
+        }
+        if (matches(this._activeProject?.filePath)) {
+            removedProjectFiles.add(normalizePath(this._activeProject!.filePath));
+        }
+        if (matches(this.plugin.settings.activeProjectFile)) {
+            removedProjectFiles.add(normalizePath(this.plugin.settings.activeProjectFile));
+        }
+        if (removedProjectFiles.size === 0) {
+            return { changed: false, activeProjectRemoved: false, removedProjectFiles: [] };
+        }
+
+        for (const projectFile of removedProjectFiles) {
+            this.deletedProjectRoots.add(deriveProjectFoldersFromFilePath(projectFile).baseFolder);
+        }
+
+        const activeProjectRemoved = matches(this._activeProject?.filePath)
+            || matches(this.plugin.settings.activeProjectFile);
+        if (activeProjectRemoved) {
+            this._activeProject = null;
+            this.plugin.settings.activeProjectFile = '';
+            this.scenes.clear();
+            this.initialized = false;
+            this.bumpVersion();
+            this.applyActiveProjectLocale();
+        }
+
+        return {
+            changed: true,
+            activeProjectRemoved,
+            removedProjectFiles: [...removedProjectFiles],
+        };
     }
 
     /**
@@ -439,6 +506,7 @@ export class SceneManager implements ISceneStore {
                 const project = this.parseProjectContent(content, filePath);
                 if (project) {
                     await this.detectLegacyFolders(project);
+                    this.deletedProjectRoots.delete(deriveProjectFoldersFromFilePath(filePath).baseFolder);
                     this.projects.set(filePath, project);
                 }
             } catch { /* file unreadable — skip */ }
@@ -524,6 +592,11 @@ export class SceneManager implements ISceneStore {
                 // the migration code has had a chance to move them to System/ files.
                 await this.plugin.saveData(this.plugin.settings);
             }
+        } else {
+            // A project removed through Explorer/Finder may not emit child-file
+            // events. Never retain its stale active reference after a rescan.
+            this._activeProject = null;
+            this.plugin.settings.activeProjectFile = '';
         }
 
         // Propagate the active project's language to wordcount tokenisation.
@@ -592,8 +665,8 @@ export class SceneManager implements ISceneStore {
             // Create project file inside the folder
             await this.app.vault.create(filePath, content);
 
-            // New projects start with only Characters and Locations. Optional
-            // categories and their folders are created when the user adds them.
+            // Create the fixed Library folders. Storyline's original preset
+            // categories are seeded on first project load and create their own folders.
             const libraryFolder = normalizePath(folders.codexFolder);
             await this.ensureFolder(libraryFolder);
             for (const folderName of Object.values(libraryFolders)) {
@@ -615,6 +688,7 @@ export class SceneManager implements ISceneStore {
                     categoryOrder: [],
                     hiddenFixedCategories: [...DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES],
                     deletedPresetCategories: [],
+                    presetSeedVersion: 0,
                 }, null, 2),
             );
 
@@ -678,6 +752,7 @@ export class SceneManager implements ISceneStore {
             };
 
             this.projects.set(filePath, project);
+            this.deletedProjectRoots.delete(baseFolder);
             new Notice(t('Project "{title}" created', { title }));
             return project;
         } catch (err) {
@@ -1061,6 +1136,12 @@ export class SceneManager implements ISceneStore {
      */
     async initialize(): Promise<void> {
         if (this.initializePromise) return this.initializePromise;
+        if (!this._activeProject) {
+            this.scenes.clear();
+            this.initialized = false;
+            this.bumpVersion();
+            return;
+        }
         this.initializePromise = (async () => {
         this.scenes.clear();
         const sceneFolder = this.getSceneFolder();

@@ -791,7 +791,7 @@ export class BoardView extends ItemView {
     }
 
     private isCorkboardTextEditingTarget(el: Element | null): boolean {
-        if (!el || !(el instanceof HTMLElement)) return false;
+        if (!el || !el.instanceOf(HTMLElement)) return false;
         if (!this.corkboardCanvasHostEl?.contains(el)) return false;
         return !!el.closest(
             'input, textarea, [contenteditable="true"], .cm-editor, .cm-content, .markdown-source-view',
@@ -1018,10 +1018,10 @@ export class BoardView extends ItemView {
         // racing NL vault.modify and surfacing Obsidian's UNKNOWN open notices).
         try {
             const crs = view?.canvas?.requestSave;
-            if (crs && typeof crs === 'object' && typeof crs.cancel === 'function') crs.cancel();
+            crs?.cancel?.();
             view?.canvas?.requestPushHistory?.cancel?.();
             const vrs = view?.requestSave;
-            if (vrs && typeof vrs === 'object' && typeof vrs.cancel === 'function') vrs.cancel();
+            vrs?.cancel?.();
         } catch { /* best effort */ }
 
         // Mark clean so EditableFileView unload won't flush a stale write.
@@ -1036,11 +1036,6 @@ export class BoardView extends ItemView {
         this.corkboardLastInteractAt = Date.now();
         await new Promise<void>(resolve => window.setTimeout(resolve, 80));
         return snapshot;
-    }
-
-    /** @deprecated use prepareCorkboardCanvasDetach — kept name for call sites / tests */
-    private async flushCorkboardCanvasSave(): Promise<void> {
-        await this.prepareCorkboardCanvasDetach();
     }
 
     private async syncNativeCorkboardFile(

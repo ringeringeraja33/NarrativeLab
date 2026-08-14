@@ -275,8 +275,6 @@ function registerNarrativeLabContextMenu(
                 order,
             }).appendTo(['contextMenu.mainArea', 'contextMenu.others']);
         };
-        append('narrativelab.plot-grid.link', zh ? '链接笔记…' : 'Link Note…', 'link-note', 1000);
-        append('narrativelab.plot-grid.unlink', zh ? '取消链接' : 'Unlink Note', 'unlink-note', 1001);
         append('narrativelab.plot-grid.to-notes', zh ? '转为笔记' : 'Convert to Notes', 'convert-to-notes', 1010);
         append('narrativelab.plot-grid.to-scene', zh ? '转为场景' : 'Convert to Scene', 'convert-to-scene', 1011);
         append('narrativelab.plot-grid.to-research', zh ? '转为调研' : 'Convert to Research', 'convert-to-research', 1012);

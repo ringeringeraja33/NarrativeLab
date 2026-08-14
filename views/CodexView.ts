@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { App, ItemView, WorkspaceLeaf, Menu, Modal, Setting, Notice, TFile, normalizePath } from 'obsidian';
+import { App, WorkspaceLeaf, Menu, Modal, Setting, Notice, TFile, normalizePath } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SceneManager } from '../services/SceneManager';
@@ -10,11 +10,15 @@ import { LOCATION_CATEGORIES, WORLD_CATEGORIES } from '../models/Location';
 import { CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE } from '../constants';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
 import { promptDeleteCategory, renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
+import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import {
     getLibraryContentMode,
     getRememberedLibraryCategory,
     rememberLibraryCategory,
+    renderLibraryModeToggle,
+    renderLibraryStoryGraphAction,
     renderLibraryStoryGraph,
     setLibraryContentMode,
     syncStoryGraphLibraryNodeTypes,
@@ -25,6 +29,7 @@ import { AddFieldModal } from '../components/AddFieldModal';
 import { attachTooltip } from '../components/Tooltip';
 import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
+import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
 import { openConfirmModal } from '../components/ConfirmModal';
 import {
     ARCHIVE_FILTER_HASHTAGS_KEY,
@@ -52,6 +57,7 @@ import {
     canRemoveBuiltinSection,
     filterRemovedBuiltinFields,
     getHiddenFieldKeys,
+    getLibraryProfileOrientation,
     isBuiltinSectionRemoved,
     isCoreProfileField,
     renderRemovedBuiltinFieldsToggle,
@@ -88,6 +94,7 @@ import {
     getLibraryTableSort,
     pageSlice,
     renderLibraryBrowseToolbar,
+    renderLibraryModeToolbar,
     renderLibraryTableHeader,
     setLibraryTableColumns,
     setLibraryTableSort,
@@ -156,7 +163,7 @@ function makeEntityFieldsDefinition(
  *
  * Characters and Locations tabs simply switch to their dedicated views.
  */
-export class CodexView extends ItemView {
+export class CodexView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private codexManager: CodexManager;
@@ -179,9 +186,9 @@ export class CodexView extends ItemView {
     /** Search filter text */
     private searchText: string = '';
     /** Bases-style Search control expanded (default on so the field stays discoverable) */
-    private browseSearchOpen = true;
+    private browseSearchOpen = false;
     /** Bases-style Filter chips panel open (default on) */
-    private browseFilterOpen = true;
+    private browseFilterOpen = false;
     /** Debounce handle for Library search typing */
     private _searchTimer: number | null = null;
     /** Windowed list scroller for large Library overviews */
@@ -210,12 +217,13 @@ export class CodexView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
+        this.ensureProjectBinding(sceneManager.activeProject?.filePath);
         this.codexManager = plugin.codexManager;
     }
 
     getViewType(): string { return CODEX_VIEW_TYPE; }
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.resolveProjectTitle(this.sceneManager.getProjects(), this.sceneManager.activeProject);
         return title ? `NarrativeLab — ${title}` : 'NarrativeLab';
     }
     getIcon(): string { return 'book-open'; }
@@ -377,36 +385,20 @@ export class CodexView extends ItemView {
         renderViewSwitcher(toolbar, CODEX_VIEW_TYPE, this.plugin, this.leaf);
 
         // Same tab bar placement as CharacterView / LocationView (outside content)
-        const profileAvailable = this.activeCategoryHasProfilePage();
-        const profileActive = this.isProfileOverviewMode();
-        const profileLabel = profileAvailable
-            ? t('{name} Profiles', {
-                name: resolveLibraryCategoryLabel(
-                    this.plugin,
-                    this.activeCategory,
-                    this.codexManager.getCategoryDef(this.activeCategory)?.label || this.activeCategory,
-                ),
-            })
-            : '';
         renderCodexCategoryTabs(container, {
             activeId: this.activeCategory || '',
             leaf: this.leaf,
             plugin: this.plugin,
-            showModeToggle: !this.selectedEntry,
-            onModeChange: () => {
-                this.profileOverviewCategoryId = null;
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            },
-            profileMode: !this.selectedEntry && profileAvailable
-                ? {
-                    label: profileLabel,
-                    active: profileActive,
-                    onClick: () => {
-                        this.profileOverviewCategoryId = this.activeCategory;
-                        setLibraryContentMode(this.plugin, 'profile');
+            renderFarRightActions: !this.selectedEntry
+                ? (actions) => renderLibraryStoryGraphAction(
+                    actions,
+                    getLibraryContentMode(this.plugin) === 'story-graph',
+                    () => {
+                        this.profileOverviewCategoryId = null;
+                        setLibraryContentMode(this.plugin, 'story-graph');
                         if (this.rootContainer) this.renderView(this.rootContainer);
                     },
-                }
+                )
                 : undefined,
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
@@ -437,6 +429,7 @@ export class CodexView extends ItemView {
         if (this.selectedEntry) {
             this.renderDetail(content);
         } else if (getLibraryContentMode(this.plugin) === 'story-graph' && !isMobile) {
+            renderLibraryModeToolbar(content, actions => this.renderOverviewModes(actions));
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -452,6 +445,7 @@ export class CodexView extends ItemView {
     private renderOverview(container: HTMLElement): void {
         container.empty();
         if (getLibraryContentMode(this.plugin) === 'browse' && !this.isProfileOverviewMode()) {
+            renderLibraryModeToolbar(container, actions => this.renderOverviewModes(actions));
             void renderNativeLibraryBase(
                 container,
                 this.plugin,
@@ -462,15 +456,13 @@ export class CodexView extends ItemView {
         }
 
         // ── Category heading (when a specific category is selected) ──
+        let overviewHeading: string | null = null;
         if (this.activeCategory) {
             const catDef = this.codexManager.getCategoryDef(this.activeCategory);
             if (catDef) {
-                container.createEl('h3', {
-                    cls: 'codex-overview-heading',
-                    text: catDef.id === UNCATEGORIZED_CATEGORY_ID
-                        ? t('Uncategorized entries')
-                        : catDef.label,
-                });
+                overviewHeading = catDef.id === UNCATEGORIZED_CATEGORY_ID
+                    ? t('Uncategorized entries')
+                    : t(catDef.label);
             }
         }
 
@@ -543,7 +535,15 @@ export class CodexView extends ItemView {
                 this.renderList(listContainer);
             },
             showLayoutToggle: !this.isProfileOverviewMode(),
+            renderTrailingActions: (actionsEl) => this.renderOverviewModes(actionsEl),
         });
+
+        if (overviewHeading) {
+            container.createEl('h3', {
+                cls: 'codex-overview-heading',
+                text: overviewHeading,
+            });
+        }
 
         // Keep list after chrome in DOM order
         container.appendChild(listContainer);
@@ -862,7 +862,41 @@ export class CodexView extends ItemView {
 
     private isProfileOverviewMode(): boolean {
         return getLibraryContentMode(this.plugin) === 'profile'
+            && this.profileOverviewCategoryId === this.activeCategory
             && this.activeCategoryHasProfilePage();
+    }
+
+    private renderOverviewModes(parent: HTMLElement): void {
+        const profileAvailable = this.activeCategoryHasProfilePage();
+        const profileLabel = profileAvailable
+            ? t('{name} Profiles', {
+                name: resolveLibraryCategoryLabel(
+                    this.plugin,
+                    this.activeCategory,
+                    this.codexManager.getCategoryDef(this.activeCategory)?.label || this.activeCategory,
+                ),
+            })
+            : '';
+        renderLibraryModeToggle(
+            parent,
+            this.plugin,
+            () => {
+                this.profileOverviewCategoryId = null;
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+            profileAvailable
+                ? {
+                    label: profileLabel,
+                    active: this.isProfileOverviewMode(),
+                    onClick: () => {
+                        this.profileOverviewCategoryId = this.activeCategory;
+                        setLibraryContentMode(this.plugin, 'profile');
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    },
+                }
+                : undefined,
+            { showStoryGraph: false },
+        );
     }
 
     private renderBrowseCards(container: HTMLElement, rows: CodexListRow[]): void {
@@ -1120,6 +1154,20 @@ export class CodexView extends ItemView {
 
         const draft: CodexEntry = { ...entry };
         this._pendingDraft = draft;
+        const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, catDef.id);
+        const horizontalProfile = profileOrientation === 'horizontal';
+
+        // Horizontal mode expands every section into a board column.
+        if (horizontalProfile) {
+            for (const category of catDef.categories) {
+                this.collapsedSections.delete(`${catDef.id}-${category.title}`);
+            }
+            this.collapsedSections.delete('custom-fields');
+            this.collapsedSections.delete('books');
+            for (const key of [...this.collapsedSections]) {
+                if (key.startsWith(`custom-section::codex::${catDef.id}::`)) this.collapsedSections.delete(key);
+            }
+        }
 
         // ── Header ─────────────────────────────────────
         const header = container.createDiv('codex-detail-header');
@@ -1135,6 +1183,16 @@ export class CodexView extends ItemView {
         });
 
         const headerRight = header.createDiv('codex-detail-header-right');
+
+        renderLibraryProfileOrientationToggle(headerRight, {
+            settings: this.plugin.settings,
+            categoryKey: catDef.id,
+            save: () => this.plugin.saveSettings(),
+            beforeChange: () => this.flushPendingSave(),
+            onChanged: () => {
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+        });
 
         mountLibraryEntityBoardAction(headerRight, {
             plugin: this.plugin,
@@ -1173,7 +1231,7 @@ export class CodexView extends ItemView {
         const typeLabel = container.createDiv('codex-detail-type-label');
         const typeIcon = typeLabel.createSpan({ cls: 'codex-detail-type-icon' });
         obsidian.setIcon(typeIcon, catDef.icon);
-        typeLabel.createSpan({ text: catDef.label.replace(/s$/, '') });
+        typeLabel.createSpan({ text: t(catDef.label).replace(/s$/, '') });
 
         // ── Portrait / image ───────────────────────────
         const portraitArea = container.createDiv('codex-detail-portrait');
@@ -1201,10 +1259,27 @@ export class CodexView extends ItemView {
             });
         });
 
-        // ── Layout: form + side ────────────────────────
-        const layout = container.createDiv('codex-detail-layout');
-        const formPanel = layout.createDiv('codex-detail-form');
+        // ── Layout: horizontal board columns, or stacked sections + side rail ──
+        container.toggleClass('codex-detail--board', horizontalProfile);
+        container.toggleClass('codex-detail--vertical', !horizontalProfile);
+        const layout = container.createDiv(
+            `codex-detail-layout ${horizontalProfile ? 'codex-detail-layout--board' : 'codex-detail-layout--vertical'}`,
+        );
+        const formPanel = layout.createDiv(
+            `codex-detail-form${horizontalProfile ? ' character-detail-board-track' : ' character-detail-vertical-track'}`,
+        );
         const sidePanel = layout.createDiv('codex-detail-side');
+
+        if (horizontalProfile) {
+            formPanel.addEventListener('wheel', (e) => {
+                if (e.deltaY === 0) return;
+                if (formPanel.scrollWidth <= formPanel.clientWidth + 1) return;
+                const inColumnBody = !!(e.target as HTMLElement | null)?.closest?.('.codex-section-body');
+                if (inColumnBody && !e.shiftKey) return;
+                e.preventDefault();
+                formPanel.scrollLeft += e.deltaY + e.deltaX;
+            }, { passive: false });
+        }
 
         // Blank custom profile pages: keep an editable name, then only user-built sections/fields.
         const isBlankCustomProfile = !catDef.builtIn && catDef.categories.length === 0;
@@ -1250,12 +1325,12 @@ export class CodexView extends ItemView {
                 renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
                 continue;
             }
-            this.renderFieldCategory(formPanel, category, draft, catDef);
+            this.renderFieldCategory(formPanel, category, draft, catDef, { board: horizontalProfile });
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
         // Custom fields section
-        this.renderCustomFields(formPanel, draft);
+        this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
 
         // "+ Add custom section" button at the bottom
         renderAddCustomSectionButton(formPanel, customHost);
@@ -1270,7 +1345,7 @@ export class CodexView extends ItemView {
         });
 
         // Books (series-ready)
-        this.renderBooksField(formPanel, draft);
+        this.renderBooksField(formPanel, draft, { board: horizontalProfile });
 
         // Side panel — gallery + notes + references
         this.renderGallerySection(sidePanel, draft);
@@ -1288,13 +1363,17 @@ export class CodexView extends ItemView {
         cat: CodexFieldCategory,
         draft: CodexEntry,
         catDef: CodexCategoryDef,
+        opts?: { board?: boolean },
     ): void {
+        const board = !!opts?.board;
         const sectionKey = `${catDef.id}-${cat.title}`;
-        const isCollapsed = this.collapsedSections.has(sectionKey);
+        const isCollapsed = board ? false : this.collapsedSections.has(sectionKey);
 
         const section = container.createDiv('codex-section');
+        if (board) section.addClass('character-board-column');
         const sectionHeader = section.createDiv('codex-section-header');
         sectionHeader.addEventListener('click', (e) => {
+            if (board) return;
             // Ignore clicks on the add-field button
             if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
             if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
@@ -1307,12 +1386,13 @@ export class CodexView extends ItemView {
         });
 
         const chevron = sectionHeader.createSpan({ cls: 'codex-section-chevron' });
+        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
 
         const catIcon = sectionHeader.createSpan({ cls: 'codex-section-icon' });
         obsidian.setIcon(catIcon, cat.icon);
 
-        sectionHeader.createSpan({ cls: 'codex-section-title', text: cat.title });
+        sectionHeader.createSpan({ cls: 'codex-section-title', text: t(cat.title) });
 
         attachBuiltinSectionRemoveControl(sectionHeader, {
             app: this.app,
@@ -1845,7 +1925,12 @@ export class CodexView extends ItemView {
      *  call-sites within this file keep working. */
     private static readonly CUSTOM_SECTION_KEY_SEP = CUSTOM_SECTION_KEY_SEP;
 
-    private renderCustomFields(container: HTMLElement, draft: CodexEntry): void {
+    private renderCustomFields(
+        container: HTMLElement,
+        draft: CodexEntry,
+        opts?: { board?: boolean },
+    ): void {
+        const board = !!opts?.board;
         // Merge per-category template fields into draft.custom so they appear
         // automatically for new entries (#115)
         const template = this.plugin.settings.codexCategoryFieldTemplates?.[draft.type] || [];
@@ -1857,25 +1942,29 @@ export class CodexView extends ItemView {
         }
 
         const section = container.createDiv('codex-section');
+        if (board) section.addClass('character-board-column');
         const header = section.createDiv('codex-section-header');
         const chevron = header.createSpan({ cls: 'codex-section-chevron' });
+        if (board) chevron.addClass('is-hidden');
 
         const sectionKey = 'custom-fields';
-        const isCollapsed = this.collapsedSections.has(sectionKey);
+        const isCollapsed = board ? false : this.collapsedSections.has(sectionKey);
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
 
         const icon = header.createSpan({ cls: 'codex-section-icon' });
         obsidian.setIcon(icon, 'plus-circle');
         header.createSpan({ cls: 'codex-section-title', text: t('Custom Fields') });
 
-        header.addEventListener('click', () => {
-            if (this.collapsedSections.has(sectionKey)) {
-                this.collapsedSections.delete(sectionKey);
-            } else {
-                this.collapsedSections.add(sectionKey);
-            }
-            if (this.rootContainer) this.renderView(this.rootContainer);
-        });
+        if (!board) {
+            header.addEventListener('click', () => {
+                if (this.collapsedSections.has(sectionKey)) {
+                    this.collapsedSections.delete(sectionKey);
+                } else {
+                    this.collapsedSections.add(sectionKey);
+                }
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            });
+        }
 
         if (isCollapsed) return;
 
@@ -2003,30 +2092,39 @@ export class CodexView extends ItemView {
 
     // ── Books (series-ready) ───────────────────────────
 
-    private renderBooksField(container: HTMLElement, draft: CodexEntry): void {
+    private renderBooksField(
+        container: HTMLElement,
+        draft: CodexEntry,
+        opts?: { board?: boolean },
+    ): void {
         const series = this.plugin.settings.series;
         if (!series) return; // Only show if project is part of a series
+        const board = !!opts?.board;
 
         const section = container.createDiv('codex-section');
+        if (board) section.addClass('character-board-column');
         const header = section.createDiv('codex-section-header');
         const chevron = header.createSpan({ cls: 'codex-section-chevron' });
+        if (board) chevron.addClass('is-hidden');
 
         const sectionKey = 'books';
-        const isCollapsed = this.collapsedSections.has(sectionKey);
+        const isCollapsed = board ? false : this.collapsedSections.has(sectionKey);
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
 
         const icon = header.createSpan({ cls: 'codex-section-icon' });
         obsidian.setIcon(icon, 'library-big');
         header.createSpan({ cls: 'codex-section-title', text: t('Appears In (Projects)') });
 
-        header.addEventListener('click', () => {
-            if (this.collapsedSections.has(sectionKey)) {
-                this.collapsedSections.delete(sectionKey);
-            } else {
-                this.collapsedSections.add(sectionKey);
-            }
-            if (this.rootContainer) this.renderView(this.rootContainer);
-        });
+        if (!board) {
+            header.addEventListener('click', () => {
+                if (this.collapsedSections.has(sectionKey)) {
+                    this.collapsedSections.delete(sectionKey);
+                } else {
+                    this.collapsedSections.add(sectionKey);
+                }
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            });
+        }
 
         if (isCollapsed) return;
 
@@ -2601,13 +2699,7 @@ export class CodexView extends ItemView {
                 ),
             },
             ...BUILTIN_CODEX_CATEGORIES
-                .filter(category =>
-                    !deletedPresetIds.has(category.id)
-                    && (
-                        state.enabled.has(category.id)
-                        || state.categories.some(item => item.id === category.id)
-                        || !!this.plugin.sceneManager.activeProject?.libraryFolders?.[category.id]
-                    ))
+                .filter(category => !deletedPresetIds.has(category.id))
                 .map(category => {
                     const override = state.categories.find(item => item.id === category.id);
                     return {
@@ -3473,7 +3565,11 @@ export class CodexView extends ItemView {
 
     private switchToView(viewType: string): void {
         try {
-            this.leaf.setViewState({ type: viewType, active: true, state: {} });
+            this.leaf.setViewState({
+                type: viewType,
+                active: true,
+                state: preservedNarrativeLabLeafState(this.leaf),
+            });
             this.plugin.app.workspace.revealLeaf(this.leaf);
         } catch {
             this.plugin.activateView(viewType);

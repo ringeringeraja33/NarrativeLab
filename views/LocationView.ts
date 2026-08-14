@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian event handlers intentionally launch async work and use compatibility assertions; matching enable at end of file */
-import { ButtonComponent, ItemView, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
+import { ButtonComponent, Menu, Modal, Notice, Setting, TFile, TextComponent, WorkspaceLeaf } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { LOCATION_VIEW_TYPE } from '../constants';
 import { Scene, resolveStatusCfg } from '../models/Scene';
@@ -24,11 +24,13 @@ import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
 import { t } from '../utils/i18n';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
     filterRemovedBuiltinFields,
     getHiddenFieldKeys,
+    getLibraryProfileOrientation,
     isBuiltinSectionRemoved,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
@@ -41,6 +43,7 @@ import { RenameConfirmModal } from '../components/RenameConfirmModal';
 import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
+import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
 import { renderNativeLibraryBase, disposeNativeLibraryBase } from '../components/NativeLibraryBase';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import {
@@ -53,12 +56,14 @@ import {
 import {
     getLibraryContentMode,
     rememberLibraryCategory,
+    renderLibraryStoryGraphAction,
     setLibraryContentMode,
     renderLibraryStoryGraph,
 } from '../components/LibraryModeBar';
 import type { StoryGraph } from '../components/StoryGraph';
 import {
     renderLibraryBrowseToolbar,
+    renderLibraryModeToolbar,
 } from '../components/LibraryBrowseLayout';
 
 /**
@@ -67,7 +72,7 @@ import {
  * Overview: collapsible tree showing worlds, their locations, orphan locations.
  * Detail: editable profile for a world or location with scene side-panel.
  */
-export class LocationView extends ItemView {
+export class LocationView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private sceneManager: SceneManager;
     private locationManager: LocationManager;
@@ -91,8 +96,8 @@ export class LocationView extends ItemView {
     private searchText: string = '';
     /** Locations-specific top-level interface: card profiles, native browse, or graph. */
     private locationOverviewMode: 'editor' | 'base' | 'story-graph';
-    private browseSearchOpen = true;
-    private browseFilterOpen = true;
+    private browseSearchOpen = false;
+    private browseFilterOpen = false;
     /** Precomputed location-name → scene count for the current overview render */
     private _locationSceneCounts: Map<string, number> | null = null;
     /** Current sort mode for the overview tree */
@@ -117,6 +122,7 @@ export class LocationView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
+        this.ensureProjectBinding(sceneManager.activeProject?.filePath);
         // Use the plugin's shared LocationManager so entries scanned from
         // Additional Source Folders survive view refreshes.
         this.locationManager = plugin.locationManager;
@@ -133,7 +139,7 @@ export class LocationView extends ItemView {
     getViewType(): string { return LOCATION_VIEW_TYPE; }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const title = this.resolveProjectTitle(this.sceneManager.getProjects(), this.sceneManager.activeProject);
         return title ? `NarrativeLab - ${title}` : 'NarrativeLab';
     }
 
@@ -181,9 +187,16 @@ export class LocationView extends ItemView {
             activeId: 'locations-pseudo',
             leaf: this.leaf,
             plugin: this.plugin,
-            showModeToggle: false,
-            renderBeforeModeActions: !this.selectedItem
-                ? (actions) => this.renderLocationOverviewModes(actions)
+            renderFarRightActions: !this.selectedItem
+                ? (actions) => renderLibraryStoryGraphAction(
+                    actions,
+                    this.locationOverviewMode === 'story-graph',
+                    () => {
+                        this.locationOverviewMode = 'story-graph';
+                        setLibraryContentMode(this.plugin, 'story-graph');
+                        if (this.rootContainer) this.renderView(this.rootContainer);
+                    },
+                )
                 : undefined,
             onCategoriesChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
@@ -200,6 +213,7 @@ export class LocationView extends ItemView {
         if (this.selectedItem) {
             this.renderDetail(content);
         } else if (this.locationOverviewMode === 'story-graph' && !isMobile) {
+            renderLibraryModeToolbar(content, actions => this.renderLocationOverviewModes(actions));
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -211,13 +225,12 @@ export class LocationView extends ItemView {
     private renderLocationOverviewModes(parent: HTMLElement): void {
         const toggle = parent.createDiv('library-mode-toggle character-mode-toggle');
         const modes: Array<{
-            id: 'editor' | 'base' | 'story-graph';
+            id: 'editor' | 'base';
             label: string;
             icon: string;
         }> = [
             { id: 'editor', label: 'Location Profiles', icon: 'map-pin' },
             { id: 'base', label: 'Browse', icon: 'layout-grid' },
-            { id: 'story-graph', label: 'Story Graph', icon: 'share-2' },
         ];
         for (const mode of modes) {
             const button = toggle.createEl('button', {
@@ -232,11 +245,7 @@ export class LocationView extends ItemView {
                 this.locationOverviewMode = mode.id;
                 setLibraryContentMode(
                     this.plugin,
-                    mode.id === 'story-graph'
-                        ? 'story-graph'
-                        : mode.id === 'base'
-                            ? 'browse'
-                            : 'profile',
+                    mode.id === 'base' ? 'browse' : 'profile',
                 );
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -261,6 +270,7 @@ export class LocationView extends ItemView {
     private renderOverview(container: HTMLElement): void {
         container.empty();
         if (this.locationOverviewMode === 'base') {
+            renderLibraryModeToolbar(container, actions => this.renderLocationOverviewModes(actions));
             void renderNativeLibraryBase(container, this.plugin, 'locations', this);
             return;
         }
@@ -306,6 +316,7 @@ export class LocationView extends ItemView {
             // Location Profiles is card-only; Browse (native Base) owns table/list.
             showLayoutToggle: false,
             onLayoutChange: () => this.renderOverview(container),
+            renderTrailingActions: (actionsEl) => this.renderLocationOverviewModes(actionsEl),
             appendExtra: (actionsEl) => {
                 const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
                 const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
@@ -702,12 +713,25 @@ export class LocationView extends ItemView {
         }
 
         const isWorld = item.type === 'world';
+        const layoutKey = isWorld ? 'world' : 'location';
+        const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, layoutKey);
+        const horizontalProfile = profileOrientation === 'horizontal';
         const draft: WorldOrLocation = { ...item, custom: { ...(item.custom || {}) }, universalFields: { ...(item.universalFields || {}) } };
         // Snapshot for undo — taken once when the detail view opens
         this.undoSnapshot = { ...item, custom: { ...(item.custom || {}) } };
         // Track original name for cascade rename detection
         this.originalItemName = item.name;
         this.originalItemType = item.type;
+
+        const categories = isWorld ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
+        if (horizontalProfile) {
+            for (const category of categories) this.collapsedSections.delete(category.title);
+            this.collapsedSections.delete('Custom Fields');
+            this.collapsedSections.delete('Hierarchy');
+            for (const key of [...this.collapsedSections]) {
+                if (key.startsWith('custom-section::location::')) this.collapsedSections.delete(key);
+            }
+        }
 
         // Header
         const header = container.createDiv('location-detail-header');
@@ -721,6 +745,16 @@ export class LocationView extends ItemView {
         });
 
         const headerRight = header.createDiv('location-detail-header-right');
+
+        renderLibraryProfileOrientationToggle(headerRight, {
+            settings: this.plugin.settings,
+            categoryKey: layoutKey,
+            save: () => this.plugin.saveSettings(),
+            beforeChange: () => this.flushPendingSave(),
+            onChanged: () => {
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
 
         mountLibraryEntityBoardAction(headerRight, {
             plugin: this.plugin,
@@ -802,14 +836,29 @@ export class LocationView extends ItemView {
             });
         });
 
-        // Layout: form + side panel
-        const layout = container.createDiv('location-detail-layout');
-        const formPanel = layout.createDiv('location-detail-form');
+        // Layout: horizontal board columns, or stacked sections + side rail
+        container.toggleClass('location-detail--board', horizontalProfile);
+        container.toggleClass('location-detail--vertical', !horizontalProfile);
+        const layout = container.createDiv(
+            `location-detail-layout ${horizontalProfile ? 'location-detail-layout--board' : 'location-detail-layout--vertical'}`,
+        );
+        const formPanel = layout.createDiv(
+            `location-detail-form${horizontalProfile ? ' character-detail-board-track' : ' character-detail-vertical-track'}`,
+        );
         const sidePanel = layout.createDiv('location-detail-side');
 
+        if (horizontalProfile) {
+            formPanel.addEventListener('wheel', (e) => {
+                if (e.deltaY === 0) return;
+                if (formPanel.scrollWidth <= formPanel.clientWidth + 1) return;
+                const inColumnBody = !!(e.target as HTMLElement | null)?.closest?.('.location-section-body');
+                if (inColumnBody && !e.shiftKey) return;
+                e.preventDefault();
+                formPanel.scrollLeft += e.deltaY + e.deltaX;
+            }, { passive: false });
+        }
+
         // Categories interleaved with user-defined custom sections (#120)
-        const categories = isWorld ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
-        const layoutKey = isWorld ? 'world' : 'location';
         const customHost = this.buildCustomSectionsHost(draft, categories.length);
         // Slot 0: any custom sections positioned above the first built-in.
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
@@ -819,18 +868,18 @@ export class LocationView extends ItemView {
                 renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
                 continue;
             }
-            this.renderCategory(formPanel, category, draft);
+            this.renderCategory(formPanel, category, draft, { board: horizontalProfile });
             // Slot i+1: any custom sections after the i-th built-in.
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
         // For locations: world & parent dropdowns
         if (!isWorld) {
-            this.renderLocationHierarchy(formPanel, draft as StoryLocation);
+            this.renderLocationHierarchy(formPanel, draft as StoryLocation, { board: horizontalProfile });
         }
 
         // Custom fields
-        this.renderCustomFields(formPanel, draft);
+        this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
 
         // "+ Add custom section" button at the bottom
         renderAddCustomSectionButton(formPanel, customHost);
@@ -862,17 +911,21 @@ export class LocationView extends ItemView {
     private renderCategory(
         parent: HTMLElement,
         category: LocationFieldCategory,
-        draft: WorldOrLocation
+        draft: WorldOrLocation,
+        opts?: { board?: boolean },
     ): void {
+        const board = !!opts?.board;
         const section = parent.createDiv('location-section');
-        const isCollapsed = this.collapsedSections.has(category.title);
+        if (board) section.addClass('character-board-column');
+        const isCollapsed = board ? false : this.collapsedSections.has(category.title);
 
         const sectionHeader = section.createDiv('location-section-header');
         const chevron = sectionHeader.createSpan('location-section-chevron');
+        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('location-section-icon');
         obsidian.setIcon(icon, category.icon);
-        sectionHeader.createSpan({ text: category.title });
+        sectionHeader.createSpan({ text: t(category.title) });
 
         const layoutKey = draft.type === 'world' ? 'world' : 'location';
         attachBuiltinSectionRemoveControl(sectionHeader, {
@@ -938,6 +991,7 @@ export class LocationView extends ItemView {
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
         sectionHeader.addEventListener('click', (e) => {
+            if (board) return;
             if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
             if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
             if (this.collapsedSections.has(category.title)) {
@@ -1008,7 +1062,7 @@ export class LocationView extends ItemView {
 
     private renderField(parent: HTMLElement, field: LocationFieldDef, draft: WorldOrLocation, sectionTitle?: string, builtInKeys?: string[]): void {
         const row = parent.createDiv('location-field-row');
-        const labelEl = row.createEl('label', { cls: 'location-field-label', text: field.label });
+        const labelEl = row.createEl('label', { cls: 'location-field-label', text: t(field.label) });
 
         // Up/down chevrons — reorder this built-in field within the section.
         if (sectionTitle && builtInKeys) {
@@ -1032,7 +1086,7 @@ export class LocationView extends ItemView {
 
         if (field.key === 'locationType') {
             const select = row.createEl('select', { cls: 'location-field-input dropdown' });
-            select.createEl('option', { text: field.placeholder, value: '' });
+            select.createEl('option', { text: t(field.placeholder), value: '' });
             // Built-in types
             for (const t of LOCATION_TYPES) {
                 const opt = select.createEl('option', { text: t, value: t.toLowerCase() });
@@ -1086,7 +1140,7 @@ export class LocationView extends ItemView {
         } else if (field.multiline) {
             const textarea = row.createEl('textarea', {
                 cls: 'location-field-textarea',
-                attr: { placeholder: field.placeholder, rows: '3' },
+                attr: { placeholder: t(field.placeholder), rows: '3' },
             });
             textarea.value = value;
             textarea.addEventListener('input', () => {
@@ -1097,7 +1151,7 @@ export class LocationView extends ItemView {
             const input = row.createEl('input', {
                 cls: 'location-field-input',
                 type: 'text',
-                attr: { placeholder: field.placeholder },
+                attr: { placeholder: t(field.placeholder) },
             });
             input.value = value;
             input.addEventListener('input', () => {
@@ -1375,10 +1429,17 @@ export class LocationView extends ItemView {
         }
     }
 
-    private renderLocationHierarchy(parent: HTMLElement, draft: StoryLocation): void {
+    private renderLocationHierarchy(
+        parent: HTMLElement,
+        draft: StoryLocation,
+        opts?: { board?: boolean },
+    ): void {
+        const board = !!opts?.board;
         const section = parent.createDiv('location-section');
+        if (board) section.addClass('character-board-column');
         const sectionHeader = section.createDiv('location-section-header');
         const chevron = sectionHeader.createSpan('location-section-chevron');
+        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, 'chevron-down');
         const icon = sectionHeader.createSpan('location-section-icon');
         obsidian.setIcon(icon, 'git-branch');
@@ -1417,13 +1478,20 @@ export class LocationView extends ItemView {
         });
     }
 
-    private renderCustomFields(parent: HTMLElement, draft: WorldOrLocation): void {
+    private renderCustomFields(
+        parent: HTMLElement,
+        draft: WorldOrLocation,
+        opts?: { board?: boolean },
+    ): void {
+        const board = !!opts?.board;
         const section = parent.createDiv('location-section');
+        if (board) section.addClass('character-board-column');
         const title = 'Custom Fields';
-        const isCollapsed = this.collapsedSections.has(title);
+        const isCollapsed = board ? false : this.collapsedSections.has(title);
 
         const sectionHeader = section.createDiv('location-section-header');
         const chevron = sectionHeader.createSpan('location-section-chevron');
+        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('location-section-icon');
         obsidian.setIcon(icon, 'plus-circle');
@@ -1432,17 +1500,19 @@ export class LocationView extends ItemView {
         const sectionBody = section.createDiv('location-section-body');
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
-        sectionHeader.addEventListener('click', () => {
-            if (this.collapsedSections.has(title)) {
-                this.collapsedSections.delete(title);
-                sectionBody.setCssStyles({ display: '' });
-                obsidian.setIcon(chevron, 'chevron-down');
-            } else {
-                this.collapsedSections.add(title);
-                sectionBody.setCssStyles({ display: 'none' });
-                obsidian.setIcon(chevron, 'chevron-right');
-            }
-        });
+        if (!board) {
+            sectionHeader.addEventListener('click', () => {
+                if (this.collapsedSections.has(title)) {
+                    this.collapsedSections.delete(title);
+                    sectionBody.setCssStyles({ display: '' });
+                    obsidian.setIcon(chevron, 'chevron-down');
+                } else {
+                    this.collapsedSections.add(title);
+                    sectionBody.setCssStyles({ display: 'none' });
+                    obsidian.setIcon(chevron, 'chevron-right');
+                }
+            });
+        }
 
         const renderAll = () => {
             sectionBody.empty();

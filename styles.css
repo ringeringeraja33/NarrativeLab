@@ -580,7 +580,7 @@ body.narrative-lab-theme-dark .plot-grid-root {
     align-items: center;
     gap: 4px;
     font-size: 0.85em;
-    cursor: pointer;
+    cursor: grab;
 }
 
 .sl-series-add-btn span svg {
@@ -4597,7 +4597,65 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .character-detail-header-right {
     display: flex;
     gap: 6px;
+    align-items: center;
 }
+
+/* Per-category archive profile direction (横式 / 竖式). */
+.library-profile-orientation {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-secondary);
+}
+
+button.library-profile-orientation-btn,
+.character-detail-header-right button.library-profile-orientation-btn,
+.location-detail-header-right button.library-profile-orientation-btn,
+.codex-detail-header-right button.library-profile-orientation-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 26px;
+    margin: 0;
+    padding: 3px 7px;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+button.library-profile-orientation-btn:hover,
+.character-detail-header-right button.library-profile-orientation-btn:hover,
+.location-detail-header-right button.library-profile-orientation-btn:hover,
+.codex-detail-header-right button.library-profile-orientation-btn:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+}
+
+button.library-profile-orientation-btn.is-active,
+button.library-profile-orientation-btn.is-active:hover,
+.character-detail-header-right button.library-profile-orientation-btn.is-active,
+.location-detail-header-right button.library-profile-orientation-btn.is-active,
+.codex-detail-header-right button.library-profile-orientation-btn.is-active {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+.library-profile-orientation-icon,
+.library-profile-orientation-icon svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 14px;
+}
+
 .character-delete-btn,
 .character-open-btn {
     background: none;
@@ -4613,7 +4671,12 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .character-open-btn:hover { color: var(--sc-accent); border-color: var(--sc-accent); }
 
 /* Detail shell: fill pane so the board can scroll horizontally */
-.character-detail--board {
+.character-detail--board,
+.character-detail--vertical,
+.codex-detail--board,
+.codex-detail--vertical,
+.location-detail--board,
+.location-detail--vertical {
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -4714,11 +4777,28 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     align-items: stretch;
 }
 
-.character-detail-layout--board {
+.character-detail-layout--board,
+.codex-detail-layout--board,
+.location-detail-layout--board {
     flex: 1;
     min-height: 0;
     gap: 14px;
     overflow: hidden;
+}
+
+/* Vertical = stacked accordion sections; side rail stays beside the form. */
+.character-detail-layout--vertical,
+.codex-detail-layout--vertical,
+.location-detail-layout--vertical {
+    flex: 1;
+    min-height: 0;
+    align-items: stretch;
+}
+
+.character-detail-vertical-track {
+    width: 100%;
+    min-width: 0;
+    overflow-y: auto;
 }
 
 .character-detail-form {
@@ -4740,7 +4820,9 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 }
 
 .character-detail-board-track > .character-section,
-.character-detail-board-track > .character-board-column {
+.character-detail-board-track > .character-board-column,
+.character-detail-board-track > .codex-section,
+.character-detail-board-track > .location-section {
     flex: 0 0 300px;
     width: 300px;
     max-width: min(340px, 86vw);
@@ -4758,12 +4840,16 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 }
 
 .character-detail-board-track > .character-section:first-of-type,
-.character-detail-board-track > .character-board-column:first-of-type {
+.character-detail-board-track > .character-board-column:first-of-type,
+.character-detail-board-track > .codex-section:first-of-type,
+.character-detail-board-track > .location-section:first-of-type {
     flex-basis: 320px;
     width: 320px;
 }
 
-.character-detail-board-track > .character-section > .character-section-header {
+.character-detail-board-track > .character-section > .character-section-header,
+.character-detail-board-track > .codex-section > .codex-section-header,
+.character-detail-board-track > .location-section > .location-section-header {
     position: sticky;
     top: 0;
     z-index: 1;
@@ -4772,30 +4858,43 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     border-bottom: 1px solid var(--background-modifier-border);
 }
 
-.character-detail-board-track > .character-section > .character-section-body {
+.character-detail-board-track > .character-section > .character-section-body,
+.character-detail-board-track > .codex-section > .codex-section-body,
+.character-detail-board-track > .location-section > .location-section-body {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
     padding: 10px 12px 14px;
+    display: block !important;
 }
 
 .character-detail-board-track .character-section-chevron.is-hidden,
-.character-detail-board-track .character-section-chevron {
+.character-detail-board-track .character-section-chevron,
+.character-detail-board-track .codex-section-chevron.is-hidden,
+.character-detail-board-track .codex-section-chevron,
+.character-detail-board-track .location-section-chevron.is-hidden,
+.character-detail-board-track .location-section-chevron {
     display: none;
 }
 
-.character-detail-board-track .character-field-row {
+.character-detail-board-track .character-field-row,
+.character-detail-board-track .codex-field-row,
+.character-detail-board-track .location-field-row {
     margin-bottom: 8px;
 }
 
-.character-detail-board-track .character-field-label {
+.character-detail-board-track .character-field-label,
+.character-detail-board-track .codex-field-label,
+.character-detail-board-track .location-field-label {
     margin-bottom: 2px;
     text-transform: none;
     letter-spacing: 0;
     font-size: 0.8em;
 }
 
-.character-detail-board-track .character-field-textarea {
+.character-detail-board-track .character-field-textarea,
+.character-detail-board-track .codex-field-textarea,
+.character-detail-board-track .location-field-textarea {
     min-height: 72px;
 }
 
@@ -4818,7 +4917,9 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     flex-direction: column;
 }
 
-.character-detail-layout--board .character-detail-side {
+.character-detail-layout--board .character-detail-side,
+.codex-detail-layout--board .codex-detail-side,
+.location-detail-layout--board .location-detail-side {
     width: 292px;
     max-height: 100%;
     overflow-y: auto;
@@ -8203,6 +8304,19 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     font-weight: 600;
     box-shadow: inset 0 2px 0 var(--interactive-accent);
 }
+.concept-grid-page-tab.is-dragging {
+    cursor: grabbing;
+    opacity: 0.45;
+}
+.concept-grid-page-tab.is-drop-before {
+    box-shadow: inset 3px 0 0 var(--interactive-accent);
+}
+.concept-grid-page-tab.is-drop-after {
+    box-shadow: inset -3px 0 0 var(--interactive-accent);
+}
+.concept-grid-page-tab:has(.concept-grid-page-tab-rename) {
+    cursor: text;
+}
 .concept-grid-page-tab-label {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -10669,6 +10783,104 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     padding: 4px 14px 14px;
 }
 
+/* Plotline color scheme — compact equal-width card grid */
+.sl-scheme-picker {
+    margin-top: 2px;
+}
+.sl-scheme-group-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin: 10px 0 6px;
+}
+.sl-scheme-picker > .sl-scheme-group-label:first-child {
+    margin-top: 4px;
+}
+.sl-scheme-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+    gap: 6px;
+    margin-bottom: 8px;
+    align-items: stretch;
+}
+.sl-scheme-grid.is-single {
+    grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+    max-width: 140px;
+}
+.sl-scheme-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 3px;
+    box-sizing: border-box;
+    min-width: 0;
+    padding: 6px 7px 7px;
+    border: 1.5px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: transparent;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.sl-scheme-card:hover {
+    background: var(--background-modifier-hover);
+}
+.sl-scheme-card.is-active {
+    border-color: var(--interactive-accent);
+    background: var(--background-modifier-hover);
+}
+.sl-scheme-card:focus-visible {
+    outline: 2px solid var(--interactive-accent);
+    outline-offset: 1px;
+}
+.sl-scheme-card-name {
+    width: 100%;
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sl-scheme-card-hint {
+    width: 100%;
+    min-height: 2.4em;
+    font-size: 9px;
+    line-height: 1.2;
+    color: var(--text-faint);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+}
+.sl-scheme-swatches {
+    display: flex;
+    flex-wrap: nowrap;
+    justify-content: center;
+    gap: 2px;
+    margin-top: 1px;
+}
+.sl-scheme-swatch {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.sl-scheme-card-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+.sl-scheme-card-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
 /* DOCX export settings (collapsible, framed) */
 .story-line-docx-settings {
     margin: 12px 0;
@@ -12432,6 +12644,11 @@ body /* Clamp title on mobile too, in case it's very long */
     overflow-y: auto;
     display: block;
 }
+.story-line-codex-content.codex-detail--board,
+.story-line-codex-content.codex-detail--vertical {
+    display: flex;
+    overflow: hidden;
+}
 .story-line-codex-content:has(> .library-native-base-embed),
 .story-line-character-content:has(> .library-native-base-embed),
 .story-line-location-content:has(> .library-native-base-embed) {
@@ -12545,6 +12762,24 @@ body /* Clamp title on mobile too, in case it's very long */
 }
 .library-browse-toolbar .library-layout-toggle {
     margin-left: auto;
+}
+.library-browse-mode-actions {
+    display: inline-flex;
+    align-items: stretch;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+.library-browse-mode-actions .library-mode-toggle {
+    margin-left: 0;
+}
+.library-browse-mode-actions .character-mode-btn span:first-child {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.library-browse-mode-actions .character-mode-btn svg {
+    width: 14px;
+    height: 14px;
 }
 .library-browse-actions .codex-book-filter {
     margin-left: 4px;
@@ -12883,19 +13118,37 @@ body /* Clamp title on mobile too, in case it's very long */
     box-sizing: border-box;
 }
 
-/* Sit immediately before Uncategorized (not pinned to the far right). */
+/* Divider before the left-aligned category-management group. */
 .codex-category-tabs .codex-category-actions {
-    margin-left: 4px;
+    margin-left: 8px;
     margin-right: 0;
+    padding-left: 8px;
+    border-left: 1px solid var(--background-modifier-border);
     display: inline-flex;
     align-items: stretch;
     align-self: stretch;
     flex-shrink: 0;
     gap: 2px;
 }
-.codex-category-tabs .library-mode-toggle {
-    margin-left: 0;
+.codex-category-far-actions {
+    display: inline-flex;
+    align-items: stretch;
     align-self: stretch;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+.codex-category-far-actions .character-mode-btn {
+    min-height: 30px;
+    margin: 0 0 -1px;
+}
+.codex-category-far-actions .character-mode-btn span:first-child {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+.codex-category-far-actions .character-mode-btn svg {
+    width: 14px;
+    height: 14px;
 }
 .codex-category-actions .character-mode-btn span:first-child {
     display: inline-flex;
@@ -12944,9 +13197,13 @@ body /* Clamp title on mobile too, in case it's very long */
     box-shadow: inset -3px 0 0 var(--interactive-accent);
 }
 .codex-tab.codex-uncategorized-tab {
-    margin-left: 8px;
-    padding-left: 12px;
-    border-left: 1px solid var(--background-modifier-border);
+    margin-left: 0;
+    padding-left: 10px;
+    border-left: none;
+}
+.codex-category-actions .character-mode-btn {
+    min-height: 30px;
+    margin: 0 0 -1px;
 }
 .codex-tab.codex-tab:hover {
     background: none;
@@ -13139,6 +13396,7 @@ body /* Clamp title on mobile too, in case it's very long */
 .codex-detail-header-right {
     display: flex;
     gap: 8px;
+    align-items: center;
 }
 .codex-detail-action-btn.codex-detail-action-btn {
     background: none;
@@ -13199,21 +13457,40 @@ body /* Clamp title on mobile too, in case it's very long */
 
 /* Layout: form + side panel */
 .codex-detail-layout {
+    display: flex;
+    gap: 20px;
+    align-items: stretch;
+}
+.codex-detail-layout--board {
+    display: flex;
+}
+.codex-detail-layout--vertical {
     display: grid;
     grid-template-columns: 1fr 280px;
-    gap: 20px;
 }
 @media (max-width: 700px) {
-    .codex-detail-layout {
-        grid-template-columns: 1fr;
+    .codex-detail-layout,
+    .codex-detail-layout--vertical,
+    .codex-detail-layout--board {
+        display: flex;
+        flex-direction: column;
+    }
+    .codex-detail-layout--board .codex-detail-side,
+    .location-detail-layout--board .location-detail-side {
+        width: 100%;
+        max-height: none;
+        padding-left: 0;
+        border-left: none;
     }
 }
 
-.codex-detail-form { min-width: 0; }
+.codex-detail-form { min-width: 0; flex: 1; }
 .codex-detail-side {
     min-width: 0;
     display: flex;
     flex-direction: column;
+    width: 280px;
+    flex-shrink: 0;
 }
 
 /* ?? Field sections ??????????????????????????????????? */

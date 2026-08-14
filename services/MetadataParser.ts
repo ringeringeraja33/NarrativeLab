@@ -281,7 +281,7 @@ export class MetadataParser {
         const content = await app.vault.read(live);
         const frontmatter = this.extractFrontmatter(content) || {};
         const body = this.extractBody(content);
-        const bodyChanging = Object.prototype.hasOwnProperty.call(updates, 'body');
+        const bodyChanging = 'body' in updates;
 
         // Apply updates to frontmatter
         for (const [key, value] of Object.entries(updates)) {

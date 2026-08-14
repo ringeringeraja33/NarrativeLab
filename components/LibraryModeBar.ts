@@ -158,6 +158,7 @@ export function renderLibraryModeToggle(
     plugin: SceneCardsPlugin,
     onChange: () => void,
     profileMode?: LibraryProfileModeAction,
+    options?: { showStoryGraph?: boolean },
 ): HTMLElement | null {
     if (isMobile && !profileMode) return null;
 
@@ -191,7 +192,7 @@ export function renderLibraryModeToggle(
         onChange();
     });
 
-    if (!isMobile) {
+    if (!isMobile && options?.showStoryGraph !== false) {
         const graphBtn = toggle.createEl('button', {
             cls: `character-mode-btn ${mode === 'story-graph' ? 'active' : ''}`,
             attr: { 'data-mode': 'story-graph', 'aria-label': t('Story Graph') },
@@ -207,6 +208,27 @@ export function renderLibraryModeToggle(
     }
 
     return toggle;
+}
+
+/** Render the Story Graph action independently in the category row. */
+export function renderLibraryStoryGraphAction(
+    parent: HTMLElement,
+    active: boolean,
+    onClick: () => void,
+): HTMLButtonElement | null {
+    if (isMobile) return null;
+    const button = parent.createEl('button', {
+        cls: `character-mode-btn library-story-graph-tab ${active ? 'active' : ''}`,
+        attr: { type: 'button', 'data-mode': 'story-graph', 'aria-label': t('Story Graph') },
+    });
+    const icon = button.createSpan();
+    obsidian.setIcon(icon, 'share-2');
+    button.createSpan({ text: t(' Story Graph') });
+    button.addEventListener('click', () => {
+        if (active) return;
+        onClick();
+    });
+    return button;
 }
 
 function storyGraphLayoutKey(plugin: SceneCardsPlugin): string {

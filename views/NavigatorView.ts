@@ -13,6 +13,7 @@ import { Scene, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import type { ProjectDraft, StoryLineProject } from '../models/StoryLineProject';
 import { RESEARCH_TYPE_CONFIG, type ResearchPost } from '../models/Research';
 import { t } from '../utils/i18n';
+import { showProjectNavigatorMenu } from '../components/ProjectNavigatorMenu';
 
 /**
  * Sort modes available in the navigator.
@@ -20,6 +21,7 @@ import { t } from '../utils/i18n';
 type NavSortMode = 'reading' | 'chapter' | 'chronological' | 'status' | 'recent' | 'words' | 'title';
 const UNASSIGNED_PLOTLINE_FILTER = '__narrative_lab_unassigned__';
 const SCENE_DRAG_MIME = 'application/x-narrative-lab-scene';
+const REMEMBERED_PRIMARY_SECTIONS = ['notes', 'scenes'] as const;
 
 const SORT_LABELS: Record<NavSortMode, string> = {
     reading: 'Reading order (by act)',
@@ -59,7 +61,7 @@ export class NavigatorView extends ItemView {
     private collapsedActs: Set<string> = new Set();
     private collapsedChapters: Set<string> = new Set();
     /** Collapsed binder nodes: project:{path} | plotlines | drafts | scenes | draft:{id} | act:… | chapter:… */
-    private collapsedNodes: Set<string> = new Set(['plotlines']);
+    private collapsedNodes: Set<string> = new Set(['plotlines', 'research']);
     /** Active scene drag path — browsers hide dataTransfer.getData() during dragover. */
     private draggingScenePath: string | null = null;
 
@@ -91,6 +93,7 @@ export class NavigatorView extends ItemView {
     }
 
     async onOpen(): Promise<void> {
+        this.restorePrimarySectionState();
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
         container.addClass('sl-navigator');
@@ -202,9 +205,30 @@ export class NavigatorView extends ItemView {
         return this.collapsedNodes.has(key);
     }
 
+    /** Restore Notes / Scenes, while Research always starts collapsed on view open. */
+    private restorePrimarySectionState(): void {
+        const remembered = new Set(this.plugin.settings.navigatorCollapsedSections ?? []);
+        for (const section of REMEMBERED_PRIMARY_SECTIONS) {
+            this.collapsedNodes.delete(section);
+            if (remembered.has(section)) this.collapsedNodes.add(section);
+        }
+        this.collapsedNodes.add('research');
+    }
+
+    private persistPrimarySectionState(key: string): void {
+        if (key !== 'notes' && key !== 'scenes') return;
+        const remembered = new Set(this.plugin.settings.navigatorCollapsedSections ?? []);
+        if (this.collapsedNodes.has(key)) remembered.add(key);
+        else remembered.delete(key);
+        this.plugin.settings.navigatorCollapsedSections = REMEMBERED_PRIMARY_SECTIONS
+            .filter(section => remembered.has(section));
+        void this.plugin.saveSettings();
+    }
+
     private toggleNode(key: string): void {
         if (this.collapsedNodes.has(key)) this.collapsedNodes.delete(key);
         else this.collapsedNodes.add(key);
+        this.persistPrimarySectionState(key);
         this.renderList();
     }
 
@@ -325,6 +349,9 @@ export class NavigatorView extends ItemView {
                 depth: 0,
                 expandable: isActive,
                 onActivate: () => { void this.switchToProject(project); },
+                onContextMenu: (event) => {
+                    showProjectNavigatorMenu(this.plugin, project, event);
+                },
                 trailing: (el) => {
                     const open = el.createSpan('sl-nav-folder-action is-always sl-nav-project-open');
                     setIcon(open, 'folder-open');
@@ -333,6 +360,14 @@ export class NavigatorView extends ItemView {
                         event.preventDefault();
                         event.stopPropagation();
                         void this.openProjectFromNavigator(project);
+                    });
+                    const more = el.createSpan('sl-nav-folder-action is-always sl-nav-project-more');
+                    setIcon(more, 'ellipsis');
+                    attachTooltip(more, t('Project menu'));
+                    more.addEventListener('click', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        showProjectNavigatorMenu(this.plugin, project, event);
                     });
                 },
             });
@@ -912,6 +947,7 @@ export class NavigatorView extends ItemView {
             });
             this.selectedScenePath = file.path;
             this.collapsedNodes.delete('notes');
+            this.persistPrimarySectionState('notes');
             this.plugin.refreshOpenViews();
             await this.app.workspace.getLeaf('tab').openFile(file, {
                 state: { mode: 'source', source: false },
@@ -973,6 +1009,7 @@ export class NavigatorView extends ItemView {
                 }
                 this.selectedScenePath = file.path;
                 this.collapsedNodes.delete('scenes');
+                this.persistPrimarySectionState('scenes');
                 this.plugin.refreshOpenViews();
                 if (openAfter) {
                     await this.app.workspace.getLeaf('tab').openFile(file, {

@@ -4,7 +4,7 @@ import { normalizePath, type WorkspaceLeaf } from 'obsidian';
 export const NARRATIVE_LAB_PROJECT_FILE_STATE_KEY = 'narrativeLabProjectFile';
 
 export function getLeafNarrativeLabProjectFile(leaf: WorkspaceLeaf): string | null {
-    const state = leaf.getViewState()?.state as Record<string, unknown> | undefined;
+    const state = leaf.getViewState()?.state;
     const raw = state?.[NARRATIVE_LAB_PROJECT_FILE_STATE_KEY];
     if (typeof raw === 'string' && raw.trim()) return normalizePath(raw);
     // Board (and any future) views keep an in-memory binding that can be ahead

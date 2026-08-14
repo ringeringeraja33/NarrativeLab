@@ -47,6 +47,55 @@ const BUILTIN_LIBRARY_ICONS: Record<string, string> = {
     ...Object.fromEntries(BUILTIN_CODEX_CATEGORIES.map(c => [c.id, c.icon])),
 };
 
+/** Version 1 restores Storyline's six original Codex presets to each project once. */
+export const STORYLINE_PRESET_SEED_VERSION = 1;
+
+/**
+ * Restore the original Storyline preset categories for projects created before
+ * they became opt-in. Explicitly deleted presets keep their tombstones and are
+ * never recreated. The version marker means later user hide/show choices stick.
+ */
+export function seedStorylinePresetCategories(plugin: SceneCardsPlugin): boolean {
+    if ((plugin.settings.codexPresetSeedVersion || 0) >= STORYLINE_PRESET_SEED_VERSION) {
+        return false;
+    }
+
+    const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
+    const enabled = new Set(plugin.settings.codexEnabledCategories || []);
+    const order = [...(plugin.settings.libraryCategoryOrder || [])];
+    const categories = plugin.settings.codexCustomCategories || [];
+
+    for (const fixedId of ['characters', 'locations']) {
+        if (!order.includes(fixedId)) order.push(fixedId);
+    }
+    for (const preset of BUILTIN_CODEX_CATEGORIES) {
+        if (deleted.has(preset.id)) continue;
+        enabled.add(preset.id);
+        if (!order.includes(preset.id)) order.push(preset.id);
+        const existing = categories.find(category => category.id === preset.id);
+        if (existing) {
+            existing.preset = true;
+            if (!existing.label?.trim()) existing.label = preset.label;
+            if (!existing.icon) existing.icon = preset.icon;
+        } else {
+            categories.push({
+                id: preset.id,
+                label: preset.label,
+                icon: preset.icon,
+                preset: true,
+                hasProfilePage: true,
+                showInSidebar: true,
+            });
+        }
+    }
+
+    plugin.settings.codexEnabledCategories = Array.from(enabled);
+    plugin.settings.codexCustomCategories = categories;
+    plugin.settings.libraryCategoryOrder = order;
+    plugin.settings.codexPresetSeedVersion = STORYLINE_PRESET_SEED_VERSION;
+    return true;
+}
+
 /** True when `label` is only a language seed of the English default (not a user rename). */
 export function isSeedLibraryCategoryLabel(categoryId: string, label: string): boolean {
     const trimmed = label.trim();
@@ -120,7 +169,7 @@ export function resolveLibraryCategoryLabel(
     }
     const english = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId] || fallback;
     if (!english) return fallback || categoryId;
-    return english;
+    return t(english);
 }
 
 function setLibraryCategoryDisplayMetadata(
@@ -543,7 +592,13 @@ export async function renameLibraryCategory(
         return false;
     }
 
-    const newName = sanitizeLibraryFolderName(rawNewName);
+    // Localized built-in labels are display aliases, not an instruction to
+    // rename stable English vault folders. A user-edited non-seed name still
+    // performs the normal folder rename.
+    const seededFolder = DEFAULT_LIBRARY_FOLDER_NAMES[categoryId];
+    const newName = seededFolder && isSeedLibraryCategoryLabel(categoryId, rawNewName)
+        ? seededFolder
+        : sanitizeLibraryFolderName(rawNewName);
     if (!newName) {
         new Notice(t('Invalid folder name'));
         return false;
@@ -885,6 +940,7 @@ export type LibraryCategorySettingsPayload = {
     categoryOrder: string[];
     hiddenFixedCategories: string[];
     deletedPresetCategories: string[];
+    presetSeedVersion?: number;
 };
 
 const FIXED_LIBRARY_FOLDER_IDS = new Set(['characters', 'locations']);
@@ -896,6 +952,7 @@ export function emptyLibraryCategorySettings(): LibraryCategorySettingsPayload {
         categoryOrder: [],
         hiddenFixedCategories: [],
         deletedPresetCategories: [],
+        presetSeedVersion: 0,
     };
 }
 
@@ -908,6 +965,7 @@ export function readLibraryCategorySettings(
         categoryOrder: [...(settings.libraryCategoryOrder || [])],
         hiddenFixedCategories: [...(settings.libraryHiddenFixedCategories || [])],
         deletedPresetCategories: [...(settings.codexDeletedPresetCategories || [])],
+        presetSeedVersion: settings.codexPresetSeedVersion || 0,
     };
 }
 
@@ -920,6 +978,7 @@ export function applyLibraryCategorySettings(
     plugin.settings.libraryCategoryOrder = [...(payload.categoryOrder || [])];
     plugin.settings.libraryHiddenFixedCategories = [...(payload.hiddenFixedCategories || [])];
     plugin.settings.codexDeletedPresetCategories = [...(payload.deletedPresetCategories || [])];
+    plugin.settings.codexPresetSeedVersion = payload.presetSeedVersion || 0;
 }
 
 function parseLibraryCategorySettings(raw: Record<string, unknown>): LibraryCategorySettingsPayload | null {
@@ -928,7 +987,8 @@ function parseLibraryCategorySettings(raw: Record<string, unknown>): LibraryCate
         || 'customCategories' in raw
         || 'categoryOrder' in raw
         || 'hiddenFixedCategories' in raw
-        || 'deletedPresetCategories' in raw;
+        || 'deletedPresetCategories' in raw
+        || 'presetSeedVersion' in raw;
     if (!hasAny) return null;
 
     const customRaw = Array.isArray(raw.customCategories) ? raw.customCategories : [];
@@ -955,6 +1015,9 @@ function parseLibraryCategorySettings(raw: Record<string, unknown>): LibraryCate
         categoryOrder: asStringArray(raw.categoryOrder),
         hiddenFixedCategories: asStringArray(raw.hiddenFixedCategories),
         deletedPresetCategories: asStringArray(raw.deletedPresetCategories),
+        presetSeedVersion: Number.isFinite(Number(raw.presetSeedVersion))
+            ? Math.max(0, Math.floor(Number(raw.presetSeedVersion)))
+            : 0,
     };
 }
 

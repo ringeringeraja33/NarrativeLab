@@ -468,6 +468,18 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /projectChanged/);
 });
 
+test('worksheet tabs support persistent drag ordering and reliable inline rename', async () => {
+    const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
+    assert.match(view, /draggable: 'true'/);
+    assert.match(view, /addEventListener\('dragstart'/);
+    assert.match(view, /addEventListener\('drop'/);
+    assert.match(view, /reorderPage\(draggedPageId, page\.id, placeAfter\)/);
+    assert.match(view, /this\.document\.pages = remaining/);
+    assert.match(view, /renderGrid\(\{ forcePush: true \}\)/);
+    assert.match(view, /updatePageTabSelection/);
+    assert.match(view, /labelEl\.ownerDocument\.createElement\('input'\)/);
+});
+
 test('lazy Univer host receives Obsidian UI through the main bundle', async () => {
     const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
     assert.doesNotMatch(host, /from ['"]obsidian['"]/);

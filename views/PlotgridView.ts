@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, Menu, Modal, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
+import { WorkspaceLeaf, Menu, Modal, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
 import * as obsidian from 'obsidian';
 import {
     CellData,
@@ -38,6 +38,7 @@ import {
     installObsidianMarkdownShortcuts,
     type MarkdownInputAction,
 } from '../utils/markdownInput';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 // Use the shared view-type constant from `constants.ts` so the ViewSwitcher
 // can correctly detect and style the active tab.
@@ -52,7 +53,7 @@ function makeId(prefix = '') {
     return prefix + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 }
 
-export class PlotgridView extends ItemView {
+export class PlotgridView extends ProjectBoundItemView {
     plugin: SceneCardsPlugin | undefined;
     /** Full multi-page document persisted to plotgrid.json */
     // eslint-disable-next-line obsidianmd/prefer-active-doc -- Concept Grid data model, not the browser Document.
@@ -100,6 +101,7 @@ export class PlotgridView extends ItemView {
     constructor(leaf: WorkspaceLeaf, plugin?: SceneCardsPlugin) {
         super(leaf);
         this.plugin = plugin;
+        this.ensureProjectBinding(plugin?.sceneManager?.activeProject?.filePath);
     }
 
     getViewType(): string {
@@ -107,7 +109,8 @@ export class PlotgridView extends ItemView {
     }
 
     getDisplayText(): string {
-        const title = this.plugin?.sceneManager?.activeProject?.title;
+        const manager = this.plugin?.sceneManager;
+        const title = this.resolveProjectTitle(manager?.getProjects() ?? [], manager?.activeProject);
         return title ? `NarrativeLab - ${title}` : t('Concept Grid');
     }
 
@@ -635,6 +638,13 @@ export class PlotgridView extends ItemView {
 
         const list = this.sidebarEl.createDiv('concept-grid-page-list');
         let activeTab: HTMLElement | null = null;
+        let draggedPageId: string | null = null;
+        let blockClickAfterDrag = false;
+        const clearDropIndicators = (): void => {
+            list.querySelectorAll('.is-drop-before, .is-drop-after').forEach(el => {
+                el.removeClass('is-drop-before', 'is-drop-after');
+            });
+        };
 
         this.document.pages.forEach((page, index) => {
             const isActive = page.id === this.document.activePageId;
@@ -645,6 +655,7 @@ export class PlotgridView extends ItemView {
                     'aria-pressed': String(isActive),
                     title: page.title,
                     'data-page-id': page.id,
+                    draggable: 'true',
                 },
             });
             tab.createSpan({
@@ -652,7 +663,12 @@ export class PlotgridView extends ItemView {
                 text: page.title || `${t('Page')} ${index + 1}`,
             });
 
-            tab.addEventListener('click', () => {
+            tab.addEventListener('click', (event) => {
+                if (blockClickAfterDrag) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return;
+                }
                 if (page.id !== this.document.activePageId) this.switchPage(page.id);
             });
             tab.addEventListener('dblclick', (evt) => {
@@ -672,6 +688,45 @@ export class PlotgridView extends ItemView {
                     item.onClick(() => this.deletePage(page.id));
                 });
                 menu.showAtMouseEvent(evt);
+            });
+            tab.addEventListener('dragstart', (event) => {
+                if (tab.querySelector('.concept-grid-page-tab-rename')) {
+                    event.preventDefault();
+                    return;
+                }
+                draggedPageId = page.id;
+                blockClickAfterDrag = true;
+                tab.addClass('is-dragging');
+                if (event.dataTransfer) {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', page.id);
+                }
+            });
+            tab.addEventListener('dragover', (event) => {
+                if (!draggedPageId || draggedPageId === page.id) return;
+                event.preventDefault();
+                if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+                clearDropIndicators();
+                const rect = tab.getBoundingClientRect();
+                tab.addClass(event.clientX < rect.left + rect.width / 2
+                    ? 'is-drop-before'
+                    : 'is-drop-after');
+            });
+            tab.addEventListener('drop', (event) => {
+                if (!draggedPageId || draggedPageId === page.id) return;
+                event.preventDefault();
+                event.stopPropagation();
+                const rect = tab.getBoundingClientRect();
+                const placeAfter = event.clientX >= rect.left + rect.width / 2;
+                this.reorderPage(draggedPageId, page.id, placeAfter);
+                draggedPageId = null;
+                clearDropIndicators();
+            });
+            tab.addEventListener('dragend', () => {
+                draggedPageId = null;
+                tab.removeClass('is-dragging');
+                clearDropIndicators();
+                window.setTimeout(() => { blockClickAfterDrag = false; }, 0);
             });
 
             if (isActive) activeTab = tab;
@@ -699,13 +754,51 @@ export class PlotgridView extends ItemView {
         if (!this.document.pages.some(p => p.id === pageId)) return;
         this.document.activePageId = pageId;
         this.bindActivePage();
+        try {
+            this.univerHost?.setActiveSheet(pageId);
+            this.univerHost?.syncMeta(this.document);
+        } catch { /* ignore an unavailable host during initial mount */ }
         this.undoStack = [];
         this.clearSelection();
         this.hideCellInspector();
         this.scheduleSave();
-        this.renderPageSidebar();
+        if (!this.updatePageTabSelection()) this.renderPageSidebar();
         this.renderToolbar();
         this.renderGrid();
+    }
+
+    /** Update active-tab styling without replacing the DOM, so double-click rename remains reliable. */
+    private updatePageTabSelection(): boolean {
+        if (!this.sidebarEl) return false;
+        const tabs = Array.from(
+            this.sidebarEl.querySelectorAll<HTMLButtonElement>('.concept-grid-page-tab'),
+        );
+        if (tabs.length !== this.document.pages.length) return false;
+        let activeTab: HTMLButtonElement | null = null;
+        for (const tab of tabs) {
+            const active = tab.dataset.pageId === this.document.activePageId;
+            tab.toggleClass('is-active', active);
+            tab.setAttribute('aria-pressed', String(active));
+            if (active) activeTab = tab;
+        }
+        activeTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return activeTab !== null;
+    }
+
+    /** Move a worksheet before/after another worksheet and persist the new page order. */
+    private reorderPage(sourcePageId: string, targetPageId: string, placeAfter: boolean): void {
+        try { this.univerHost?.flush(); } catch { /* keep the last in-memory document */ }
+        const source = this.document.pages.find(page => page.id === sourcePageId);
+        if (!source || sourcePageId === targetPageId) return;
+        const remaining = this.document.pages.filter(page => page.id !== sourcePageId);
+        const targetIndex = remaining.findIndex(page => page.id === targetPageId);
+        if (targetIndex < 0) return;
+        remaining.splice(targetIndex + (placeAfter ? 1 : 0), 0, source);
+        this.document.pages = remaining;
+        this.bindActivePage();
+        this.scheduleSave();
+        this.renderPageSidebar();
+        this.renderGrid({ forcePush: true });
     }
 
     /** Jump to a datasheet page/row from a Library archive appearance link. */
@@ -810,7 +903,7 @@ export class PlotgridView extends ItemView {
     ): void {
         if (labelEl.querySelector('input')) return;
         const original = page.title || labelEl.textContent || '';
-        const input = activeDocument.createElement('input');
+        const input = labelEl.ownerDocument.createElement('input');
         input.type = 'text';
         input.className = 'concept-grid-page-tab-rename';
         input.value = original;
@@ -1655,7 +1748,7 @@ export class PlotgridView extends ItemView {
             this.scheduleSave();
             if (opts.pushGrid) {
                 this.renderGrid({ forcePush: true });
-                            } else {
+            } else {
                 try { this.univerHost?.refreshLinkMarkers(); } catch { /* ignore */ }
             }
             this.refreshOpenCellInspector();
@@ -1837,7 +1930,7 @@ export class PlotgridView extends ItemView {
                     sourcePath,
                     renderer,
                 );
-                        } else {
+            } else {
                 textarea.focus();
             }
         };
@@ -1943,8 +2036,8 @@ export class PlotgridView extends ItemView {
                             type: 'button',
                             title: t('Unlink Note'),
                             'aria-label': t('Unlink Note'),
-                                },
-                            });
+                        },
+                    });
                     obsidian.setIcon(removeBtn, 'x');
                     removeBtn.addEventListener('click', (event) => {
                         event.preventDefault();
@@ -1959,8 +2052,8 @@ export class PlotgridView extends ItemView {
                     type: 'button',
                     title: t('Link Note…'),
                     'aria-label': t('Link Note…'),
-                                },
-                            });
+                },
+            });
             obsidian.setIcon(addBtn, 'plus');
             addBtn.addEventListener('click', (event) => {
                 event.preventDefault();

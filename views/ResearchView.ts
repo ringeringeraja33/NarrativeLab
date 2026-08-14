@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, TFile, Notice, Modal, Setting, FuzzySuggestModal } from 'obsidian';
+import { WorkspaceLeaf, TFile, Notice, Modal, Setting, FuzzySuggestModal } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { ResearchManager } from '../services/ResearchManager';
@@ -9,6 +9,7 @@ import { attachTooltip } from '../components/Tooltip';
 import { pickImage, resolveImagePath } from '../components/ImagePicker';
 import { tokenizeWords, isScriptioContinuaLocale, DEFAULT_STORYLINE_LOCALE, type StoryLineLocale } from '../utils/locale';
 import { t } from '../utils/i18n';
+import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 /**
  * ResearchView — a right-sidebar panel for browsing, searching,
@@ -23,7 +24,7 @@ import { t } from '../utils/i18n';
  *  - Create / edit / delete posts
  *  - Open-question badge
  */
-export class ResearchView extends ItemView {
+export class ResearchView extends ProjectBoundItemView {
     private plugin: SceneCardsPlugin;
     private manager: ResearchManager;
     private rootEl: HTMLElement | null = null;
@@ -40,13 +41,18 @@ export class ResearchView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.manager = manager;
+        this.ensureProjectBinding(plugin.sceneManager.activeProject?.filePath);
         // Restore persisted filter states
         this.activeTag = plugin.settings.researchActiveTag ?? null;
         this.activeType = (plugin.settings.researchActiveType as ResearchType | null) ?? null;
     }
 
     getViewType(): string { return RESEARCH_VIEW_TYPE; }
-    getDisplayText(): string { return t('Research'); }
+    getDisplayText(): string {
+        const manager = this.plugin.sceneManager;
+        const title = this.resolveProjectTitle(manager.getProjects(), manager.activeProject);
+        return title ? `${t('Research')} - ${title}` : t('Research');
+    }
     getIcon(): string { return 'library-big'; }
 
     async onOpen(): Promise<void> {

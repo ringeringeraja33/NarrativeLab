@@ -3,6 +3,7 @@ import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { STORYLINE_VIEW_TYPE, TIMELINE_VIEW_TYPE } from '../constants';
 import { t } from '../utils/i18n';
+import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 
 export type StructureMode = 'timeline' | 'tracks' | 'plot-list' | 'subway';
 
@@ -27,7 +28,11 @@ export function renderStructureModeSwitcher(
         if (switching) return;
         switching = true;
         try {
-            await leaf.setViewState({ type, active: true, state: {} });
+            await leaf.setViewState({
+                type,
+                active: true,
+                state: preservedNarrativeLabLeafState(leaf),
+            });
             void plugin.app.workspace.revealLeaf(leaf);
             after?.();
         } finally {

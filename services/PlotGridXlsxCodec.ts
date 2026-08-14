@@ -173,6 +173,7 @@ function cellValueText(value: unknown): string {
 
 /** Strip characters illegal in XML 1.0 text nodes (keep tab/LF/CR). */
 export function sanitizeExcelXmlText(value: string): string {
+    // eslint-disable-next-line no-control-regex -- XML 1.0 explicitly forbids these code points.
     return String(value || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
 }
 
@@ -317,7 +318,7 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
 
     const activePageId = meta.activePageId && pages.some(p => p.id === meta.activePageId)
         ? meta.activePageId
-        : pages[0]!.id;
+        : pages[0].id;
 
     return normalizeConceptGridDocument({
         version: 2,
@@ -338,11 +339,13 @@ export async function plotGridXlsxNeedsRewrite(data: ArrayBuffer | Uint8Array): 
 
     if (wb.getWorksheet(NL_META_SHEET)) return true;
 
-    let meta: PlotGridNlMeta | null = null;
+    const parsedMeta: PlotGridNlMeta[] = [];
     wb.eachSheet((sheet) => {
-        if (meta) return;
-        meta = tryParseNlMeta(readChunkedMetaText(sheet));
+        if (parsedMeta.length > 0) return;
+        const candidate = tryParseNlMeta(readChunkedMetaText(sheet));
+        if (candidate) parsedMeta.push(candidate);
     });
+    const meta = parsedMeta[0] ?? null;
     if (!meta || Object.keys(meta.pages || {}).length === 0) return false;
 
     let dataSheetCount = 0;

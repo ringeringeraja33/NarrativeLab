@@ -334,6 +334,8 @@ export interface LibraryBrowseToolbarOpts {
     showLayoutToggle?: boolean;
     /** Optional controls after New (e.g. series book filter). */
     appendExtra?: (actionsEl: HTMLElement) => void;
+    /** Content-mode controls aligned to the far right of the toolbar. */
+    renderTrailingActions?: (actionsEl: HTMLElement) => void;
 }
 
 export interface LibraryBrowseToolbarResult {
@@ -693,6 +695,11 @@ export function renderLibraryBrowseToolbar(
         renderLibraryLayoutToggle(toolbar, opts.plugin, opts.categoryId, opts.onLayoutChange);
     }
 
+    if (opts.renderTrailingActions) {
+        const trailing = toolbar.createDiv('library-browse-mode-actions');
+        opts.renderTrailingActions(trailing);
+    }
+
     let searchInput: HTMLInputElement | null = null;
     if (searchShowing) {
         const searchSlot = root.createDiv('library-browse-search-slot');
@@ -722,5 +729,17 @@ export function renderLibraryBrowseToolbar(
     }
 
     return { root, searchInput, chipHost };
+}
+
+/** Keep content-mode controls in the same right-aligned toolbar position. */
+export function renderLibraryModeToolbar(
+    parent: HTMLElement,
+    renderActions: (actionsEl: HTMLElement) => void,
+): HTMLElement {
+    const root = parent.createDiv('library-browse-chrome library-mode-only-chrome');
+    const toolbar = root.createDiv('codex-search-row library-browse-toolbar');
+    const trailing = toolbar.createDiv('library-browse-mode-actions');
+    renderActions(trailing);
+    return root;
 }
 /* eslint-enable @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

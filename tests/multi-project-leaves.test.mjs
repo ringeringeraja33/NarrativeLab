@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [mainTs, boardView, navigatorView, viewSwitcher, leafState, corkboard, codexTabs] = await Promise.all([
+const [mainTs, boardView, navigatorView, viewSwitcher, leafState, corkboard, codexTabs, projectBoundView, structureSwitcher, codexView, ...projectViews] = await Promise.all([
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/BoardView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/NavigatorView.ts', import.meta.url), 'utf8'),
@@ -10,6 +10,20 @@ const [mainTs, boardView, navigatorView, viewSwitcher, leafState, corkboard, cod
     readFile(new URL('../utils/narrativeLabLeafState.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/CorkboardCanvasService.ts', import.meta.url), 'utf8'),
     readFile(new URL('../components/CodexCategoryTabs.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../views/ProjectBoundItemView.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../components/StructureModeSwitcher.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../views/CodexView.ts', import.meta.url), 'utf8'),
+    ...[
+        'PlotgridView.ts',
+        'TimelineView.ts',
+        'StorylineView.ts',
+        'CharacterView.ts',
+        'LocationView.ts',
+        'CodexView.ts',
+        'StatsView.ts',
+        'ManuscriptView.ts',
+        'ResearchView.ts',
+    ].map(name => readFile(new URL(`../views/${name}`, import.meta.url), 'utf8')),
 ]);
 
 test('NarrativeLab leaf state binds tabs to a project file', () => {
@@ -65,4 +79,38 @@ test('ViewSwitcher preserves project binding across in-leaf view changes', () =>
         viewSwitcher.slice(viewSwitcher.indexOf('entry.type !== activeViewType')),
         /state:\s*\{\s*\}/,
     );
+});
+
+test('Every project-scoped main view persists its leaf project binding', () => {
+    assert.match(projectBoundView, /getBoundProjectFile\(\): string \| null/);
+    assert.match(projectBoundView, /getState\(\): Record<string, unknown>/);
+    assert.match(projectBoundView, /async setState\(/);
+    assert.match(projectBoundView, /NARRATIVE_LAB_PROJECT_FILE_STATE_KEY/);
+    assert.match(projectBoundView, /resolveProjectTitle/);
+    for (const source of projectViews) {
+        assert.match(source, /extends ProjectBoundItemView/);
+        assert.match(source, /ensureProjectBinding\(/);
+        assert.match(source, /resolveProjectTitle\(/);
+    }
+});
+
+test('Structure and Library in-place switches cannot erase the project binding', () => {
+    assert.match(structureSwitcher, /preservedNarrativeLabLeafState\(leaf\)/);
+    assert.match(codexView, /preservedNarrativeLabLeafState\(this\.leaf\)/);
+    const activateInPlace = mainTs.slice(
+        mainTs.indexOf('async activateViewInPlace('),
+        mainTs.indexOf('async openQuickAdd('),
+    );
+    assert.match(activateInPlace, /preservedNarrativeLabLeafState\(leaf\)/);
+    assert.doesNotMatch(structureSwitcher, /state:\s*\{\}/);
+});
+
+test('Global refresh skips leaves bound to another project', () => {
+    const refresh = mainTs.slice(
+        mainTs.indexOf('private async doRefreshOpenViews('),
+        mainTs.indexOf('private async refreshPlotGridViews('),
+    );
+    assert.match(refresh, /getLeafNarrativeLabProjectFile\(leaf\)/);
+    assert.match(refresh, /bound && \(!activePath \|\| bound !== activePath\)/);
+    assert.match(refresh, /continue/);
 });

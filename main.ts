@@ -5,6 +5,7 @@ import { asRecord, isRecord } from './utils/narrow';
 import {
     getLeafNarrativeLabProjectFile,
     narrativeLabLeafState,
+    preservedNarrativeLabLeafState,
 } from './utils/narrativeLabLeafState';
 import type { FilterPreset } from './models/Scene';
 import { SceneManager } from './services/SceneManager';
@@ -115,6 +116,7 @@ import {
     parentOfPath,
     readLibraryCategorySettings,
     reconcileLibraryCategoriesForActiveProject,
+    seedStorylinePresetCategories,
 } from './services/LibraryCategorySync';
 import {
     applyLibraryProfileLayout,
@@ -912,6 +914,33 @@ export default class SceneCardsPlugin extends Plugin {
                 if (categoriesChanged) void this.refreshViewsOnly();
             });
         }, 500);
+        let projectDeletionQueue: Promise<void> = Promise.resolve();
+        const settleProjectTreeDelete = (
+            result: ReturnType<SceneManager['handleProjectTreeDelete']>,
+        ): void => {
+            projectDeletionQueue = projectDeletionQueue
+                .catch(() => undefined)
+                .then(async () => {
+                    if (result.activeProjectRemoved) {
+                        // Save only the cleared global pointer. saveSettings() also
+                        // writes System/* and could revive the deleted project tree.
+                        await this.saveData(this.settings);
+                        let replacement: StoryLineProject | undefined;
+                        for (const project of this.sceneManager.getProjects()) {
+                            if (await this.app.vault.adapter.exists(project.filePath)) {
+                                replacement = project;
+                                break;
+                            }
+                        }
+                        if (replacement && !this.sceneManager.activeProject) {
+                            await this.sceneManager.setActiveProject(replacement);
+                        }
+                    }
+                    this.libraryCategoriesStructureEpoch += 1;
+                    this.refreshOpenViews();
+                })
+                .catch(error => console.error('[NarrativeLab] Project deletion refresh failed:', error));
+        };
 
         this.registerEvent(
             this.app.vault.on('modify', (file) => {
@@ -995,6 +1024,11 @@ export default class SceneCardsPlugin extends Plugin {
         this.registerEvent(
             this.app.vault.on('delete', (file) => {
                 if (file instanceof TFolder) {
+                    const projectDelete = this.sceneManager.handleProjectTreeDelete(file.path, true);
+                    if (projectDelete.changed) {
+                        settleProjectTreeDelete(projectDelete);
+                        return;
+                    }
                     // Draft roots live at Scenes/<name>/ — drop ghost drafts when folder is trashed
                     this.sceneManager.handleDraftFolderDelete(file.path).then((changed) => {
                         if (changed) debouncedRefresh();
@@ -1007,6 +1041,12 @@ export default class SceneCardsPlugin extends Plugin {
                     return;
                 }
                 if (file instanceof TFile) {
+                    const projectDelete = this.sceneManager.handleProjectTreeDelete(file.path, false);
+                    if (projectDelete.changed) {
+                        invalidateAllEntityCaches(file.path);
+                        settleProjectTreeDelete(projectDelete);
+                        return;
+                    }
                     if (file.extension.toLowerCase() === 'base') return;
                     invalidateAllEntityCaches(file.path);
                     const filePath = normalizePath(file.path);
@@ -1756,6 +1796,12 @@ export default class SceneCardsPlugin extends Plugin {
         }
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, migratedData);
+        const navigatorCollapsedSections = Array.isArray(this.settings.navigatorCollapsedSections)
+            ? this.settings.navigatorCollapsedSections.filter(
+                (section): section is 'notes' | 'scenes' => section === 'notes' || section === 'scenes',
+            )
+            : [];
+        this.settings.navigatorCollapsedSections = [...new Set(navigatorCollapsedSections)];
         if (!Array.isArray(this.settings.sceneTemplates)) {
             this.settings.sceneTemplates = [];
         } else {
@@ -1851,11 +1897,11 @@ export default class SceneCardsPlugin extends Plugin {
         'filterPresets',
         // Library categories are one-config-per-project (System/library-categories.json)
         'codexEnabledCategories', 'codexCustomCategories', 'libraryCategoryOrder',
-        'libraryHiddenFixedCategories', 'codexDeletedPresetCategories',
+        'libraryHiddenFixedCategories', 'codexDeletedPresetCategories', 'codexPresetSeedVersion',
         // Archive profile field layout (System/library-profile-layout.json)
         'hiddenFields', 'removedBuiltinFields', 'removedBuiltinSections',
         'characterCustomSections', 'locationCustomSections', 'codexCategoryCustomSections',
-        'codexCategoryFieldTemplates',
+        'codexCategoryFieldTemplates', 'profileOrientations',
     ];
 
     /** Obsidian appearance → NL/ncanvas light|dark. */
@@ -1891,6 +1937,46 @@ export default class SceneCardsPlugin extends Plugin {
         }
         // Theme is CSS-driven — do not remount open views (would flash / reset canvas).
         await this.saveSettings();
+    }
+
+    /** Enable/disable per-project color overrides (Navigator project menu). */
+    async setUseProjectColors(enabled: boolean): Promise<void> {
+        const next = !!enabled;
+        if (this.settings.useProjectColors === next) return;
+        this.settings.useProjectColors = next;
+        if (!next) {
+            const g = this._globalColorDefaults;
+            if (g && Object.keys(g).length > 0) {
+                if (g.colorScheme !== undefined) this.settings.colorScheme = g.colorScheme as SceneCardsSettings['colorScheme'];
+                if (g.plotlineHue !== undefined) this.settings.plotlineHue = g.plotlineHue;
+                if (g.plotlineSaturation !== undefined) this.settings.plotlineSaturation = g.plotlineSaturation;
+                if (g.plotlineLightness !== undefined) this.settings.plotlineLightness = g.plotlineLightness;
+                if (g.stickyNoteTheme !== undefined) this.settings.stickyNoteTheme = g.stickyNoteTheme as SceneCardsSettings['stickyNoteTheme'];
+                if (g.stickyNoteHue !== undefined) this.settings.stickyNoteHue = g.stickyNoteHue;
+                if (g.stickyNoteSaturation !== undefined) this.settings.stickyNoteSaturation = g.stickyNoteSaturation;
+                if (g.stickyNoteLightness !== undefined) this.settings.stickyNoteLightness = g.stickyNoteLightness;
+                this.settings.stickyNoteOverrides = { ...(g.stickyNoteOverrides || {}) };
+                if (g.stickyNoteFontColorLight !== undefined) this.settings.stickyNoteFontColorLight = g.stickyNoteFontColorLight;
+                if (g.stickyNoteFontColorDark !== undefined) this.settings.stickyNoteFontColorDark = g.stickyNoteFontColorDark;
+            }
+        } else if (Object.keys(this._globalColorDefaults).length === 0) {
+            this._globalColorDefaults = {
+                colorScheme: this.settings.colorScheme,
+                plotlineHue: this.settings.plotlineHue,
+                plotlineSaturation: this.settings.plotlineSaturation,
+                plotlineLightness: this.settings.plotlineLightness,
+                stickyNoteTheme: this.settings.stickyNoteTheme,
+                stickyNoteHue: this.settings.stickyNoteHue,
+                stickyNoteSaturation: this.settings.stickyNoteSaturation,
+                stickyNoteLightness: this.settings.stickyNoteLightness,
+                stickyNoteOverrides: { ...(this.settings.stickyNoteOverrides || {}) },
+                stickyNoteFontColorLight: this.settings.stickyNoteFontColorLight,
+                stickyNoteFontColorDark: this.settings.stickyNoteFontColorDark,
+                uiTheme: this.settings.uiTheme,
+            };
+        }
+        await this.saveSettings();
+        this.refreshOpenViews();
     }
 
     /**
@@ -1949,6 +2035,7 @@ export default class SceneCardsPlugin extends Plugin {
             toSave.libraryCategoryOrder = emptyCats.categoryOrder;
             toSave.libraryHiddenFixedCategories = emptyCats.hiddenFixedCategories;
             toSave.codexDeletedPresetCategories = emptyCats.deletedPresetCategories;
+            toSave.codexPresetSeedVersion = emptyCats.presetSeedVersion;
             // Keep empty profile-layout defaults in data.json so projects do not
             // inherit the active project's working copy of hidden/removed fields.
             const emptyProfile = emptyLibraryProfileLayout();
@@ -1959,6 +2046,7 @@ export default class SceneCardsPlugin extends Plugin {
             toSave.locationCustomSections = emptyProfile.locationCustomSections;
             toSave.codexCategoryCustomSections = emptyProfile.codexCategoryCustomSections;
             toSave.codexCategoryFieldTemplates = emptyProfile.codexCategoryFieldTemplates;
+            toSave.profileOrientations = emptyProfile.profileOrientations;
             // When using per-project colours, restore global defaults into
             // data.json so the global values are not overwritten by the
             // project-specific ones currently in memory.
@@ -2301,6 +2389,14 @@ export default class SceneCardsPlugin extends Plugin {
         return normalizePath(`${this.getProjectBaseFolder()}/System`);
     }
 
+    /** Reject late project autosaves after its manifest or folder was removed. */
+    private async projectExistsForWrite(projectFilePath: string | undefined): Promise<boolean> {
+        if (!projectFilePath) return false;
+        const normalized = normalizePath(projectFilePath);
+        if (this.sceneManager.isDeletedProjectPath(normalized)) return false;
+        return this.app.vault.adapter.exists(normalized);
+    }
+
     // ────────────────────────────────────
     //  Issue #71 follow-up — universal-field migrations
     // ────────────────────────────────────
@@ -2426,11 +2522,14 @@ export default class SceneCardsPlugin extends Plugin {
      * Creates the System/ folder if it doesn't exist.
      */
     private async writeSystemJson(filename: string, data: Record<string, unknown>): Promise<void> {
-        const filePath = normalizePath(`${this.getProjectSystemFolder()}/${filename}`);
+        const projectFilePath = this.sceneManager.activeProject?.filePath;
+        if (!await this.projectExistsForWrite(projectFilePath)) return;
+        const baseFolder = deriveProjectFoldersFromFilePath(projectFilePath!).baseFolder;
+        const filePath = normalizePath(`${baseFolder}/System/${filename}`);
         const previous = this._systemJsonWriteQueues.get(filePath) ?? Promise.resolve();
         const pending = previous
             .catch(() => undefined)
-            .then(() => this.writeSystemJsonSafely(filename, filePath, data));
+            .then(() => this.writeSystemJsonSafely(filename, filePath, data, projectFilePath!));
         this._systemJsonWriteQueues.set(filePath, pending);
         try {
             await pending;
@@ -2452,10 +2551,13 @@ export default class SceneCardsPlugin extends Plugin {
         filename: string,
         filePath: string,
         data: Record<string, unknown>,
+        projectFilePath: string,
     ): Promise<void> {
         const adapter = this.app.vault.adapter;
-        const systemFolder = this.getProjectSystemFolder();
+        if (!await this.projectExistsForWrite(projectFilePath)) return;
+        const systemFolder = normalizePath(filePath.slice(0, filePath.lastIndexOf('/')));
         if (!await adapter.exists(systemFolder)) {
+            if (!await this.projectExistsForWrite(projectFilePath)) return;
             await this.app.vault.createFolder(systemFolder);
         }
 
@@ -2561,10 +2663,16 @@ export default class SceneCardsPlugin extends Plugin {
                 categoryOrder: [...this._legacyLibraryCategoryDefaults.categoryOrder],
                 hiddenFixedCategories: [...this._legacyLibraryCategoryDefaults.hiddenFixedCategories],
                 deletedPresetCategories: [...this._legacyLibraryCategoryDefaults.deletedPresetCategories],
+                presetSeedVersion: this._legacyLibraryCategoryDefaults.presetSeedVersion || 0,
             });
             libraryCategoriesDirty = true;
         }
-        if (await reconcileLibraryCategoriesForActiveProject(this)) {
+        const presetsSeeded = seedStorylinePresetCategories(this);
+        if (presetsSeeded) libraryCategoriesDirty = true;
+        if (await reconcileLibraryCategoriesForActiveProject(
+            this,
+            presetsSeeded ? { createMissingRegistered: true } : {},
+        )) {
             libraryCategoriesDirty = true;
         }
 
@@ -2583,6 +2691,7 @@ export default class SceneCardsPlugin extends Plugin {
                 locationCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.locationCustomSections)) as unknown[],
                 codexCategoryCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.codexCategoryCustomSections)) as Record<string, unknown[]>,
                 codexCategoryFieldTemplates: { ...this._legacyLibraryProfileLayoutDefaults.codexCategoryFieldTemplates },
+                profileOrientations: { ...this._legacyLibraryProfileLayoutDefaults.profileOrientations },
             });
             profileLayoutDirty = true;
         }
@@ -2738,12 +2847,17 @@ export default class SceneCardsPlugin extends Plugin {
                             categoryOrder: [...this._legacyLibraryCategoryDefaults.categoryOrder],
                             hiddenFixedCategories: [...this._legacyLibraryCategoryDefaults.hiddenFixedCategories],
                             deletedPresetCategories: [...this._legacyLibraryCategoryDefaults.deletedPresetCategories],
+                            presetSeedVersion: this._legacyLibraryCategoryDefaults.presetSeedVersion || 0,
                         });
                     }
+                    const presetsSeeded = seedStorylinePresetCategories(this);
                     // Base aliases and orphan detection must use this project's
                     // category definitions, not the previously active project.
                     initProjectCategoryManager();
-                    await reconcileLibraryCategoriesForActiveProject(this);
+                    await reconcileLibraryCategoriesForActiveProject(
+                        this,
+                        presetsSeeded ? { createMissingRegistered: true } : {},
+                    );
                     await this.writeSystemJson(
                         LIBRARY_CATEGORIES_FILENAME,
                         readLibraryCategorySettings(this.settings) as unknown as Record<string, unknown>,
@@ -2777,7 +2891,8 @@ export default class SceneCardsPlugin extends Plugin {
      * Called when settings are saved or before switching projects.
      */
     async saveProjectSystemData(): Promise<void> {
-        if (!this.sceneManager?.activeProject) return;
+        const projectFilePath = this.sceneManager?.activeProject?.filePath;
+        if (!await this.projectExistsForWrite(projectFilePath)) return;
 
         const plotlinesPayload: Record<string, unknown> = {
             tagColors: this.settings.tagColors || {},
@@ -2844,6 +2959,8 @@ export default class SceneCardsPlugin extends Plugin {
         data: ConceptGridDocument | PlotGridData,
         options: { allowEmptyOverwrite?: boolean } = {},
     ): Promise<void> {
+        const projectFilePath = this.sceneManager.activeProject?.filePath;
+        if (!await this.projectExistsForWrite(projectFilePath)) return;
         const baseFolder = this.getProjectBaseFolder();
         const libraryFolder = this.getProjectLibraryFolder();
         const systemFolder = this.getProjectSystemFolder();
@@ -2851,7 +2968,7 @@ export default class SceneCardsPlugin extends Plugin {
         const previous = this._systemJsonWriteQueues.get(filePath) ?? Promise.resolve();
         const pending = previous
             .catch(() => undefined)
-            .then(() => this.savePlotGridSafely(data, options, baseFolder, libraryFolder, systemFolder, filePath));
+            .then(() => this.savePlotGridSafely(data, options, baseFolder, libraryFolder, systemFolder, filePath, projectFilePath!));
         this._systemJsonWriteQueues.set(filePath, pending);
         try {
             await pending;
@@ -2872,7 +2989,9 @@ export default class SceneCardsPlugin extends Plugin {
         libraryFolder: string,
         systemFolder: string,
         filePath: string,
+        projectFilePath: string,
     ): Promise<void> {
+        if (!await this.projectExistsForWrite(projectFilePath)) return;
         const adapter = this.app.vault.adapter;
         const document = normalizeConceptGridDocument(data);
         const path = normalizePath(filePath);
@@ -2914,6 +3033,7 @@ export default class SceneCardsPlugin extends Plugin {
         // Clean xlsx (no embedded meta) so Excel/Univer only see page sheets.
         const binary = await encodePlotGridXlsx(document, { vaultName: this.app.vault.getName() });
         const metaJson = serializePlotGridNlMeta(document);
+        if (!await this.projectExistsForWrite(projectFilePath)) return;
         await this.ensureVaultFolder(libraryFolder);
         await this.ensureVaultFolder(systemFolder);
         const endSuppressXlsx = this.beginSuppressVaultRefresh(path, 2500);
@@ -3054,6 +3174,8 @@ export default class SceneCardsPlugin extends Plugin {
      */
     async migratePlotGridToLibraryIfNeeded(): Promise<void> {
         try {
+            const projectFilePath = this.sceneManager.activeProject?.filePath;
+            if (!await this.projectExistsForWrite(projectFilePath)) return;
             const baseFolder = this.getProjectBaseFolder();
             if (!baseFolder) return;
             const libraryFolder = this.getProjectLibraryFolder();
@@ -3092,6 +3214,8 @@ export default class SceneCardsPlugin extends Plugin {
      * Library/datasheet.nlmeta.json, and embedded `_nl_meta` sheets.
      */
     async loadPlotGrid(): Promise<ConceptGridDocument | null> {
+        const projectFilePath = this.sceneManager.activeProject?.filePath;
+        if (!await this.projectExistsForWrite(projectFilePath)) return null;
         await this.migratePlotGridToLibraryIfNeeded();
         try {
             const baseFolder = this.getProjectBaseFolder();
@@ -3579,7 +3703,11 @@ export default class SceneCardsPlugin extends Plugin {
      */
     async activateViewInPlace(viewType: string): Promise<void> {
         const leaf = this.app.workspace.getLeaf(false);
-        await leaf.setViewState({ type: viewType, active: true, state: {} });
+        await leaf.setViewState({
+            type: viewType,
+            active: true,
+            state: preservedNarrativeLabLeafState(leaf),
+        });
         this.app.workspace.revealLeaf(leaf);
     }
 
@@ -3635,6 +3763,7 @@ export default class SceneCardsPlugin extends Plugin {
      * @returns true when Library category tabs were added/changed from vault folders.
      */
     async reloadEntities(): Promise<boolean> {
+        if (!this.sceneManager.activeProject) return false;
         // Coalesce view-driven reads, but never lose a Finder/Explorer folder
         // event that arrives during the current pass.
         if (this._reloadEntitiesPromise) {
@@ -4482,8 +4611,9 @@ export default class SceneCardsPlugin extends Plugin {
             const leaves = this.app.workspace.getLeavesOfType(viewType);
             for (const leaf of leaves) {
                 const bound = getLeafNarrativeLabProjectFile(leaf);
-                // Keep other projects' open tabs intact while this project is active.
-                if (bound && activePath && bound !== activePath) {
+                // Keep other projects' tabs intact, and never refresh a
+                // project-bound tab while no live project is active.
+                if (bound && (!activePath || bound !== activePath)) {
                     continue;
                 }
                 const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
