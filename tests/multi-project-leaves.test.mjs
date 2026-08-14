@@ -97,6 +97,17 @@ test('Every project-scoped main view persists its leaf project binding', () => {
     }
 });
 
+test('Project-scoped main tabs display only the project name', () => {
+    assert.match(boardView, /if \(project\?\.title\) return project\.title/);
+    for (const source of projectViews) {
+        const start = source.indexOf('getDisplayText(): string');
+        const end = source.indexOf('getIcon()', start);
+        const displayText = source.slice(start, end);
+        assert.match(displayText, /return title \|\|/);
+        assert.doesNotMatch(displayText, /NarrativeLab\s*[-—]\s*\$\{title\}/);
+    }
+});
+
 test('Structure and Library in-place switches cannot erase the project binding', () => {
     assert.match(structureSwitcher, /preservedNarrativeLabLeafState\(leaf\)/);
     assert.match(codexView, /preservedNarrativeLabLeafState\(this\.leaf\)/);

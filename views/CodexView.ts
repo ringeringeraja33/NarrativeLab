@@ -229,7 +229,7 @@ export class CodexView extends ProjectBoundItemView {
     getViewType(): string { return CODEX_VIEW_TYPE; }
     getDisplayText(): string {
         const title = this.resolveProjectTitle(this.sceneManager.getProjects(), this.sceneManager.activeProject);
-        return title ? `NarrativeLab — ${title}` : 'NarrativeLab';
+        return title || 'NarrativeLab';
     }
     getIcon(): string { return 'book-open'; }
 

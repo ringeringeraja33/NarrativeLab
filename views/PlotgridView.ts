@@ -114,7 +114,7 @@ export class PlotgridView extends ProjectBoundItemView {
     getDisplayText(): string {
         const manager = this.plugin?.sceneManager;
         const title = this.resolveProjectTitle(manager?.getProjects() ?? [], manager?.activeProject);
-        return title ? `NarrativeLab - ${title}` : t('Concept Grid');
+        return title || t('Concept Grid');
     }
 
     async onOpen(): Promise<void> {

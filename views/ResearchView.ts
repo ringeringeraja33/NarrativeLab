@@ -53,7 +53,7 @@ export class ResearchView extends ProjectBoundItemView {
     getDisplayText(): string {
         const manager = this.plugin.sceneManager;
         const title = this.resolveProjectTitle(manager.getProjects(), manager.activeProject);
-        return title ? `${t('Research')} - ${title}` : t('Research');
+        return title || t('Research');
     }
     getIcon(): string { return 'library-big'; }
 

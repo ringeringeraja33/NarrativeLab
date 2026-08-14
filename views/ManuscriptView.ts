@@ -136,7 +136,7 @@ export class ManuscriptView extends ProjectBoundItemView {
 
     getDisplayText(): string {
         const title = this.resolveProjectTitle(this.sceneManager.getProjects(), this.sceneManager.activeProject);
-        return title ? `${t('Manuscript')} - ${title}` : t('Manuscript');
+        return title || t('Manuscript');
     }
 
     getIcon(): string {
