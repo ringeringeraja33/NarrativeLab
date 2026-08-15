@@ -105,12 +105,6 @@ See [Security](./SECURITY.md) for vulnerability reporting and [Support](./SUPPOR
 
 ## Installation
 
-### Community Plugins
-
-After approval, install **NarrativeLab** from **Settings → Community plugins → Browse**.
-
-### Manual or beta installation
-
 Download `main.js`, `manifest.json`, and `styles.css` from a release whose tag exactly matches the manifest version. Place them in:
 
 ```text
