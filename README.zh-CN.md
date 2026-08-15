@@ -78,9 +78,7 @@ NarrativeLab 是用于规划、写作和维护叙事项目的 Obsidian 工作区
 
 ## 安装
 
-社区审核通过后，可在 **设置 → 第三方插件 → 浏览** 中安装 NarrativeLab。
-
-手动测试时，从版本发布页下载版本一致的 `main.js`、`manifest.json` 和 `styles.css`，放到：
+从版本发布页下载版本一致的 `main.js`、`manifest.json` 和 `styles.css`，放到：
 
 ```text
 <库目录>/.obsidian/plugins/narrative-lab/
