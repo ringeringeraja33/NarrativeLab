@@ -729,6 +729,9 @@ export class StoryGraph {
     } = null;
     private pendingConnectMenuTimer = 0;
     private connectBanner: HTMLElement | null = null;
+    private connectChooserEl: HTMLElement | null = null;
+    private connectChooserCleanup: (() => void) | null = null;
+    private connectChooserTimer = 0;
     private onConnectKeyDown: ((e: KeyboardEvent) => void) | null = null;
     private onConnectDragMove: ((e: MouseEvent) => void) | null = null;
     private onConnectDragUp: ((e: MouseEvent) => void) | null = null;
@@ -1045,8 +1048,10 @@ export class StoryGraph {
         const override = this.layoutImages.get(key);
         if (override) return override;
         if (node.image) return node.image;
-        if (node.filePath && this.imageByPath[node.filePath]) {
-            return this.imageByPath[node.filePath];
+        if (node.filePath) {
+            const mapped = this.imageByPath[node.filePath]
+                || this.imageByPath[normalizePath(node.filePath)];
+            if (mapped) return mapped;
         }
         return '';
     }
@@ -1212,6 +1217,7 @@ export class StoryGraph {
         this.clearConnectDrag(false);
         this.clearConnectPick(false);
         this.connectClickFrom = null;
+        this.closeConnectChooser();
         this.clearPendingConnectMenu();
         this.disarmConnectContextGuard();
         // Keep CSS fullscreen across filter re-renders; only tear down listeners here.
@@ -1815,6 +1821,23 @@ export class StoryGraph {
         window.addEventListener('mouseup', this.onConnectDragUp);
     }
 
+    private closeConnectChooser(): void {
+        const win = this.container.ownerDocument.defaultView ?? window;
+        if (this.connectChooserTimer) {
+            win.clearTimeout(this.connectChooserTimer);
+            this.connectChooserTimer = 0;
+        }
+        this.connectChooserCleanup?.();
+        this.connectChooserCleanup = null;
+        this.connectChooserEl?.remove();
+        this.connectChooserEl = null;
+    }
+
+    /**
+     * Graph-owned picker. Obsidian Menu is dismissed by the trailing Windows
+     * `auxclick`, and its hide path can also tear down any `.menu` node — so
+     * this chooser is not an Obsidian Menu and does not use that class.
+     */
     private showConnectDropMenuAt(
         x: number,
         y: number,
@@ -1823,36 +1846,102 @@ export class StoryGraph {
         evt?: MouseEvent,
     ): void {
         if (!this.onConnectNodes) return;
-        const menu = new Menu();
-        menu.addItem(item => {
-            item.setTitle(`${from.label} → ${to.label}`);
-            item.setDisabled(true);
-        });
-        menu.addSeparator();
-        menu.addItem(item => {
-            item.setTitle(t('Connect with wikilink'));
-            item.setIcon('link');
-            item.onClick(() => {
-                void this.onConnectNodes?.(from, to, 'wikilink');
+        try {
+            evt?.preventDefault();
+            evt?.stopPropagation();
+        } catch { /* event may already be uncancelable */ }
+        this.closeConnectChooser();
+
+        const doc = this.container.ownerDocument;
+        const win = doc.defaultView ?? window;
+        // Wait until contextmenu/auxclick from this gesture have finished, so
+        // Obsidian's leftover "click outside" handlers run against empty air.
+        this.connectChooserTimer = win.setTimeout(() => {
+            this.connectChooserTimer = 0;
+            this.mountConnectChooser(doc, win, x, y, from, to);
+        }, 0);
+    }
+
+    private mountConnectChooser(
+        doc: Document,
+        win: Window,
+        x: number,
+        y: number,
+        from: StoryGraphConnectNode,
+        to: StoryGraphConnectNode,
+    ): void {
+        const el = doc.body.createDiv({ cls: 'story-graph-connect-chooser' });
+        el.setAttribute('role', 'menu');
+
+        const addLabel = (title: string, icon?: string) => {
+            const item = el.createDiv({ cls: 'story-graph-connect-chooser-item is-disabled' });
+            if (icon) {
+                const iconEl = item.createDiv({ cls: 'story-graph-connect-chooser-icon' });
+                obsidian.setIcon(iconEl, icon);
+            }
+            item.createDiv({ cls: 'story-graph-connect-chooser-title', text: title });
+        };
+        const addAction = (title: string, icon: string, onClick: () => void) => {
+            const item = el.createDiv({ cls: 'story-graph-connect-chooser-item' });
+            item.setAttribute('role', 'menuitem');
+            const iconEl = item.createDiv({ cls: 'story-graph-connect-chooser-icon' });
+            obsidian.setIcon(iconEl, icon);
+            item.createDiv({ cls: 'story-graph-connect-chooser-title', text: title });
+            item.addEventListener('click', (clickEvt) => {
+                clickEvt.preventDefault();
+                clickEvt.stopPropagation();
+                this.closeConnectChooser();
+                onClick();
             });
+            item.addEventListener('pointerdown', (downEvt) => downEvt.stopPropagation());
+        };
+
+        addLabel(`${from.label} → ${to.label}`);
+        el.createDiv({ cls: 'story-graph-connect-chooser-separator' });
+        addAction(t('Connect with wikilink'), 'link', () => {
+            void this.onConnectNodes?.(from, to, 'wikilink');
         });
         if (from.entityType === 'character' && to.entityType === 'character') {
-            menu.addSeparator();
-            menu.addItem(item => {
-                item.setTitle(t('Connect character relation'));
-                item.setIcon('heart-handshake');
-                item.setDisabled(true);
-            });
+            el.createDiv({ cls: 'story-graph-connect-chooser-separator' });
+            addLabel(t('Connect character relation'), 'heart-handshake');
             for (const style of this.characterRelationTypes) {
-                menu.addItem(item => {
-                    item.setTitle(`  ${displayCharacterRelationLabel(style)}`);
-                    item.onClick(() => {
-                        void this.onConnectNodes?.(from, to, style.id);
-                    });
+                addAction(`  ${displayCharacterRelationLabel(style)}`, 'dot', () => {
+                    void this.onConnectNodes?.(from, to, style.id);
                 });
             }
         }
-        showMenuSafely(menu, evt || { x, y });
+
+        el.setCssStyles({ left: `${x}px`, top: `${y}px` });
+        const pad = 8;
+        const rect = el.getBoundingClientRect();
+        const left = Math.min(Math.max(pad, x), Math.max(pad, win.innerWidth - rect.width - pad));
+        const top = Math.min(Math.max(pad, y), Math.max(pad, win.innerHeight - rect.height - pad));
+        el.setCssStyles({ left: `${Math.round(left)}px`, top: `${Math.round(top)}px` });
+
+        const onKey = (ke: KeyboardEvent) => {
+            if (ke.key !== 'Escape') return;
+            ke.preventDefault();
+            this.closeConnectChooser();
+        };
+        const onPointerDown = (pe: PointerEvent) => {
+            if (el.contains(pe.target as Node)) return;
+            // Right-button leftovers from this same gesture must not close the picker.
+            if (pe.button !== 0) return;
+            this.closeConnectChooser();
+        };
+        const onContextMenu = (ce: Event) => {
+            ce.preventDefault();
+            if (el.contains(ce.target as Node)) ce.stopPropagation();
+        };
+        win.addEventListener('keydown', onKey, true);
+        win.addEventListener('pointerdown', onPointerDown, true);
+        win.addEventListener('contextmenu', onContextMenu, true);
+        this.connectChooserEl = el;
+        this.connectChooserCleanup = () => {
+            win.removeEventListener('keydown', onKey, true);
+            win.removeEventListener('pointerdown', onPointerDown, true);
+            win.removeEventListener('contextmenu', onContextMenu, true);
+        };
     }
 
     private showCanvasConnectMenu(e: MouseEvent): void {
@@ -3304,6 +3393,7 @@ export class StoryGraph {
             });
         }
 
+        let avatarClipIndex = 0;
         for (const node of this.nodes) {
             const nodeColors = this.colorsForNode(node);
             const color = nodeColors.fill;
@@ -3325,7 +3415,9 @@ export class StoryGraph {
                 const group = activeDocument.createElementNS(svgNS, 'g');
                 group.classList.add('story-graph-node', 'story-graph-node-avatar', `story-graph-node-${node.entityType}`);
 
-                const clipId = `sg-clip-${node.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+                // Do not derive clip ids from labels: Chinese names of the same
+                // length all collapse to the same token and steal each other's portraits.
+                const clipId = `sg-avatar-clip-${avatarClipIndex++}`;
                 const clip = activeDocument.createElementNS(svgNS, 'clipPath');
                 clip.setAttribute('id', clipId);
                 avatarClipCircle = activeDocument.createElementNS(svgNS, 'circle');
@@ -3724,6 +3816,7 @@ export class StoryGraph {
                 if (to) {
                     const from = this.connectClickFrom;
                     this.connectClickFrom = null;
+                    this.clearPendingConnectMenu();
                     this.showConnectDropMenuAt(e.clientX, e.clientY, from, to, e);
                     return;
                 }

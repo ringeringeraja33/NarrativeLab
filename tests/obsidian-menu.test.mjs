@@ -16,7 +16,10 @@ const result = await build({
     external: ['obsidian'],
 });
 const source = result.outputFiles[0].text;
-const { menuShowShouldGateOnTrailingContextMenu } = await import(
+const {
+    menuShowShouldGateOnTrailingContextMenu,
+    menuShowShouldShieldTrailingPointerEvents,
+} = await import(
     `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
 );
 
@@ -46,6 +49,25 @@ test('does not wait for another contextmenu when already handling contextmenu or
     );
     assert.equal(
         menuShowShouldGateOnTrailingContextMenu({ x: 10, y: 20 }),
+        false,
+    );
+});
+
+test('shields auxclick after a contextmenu so the menu is not treated as outside-click', () => {
+    assert.equal(
+        menuShowShouldShieldTrailingPointerEvents({ type: 'contextmenu', button: 2 }),
+        true,
+    );
+    assert.equal(
+        menuShowShouldShieldTrailingPointerEvents({ type: 'mouseup', button: 2 }),
+        true,
+    );
+    assert.equal(
+        menuShowShouldShieldTrailingPointerEvents({ type: 'click', button: 0 }),
+        false,
+    );
+    assert.equal(
+        menuShowShouldShieldTrailingPointerEvents({ x: 10, y: 20 }),
         false,
     );
 });

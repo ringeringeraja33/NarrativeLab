@@ -45,6 +45,110 @@ export function allocateLibraryCategoryId(preferredId: string, usedIds: Iterable
     return `${base}-${suffix}`;
 }
 
+function liveFolderNamesHave(liveFolders: Iterable<string>, name: string): boolean {
+    return [...liveFolders].some(disk => libraryFolderNamesMatch(name, disk));
+}
+
+/**
+ * When a Library folder is renamed on disk, the old mapping still points at
+ * the previous basename. Allocate a `-2` clone only if *both* folders still
+ * exist; otherwise retarget the original category.
+ */
+export function shouldAllocateNewCategoryForFolder(params: {
+    mappedFolder: string;
+    discoveredFolder: string;
+    liveFolders: Iterable<string>;
+}): boolean {
+    const mapped = params.mappedFolder.trim();
+    const discovered = params.discoveredFolder.trim();
+    if (!mapped || libraryFolderNamesMatch(mapped, discovered)) return false;
+    if (!liveFolderNamesHave(params.liveFolders, mapped)
+        && liveFolderNamesHave(params.liveFolders, discovered)) {
+        return false;
+    }
+    return true;
+}
+
+/** Location/Locations or Creature/Creatures — same seed folder, not a user rename. */
+export function isSingularPluralFolderAlias(left: string, right: string): boolean {
+    const a = left.trim().toLowerCase();
+    const b = right.trim().toLowerCase();
+    if (!a || !b || a === b) return false;
+    return a + 's' === b || b + 's' === a;
+}
+
+/** Numbered clone (`creatures-2`) left behind after a builtin folder rename. */
+export function findStaleNumberedCategoryClone(
+    parentId: string,
+    libraryFolders: Record<string, string>,
+    liveFolders: Iterable<string>,
+): { cloneId: string; liveFolder: string } | null {
+    const repairs = collectStaleNumberedCategoryRepairs(libraryFolders, liveFolders);
+    const hit = repairs.find((item): item is Extract<StaleNumberedCategoryRepair, { action: 'retarget' }> =>
+        item.parentId === parentId && item.action === 'retarget');
+    return hit ? { cloneId: hit.cloneId, liveFolder: hit.liveFolder } : null;
+}
+
+export type StaleNumberedCategoryRepair =
+    | { action: 'retarget'; parentId: string; cloneId: string; liveFolder: string; abandonedFolder: string }
+    | { action: 'drop-clone'; parentId: string; cloneId: string; abandonedFolder: string };
+
+/**
+ * Repair `-2` clones created when a category folder was renamed.
+ * Occupied = folder currently holds Library notes. Empty leftovers do not count.
+ *
+ * - Parent empty, clone has notes → keep parent id, point it at the clone folder.
+ * - Parent has notes, clone empty → delete the clone tab.
+ * - Both have notes in different folders → leave them (two real categories).
+ */
+export function collectStaleNumberedCategoryRepairs(
+    libraryFolders: Record<string, string>,
+    occupiedFolders: Iterable<string>,
+): StaleNumberedCategoryRepair[] {
+    const repairs: StaleNumberedCategoryRepair[] = [];
+    const parentIds = Object.keys(libraryFolders).filter(id => !/-\d+$/.test(id));
+    for (const parentId of parentIds) {
+        const parentFolder = libraryFolders[parentId]?.trim() || '';
+        const parentOccupied = !!parentFolder && liveFolderNamesHave(occupiedFolders, parentFolder);
+        const prefix = `${parentId}-`;
+        const clones = Object.keys(libraryFolders)
+            .filter(id => id.startsWith(prefix) && /^\d+$/.test(id.slice(prefix.length)))
+            .sort((a, b) => Number(a.slice(prefix.length)) - Number(b.slice(prefix.length)));
+        for (const cloneId of clones) {
+            const cloneFolder = libraryFolders[cloneId]?.trim() || '';
+            const cloneOccupied = !!cloneFolder && liveFolderNamesHave(occupiedFolders, cloneFolder);
+            if (!parentOccupied && cloneOccupied) {
+                repairs.push({
+                    action: 'retarget',
+                    parentId,
+                    cloneId,
+                    liveFolder: cloneFolder,
+                    abandonedFolder: parentFolder,
+                });
+                continue;
+            }
+            if (cloneOccupied && parentOccupied && libraryFolderNamesMatch(parentFolder, cloneFolder)) {
+                repairs.push({
+                    action: 'drop-clone',
+                    parentId,
+                    cloneId,
+                    abandonedFolder: '',
+                });
+                continue;
+            }
+            if (!cloneOccupied) {
+                repairs.push({
+                    action: 'drop-clone',
+                    parentId,
+                    cloneId,
+                    abandonedFolder: cloneFolder,
+                });
+            }
+        }
+    }
+    return repairs;
+}
+
 export interface LibraryFolderRenameState {
     root: string;
     oldPath: string;

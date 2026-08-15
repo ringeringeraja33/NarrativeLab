@@ -8743,6 +8743,60 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     pointer-events: none;
 }
 
+.story-graph-connect-chooser {
+    position: fixed;
+    z-index: var(--layer-menu);
+    min-width: 180px;
+    max-width: 320px;
+    padding: var(--size-4-1);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-m);
+    background-color: var(--background-secondary);
+    box-shadow: var(--shadow-s);
+    color: var(--text-normal);
+    font-size: var(--font-ui-small);
+}
+
+.story-graph-connect-chooser-item {
+    display: flex;
+    align-items: center;
+    gap: var(--size-4-2);
+    padding: var(--size-4-1) var(--size-4-2);
+    border-radius: var(--radius-s);
+    cursor: pointer;
+    line-height: var(--line-height-tight);
+}
+
+.story-graph-connect-chooser-item:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.story-graph-connect-chooser-item.is-disabled,
+.story-graph-connect-chooser-item.is-disabled:hover {
+    color: var(--text-muted);
+    cursor: default;
+    background-color: transparent;
+}
+
+.story-graph-connect-chooser-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--icon-size);
+    height: var(--icon-size);
+    flex-shrink: 0;
+}
+
+.story-graph-connect-chooser-title {
+    min-width: 0;
+}
+
+.story-graph-connect-chooser-separator {
+    height: 1px;
+    margin: var(--size-4-1) 0;
+    background-color: var(--background-modifier-border);
+}
+
 .story-graph-focus-host {
     position: relative;
     min-height: 560px;

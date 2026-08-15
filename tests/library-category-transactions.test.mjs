@@ -16,7 +16,11 @@ const {
     buildLibraryPathScopeFilter,
     collectReferencedLibraryCategoryIds,
     findLibraryCategoriesMissingFolders,
+    findStaleNumberedCategoryClone,
+    isSingularPluralFolderAlias,
+    libraryFolderNamesMatch,
     planLibraryFolderRename,
+    shouldAllocateNewCategoryForFolder,
     shouldEnableAdoptedLibraryCategory,
 } = await import(
     `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
@@ -44,6 +48,49 @@ test('distinct folders with the same slug receive distinct category ids', () => 
     assert.equal(
         allocateLibraryCategoryId('story-ideas', ['story-ideas', 'story-ideas-2']),
         'story-ideas-3',
+    );
+});
+
+test('singular Location is the Locations seed folder, not a new category', () => {
+    assert.equal(isSingularPluralFolderAlias('Location', 'Locations'), true);
+    assert.equal(isSingularPluralFolderAlias('Creature', 'Creatures'), true);
+    assert.equal(isSingularPluralFolderAlias('Evomon', 'Creatures'), false);
+});
+
+test('renamed Library folders retarget the original category instead of cloning it', () => {
+    assert.equal(shouldAllocateNewCategoryForFolder({
+        mappedFolder: 'Creatures',
+        discoveredFolder: 'Evomon',
+        liveFolders: ['Evomon', 'Characters', 'Location'],
+    }), false);
+    assert.equal(shouldAllocateNewCategoryForFolder({
+        mappedFolder: 'Locations',
+        discoveredFolder: 'Location',
+        liveFolders: ['Location', 'Characters'],
+    }), false);
+    assert.equal(shouldAllocateNewCategoryForFolder({
+        mappedFolder: 'Creatures',
+        discoveredFolder: 'Evomon',
+        liveFolders: ['Creatures', 'Evomon'],
+    }), true);
+});
+
+test('stale numbered clones point back at the renamed live folder', () => {
+    assert.deepEqual(
+        findStaleNumberedCategoryClone(
+            'creatures',
+            { creatures: 'Creatures', 'creatures-2': 'Evomon', locations: 'Locations' },
+            ['Evomon', 'Location', 'Characters'],
+        ),
+        { cloneId: 'creatures-2', liveFolder: 'Evomon' },
+    );
+    assert.equal(
+        findStaleNumberedCategoryClone(
+            'creatures',
+            { creatures: 'Creatures', 'creatures-2': 'Evomon' },
+            ['Creatures', 'Evomon'],
+        ),
+        null,
     );
 });
 

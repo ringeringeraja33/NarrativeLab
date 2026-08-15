@@ -1,6 +1,6 @@
 # NarrativeLab — Changelog
 
-## 1.0.0 — Community release candidate
+## 1.0.0 — Community release
 
 - Prepared NarrativeLab for the Obsidian Community directory with complete user, contributor, security, privacy, release, and submission documentation.
 - Bundled the Univer spreadsheet runtime into `main.js`, so a standard Community Plugins installation contains every runtime dependency and works without an undeclared sidecar file.
@@ -8,6 +8,9 @@
 - Added persistent horizontal and vertical archive-page layouts for Characters, Locations, Worlds, and custom Library categories.
 - Refined the unified Structure workspace, recursive Library synchronization, native Base integration, Markdown-aware spreadsheet editing, bilingual interface, and data-safety checks.
 - Added automated CI and tag-based GitHub releases containing the exact assets required by Obsidian: `main.js`, `manifest.json`, and `styles.css`.
+- Story Graph connect-drop no longer flashes and vanishes on Windows after a second right-click; the chooser is graph-owned instead of an Obsidian Menu.
+- Story Graph portraits no longer clip to the wrong node when Chinese names collide on the same SVG clipPath id; covers also fall back to the first gallery image.
+- Renaming a Library folder (for example Creatures → Evomon) or using a singular/plural alias (Location / Locations) no longer creates a duplicate category tab.
 
 ## 0.1.1
 

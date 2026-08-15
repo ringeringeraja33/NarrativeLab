@@ -49,7 +49,7 @@ import {
 } from './StoryGraphFocusView';
 import { CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE } from '../constants';
 import { isMobile } from './MobileAdapter';
-import { pickImage, resolveImagePath } from './ImagePicker';
+import { libraryCoverPath, pickImage, resolveImagePath } from './ImagePicker';
 import { ensureWikilink, waitForResolvedWikilink } from '../utils/perceptions';
 import {
     assignStoryGraphLinkCategory,
@@ -248,16 +248,16 @@ function collectStoryGraphImageMap(plugin: SceneCardsPlugin): Record<string, str
         map[normalizePath(filePath)] = image.trim();
     };
     for (const character of plugin.characterManager.getAllCharacters()) {
-        put(character.filePath, character.image);
+        put(character.filePath, libraryCoverPath(character));
     }
     for (const world of plugin.locationManager.getAllWorlds()) {
-        put(world.filePath, world.image);
+        put(world.filePath, libraryCoverPath(world));
     }
     for (const location of plugin.locationManager.getAllLocations()) {
-        put(location.filePath, location.image);
+        put(location.filePath, libraryCoverPath(location));
     }
     for (const entry of plugin.codexManager.getAllEntries()) {
-        put(entry.filePath, entry.image);
+        put(entry.filePath, libraryCoverPath(entry));
     }
     return map;
 }
@@ -286,7 +286,7 @@ function collectStoryGraphDocuments(
             filePath: character.filePath,
             label: resolveLibraryEntityName(character.name, character.filePath),
             entityType: 'character',
-            image: character.image,
+            image: libraryCoverPath(character),
         });
     }
     for (const world of plugin.locationManager.getAllWorlds()) {
@@ -294,7 +294,7 @@ function collectStoryGraphDocuments(
             filePath: world.filePath,
             label: resolveLibraryEntityName(world.name, world.filePath),
             entityType: 'location',
-            image: world.image,
+            image: libraryCoverPath(world),
         });
     }
     for (const location of plugin.locationManager.getAllLocations()) {
@@ -302,7 +302,7 @@ function collectStoryGraphDocuments(
             filePath: location.filePath,
             label: resolveLibraryEntityName(location.name, location.filePath),
             entityType: 'location',
-            image: location.image,
+            image: libraryCoverPath(location),
         });
     }
     for (const entry of plugin.codexManager.getAllEntries()) {
@@ -311,7 +311,7 @@ function collectStoryGraphDocuments(
             label: resolveLibraryEntityName(entry.name, entry.filePath),
             entityType: 'codex',
             libraryCategoryId: entry.type,
-            image: entry.image,
+            image: libraryCoverPath(entry),
         });
     }
     return Array.from(documents.values());

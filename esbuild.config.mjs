@@ -15,6 +15,10 @@ const DEFAULT_DEPLOY_DIRS = [
   join(home, "Library/CloudStorage/OneDrive-个人/My Library/.obsidianMac/plugins/narrative-lab"),
   join(home, "Documents/Obsidian/.obsidian/plugins/narrative-lab"),
   join(home, "Documents/Obsidian/.obsidianMac/plugins/narrative-lab"),
+  join(home, "OneDrive/My Library/.obsidian/plugins/narrative-lab"),
+  join(home, "OneDrive/My Library/.obsidianMac/plugins/narrative-lab"),
+  join(home, "iCloudDrive/Documents/Obsidian/.obsidian/plugins/narrative-lab"),
+  join(home, "OneDrive/My Library/Projects/Game Design/.obsidian/plugins/narrative-lab"),
 ];
 
 /** Optional, path-delimited vault plugin folders that receive build outputs. */

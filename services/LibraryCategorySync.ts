@@ -21,13 +21,17 @@ import type SceneCardsPlugin from '../main';
 import { localizeForLanguage, t } from '../utils/i18n';
 import {
     allocateLibraryCategoryId,
+    collectStaleNumberedCategoryRepairs,
     findLibraryCategoriesMissingFolders,
     libraryFolderNamesMatch,
     planLibraryFolderRename,
+    isSingularPluralFolderAlias,
+    shouldAllocateNewCategoryForFolder,
     shouldEnableAdoptedLibraryCategory,
     type VaultPathKind,
 } from '../utils/libraryCategoryTransactions';
 import { coerceString } from '../utils/narrow';
+import { collectMarkdownFiles, isLibraryEntityMarkdownFile } from './EntityFileCache';
 import {
     migrateNativeLibraryBasesForActiveProject,
     pruneOrphanNativeLibraryBases,
@@ -334,8 +338,9 @@ function removeLibraryCategoryState(
 async function readLibraryFolderNames(
     plugin: SceneCardsPlugin,
     project: StoryLineProject,
-): Promise<{ names: Set<string>; scannedRoots: number }> {
+): Promise<{ names: Set<string>; occupied: Set<string>; scannedRoots: number }> {
     const names = new Set<string>();
+    const occupied = new Set<string>();
     let scannedRoots = 0;
     for (const root of libraryRootsForProject(plugin, project)) {
         try {
@@ -344,13 +349,108 @@ async function readLibraryFolderNames(
             scannedRoots += 1;
             for (const folderPath of listing.folders) {
                 const name = basenameOfPath(folderPath);
-                if (name) names.add(name);
+                if (!name) continue;
+                names.add(name);
+                const notes = await collectMarkdownFiles(plugin.app, folderPath);
+                if (notes.some(file => isLibraryEntityMarkdownFile(file))) occupied.add(name);
             }
         } catch (error) {
             console.warn('[NarrativeLab] Failed to scan Library folders:', root, error);
         }
     }
-    return { names, scannedRoots };
+    return { names, occupied, scannedRoots };
+}
+
+async function trashEmptyLibraryFolder(
+    plugin: SceneCardsPlugin,
+    project: StoryLineProject,
+    folderName: string,
+): Promise<void> {
+    const name = folderName.trim();
+    if (!name) return;
+    for (const root of libraryRootsForProject(plugin, project)) {
+        await disposeLibrarySubfolder(plugin, root, name, 'trash');
+    }
+}
+
+async function mergeFolderInto(
+    plugin: SceneCardsPlugin,
+    from: TFolder,
+    to: TFolder,
+): Promise<void> {
+    for (const child of [...from.children]) {
+        const destPath = normalizePath(`${to.path}/${child.name}`);
+        const existing = plugin.app.vault.getAbstractFileByPath(destPath);
+        if (child instanceof TFolder && existing instanceof TFolder) {
+            await mergeFolderInto(plugin, child, existing);
+            const leftover = plugin.app.vault.getAbstractFileByPath(child.path);
+            if (leftover instanceof TFolder && leftover.children.length === 0) {
+                await plugin.app.fileManager.trashFile(leftover);
+            }
+            continue;
+        }
+        let target = destPath;
+        if (existing) {
+            const dot = child.name.lastIndexOf('.');
+            const stem = dot > 0 ? child.name.slice(0, dot) : child.name;
+            const extension = dot > 0 ? child.name.slice(dot) : '';
+            let suffix = 2;
+            while (plugin.app.vault.getAbstractFileByPath(target)) {
+                target = normalizePath(`${to.path}/${stem} ${suffix}${extension}`);
+                suffix += 1;
+            }
+        }
+        await plugin.app.fileManager.renameFile(child, target);
+    }
+}
+
+/** Location → Locations: restore the seed folder instead of creating locations-2. */
+async function restoreCanonicalSeedFolders(
+    plugin: SceneCardsPlugin,
+    project: StoryLineProject,
+): Promise<boolean> {
+    let changed = false;
+    if (!project.libraryFolders) project.libraryFolders = {};
+    for (const root of libraryRootsForProject(plugin, project)) {
+        if (!await plugin.app.vault.adapter.exists(root)) continue;
+        for (const [id, canonical] of Object.entries(DEFAULT_LIBRARY_FOLDER_NAMES)) {
+            const listing = await plugin.app.vault.adapter.list(root);
+            const alias = listing.folders
+                .map(path => basenameOfPath(path))
+                .find(name => isSingularPluralFolderAlias(name, canonical));
+            if (!alias) continue;
+            const fromPath = normalizePath(`${root}/${alias}`);
+            const toPath = normalizePath(`${root}/${canonical}`);
+            const from = plugin.app.vault.getAbstractFileByPath(fromPath);
+            if (!(from instanceof TFolder)) continue;
+            const to = plugin.app.vault.getAbstractFileByPath(toPath);
+            if (!to) {
+                await plugin.app.fileManager.renameFile(from, toPath);
+            } else if (to instanceof TFolder) {
+                await mergeFolderInto(plugin, from, to);
+                const leftover = plugin.app.vault.getAbstractFileByPath(fromPath);
+                if (leftover instanceof TFolder) {
+                    await plugin.app.fileManager.trashFile(leftover);
+                }
+            } else {
+                continue;
+            }
+            if (project.libraryFolders[id] !== canonical) {
+                project.libraryFolders[id] = canonical;
+                changed = true;
+            }
+            const custom = plugin.settings.codexCustomCategories?.find(category => category.id === id);
+            if (custom?.label && (
+                isSingularPluralFolderAlias(custom.label, canonical)
+                || libraryFolderNamesMatch(custom.label, alias)
+            )) {
+                custom.label = canonical;
+                changed = true;
+            }
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 /** Remove category settings and Base assets when its local folder was removed. */
@@ -407,11 +507,16 @@ function expectedLibraryFolderNames(
         if (resolved) names.add(resolved);
         const mapped = project.libraryFolders?.[id]?.trim();
         if (mapped) names.add(mapped);
-        const english = DEFAULT_LIBRARY_FOLDER_NAMES[id];
-        if (english) names.add(english);
         const custom = plugin.settings.codexCustomCategories?.find(c => c.id === id);
         const label = sanitizeLibraryFolderName(custom?.label || '');
         if (label) names.add(label);
+        const english = DEFAULT_LIBRARY_FOLDER_NAMES[id];
+        // After Creatures → Evomon, do not keep the old English folder as "expected"
+        // or ensureLibraryCategoryFolders will recreate an empty duplicate.
+        const current = mapped || resolved;
+        if (english && (!current || libraryFolderNamesMatch(current, english))) {
+            names.add(english);
+        }
     }
     return names;
 }
@@ -1127,7 +1232,7 @@ export async function adoptLibraryCategoriesFromFolders(
     // Recover fixed-folder renames that happened while Obsidian was closed.
     // Localized seed names are unambiguous; arbitrary unknown folders remain
     // custom categories because their intended fixed-category target is unknowable.
-    const diskSnapshot = await readLibraryFolderNames(plugin, project);
+    let diskSnapshot = await readLibraryFolderNames(plugin, project);
     if (diskSnapshot.scannedRoots > 0) {
         for (const id of FIXED_LIBRARY_FOLDER_IDS) {
             const current = resolveLibraryFolderName(plugin, id, project);
@@ -1142,6 +1247,35 @@ export async function adoptLibraryCategoriesFromFolders(
             if (!replacement) continue;
             project.libraryFolders[id] = replacement;
             setLibraryCategoryDisplayMetadata(plugin, id, replacement);
+            changed = true;
+        }
+    }
+
+    if (await restoreCanonicalSeedFolders(plugin, project)) {
+        changed = true;
+        diskSnapshot = await readLibraryFolderNames(plugin, project);
+    }
+
+    if (project.libraryFolders) {
+        const repairs = collectStaleNumberedCategoryRepairs(
+            project.libraryFolders,
+            diskSnapshot.occupied,
+        );
+        for (const repair of repairs) {
+            if (repair.action === 'retarget') {
+                const canonical = DEFAULT_LIBRARY_FOLDER_NAMES[repair.parentId];
+                project.libraryFolders[repair.parentId] =
+                    canonical && isSingularPluralFolderAlias(repair.liveFolder, canonical)
+                        ? canonical
+                        : repair.liveFolder;
+            }
+            removeLibraryCategoryState(plugin, project, repair.cloneId);
+            enabled.delete(repair.cloneId);
+            const orderIndex = order.indexOf(repair.cloneId);
+            if (orderIndex >= 0) order.splice(orderIndex, 1);
+            if (repair.abandonedFolder && !diskSnapshot.occupied.has(repair.abandonedFolder)) {
+                await trashEmptyLibraryFolder(plugin, project, repair.abandonedFolder);
+            }
             changed = true;
         }
     }
@@ -1207,11 +1341,20 @@ export async function adoptLibraryCategoriesFromFolders(
             continue;
         }
         for (const folderPath of folderPaths) {
-            const folderName = basenameOfPath(folderPath);
+            let folderName = basenameOfPath(folderPath);
             let resolved = resolveCategoryIdForLibraryFolder(plugin, project, folderName);
             if (!resolved) continue;
+            const canonical = DEFAULT_LIBRARY_FOLDER_NAMES[resolved.id];
+            if (canonical && isSingularPluralFolderAlias(folderName, canonical)) {
+                folderName = canonical;
+            }
             const mappedFolder = project.libraryFolders?.[resolved.id]?.trim();
-            if (mappedFolder && mappedFolder !== folderName) {
+            if (mappedFolder && mappedFolder !== folderName
+                && shouldAllocateNewCategoryForFolder({
+                    mappedFolder,
+                    discoveredFolder: folderName,
+                    liveFolders: diskSnapshot.occupied,
+                })) {
                 const usedIds = new Set<string>([
                     ...Object.keys(project.libraryFolders || {}),
                     ...(plugin.settings.codexEnabledCategories || []),

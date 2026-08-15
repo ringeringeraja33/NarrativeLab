@@ -55,6 +55,12 @@ test('right-click connect queues the drop menu instead of showing it on mouseup'
     const source = await readFile(new URL('../components/StoryGraph.ts', import.meta.url), 'utf8');
     assert.match(source, /queueConnectDropMenu/);
     assert.match(source, /pendingConnectMenu/);
+    assert.match(source, /story-graph-connect-chooser/);
+    assert.match(source, /sg-avatar-clip-/);
+    assert.doesNotMatch(source, /sg-clip-\$\{node\.id\.replace/);
+    assert.match(source, /mountConnectChooser/);
+    assert.doesNotMatch(source, /cls: 'menu story-graph-connect-chooser'/);
+    assert.match(source, /connectClickFrom && this\.connectClickFrom\.id !== node\.id/);
     assert.doesNotMatch(source, /this\.showConnectDropMenu\(ue/);
     assert.match(source, /revealWikilink/);
 });
