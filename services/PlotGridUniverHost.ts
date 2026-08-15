@@ -41,6 +41,10 @@ function withNarrativeLabZhTerminology(base: unknown): Record<string, unknown> {
     };
 }
 
+export function warmupPlotGridUniver(activeDocument: Document = document): void {
+    injectUniverCss(activeDocument);
+}
+
 function injectUniverCss(activeDocument: Document): void {
     const id = 'narrativelab-univer-sheets-css';
     if (activeDocument.getElementById(id)) return;
@@ -58,9 +62,12 @@ import {
     conceptGridContentFingerprint,
     documentToUniverWorkbookData,
     mergeUniverCellDataIntoDocument,
+    reconcileUniverSheetsIntoDocument,
     moveConceptGridAxis,
     preserveConceptGridAxisSizes,
     spliceConceptGridAxis,
+    plotGridSourceToUniverRichText,
+    PLOTGRID_SOURCE_FIELD,
 } from './PlotGridXlsxCodec';
 
 export { cellRequiresMarkdownEditor } from '../utils/plotGridCellEdit';
@@ -87,6 +94,8 @@ export interface PlotGridUniverHostOptions {
     shouldBlockUniverCellEdit?: (sheetId: string, row: number, col: number) => boolean;
     /** Open the Markdown cell editor for the given Univer coordinates. */
     onRequestMarkdownCellEdit?: (info: { sheetId: string; row: number; col: number }) => void;
+    /** True while NarrativeLab's floating Markdown editor is open. */
+    isExternalEditorBusy?: () => boolean;
     onDocumentChange: (doc: ConceptGridDocument) => void;
     onSelectionChange?: (info: { sheetId: string; row: number; col: number }) => void;
 }
@@ -109,13 +118,15 @@ export interface PlotGridUniverHost {
     /** Redraw link icons without replacing workbook content or selection. */
     refreshLinkMarkers: () => void;
     setActiveSheet: (sheetId: string) => void;
-    /** Rename a worksheet to match NarrativeLab page tabs (Univer footer is hidden). */
+    /** Rename a worksheet (Univer sheet bar is the primary rename UI). */
     setSheetTitle: (sheetId: string, title: string) => void;
     /** Apply NarrativeLab's legacy view controls to the embedded worksheet. */
     setZoom: (sheetId: string, ratio: number) => void;
     setFreeze: (sheetId: string, enabled: boolean, frozenColumns?: number, frozenRows?: number) => void;
     setActiveCell: (sheetId: string, row: number, col: number) => void;
     getActiveCell: () => { sheetId: string; row: number; col: number } | null;
+    /** Write one cell's Markdown source without remounting the workbook. */
+    applyCellSource: (sheetId: string, row: number, col: number, source: string) => void;
     /** True while the in-cell / formula editor or IME composition is active. */
     isEditorBusy: () => boolean;
     /** True when a debounced Univer→document pull is waiting (or editor still open). */
@@ -158,6 +169,7 @@ type UniverAPI = {
             getRange: (r: number, c: number) => {
                 getValue: () => unknown;
                 getCellData: () => { v?: unknown } | null;
+                setValue?: (value: unknown) => unknown;
                 activate?: () => unknown;
             };
             getCellMatrix?: () => { getMatrix: () => unknown };
@@ -615,49 +627,38 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         overflow: 'hidden',
     });
 
-    // Prefer hiding Univer's sheet bar (NL has its own page tabs). Fall back if unsupported.
+    const univerFooter = {
+        sheetBar: true,
+        statisticBar: true,
+        menus: true,
+        zoomSlider: true,
+        addSheetButtonConfig: {
+            show: true,
+            defaultRowCount: 50,
+            defaultColumnCount: 20,
+        },
+    };
+    // Prefer Univer's classic ribbon + native sheet bar (hide / tab color / rename).
     let univerAPI: UniverAPI;
     let univerInstance: Univer;
-    try {
-        ({ univer: univerInstance, univerAPI } = createUniver({
-            locale,
-            locales,
-            presets: [
-                UniverSheetsCorePreset({
-                    container: opts.container,
-                    footer: false,
-                    toolbar: true,
-                    formulaBar: true,
-                    // Simple ribbon is Univer's own compact layout. It keeps
-                    // the complete command registry in the overflow menu.
-                    ribbonType: 'simple',
-                    contextMenu: true,
-                    menu: {
-                        [TEXT_TO_NUMBER_TOOLBAR_MENU_ID]: { hidden: true },
-                    },
-                }),
-                UniverSheetsFilterPreset(),
-            ],
-        }) as unknown as { univer: Univer; univerAPI: UniverAPI });
-    } catch {
-        ({ univer: univerInstance, univerAPI } = createUniver({
-            locale,
-            locales,
-            presets: [
-                UniverSheetsCorePreset({
-                    container: opts.container,
-                    toolbar: true,
-                    formulaBar: true,
-                    ribbonType: 'simple',
-                    contextMenu: true,
-                    menu: {
-                        [TEXT_TO_NUMBER_TOOLBAR_MENU_ID]: { hidden: true },
-                    },
-                }),
-                UniverSheetsFilterPreset(),
-            ],
-        }) as unknown as { univer: Univer; univerAPI: UniverAPI });
-    }
+    ({ univer: univerInstance, univerAPI } = createUniver({
+        locale,
+        locales,
+        presets: [
+            UniverSheetsCorePreset({
+                container: opts.container,
+                footer: univerFooter,
+                toolbar: true,
+                formulaBar: true,
+                ribbonType: 'classic',
+                contextMenu: true,
+                menu: {
+                    [TEXT_TO_NUMBER_TOOLBAR_MENU_ID]: { hidden: true },
+                },
+            }),
+            UniverSheetsFilterPreset(),
+        ],
+    }) as unknown as { univer: Univer; univerAPI: UniverAPI });
 
     const nativeLinkColor = getComputedStyle(opts.container).getPropertyValue('--link-color').trim()
         || getComputedStyle(opts.container).getPropertyValue('--interactive-accent').trim()
@@ -783,6 +784,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             const wb = univerAPI.getActiveWorkbook?.();
             if (!wb) return;
             const saved = wb.save?.() as {
+                sheetOrder?: string[];
                 styles?: Record<string, {
                     bg?: { rgb?: string } | null;
                     cl?: { rgb?: string } | null;
@@ -792,6 +794,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 }>;
                 sheets?: Record<string, {
                     id?: string;
+                    name?: string;
+                    tabColor?: string;
+                    hidden?: number | boolean | string;
+                    zoomRatio?: number;
                     cellData?: Record<number, Record<number, {
                         v?: unknown;
                         f?: unknown;
@@ -820,7 +826,16 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 preserveConceptGridAxisSizes(base, liveDoc);
             }
 
-            let next = base;
+            const activeSheetId = wb.getActiveSheet?.()?.getSheetId?.();
+            // Univer's sheet bar owns name / hide / tab color / order / add / delete.
+            // Reconcile those first so a newly inserted sheet has an NL page before
+            // cell merge, and so link metadata on matching page ids is kept.
+            let next = reconcileUniverSheetsIntoDocument(
+                base,
+                saved.sheets,
+                saved.sheetOrder,
+                activeSheetId,
+            );
             for (const sheet of Object.values(saved.sheets)) {
                 const id = sheet.id;
                 if (!id || !sheet.cellData) continue;
@@ -833,9 +848,6 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     mergeDimensions ? sheet.columnData : undefined,
                     { clearMissing, mergeDimensions },
                 );
-                // NarrativeLab owns page titles via the bottom sheet tabs
-                // (Univer's sheet bar is hidden). Do not overwrite NL titles
-                // from workbook.save() sheet names — that snaps renames back.
             }
             const nextFp = conceptGridContentFingerprint(next);
             // Also detect meta drift (links) even when display text is unchanged.
@@ -864,7 +876,38 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let pendingMergeDimensions = false;
     let schedulePull: (opts?: { clearMissing?: boolean; mergeDimensions?: boolean }) => void = () => { /* assigned below */ };
 
+    const applyCellSource = (sheetId: string, row: number, col: number, source: string): void => {
+        const page = liveDoc.pages.find(item => item.id === sheetId);
+        if (page) {
+            const rowMeta = page.rows[row - 1];
+            const colMeta = page.columns[col - 1];
+            if (rowMeta && colMeta) {
+                const key = `${rowMeta.id}-${colMeta.id}`;
+                const cell = page.cells[key];
+                if (cell) {
+                    cell.content = source;
+                    cell.manualContent = true;
+                }
+            }
+        }
+        contentFp = conceptGridContentFingerprint(liveDoc);
+        suppressUntil = Date.now() + 400;
+        try {
+            const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
+            const rich = source ? plotGridSourceToUniverRichText(source, nativeLinkColor) : null;
+            sheet?.getRange?.(row, col)?.setValue?.({
+                v: rich?.displayText ?? source,
+                p: nativeRichTextEnabled && rich ? rich.cellDocument : undefined,
+                custom: source ? { [PLOTGRID_SOURCE_FIELD]: source } : undefined,
+            });
+        } catch (error) {
+            console.warn('[NarrativeLab] Univer applyCellSource failed:', error);
+        }
+        refreshLinkMarkers();
+    };
+
     const isEditorBusy = () => {
+        if (opts.isExternalEditorBusy?.()) return true;
         if (cellEditing || composing) return true;
         // Univer does not always emit set-cell-edit-visible for every edit path,
         // and the formula/cell editor may portal outside the host container.
@@ -880,7 +923,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             // NarrativeLab's floating Markdown editor lives on <body> — never block saves for it.
             if (active.closest('.plot-grid-cell-editor-window, .modal, .prompt')) return false;
             if (active.closest(
-                '.univer-cell-editor, .univer-editor-container, .univer-formula-bar, [class*="cell-editor"], [class*="formula-editor"]',
+                '.univer-cell-editor, .univer-editor-container, .univer-formula-bar, [class*="cell-editor"], [class*="formula-editor"], [class*="sheet-bar"], [class*="sheetbar"], [class*="SheetBar"]',
             )) {
                 return true;
             }
@@ -1306,6 +1349,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 sheet.cancelFreeze?.();
             }
         },
+        applyCellSource,
         setActiveCell: (sheetId: string, row: number, col: number) => {
             const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
             sheet?.getRange?.(row, col)?.activate?.();

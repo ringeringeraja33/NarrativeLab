@@ -11,7 +11,7 @@ import { renderTagPillInput, renderAutocompleteInput } from './InlineSuggest';
 import { AddFieldModal } from './AddFieldModal';
 import { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { parseActChapterInput, actChapterHasIllegalPathChars, isPrologueAct, isEpilogueAct, PROLOGUE_ACT, EPILOGUE_ACT } from '../utils/actChapter';
-import { Scene, SceneStatus, TIMELINE_MODES, TIMELINE_MODE_LABELS, TimelineMode, getStatusOrder, resolveStatusCfg } from '../models/Scene';
+import { Scene, SceneStatus, TIMELINE_MODES, TIMELINE_MODE_LABELS, TimelineMode, getStatusOrder, resolveStatusCfg, sceneHasLocation, sceneLocationNames } from '../models/Scene';
 import { t } from '../utils/i18n';
 
 /**
@@ -434,23 +434,23 @@ export class InspectorComponent {
             highlightLabel: '(POV)',
         });
 
-        // ── Location (autocomplete input) ──
+        // ── Locations (autocomplete tag-pill input) ──
         const locSection = this.container.createDiv('inspector-section');
-        locSection.createSpan({ cls: 'inspector-label', text: t('Location: ') });
-        const locContainer = locSection.createDiv('inspector-location-autocomplete');
-        renderAutocompleteInput({
-            container: locContainer,
-            value: scene.location || '',
+        locSection.createSpan({ cls: 'inspector-label', text: t('Locations:') });
+        const locPillContainer = locSection.createDiv('inspector-chip-list');
+
+        renderTagPillInput({
+            container: locPillContainer,
+            values: sceneLocationNames(scene),
             getSuggestions: () => this.getLocationNames(),
-            onChange: async (val) => {
-                await this.sceneManager.updateScene(scene.filePath, { location: val });
-                scene.location = val;
+            onChange: async (values) => {
+                await this.sceneManager.updateScene(scene.filePath, { location: values });
+                scene.location = values;
             },
-            placeholder: t('Search locations…'),
-            getDisplayLabel: this.getLocationDisplayLabel(),
+            placeholder: t('Add location…'),
         });
 
-        // ── Dynamic Codex sections (categories with showInSidebar) ──
+        // ── Dynamic Codex sections (enabled Library categories) ──
         this.renderCodexSections(scene);
 
         // ── Timeline Mode / Strand ──
@@ -1046,20 +1046,17 @@ export class InspectorComponent {
     }
 
     /**
-     * Render dynamic Codex sections for categories that have showInSidebar enabled.
-     * Each enabled category gets a tag-pill input populated with codex entry names.
+     * Render dynamic Codex sections for Library categories shown in the inspector.
+     * Each enabled category gets a tag-pill input populated with entry names.
      */
     private renderCodexSections(scene: Scene): void {
         const codexMgr = this.plugin.codexManager;
         if (!codexMgr) return;
 
-        const sidebarCatIds = this.plugin.settings.codexSidebarCategories || [];
-        if (sidebarCatIds.length === 0) return;
+        const categories = codexMgr.getCategories();
+        if (categories.length === 0) return;
 
-        for (const catId of sidebarCatIds) {
-            const catDef = codexMgr.getCategoryDef(catId);
-            if (!catDef) continue;
-
+        for (const catDef of categories) {
             const section = this.container.createDiv('inspector-section');
             const labelRow = section.createDiv();
             labelRow.setCssStyles({
@@ -1073,14 +1070,14 @@ export class InspectorComponent {
 
             const pillContainer = section.createDiv('inspector-chip-list');
 
-            const currentLinks = scene.codexLinks?.[catId] || [];
+            const currentLinks = scene.codexLinks?.[catDef.id] || [];
             renderTagPillInput({
                 container: pillContainer,
                 values: currentLinks,
-                getSuggestions: () => codexMgr.getEntries(catId).map(e => e.name),
+                getSuggestions: () => codexMgr.getEntries(catDef.id).map(e => e.name),
                 onChange: async (values) => {
                     if (!scene.codexLinks) scene.codexLinks = {};
-                    scene.codexLinks[catId] = values;
+                    scene.codexLinks[catDef.id] = values;
                     await this.sceneManager.updateScene(scene.filePath, { codexLinks: scene.codexLinks });
                 },
                 placeholder: t('Add {kind}…', { kind: t(catDef.label).toLowerCase() }),
@@ -1101,7 +1098,7 @@ export class InspectorComponent {
 
         // Exclude links that are already listed in frontmatter characters / location / codexLinks
         const fmChars = new Set((scene.characters || []).map(c => c.toLowerCase()));
-        const fmLoc = scene.location?.toLowerCase();
+        const fmLocs = new Set(sceneLocationNames(scene).map(n => n.toLowerCase()));
         const fmCodex = new Set<string>();
         if (scene.codexLinks) {
             for (const names of Object.values(scene.codexLinks)) {
@@ -1114,7 +1111,7 @@ export class InspectorComponent {
             const key = l.name.toLowerCase();
             if (ignored.has(key)) return false;
             if (l.type === 'character' && fmChars.has(key)) return false;
-            if (l.type === 'location' && key === fmLoc) return false;
+            if (l.type === 'location' && fmLocs.has(key)) return false;
             if (fmCodex.has(key)) return false;
             return true;
         });
@@ -1144,12 +1141,33 @@ export class InspectorComponent {
 
         for (const link of novel) {
             const low = link.name.toLowerCase();
-            const resolvedType = overrides[low] || link.type;
+            const resolvedType = overrides[low]
+                || (link.codexCategory ? `codex:${link.codexCategory}` : link.type);
             const pill = pillContainer.createDiv(`inspector-detected-pill detected-type-${resolvedType}`);
             if (overrides[low]) pill.addClass('tag-overridden');
             const icon = pill.createSpan({ cls: 'inspector-detected-icon' });
             obsidian.setIcon(icon, typeIcons[resolvedType] || 'file-text');
             pill.createSpan({ text: link.name });
+            const addHint = resolvedType === 'character'
+                ? t('Add to characters')
+                : resolvedType === 'location'
+                    ? t('Add to locations')
+                    : resolvedType === 'codex' || resolvedType.startsWith('codex:')
+                        ? t('Add to {name}', {
+                            name: t(codexMgr?.getCategoryDef(
+                                resolvedType.startsWith('codex:')
+                                    ? resolvedType.slice(6)
+                                    : (link.codexCategory || ''),
+                            )?.label || resolvedType.replace(/^codex:/, '')),
+                        })
+                        : '';
+            if (addHint) {
+                pill.setAttribute('title', addHint);
+                pill.addClass('is-assignable');
+                pill.addEventListener('click', () => {
+                    void this.assignDetectedLink(scene, link.name, resolvedType);
+                });
+            }
 
             // Right-click to override type
             pill.addEventListener('contextmenu', (e) => {
@@ -1160,6 +1178,38 @@ export class InspectorComponent {
                 });
             });
         }
+    }
+
+    /** Left-click a detected pill to write it into the matching scene field. */
+    private async assignDetectedLink(scene: Scene, name: string, resolvedType: string): Promise<void> {
+        const low = name.toLowerCase();
+        if (resolvedType === 'character') {
+            const characters = [...(scene.characters || [])];
+            if (characters.some(c => c.toLowerCase() === low)) return;
+            characters.push(name);
+            await this.sceneManager.updateScene(scene.filePath, { characters });
+            scene.characters = characters;
+        } else if (resolvedType === 'location') {
+            if (sceneHasLocation(scene, name)) return;
+            const location = [...sceneLocationNames(scene), name];
+            await this.sceneManager.updateScene(scene.filePath, { location });
+            scene.location = location;
+        } else if (resolvedType === 'codex' || resolvedType.startsWith('codex:')) {
+            const catId = resolvedType.startsWith('codex:')
+                ? resolvedType.slice(6)
+                : this.plugin.linkScanner.getCodexCategoryForName(name);
+            if (!catId) return;
+            if (!scene.codexLinks) scene.codexLinks = {};
+            const names = [...(scene.codexLinks[catId] || [])];
+            if (!names.some(n => n.toLowerCase() === low)) {
+                names.push(name);
+                scene.codexLinks[catId] = names;
+                await this.sceneManager.updateScene(scene.filePath, { codexLinks: scene.codexLinks });
+            }
+        } else {
+            return;
+        }
+        if (this.currentScene) this.render();
     }
 
     /**
@@ -1176,15 +1226,11 @@ export class InspectorComponent {
             { label: 'Other', value: 'other', icon: 'file-text' },
         ];
 
-        // Add codex categories that are shown in sidebar
+        // Add every enabled Library / Codex category
         const codexMgr = this.plugin.codexManager;
-        const sidebarCatIds = this.plugin.settings.codexSidebarCategories || [];
         if (codexMgr) {
-            for (const catId of sidebarCatIds) {
-                const catDef = codexMgr.getCategoryDef(catId);
-                if (catDef) {
-                    types.push({ label: catDef.label, value: `codex:${catId}`, icon: catDef.icon });
-                }
+            for (const catDef of codexMgr.getCategories()) {
+                types.push({ label: catDef.label, value: `codex:${catDef.id}`, icon: catDef.icon });
             }
         }
 
@@ -1562,16 +1608,6 @@ export class InspectorComponent {
         return Array.from(names.values()).sort((a, b) =>
             a.toLowerCase().localeCompare(b.toLowerCase())
         );
-    }
-
-    /**
-     * Build a display-label function for locations (e.g., "Parent > Child").
-     */
-    private getLocationDisplayLabel(): (value: string) => string {
-        const lm = this.plugin.locationManager;
-        if (!lm) return (v) => v;
-        const displayMap = lm.getDisplayNameMap();
-        return (value: string) => displayMap.get(value) || value;
     }
 }
 

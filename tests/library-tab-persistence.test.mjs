@@ -57,7 +57,7 @@ test('Uncategorized gallery matches Location Profiles chrome', () => {
     assert.match(codexView, /UNCATEGORIZED_CATEGORY_ID\) return true/);
     assert.match(codexView, /t\('Uncategorized Profiles'\)/);
     assert.doesNotMatch(codexView, /codex-overview-heading/);
-    assert.match(codexView, /showLayoutToggle: !this\.isProfileOverviewMode\(\)/);
+    assert.match(codexView, /showLayoutToggle: false/);
     assert.match(codexView, /t\('All projects'\)/);
     assert.match(locationView, /showLayoutToggle: false/);
     assert.match(locationView, /t\('All projects'\)/);
@@ -70,11 +70,26 @@ test('Codex profile mode and category restore from memory', () => {
     assert.match(codexView, /rememberLibraryCategory\(this\.plugin, categoryId/);
 });
 
+test('Library category hide keeps folders without resurrecting tabs', async () => {
+    const [sync, transactions] = await Promise.all([
+        readFile(new URL('../services/LibraryCategorySync.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../utils/libraryCategoryTransactions.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(transactions, /export function shouldEnableAdoptedLibraryCategory/);
+    assert.match(sync, /shouldEnableAdoptedLibraryCategory/);
+    assert.match(sync, /Deleted presets stay deleted even if their Library folder is still on disk/);
+    assert.doesNotMatch(sync, /deleted\.delete\(id\)/);
+    assert.match(categoryTabs, /enabledCodex\.has\(category\.id\)/);
+    assert.match(codexView, /Hidden presets stay registered so Library\/ folders cannot resurrect their tabs/);
+    assert.match(modeBar, /if \(!enabled\.has\(id\)\) return;/);
+});
+
 test('Library view switcher and category tabs restore the last category', () => {
     assert.match(viewSwitcher, /resolveLibraryViewType\(plugin\)/);
     assert.match(categoryTabs, /switchTo\(leaf, plugin, CHARACTER_VIEW_TYPE, 'characters'\)/);
     assert.match(categoryTabs, /switchTo\(leaf, plugin, LOCATION_VIEW_TYPE, 'locations'\)/);
-    assert.match(categoryTabs, /rememberLibraryCategory\(plugin, cat\.id\)/);
+    assert.match(categoryTabs, /rememberLibraryCategory\(plugin, categoryId\)/);
+    assert.match(categoryTabs, /activateCategory\(cat\.id\)/);
 });
 
 test('Structure top tab restores the last Structure sub-tab', async () => {

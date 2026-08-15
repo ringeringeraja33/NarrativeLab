@@ -802,9 +802,17 @@ export class SceneManager implements ISceneStore {
     /**
      * Switch to a different active project and re-index scenes.
      */
-    async setActiveProject(project: StoryLineProject): Promise<void> {
+    async setActiveProject(
+        project: StoryLineProject,
+        options?: { fromLeafFocus?: boolean },
+    ): Promise<void> {
+        const fromLeafFocus = options?.fromLeafFocus === true;
+        const previousFile = this._activeProject?.filePath
+            ? normalizePath(this._activeProject.filePath)
+            : '';
         // Save per-project data for the previous project before switching
         await this.plugin.saveProjectSystemData();
+        if (previousFile) this.plugin.stashProjectRuntime(previousFile);
 
         this._activeProject = project;
         this.plugin.settings.activeProjectFile = project.filePath;
@@ -817,25 +825,44 @@ export class SceneManager implements ISceneStore {
         // Native Base and Story Graph embeds are bound to concrete Library
         // paths. Force open Library views to remount for this project instead
         // of retaining the previous project's rows/categories under a new title.
-        this.plugin.libraryCategoriesStructureEpoch += 1;
+        // Tab-focus switches skip the epoch bump — those views are already
+        // painted for their bound project; remounting is what made multi-project
+        // work feel like the screens were swapping into each other.
+        if (!fromLeafFocus) {
+            this.plugin.libraryCategoriesStructureEpoch += 1;
+        }
         // Reload universal field templates for the new project
         await this.plugin.fieldTemplates.load();
         await this.plugin.templateCenter.load();
         await this.loadCorkboardPositions();
-        await this.plugin.saveSettings();
-        await this.initialize();
-        await this.migrateDraftFoldersIfNeeded();
-        await this.reconcileDraftFolders();
-        // Ensure Library/library.base (migrates System/library.base + Bases/library-*.base)
-        try {
-            const { migrateNativeLibraryBasesForActiveProject } = await import('../components/NativeLibraryBase');
-            await migrateNativeLibraryBasesForActiveProject(this.plugin);
-        } catch { /* non-fatal */ }
-        await this.plugin.plotlineManager.ensureSeeded();
-        await this.plugin.syncNarrativeCanvasToActiveProject();
+        if (!fromLeafFocus) {
+            await this.plugin.saveSettings();
+        }
+        const restored = fromLeafFocus && this.plugin.restoreProjectRuntime(project.filePath);
+        if (!restored) {
+            await this.initialize();
+        }
+        if (!fromLeafFocus) {
+            await this.migrateDraftFoldersIfNeeded();
+            await this.reconcileDraftFolders();
+            // Ensure Library/library.base (migrates System/library.base + Bases/library-*.base)
+            try {
+                const { migrateNativeLibraryBasesForActiveProject } = await import('../components/NativeLibraryBase');
+                await migrateNativeLibraryBasesForActiveProject(this.plugin);
+            } catch { /* non-fatal */ }
+            await this.plugin.plotlineManager.ensureSeeded();
+            await this.plugin.syncNarrativeCanvasToActiveProject();
+        }
         // Ask the plugin to refresh any open NarrativeLab views so the UI updates
         try {
-            if (this.plugin && typeof this.plugin.refreshOpenViews === 'function') {
+            if (fromLeafFocus) {
+                // Entities must match the focused project; skip wikilink rescan,
+                // plot-grid migration, and digest rebuild on a mere tab focus.
+                if (!restored) {
+                    await this.plugin.reloadEntities();
+                }
+                await this.plugin.refreshViewsOnly();
+            } else if (this.plugin && typeof this.plugin.refreshOpenViews === 'function') {
                 await this.plugin.refreshOpenViews();
             }
         } catch (e) {
@@ -1188,9 +1215,11 @@ export class SceneManager implements ISceneStore {
         this.initializePromise = (async () => {
         this.scenes.clear();
         const sceneFolder = this.getSceneFolder();
-        await this.scanFolderAdapter(sceneFolder);
         const notesFolder = this.getNotesFolder();
-        await this.scanFolderAdapter(notesFolder);
+        await Promise.all([
+            this.scanFolderAdapter(sceneFolder),
+            this.scanFolderAdapter(notesFolder),
+        ]);
         this.initialized = true;
         this.bumpVersion();
         })().finally(() => {
@@ -1319,9 +1348,16 @@ export class SceneManager implements ISceneStore {
         }
     }
 
-    /**
-     * Get all scenes
-     */
+    exportSceneIndex(): Map<string, Scene> {
+        return new Map(this.scenes);
+    }
+
+    restoreSceneIndex(scenes: Map<string, Scene>): void {
+        this.scenes = new Map(scenes);
+        this.initialized = true;
+        this.bumpVersion();
+    }
+
     getAllScenes(): Scene[] {
         return Array.from(this.scenes.values());
     }
@@ -4327,9 +4363,11 @@ export class SceneManager implements ISceneStore {
             return safeCurrent < safeLowest ? s.status : lowest;
         }, primary.status || 'idea');
 
-        // Combine locations if different
-        const locations = [...new Set(scenes.map(s => s.location).filter(Boolean))];
-        const mergedLocation = locations.length === 1 ? locations[0] : locations.join(', ');
+        // Union locations
+        const locSet = new Set<string>();
+        for (const s of scenes) {
+            for (const name of s.location || []) locSet.add(name);
+        }
 
         // Union setup/payoff links
         const setupSet = new Set<string>();
@@ -4346,7 +4384,7 @@ export class SceneManager implements ISceneStore {
             characters: [...charSet],
             tags: [...tagSet],
             status: lowestStatus,
-            location: mergedLocation,
+            location: locSet.size > 0 ? [...locSet] : undefined,
             setup_scenes: setupSet.size > 0 ? [...setupSet] : undefined,
             payoff_scenes: payoffSet.size > 0 ? [...payoffSet] : undefined,
         };

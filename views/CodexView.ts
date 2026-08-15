@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { App, WorkspaceLeaf, Menu, Modal, Setting, Notice, TFile, normalizePath } from 'obsidian';
+import { App, WorkspaceLeaf, Menu, Modal, Setting, Notice, normalizePath } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SceneManager } from '../services/SceneManager';
@@ -23,7 +23,7 @@ import {
     syncStoryGraphLibraryNodeTypes,
 } from '../components/LibraryModeBar';
 import type { StoryGraph } from '../components/StoryGraph';
-import { pickImage as pickImageModal, resolveImagePath } from '../components/ImagePicker';
+import { absorbCoverIntoGallery, libraryCoverPath, pickImage as pickImageModal, resolveImagePath, syncLibraryCoverFromGallery } from '../components/ImagePicker';
 import { AddFieldModal } from '../components/AddFieldModal';
 import { attachTooltip } from '../components/Tooltip';
 import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
@@ -64,7 +64,6 @@ import {
     renderRemovedBuiltinSectionsToggle,
 } from '../utils/libraryProfileLayout';
 import { coerceString } from '../utils/narrow';
-import { setLibraryCategoryProfileSetting } from '../utils/libraryCategoryTransactions';
 import {
     applyCategoryFolderLabels,
     ensureSeededLibraryCategoryLabels,
@@ -174,8 +173,6 @@ export class CodexView extends ProjectBoundItemView {
     private selectedEntry: string | null = null;
     /** Active category tab id */
     private activeCategory: string = '';
-    /** Category whose optional card/profile overview is currently open. */
-    private profileOverviewCategoryId: string | null = null;
     private sortBy: 'name' | 'modified' | 'created' | 'type' = 'name';
     /** Active type/tag filters (lowercased). Empty = no filter. */
     private activeTagFilters: Set<string> = new Set();
@@ -347,7 +344,7 @@ export class CodexView extends ProjectBoundItemView {
             && getLibraryContentMode(this.plugin) === 'browse'
             && this.rootContainer?.querySelector('.library-native-base-embed')
         ) {
-            const title = this.plugin.getActiveProjectDisplayName();
+            const title = this.plugin.getProjectDisplayName(this.getBoundProjectFile());
             this.rootContainer.querySelectorAll('.story-line-view-title')
                 .forEach(el => { el.textContent = title; });
             return;
@@ -360,7 +357,7 @@ export class CodexView extends ProjectBoundItemView {
             && this.storyGraph
             && this.rootContainer?.querySelector('.story-graph-page')
         ) {
-            const title = this.plugin.getActiveProjectDisplayName();
+            const title = this.plugin.getProjectDisplayName(this.getBoundProjectFile());
             this.rootContainer.querySelectorAll('.story-line-view-title')
                 .forEach(el => { el.textContent = title; });
             return;
@@ -381,7 +378,7 @@ export class CodexView extends ProjectBoundItemView {
         // ── Toolbar ────────────────────────────────────
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
-        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getActiveProjectDisplayName() });
+        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
         renderViewSwitcher(toolbar, CODEX_VIEW_TYPE, this.plugin, this.leaf);
 
         // Same tab bar placement as CharacterView / LocationView (outside content)
@@ -397,7 +394,6 @@ export class CodexView extends ProjectBoundItemView {
                 storyGraphActive,
                 () => {
                     this.selectedEntry = null;
-                    this.profileOverviewCategoryId = null;
                     setLibraryContentMode(this.plugin, 'story-graph');
                     if (this.rootContainer) this.renderView(this.rootContainer);
                 },
@@ -419,7 +415,6 @@ export class CodexView extends ProjectBoundItemView {
         if (this.selectedEntry) {
             this.renderDetail(content);
         } else if (getLibraryContentMode(this.plugin) === 'story-graph' && !isMobile) {
-            renderLibraryModeToolbar(content, actions => this.renderOverviewModes(actions));
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -524,9 +519,9 @@ export class CodexView extends ProjectBoundItemView {
                 this.browseShown = LIBRARY_BROWSE_PAGE_SIZE;
                 this.renderList(listContainer);
             },
-            // Profile / Uncategorized gallery is card-only, like Location Profiles.
-            showLayoutToggle: !this.isProfileOverviewMode(),
-            renderTrailingActions: (actionsEl) => this.renderOverviewModes(actionsEl),
+            // Profile galleries are card-only, same as Character / Location Profiles.
+            showLayoutToggle: false,
+            renderLeadingActions: (actionsEl) => this.renderOverviewModes(actionsEl),
         });
 
         if (overviewHeading) {
@@ -858,50 +853,32 @@ export class CodexView extends ProjectBoundItemView {
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 
-    private activeCategoryHasProfilePage(): boolean {
-        if (!this.activeCategory) return false;
-        // Card gallery like Location Profiles — not the per-entry field schema.
-        if (this.activeCategory === UNCATEGORIZED_CATEGORY_ID) return true;
-        return this.plugin.settings.codexCustomCategories
-            ?.find(category => category.id === this.activeCategory)
-            ?.hasProfilePage === true;
-    }
-
     private isProfileOverviewMode(): boolean {
-        return getLibraryContentMode(this.plugin) === 'profile'
-            && this.profileOverviewCategoryId === this.activeCategory
-            && this.activeCategoryHasProfilePage();
+        return getLibraryContentMode(this.plugin) === 'profile';
     }
 
     private renderOverviewModes(parent: HTMLElement): void {
-        const profileAvailable = this.activeCategoryHasProfilePage();
-        const profileLabel = profileAvailable
-            ? t('{name} Profiles', {
-                name: resolveLibraryCategoryLabel(
-                    this.plugin,
-                    this.activeCategory,
-                    this.codexManager.getCategoryDef(this.activeCategory)?.label || this.activeCategory,
-                ),
-            })
-            : '';
+        const profileLabel = t('{name} Profiles', {
+            name: resolveLibraryCategoryLabel(
+                this.plugin,
+                this.activeCategory,
+                this.codexManager.getCategoryDef(this.activeCategory)?.label || this.activeCategory,
+            ),
+        });
         renderLibraryModeToggle(
             parent,
             this.plugin,
             () => {
-                this.profileOverviewCategoryId = null;
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
-            profileAvailable
-                ? {
-                    label: profileLabel,
-                    active: this.isProfileOverviewMode(),
-                    onClick: () => {
-                        this.profileOverviewCategoryId = this.activeCategory;
-                        setLibraryContentMode(this.plugin, 'profile');
-                        if (this.rootContainer) this.renderView(this.rootContainer);
-                    },
-                }
-                : undefined,
+            {
+                label: profileLabel,
+                active: this.isProfileOverviewMode(),
+                onClick: () => {
+                    setLibraryContentMode(this.plugin, 'profile');
+                    if (this.rootContainer) this.renderView(this.rootContainer);
+                },
+            },
         );
     }
 
@@ -921,8 +898,9 @@ export class CodexView extends ProjectBoundItemView {
             const { entry, catDef } = row;
             const card = grid.createDiv('codex-entry-card');
             const cover = card.createDiv('codex-entry-card-cover');
-            if (entry.image) {
-                const src = resolveImagePath(this.app, entry.image);
+            const coverPath = libraryCoverPath(entry);
+            if (coverPath) {
+                const src = resolveImagePath(this.app, coverPath);
                 if (src) {
                     cover.createEl('img', { attr: { src, alt: '', loading: 'lazy' } });
                 } else {
@@ -1204,7 +1182,7 @@ export class CodexView extends ProjectBoundItemView {
             plugin: this.plugin,
             notePath: entry.filePath,
             name: draft.name || entry.name,
-            image: draft.image,
+            image: libraryCoverPath(draft),
             onCreated: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
@@ -1238,32 +1216,6 @@ export class CodexView extends ProjectBoundItemView {
         const typeIcon = typeLabel.createSpan({ cls: 'codex-detail-type-icon' });
         obsidian.setIcon(typeIcon, catDef.icon);
         typeLabel.createSpan({ text: t(catDef.label).replace(/s$/, '') });
-
-        // ── Portrait / image ───────────────────────────
-        const portraitArea = container.createDiv('codex-detail-portrait');
-        if (draft.image) {
-            const file = this.app.vault.getAbstractFileByPath(draft.image);
-            if (file instanceof TFile) {
-                const img = portraitArea.createEl('img', {
-                    attr: { src: this.app.vault.getResourcePath(file) },
-                });
-                img.addClass('codex-detail-img');
-            }
-        } else {
-            const placeholder = portraitArea.createDiv('codex-detail-portrait-placeholder');
-            obsidian.setIcon(placeholder, 'image');
-            placeholder.createEl('span', { text: t('Click to add image') });
-        }
-        portraitArea.addEventListener('click', () => {
-            const attachmentSourcePath = this.sceneManager.getLibraryAttachmentFolder(catDef.id);
-            pickImageModal(this.app, attachmentSourcePath, draft.image).then(async (picked) => {
-                if (picked !== undefined) {
-                    draft.image = picked;
-                    this.scheduleSave(draft);
-                    if (this.rootContainer) this.renderView(this.rootContainer);
-                }
-            });
-        });
 
         // ── Layout: horizontal board columns, or stacked sections + side rail ──
         container.toggleClass('codex-detail--board', horizontalProfile);
@@ -2170,6 +2122,7 @@ export class CodexView extends ProjectBoundItemView {
         const SECTION_KEY = '__Gallery';
 
         const wrapper = container.createDiv('character-gallery');
+        if (absorbCoverIntoGallery(draft)) this.scheduleSave(draft);
         const gallery = draft.gallery ?? [];
 
         // Collapsible header with add button
@@ -2194,6 +2147,7 @@ export class CodexView extends ProjectBoundItemView {
                     if (picked !== undefined) {
                         if (!draft.gallery) draft.gallery = [];
                         draft.gallery.push({ path: picked, caption: '' });
+                        syncLibraryCoverFromGallery(draft);
                         this.scheduleSave(draft);
                         if (this.rootContainer) this.renderView(this.rootContainer);
                     }
@@ -2269,6 +2223,7 @@ export class CodexView extends ProjectBoundItemView {
                 removeBtn.addEventListener('click', () => {
                     gallery.splice(idx, 1);
                     draft.gallery = gallery.length ? [...gallery] : undefined;
+                    syncLibraryCoverFromGallery(draft);
                     this.scheduleSave(draft);
                     activeIndex = gallery.length > 0 ? Math.min(idx, gallery.length - 1) : -1;
                     renderViewer();
@@ -2280,8 +2235,11 @@ export class CodexView extends ProjectBoundItemView {
             }
         };
 
-        // Navigation row: prev | thumbs | next
+        // Navigation row: prev | thumbs | next (hidden when there is only one image)
         const nav = body.createDiv('character-gallery-nav');
+        const syncNav = () => {
+            nav.toggleClass('is-single', gallery.length <= 1);
+        };
         const prevBtn = nav.createEl('button', { cls: 'character-gallery-arrow', attr: { title: t('Previous') } });
         obsidian.setIcon(prevBtn, 'chevron-left');
         prevBtn.addEventListener('click', () => {
@@ -2305,7 +2263,9 @@ export class CodexView extends ProjectBoundItemView {
         const renderThumbs = () => {
             thumbStrip.empty();
             for (let i = 0; i < gallery.length; i++) {
-                const thumb = thumbStrip.createDiv(`character-gallery-thumb-item ${i === activeIndex ? 'active' : ''}`);
+                const thumb = thumbStrip.createDiv({
+                    cls: `character-gallery-thumb${i === activeIndex ? ' active' : ''}`,
+                });
                 const src = resolveImagePath(this.app, gallery[i].path);
                 if (src) {
                     thumb.createEl('img', { attr: { src } });
@@ -2318,6 +2278,7 @@ export class CodexView extends ProjectBoundItemView {
                     renderThumbs();
                 });
             }
+            syncNav();
         };
 
         renderViewer();
@@ -2651,7 +2612,7 @@ export class CodexView extends ProjectBoundItemView {
         el.createEl('h4', { text: t('Custom Categories') });
         el.createEl('p', {
             cls: 'setting-item-description',
-            text: t('Show or hide categories, edit names and icons, choose profile pages, and manage fields. Preset categories can also be deleted.'),
+            text: t('Show or hide categories, and edit their names, icons, and fields. Preset categories can also be deleted.'),
         });
 
         const displayLabel = (id: string, fallback: string) => {
@@ -2665,7 +2626,6 @@ export class CodexView extends ProjectBoundItemView {
         header.createSpan({ cls: 'codex-category-manager-icon-select', text: t('Icon') });
         header.createSpan({ cls: 'codex-category-manager-name', text: t('Category name') });
         header.createSpan({ cls: 'codex-category-manager-preset', text: t('Type') });
-        header.createSpan({ cls: 'codex-category-manager-profile-col', text: t('Profile page') });
         header.createSpan({ cls: 'codex-category-manager-fields-col', text: t('Fields') });
         header.createSpan({ cls: 'codex-category-manager-actions-col', text: '' });
         const rows: Array<{
@@ -2726,9 +2686,7 @@ export class CodexView extends ProjectBoundItemView {
                     label: category.label || displayLabel(category.id, category.label),
                     icon: category.icon,
                     preset: false,
-                    definition: category.hasProfilePage
-                        ? makeProfileCodexCategory(category.id, category.label, category.icon)
-                        : makeCustomCodexCategory(category.id, category.label, category.icon),
+                    definition: makeProfileCodexCategory(category.id, category.label, category.icon),
                     draft: category,
                 })),
             {
@@ -2825,33 +2783,6 @@ export class CodexView extends ProjectBoundItemView {
                 row.createSpan({ cls: 'codex-category-manager-preset is-custom', text: t('Custom') });
             }
 
-            const fixedProfile = category.id === 'characters' || category.id === 'locations';
-            const profileUnavailable = category.id === UNCATEGORIZED_CATEGORY_ID;
-            const profileToggle = row.createEl('input', {
-                cls: 'codex-category-manager-profile-toggle',
-                attr: { type: 'checkbox', 'aria-label': t('Include profile page') },
-            }) as HTMLInputElement;
-            profileToggle.checked = fixedProfile || category.draft?.hasProfilePage === true;
-            profileToggle.disabled = fixedProfile || profileUnavailable;
-            profileToggle.title = fixedProfile
-                ? t('Profile page is always enabled for Characters and Locations.')
-                : profileUnavailable
-                    ? t('Profile page is unavailable for Uncategorized entries.')
-                    : t('Include profile page');
-            profileToggle.addEventListener('change', () => {
-                state.categories = setLibraryCategoryProfileSetting(
-                    state.categories,
-                    {
-                        id: category.id,
-                        label: nameInput.value.trim() || category.label,
-                        icon: ensureDraft().icon || category.icon,
-                        preset: category.preset,
-                    },
-                    profileToggle.checked,
-                );
-                this.renderCategoryManager(el, modal, state);
-            });
-
             const fieldsBtn = row.createEl('button', {
                 cls: 'codex-category-manager-fields',
                 text: t('Fields'),
@@ -2884,9 +2815,7 @@ export class CodexView extends ProjectBoundItemView {
                         this.codexManager.initCategories(
                             Array.from(state.enabled).filter(id => !fixedIds.has(id)),
                             state.categories.map(item =>
-                                item.hasProfilePage
-                                    ? makeProfileCodexCategory(item.id, item.label, item.icon)
-                                    : makeCustomCodexCategory(item.id, item.label, item.icon)),
+                                makeProfileCodexCategory(item.id, item.label, item.icon)),
                         );
                         if (this.activeCategory === category.id) {
                             this.activeCategory = UNCATEGORIZED_CATEGORY_ID;
@@ -2911,7 +2840,6 @@ export class CodexView extends ProjectBoundItemView {
         const addSection = el.createDiv('codex-category-manager-add');
         let newLabel = '';
         let newIcon = 'file-text';
-        let newHasProfilePage = false;
         let newLabelInput: HTMLInputElement | null = null;
 
         new Setting(addSection)
@@ -2931,13 +2859,6 @@ export class CodexView extends ProjectBoundItemView {
             () => newIcon,
             (icon) => { newIcon = icon; },
         );
-
-        new Setting(addSection)
-            .setName(t('Include profile page'))
-            .setDesc(t('Blank profile page you fill with custom section titles and fields. Also enables card browse and scene-inspector links.'))
-            .addToggle(toggle => toggle
-                .setValue(newHasProfilePage)
-                .onChange(v => { newHasProfilePage = v; }));
 
         new Setting(addSection)
             .addButton(btn => btn
@@ -2975,9 +2896,9 @@ export class CodexView extends ProjectBoundItemView {
                         state.categories.push({
                             id,
                             label,
-                            icon: newHasProfilePage && newIcon === 'file-text' ? 'user' : newIcon,
-                            hasProfilePage: newHasProfilePage || undefined,
-                            showInSidebar: newHasProfilePage || undefined,
+                            icon: newIcon,
+                            hasProfilePage: true,
+                            showInSidebar: true,
                         });
                         state.enabled.add(id);
                         const ok = await this.persistLibraryCategoryManagerState(state);
@@ -3023,29 +2944,40 @@ export class CodexView extends ProjectBoundItemView {
 
         this.plugin.settings.codexCustomCategories = state.categories
             .filter(category => category.label.trim())
-            .map(category => ({ ...category, label: category.label.trim() }));
+            .map(category => ({
+                ...category,
+                label: category.label.trim(),
+                hasProfilePage: true,
+                showInSidebar: true,
+            }));
         this.plugin.settings.codexEnabledCategories = Array.from(state.enabled)
             .filter(id => !fixedIds.has(id));
         this.plugin.settings.libraryHiddenFixedCategories =
             FIXED_LIBRARY_CATEGORY_IDS.filter(id => !state.enabled.has(id));
         this.plugin.settings.codexDeletedPresetCategories = Array.from(state.deletedPresets);
+        // Hidden presets stay registered so Library/ folders cannot resurrect their tabs.
+        for (const preset of BUILTIN_CODEX_CATEGORIES) {
+            if (state.deletedPresets.has(preset.id)) continue;
+            if (this.plugin.settings.codexEnabledCategories.includes(preset.id)) continue;
+            if (this.plugin.settings.codexCustomCategories.some(category => category.id === preset.id)) continue;
+            this.plugin.settings.codexCustomCategories.push({
+                id: preset.id,
+                label: preset.label,
+                icon: preset.icon,
+                preset: true,
+                hasProfilePage: true,
+                showInSidebar: true,
+            });
+        }
 
         if (!this.plugin.settings.libraryBrowseLayout) {
             this.plugin.settings.libraryBrowseLayout = {};
         }
-        const sidebar = new Set(this.plugin.settings.codexSidebarCategories || []);
         for (const category of state.categories) {
-            if (!category.hasProfilePage) {
-                sidebar.delete(category.id);
-                continue;
-            }
             if (!this.plugin.settings.libraryBrowseLayout[category.id]) {
                 this.plugin.settings.libraryBrowseLayout[category.id] = 'cards';
             }
-            if (state.enabled.has(category.id)) sidebar.add(category.id);
-            else sidebar.delete(category.id);
         }
-        this.plugin.settings.codexSidebarCategories = Array.from(sidebar);
 
         // Keep P2 order in sync — append newly enabled ids.
         const order = [...(this.plugin.settings.libraryCategoryOrder || [])];
@@ -3565,9 +3497,7 @@ export class CodexView extends ProjectBoundItemView {
 
     private resolveCustomDefs() {
         return this.plugin.settings.codexCustomCategories.map(cc =>
-            cc.hasProfilePage
-                ? makeProfileCodexCategory(cc.id, cc.label, cc.icon)
-                : makeCustomCodexCategory(cc.id, cc.label, cc.icon)
+            makeProfileCodexCategory(cc.id, cc.label, cc.icon)
         );
     }
 

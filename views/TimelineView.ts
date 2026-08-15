@@ -112,7 +112,7 @@ export class TimelineView extends ProjectBoundItemView {
         // Toolbar
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
-        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getActiveProjectDisplayName() });
+        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
         // project name shown in top-center only; no inline project selector here
 
         // View switcher tabs
@@ -734,7 +734,8 @@ export class TimelineView extends ProjectBoundItemView {
                 if (scene.characters && scene.characters.length > 0) return this.cleanLaneKeys(scene.characters);
                 return ['(no character)'];
             case 'location':
-                return [scene.location || '(no location)'];
+                if (scene.location && scene.location.length > 0) return this.cleanLaneKeys(scene.location);
+                return ['(no location)'];
             case 'plotline':
             case 'tag':
                 if (scene.tags && scene.tags.length > 0) return this.cleanLaneKeys(scene.tags);
@@ -792,10 +793,10 @@ export class TimelineView extends ProjectBoundItemView {
         if (this.swimlaneGroupBy !== 'character' && scene.characters?.length) {
             meta.createSpan({ cls: 'timeline-card-pov', text: scene.characters.join(', ') });
         }
-        if (this.swimlaneGroupBy !== 'location' && scene.location) {
+        if (this.swimlaneGroupBy !== 'location' && scene.location?.length) {
             const locSpan = meta.createSpan({ cls: 'timeline-card-location' });
             obsidian.setIcon(locSpan, 'map-pin');
-            locSpan.appendText(' ' + scene.location);
+            locSpan.appendText(' ' + scene.location.join(', '));
         }
         if (this.swimlaneGroupBy !== 'plotline' && this.swimlaneGroupBy !== 'tag' && scene.tags?.length) {
             meta.createSpan({ cls: 'timeline-card-pov', text: scene.tags.join(', ') });
@@ -963,10 +964,10 @@ export class TimelineView extends ProjectBoundItemView {
         if (scene.pov) {
             meta.createSpan({ cls: 'timeline-card-pov', text: t('POV: {pov}', { pov: scene.pov }) });
         }
-        if (scene.location) {
+        if (scene.location?.length) {
             const locSpan = meta.createSpan({ cls: 'timeline-card-location' });
             obsidian.setIcon(locSpan, 'map-pin');
-            locSpan.appendText(' ' + scene.location);
+            locSpan.appendText(' ' + scene.location.join(', '));
         }
         if (scene.timeline) {
             const timeSpan = meta.createSpan({ cls: 'timeline-card-time' });

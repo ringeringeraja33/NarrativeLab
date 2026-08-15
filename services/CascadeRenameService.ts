@@ -175,7 +175,7 @@ export class CascadeRenameService {
 
         // Scenes: check location field
         for (const scene of this.sceneManager.getAllScenes()) {
-            if (scene.location && scene.location.toLowerCase() === lowerOld) {
+            if (scene.location?.some(n => n.toLowerCase() === lowerOld)) {
                 sceneCount++;
             }
         }
@@ -207,10 +207,11 @@ export class CascadeRenameService {
 
         // ── Update scenes ──
         for (const scene of this.sceneManager.getAllScenes()) {
-            if (scene.location && scene.location.toLowerCase() === lowerOld) {
-                await this.sceneManager.updateScene(scene.filePath, { location: newName });
-                totalUpdated++;
-            }
+            const current = scene.location || [];
+            if (!current.some(n => n.toLowerCase() === lowerOld)) continue;
+            const location = current.map(n => n.toLowerCase() === lowerOld ? newName : n);
+            await this.sceneManager.updateScene(scene.filePath, { location });
+            totalUpdated++;
         }
 
         // ── Update child locations (parent field) ──

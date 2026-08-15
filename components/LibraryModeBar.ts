@@ -78,6 +78,11 @@ import {
 } from '../utils/storyGraphCharacterRelations';
 import { localizeForLanguage, seedUiLanguage, t } from '../utils/i18n';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
+import {
+    buildProjectFileGraphQuery,
+    buildProjectGraphQuery,
+    openNativeGraphWithQuery,
+} from '../utils/obsidianGraph';
 
 export type LibraryContentMode = 'profile' | 'browse' | 'story-graph';
 
@@ -183,7 +188,7 @@ export function renderLibraryModeToggle(
     });
     const browseIcon = browseBtn.createSpan();
     obsidian.setIcon(browseIcon, 'layout-grid');
-    browseBtn.createSpan({ text: t(' Browse') });
+        browseBtn.createSpan({ text: t('Browse') });
     browseBtn.addEventListener('click', () => {
         if (getLibraryContentMode(plugin) === 'browse' && !profileMode?.active) return;
         setLibraryContentMode(plugin, 'browse');
@@ -349,7 +354,7 @@ export function collectStoryGraphLegendLibraryCategories(
             || id === 'characters'
             || id === 'locations'
         ) return;
-        if (!enabled.has(id) && !plugin.codexManager.getCategoryDef(id)) return;
+        if (!enabled.has(id)) return;
         push({
             id,
             label: resolveLibraryCategoryLabel(plugin, id, fallbackLabel),
@@ -481,6 +486,14 @@ function collectStoryGraphWikilinks(
         }
     }
     return links;
+}
+
+/** Native Graph `path:` scope: this project's Library + Scenes folders. */
+function projectNativeGraphFolders(plugin: SceneCardsPlugin): string[] {
+    return [
+        plugin.sceneManager.getCodexFolder(),
+        plugin.sceneManager.getSceneFolder(),
+    ].filter(folder => folder.trim().length > 0);
 }
 
 /**
@@ -684,6 +697,14 @@ export function renderLibraryStoryGraph(
             // Left-click + → add a general graph relation; right-click → full add menu.
             onLegendAdd: () => openAddStoryGraphRelationModal(plugin, async () => onRefresh()),
             onLegendAddMenu: (evt) => showStoryGraphLegendAddMenu(plugin, onRefresh, evt),
+            onOpenNativeGraph: () => {
+                const query = buildProjectGraphQuery(projectNativeGraphFolders(plugin));
+                void openNativeGraphWithQuery(plugin.app, query, { reveal: true });
+            },
+            onShowInNativeGraph: (filePath, reveal) => {
+                const query = buildProjectFileGraphQuery(projectNativeGraphFolders(plugin), filePath);
+                void openNativeGraphWithQuery(plugin.app, query, { reveal });
+            },
         },
     );
     graph.render();

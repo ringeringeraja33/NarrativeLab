@@ -128,7 +128,7 @@ export class BoardView extends ItemView {
                 .find(p => normalizePath(p.filePath) === bound);
             if (project?.title) return project.title;
         }
-        return this.plugin?.getActiveProjectDisplayName() || 'NarrativeLab';
+        return this.plugin?.getProjectDisplayName(this.boundProjectFile) || 'NarrativeLab';
     }
 
     getIcon(): string {
@@ -349,7 +349,7 @@ export class BoardView extends ItemView {
         const titleRow = toolbar.createDiv('story-line-title-row');
         titleRow.createEl('h3', {
             cls: 'story-line-view-title',
-            text: this.plugin.getActiveProjectDisplayName()
+            text: this.plugin.getProjectDisplayName(this.boundProjectFile)
         });
         // project name shown in top-center only; no inline project selector here
 

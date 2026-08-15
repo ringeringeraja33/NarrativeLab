@@ -12,8 +12,8 @@ import { t } from '../utils/i18n';
  *
  * Mirrors the focused scene's `notes` field in a dedicated sidebar leaf,
  * so writers can keep notes visible alongside the manuscript without
- * having the full Inspector open. Reuses InfoPanelComponent in 'notes'
- * mode so all editing round-trips through the same frontmatter pipeline.
+ * having the full Inspector open. Uses a native embedded MarkdownView
+ * so notes editing matches Obsidian Live Preview.
  */
 export class NotesView extends ItemView {
     private sceneManager: SceneManager;

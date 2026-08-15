@@ -12,6 +12,24 @@
  * A brief-lived `Library/datasheet.nlmeta.json` is also migrated into System/.
  */
 import ExcelJS from 'exceljs';
+
+/** Same ArrayBuffer reused across inspect/decode/count — parse Excel once per open. */
+let _plotGridWorkbookCache: { data: ArrayBuffer | Uint8Array; wb: ExcelJS.Workbook } | null = null;
+
+async function loadExcelWorkbook(data: ArrayBuffer | Uint8Array): Promise<ExcelJS.Workbook> {
+    if (_plotGridWorkbookCache && _plotGridWorkbookCache.data === data) {
+        return _plotGridWorkbookCache.wb;
+    }
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(data);
+    _plotGridWorkbookCache = { data, wb };
+    return wb;
+}
+
+/** Drop the parsed workbook so the next datasheet open does not keep it resident. */
+export function releasePlotGridWorkbookCache(): void {
+    _plotGridWorkbookCache = null;
+}
 import type {
     CellData,
     ColumnMeta,
@@ -21,6 +39,7 @@ import type {
 } from '../models/PlotGridData';
 import {
     createEmptyConceptGridDocument,
+    createEmptyConceptGridPage,
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
 
@@ -88,6 +107,8 @@ export interface PlotGridNlMeta {
         cornerLabel?: string;
         headerRowHeight?: number;
         labelColumnWidth?: number;
+        hidden?: boolean;
+        tabColor?: string;
         rows: RowMeta[];
         columns: ColumnMeta[];
         cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'> & {
@@ -311,6 +332,8 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
             labelColumnWidth: typeof pageMeta?.labelColumnWidth === 'number' && pageMeta.labelColumnWidth > 0
                 ? Math.round(pageMeta.labelColumnWidth)
                 : 0,
+            hidden: pageMeta?.hidden === true,
+            tabColor: typeof pageMeta?.tabColor === 'string' ? pageMeta.tabColor : '',
         };
     }).filter(page => page.rows.length > 0 || page.columns.length > 0 || Object.keys(page.cells).length > 0);
 
@@ -334,8 +357,7 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
  * is still embedded (should migrate to the sidecar).
  */
 export async function plotGridXlsxNeedsRewrite(data: ArrayBuffer | Uint8Array): Promise<boolean> {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(data);
+    const wb = await loadExcelWorkbook(data);
 
     if (wb.getWorksheet(NL_META_SHEET)) return true;
 
@@ -369,8 +391,7 @@ export async function plotGridXlsxNeedsRewrite(data: ArrayBuffer | Uint8Array): 
 export async function countPlotGridXlsxFilledCells(
     data: ArrayBuffer | Uint8Array,
 ): Promise<number> {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(data);
+    const wb = await loadExcelWorkbook(data);
     let count = 0;
     wb.eachSheet((sheet) => {
         if (sheetLooksLikeNlMetaDump(sheet)) return;
@@ -391,8 +412,7 @@ export async function countPlotGridXlsxFilledCells(
 export async function extractEmbeddedNlMeta(
     data: ArrayBuffer | Uint8Array,
 ): Promise<PlotGridNlMeta | null> {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(data);
+    const wb = await loadExcelWorkbook(data);
     const metaWs = wb.getWorksheet(NL_META_SHEET);
     if (metaWs) {
         const embedded = tryParseNlMeta(readChunkedMetaText(metaWs));
@@ -709,6 +729,8 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
             cornerLabel: page.cornerLabel || '',
             headerRowHeight: page.headerRowHeight || 0,
             labelColumnWidth: page.labelColumnWidth || 0,
+            hidden: page.hidden === true,
+            tabColor: page.tabColor || '',
             rows: page.rows.map(r => ({ ...r })),
             columns: page.columns.map(c => ({ ...c })),
             cells,
@@ -754,13 +776,19 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
     for (const page of doc.pages) {
         const name = sanitizeSheetName(page.title, usedNames);
         sheetNames.push(name);
-        const sheet = wb.addWorksheet(name, page.stickyHeaders === false
-            ? undefined
-            : { views: [{
-                state: 'frozen',
-                xSplit: Math.max(1, page.frozenColumns ?? 1),
-                ySplit: Math.max(1, page.frozenRows ?? 1),
-            }] });
+        const sheet = wb.addWorksheet(name, {
+            state: page.hidden ? 'hidden' : 'visible',
+            properties: page.tabColor
+                ? { tabColor: { argb: cssToArgb(page.tabColor) } }
+                : undefined,
+            views: page.stickyHeaders === false
+                ? undefined
+                : [{
+                    state: 'frozen',
+                    xSplit: Math.max(1, page.frozenColumns ?? 1),
+                    ySplit: Math.max(1, page.frozenRows ?? 1),
+                }],
+        });
 
         const cols = page.columns || [];
         const rows = page.rows || [];
@@ -900,8 +928,7 @@ export async function decodePlotGridXlsx(
     data: ArrayBuffer | Uint8Array,
     options: DecodePlotGridXlsxOptions = {},
 ): Promise<ConceptGridDocument> {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(data);
+    const wb = await loadExcelWorkbook(data);
 
     let meta: PlotGridNlMeta | null = options.meta ?? null;
     if (!meta) {
@@ -1173,6 +1200,8 @@ export async function decodePlotGridXlsx(
                 : (typeof sheet.getColumn(1).width === 'number' && (sheet.getColumn(1).width || 0) > 0
                     ? Math.round((sheet.getColumn(1).width || 0) * 8)
                     : 0),
+            hidden: sheet.state === 'hidden' || sheet.state === 'veryHidden' || pageMeta?.hidden === true,
+            tabColor: argbToCss(sheet.properties?.tabColor?.argb) || pageMeta?.tabColor || '',
         });
     });
 
@@ -1319,8 +1348,8 @@ export function documentToUniverWorkbookData(
         sheets[id] = {
             id,
             name: page.title || `Page ${index + 1}`,
-            tabColor: '',
-            hidden: 0,
+            tabColor: page.tabColor || '',
+            hidden: page.hidden ? 1 : 0,
             rowCount: Math.max(50, rows.length + 20),
             columnCount: Math.max(20, cols.length + 10),
             zoomRatio: page.zoom || 1,
@@ -1355,6 +1384,91 @@ export function documentToUniverWorkbookData(
             },
         ],
     };
+}
+
+/** Univer workbook.save() fields that describe a worksheet tab. */
+export type UniverSheetChromeSnapshot = {
+    id?: string;
+    name?: string;
+    tabColor?: string;
+    hidden?: number | boolean | string;
+    zoomRatio?: number;
+};
+
+function normalizeUniverTabColor(value: unknown): string {
+    if (typeof value !== 'string') return '';
+    const raw = value.trim();
+    if (!raw) return '';
+    if (raw.startsWith('#') && raw.length === 9) return `#${raw.slice(3)}`;
+    if (raw.startsWith('#')) return raw;
+    if (/^[0-9a-fA-F]{6}$/.test(raw)) return `#${raw}`;
+    if (/^[0-9a-fA-F]{8}$/.test(raw)) return `#${raw.slice(2)}`;
+    return raw;
+}
+
+function isUniverSheetHidden(value: unknown): boolean {
+    if (value === true || value === 1 || value === 2) return true;
+    if (typeof value === 'string') {
+        const n = Number(value);
+        return value === 'hidden' || value === 'veryHidden' || n === 1 || n === 2;
+    }
+    return false;
+}
+
+/**
+ * Apply Univer sheet-bar mutations (name / hide / tab color / order / add / delete)
+ * onto the NarrativeLab document. Cell link metadata on matching page ids is kept.
+ */
+export function reconcileUniverSheetsIntoDocument(
+    raw: ConceptGridDocument,
+    sheets: Record<string, UniverSheetChromeSnapshot> | undefined,
+    sheetOrder?: string[],
+    activeSheetId?: string,
+): ConceptGridDocument {
+    if (!sheets) return raw;
+    const order = (sheetOrder?.length ? [...sheetOrder] : Object.keys(sheets)).filter((id) => {
+        const sheet = sheets[id];
+        const name = (sheet?.name || id).trim();
+        return name.toLowerCase() !== NL_META_SHEET.toLowerCase();
+    });
+    if (order.length === 0) return raw;
+
+    const doc = structuredClone(raw);
+    const byId = new Map(doc.pages.map(page => [page.id, page]));
+    const nextPages: ConceptGridPage[] = [];
+    for (const id of order) {
+        const sheet = sheets[id] || { id };
+        const name = (sheet.name || '').trim();
+        const existing = byId.get(id);
+        if (existing) {
+            if (name) existing.title = name;
+            existing.hidden = isUniverSheetHidden(sheet.hidden);
+            existing.tabColor = normalizeUniverTabColor(sheet.tabColor);
+            if (typeof sheet.zoomRatio === 'number' && Number.isFinite(sheet.zoomRatio) && sheet.zoomRatio > 0) {
+                existing.zoom = sheet.zoomRatio;
+            }
+            nextPages.push(existing);
+            continue;
+        }
+        const page = createEmptyConceptGridPage(name || undefined);
+        page.id = id;
+        if (name) page.title = name;
+        page.hidden = isUniverSheetHidden(sheet.hidden);
+        page.tabColor = normalizeUniverTabColor(sheet.tabColor);
+        if (typeof sheet.zoomRatio === 'number' && Number.isFinite(sheet.zoomRatio) && sheet.zoomRatio > 0) {
+            page.zoom = sheet.zoomRatio;
+        }
+        nextPages.push(page);
+    }
+    if (nextPages.length === 0) return raw;
+    doc.pages = nextPages;
+    if (activeSheetId && doc.pages.some(page => page.id === activeSheetId)) {
+        doc.activePageId = activeSheetId;
+    } else if (!doc.pages.some(page => page.id === doc.activePageId)) {
+        const visible = doc.pages.find(page => !page.hidden) ?? doc.pages[0];
+        if (visible) doc.activePageId = visible.id;
+    }
+    return doc;
 }
 
 export type MergeUniverCellDataOptions = {
@@ -1529,6 +1643,8 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
             `corner:${page.cornerLabel || ''}`,
             `headerH:${page.headerRowHeight || 0}`,
             `labelW:${page.labelColumnWidth || 0}`,
+            `hidden:${page.hidden ? 1 : 0}`,
+            `tab:${page.tabColor || ''}`,
         );
         for (const row of page.rows || []) {
             parts.push(

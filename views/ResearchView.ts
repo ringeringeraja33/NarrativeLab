@@ -69,11 +69,7 @@ export class ResearchView extends ProjectBoundItemView {
         this.rootEl = null;
     }
 
-    /**
-     * Render the Research panel into an arbitrary host element.
-     * Used both by `onOpen` (full-view mount) and by the Scene Inspector
-     * sidebar's Research tab (embedded mount).
-     */
+    /** Render the Research panel into the view host. */
     async mountInto(host: HTMLElement): Promise<void> {
         const mountGeneration = ++this.mountGeneration;
         await this.manager.scan();
@@ -475,7 +471,7 @@ export class ResearchView extends ProjectBoundItemView {
         if (scene.characters) keywords.push(...scene.characters);
         if (scene.pov) keywords.push(scene.pov);
         // Location
-        if (scene.location) keywords.push(scene.location);
+        if (scene.location) keywords.push(...scene.location);
         // Tags
         if (scene.tags) keywords.push(...scene.tags);
         // Title words — locale-aware tokenisation. For scriptio-continua

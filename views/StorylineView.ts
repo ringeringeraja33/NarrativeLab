@@ -112,7 +112,7 @@ export class StorylineView extends ProjectBoundItemView {
         // Toolbar
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
-        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getActiveProjectDisplayName() });
+        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
         // project name shown in top-center only; no inline project selector here
 
         // View switcher tabs

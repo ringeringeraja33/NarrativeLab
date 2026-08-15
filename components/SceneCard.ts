@@ -189,11 +189,11 @@ export class SceneCardComponent {
             if (scanResult && scanResult.links.length > 0) {
                 // Count only links NOT already in frontmatter
                 const fmChars = new Set((scene.characters || []).map(c => c.toLowerCase()));
-                const fmLoc = scene.location?.toLowerCase();
+                const fmLocs = new Set((scene.location || []).map(n => n.toLowerCase()));
                 const novelCount = scanResult.links.filter(l => {
                     const key = l.name.toLowerCase();
                     if (l.type === 'character' && fmChars.has(key)) return false;
-                    if (l.type === 'location' && key === fmLoc) return false;
+                    if (l.type === 'location' && fmLocs.has(key)) return false;
                     return true;
                 }).length;
                 if (novelCount > 0) {

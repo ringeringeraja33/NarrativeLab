@@ -39,7 +39,6 @@ export const EXTRA_ZH: Record<string, string> = {
     'Define your own metadata fields that appear on every scene\'s Inspector. Useful for Story Grid functions, Truby aspects, beat-sheet labels, genre conventions, and any other scene tagging your method requires. Dropdown and multi-select fields can also be used to filter and group scenes on the Board.': '自定义会出现在每个场景 Inspector 中的元数据字段。适合 Story Grid 功能、Truby 要素、节拍表标签、类型惯例，以及你方法里需要的任何场景标记。下拉与多选字段也可用于白板筛选与分组。',
     'Delete Scenes': '删除场景',
     'Delete failed: {err}': '删除失败：{err}',
-    'Delete page "{title}"? This cannot be undone.': '删除页面「{title}」？此操作无法撤销。',
     'Enter act numbers (e.g. "1,2,3,4,5" or "6" to add one)': '输入幕编号（例如「1,2,3,4,5」，或「6」添加一幕）',
     'Enter act numbers (e.g. "1,2,3,4,5")': '输入幕编号（例如「1,2,3,4,5」）',
     'Enter chapter numbers (e.g. "1-10" or "1,2,3")': '输入章编号（例如「1-10」或「1,2,3」）',

@@ -94,6 +94,10 @@ export interface PlotGridData {
 export interface ConceptGridPage extends PlotGridData {
     id: string;
     title: string;
+    /** When true the worksheet is hidden in Univer / Excel (not deleted). */
+    hidden?: boolean;
+    /** Worksheet tab color as `#rrggbb` (Univer / Excel tabColor). */
+    tabColor?: string;
 }
 
 /** Persisted Concept Grid document (v2). */
@@ -122,6 +126,8 @@ export function createEmptyConceptGridPage(title?: string): ConceptGridPage {
         cornerLabel: '',
         headerRowHeight: 0,
         labelColumnWidth: 0,
+        hidden: false,
+        tabColor: '',
     };
 }
 
@@ -194,6 +200,8 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             cornerLabel: typeof page.cornerLabel === 'string' ? page.cornerLabel : '',
             headerRowHeight: normalizeAxisSize(page.headerRowHeight),
             labelColumnWidth: normalizeAxisSize(page.labelColumnWidth),
+            hidden: page.hidden === true,
+            tabColor: typeof page.tabColor === 'string' ? page.tabColor.trim() : '',
         }));
         const firstPage = pages[0] ?? createEmptyConceptGridPage();
         const activePageId = pages.some(p => p.id === raw.activePageId)
@@ -226,6 +234,8 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             cornerLabel: typeof legacy.cornerLabel === 'string' ? legacy.cornerLabel : '',
             headerRowHeight: normalizeAxisSize(legacy.headerRowHeight),
             labelColumnWidth: normalizeAxisSize(legacy.labelColumnWidth),
+            hidden: false,
+            tabColor: '',
         };
         return {
             version: 2,
@@ -283,6 +293,8 @@ export function cloneConceptGridPage(page: ConceptGridPage, title?: string): Con
         cornerLabel: page.cornerLabel,
         headerRowHeight: page.headerRowHeight,
         labelColumnWidth: page.labelColumnWidth,
+        hidden: page.hidden === true,
+        tabColor: page.tabColor || '',
     };
 }
 /* eslint-enable @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

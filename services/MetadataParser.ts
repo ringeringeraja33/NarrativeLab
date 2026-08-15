@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { App, TFile, parseYaml, stringifyYaml } from 'obsidian';
-import { Scene, SceneStatus, TIMELINE_MODES, TimelineMode } from '../models/Scene';
+import { coerceSceneLocations, Scene, SceneStatus, TIMELINE_MODES, TimelineMode } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { tokenizeWords, DEFAULT_STORYLINE_LOCALE, resolveLocale, type StoryLineLocale } from '../utils/locale';
 
@@ -11,8 +11,8 @@ import { tokenizeWords, DEFAULT_STORYLINE_LOCALE, resolveLocale, type StoryLineL
  * Obsidian keeps them in sync on rename. Readers strip wikilink syntax in
  * either case, so flipping this on/off is non-destructive.
  */
-const SCENE_LINK_FIELDS_SCALAR = ['pov', 'location'] as const;
-const SCENE_LINK_FIELDS_ARRAY = ['characters', 'setup_scenes', 'payoff_scenes'] as const;
+const SCENE_LINK_FIELDS_SCALAR = ['pov'] as const;
+const SCENE_LINK_FIELDS_ARRAY = ['characters', 'location', 'setup_scenes', 'payoff_scenes'] as const;
 
 /** Per-file write chain — concurrent vault.modify on Windows → UNKNOWN open errors. */
 const frontmatterWriteChains = new Map<string, Promise<unknown>>();
@@ -160,7 +160,7 @@ export class MetadataParser {
             chronologicalOrder: frontmatter.chronologicalOrder ?? (frontmatter.chronological_order as number | undefined),
             pov: this.cleanWikilink(frontmatter.pov),
             characters: this.parseCharacters(frontmatter.characters),
-            location: this.cleanWikilink(frontmatter.location),
+            location: this.parseLocationList(frontmatter.location, frontmatter.locations),
             timeline: frontmatter.timeline,
             storyDate: this.normalizeFrontmatterString(frontmatter.storyDate ?? frontmatter.story_date),
             storyTime: this.normalizeFrontmatterString(frontmatter.storyTime ?? frontmatter.story_time),
@@ -339,6 +339,13 @@ export class MetadataParser {
                 }
                 continue;
             }
+            if (key === 'location') {
+                delete frontmatter.locations;
+                if (!Array.isArray(value) || value.length === 0) {
+                    delete frontmatter.location;
+                    continue;
+                }
+            }
             if (value !== undefined) {
                 if ((SCENE_LINK_FIELDS_SCALAR as readonly string[]).includes(key)) {
                     frontmatter[key] = wrapScalar(value);
@@ -394,7 +401,7 @@ export class MetadataParser {
         if (scene.chronologicalOrder !== undefined) fm.chronologicalOrder = scene.chronologicalOrder;
         if (scene.pov) fm.pov = wrapScalar(scene.pov);
         if (scene.characters?.length) fm.characters = wrapArray(scene.characters);
-        if (scene.location) fm.location = wrapScalar(scene.location);
+        if (scene.location?.length) fm.location = wrapArray(scene.location);
         if (scene.timeline) fm.timeline = scene.timeline;
         if (scene.storyDate) fm.storyDate = scene.storyDate;
         if (scene.storyTime) fm.storyTime = scene.storyTime;
@@ -535,6 +542,20 @@ export class MetadataParser {
         if (backslash >= 0) out = out.slice(backslash + 1);
         if (out.toLowerCase().endsWith('.md')) out = out.slice(0, -3);
         return out.trim();
+    }
+
+    /**
+     * Parse scene `location` (scalar or list) plus optional `locations` alias.
+     */
+    private static parseLocationList(location: unknown, locations?: unknown): string[] | undefined {
+        const clean = (raw: unknown): unknown => {
+            if (Array.isArray(raw)) return raw.map(item => this.cleanWikilink(String(item)) ?? '');
+            if (raw == null || raw === '') return undefined;
+            if (typeof raw === 'object') return undefined;
+            return this.cleanWikilink(String(raw)) ?? '';
+        };
+        const names = coerceSceneLocations(clean(location), clean(locations));
+        return names.length ? names : undefined;
     }
 
     /**

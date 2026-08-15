@@ -40,6 +40,53 @@ function normalizeImagePath(imagePath: string): string {
     return normalized;
 }
 
+/** Cover for cards / board: explicit `image`, else the first gallery still. */
+export function libraryCoverPath(entity: {
+    image?: string;
+    gallery?: Array<{ path?: string }>;
+}): string | undefined {
+    const cover = typeof entity.image === 'string' ? entity.image.trim() : '';
+    if (cover) return cover;
+    const first = entity.gallery?.find(item => typeof item.path === 'string' && item.path.trim());
+    return first?.path?.trim() || undefined;
+}
+
+/** Move a leftover cover into gallery[0] so detail pages only show the gallery. */
+export function absorbCoverIntoGallery(entity: {
+    image?: string;
+    gallery?: Array<{ path: string; caption: string }>;
+}): boolean {
+    const cover = typeof entity.image === 'string' ? entity.image.trim() : '';
+    const gallery = [...(entity.gallery ?? [])];
+    let changed = false;
+    if (cover) {
+        const idx = gallery.findIndex(item => (item.path || '').trim() === cover);
+        if (idx === -1) {
+            gallery.unshift({ path: cover, caption: '' });
+            changed = true;
+        } else if (idx > 0) {
+            const [item] = gallery.splice(idx, 1);
+            gallery.unshift(item);
+            changed = true;
+        }
+    }
+    const first = gallery[0]?.path?.trim() || undefined;
+    if ((entity.image || undefined) !== first) {
+        entity.image = first;
+        changed = true;
+    }
+    if (changed) entity.gallery = gallery.length ? gallery : undefined;
+    return changed;
+}
+
+export function syncLibraryCoverFromGallery(entity: {
+    image?: string;
+    gallery?: Array<{ path?: string }>;
+}): void {
+    const first = entity.gallery?.find(item => typeof item.path === 'string' && item.path.trim());
+    entity.image = first?.path?.trim() || undefined;
+}
+
 /** Short-lived vault image index — avoids per-card `getFiles()` on Library overviews. */
 let _imageIndexAt = 0;
 let _imageByPath: Map<string, TFile> | null = null;

@@ -245,6 +245,21 @@ export class CodexManager {
         return entries.find(e => e.name.toLowerCase() === lower);
     }
 
+    exportSnapshot(): Map<string, Map<string, CodexEntry>> {
+        const out = new Map<string, Map<string, CodexEntry>>();
+        for (const [categoryId, entries] of this.entriesByCategory) {
+            out.set(categoryId, new Map(entries));
+        }
+        return out;
+    }
+
+    restoreSnapshot(entries: Map<string, Map<string, CodexEntry>>): void {
+        this.entriesByCategory = new Map();
+        for (const [categoryId, categoryEntries] of entries) {
+            this.entriesByCategory.set(categoryId, new Map(categoryEntries));
+        }
+    }
+
     /** All entries across every category. */
     getAllEntries(): CodexEntry[] {
         const all: CodexEntry[] = [];

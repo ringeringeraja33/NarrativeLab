@@ -20,6 +20,8 @@ export interface DetectedLink {
     name: string;
     /** Entity type derived from cross-referencing managers */
     type: 'character' | 'location' | 'codex' | 'other';
+    /** Library / Codex category id when type is `codex` */
+    codexCategory?: string;
 }
 
 /** Scan result for one scene */
@@ -72,6 +74,10 @@ export class LinkScanner {
      * E.g. "anna" → "Anna Svensson" when nickname is "Anna".
      */
     private charCanonical: Map<string, string> = new Map();
+    /** Alias / nickname → official Codex entry name. */
+    private codexCanonical: Map<string, string> = new Map();
+    /** Lowercased Codex name / alias → category id. */
+    private codexCategoryByName: Map<string, string> = new Map();
 
     /**
      * All character/location plain-text names to search for, sorted longest
@@ -238,53 +244,31 @@ export class LinkScanner {
             }
         }
 
-        // Codex entry names
+        // Codex entry names, keyed to their Library category
         this.codexNames.clear();
-        // Issue #223 — reset per-entry matching rules
+        this.codexCanonical.clear();
+        this.codexCategoryByName.clear();
         this.codexEntryRules.clear();
         this.codexCaseSensitiveNames = [];
         if (this.codexManager) {
-            for (const entry of this.codexManager.getAllEntries()) {
-                const lower = entry.name.toLowerCase();
-                // Read per-entry matching configuration (Issues #209, #223).
-                const caseSensitive = entry.caseSensitive === true;
-                const excludeRaw = typeof entry.excludeTerms === 'string' ? entry.excludeTerms : '';
-                const excludeTerms = excludeRaw
-                    .split(/[,\n]/)
-                    .map(t => t.trim().toLowerCase())
-                    .filter(Boolean);
-                const rules = { caseSensitive, excludeTerms };
-
-                // Don't add if already a character or location name
-                if (!this.charNames.has(lower) && !this.locNames.has(lower)) {
-                    this.codexNames.add(lower);
-                    this.codexEntryRules.set(lower, rules);
-                    if (caseSensitive) this.codexCaseSensitiveNames.push(entry.name);
-                }
-                // Issue #209 — aliases (shared across all codex categories)
-                const aliasesRaw = typeof entry.aliases === 'string' ? entry.aliases : '';
-                const aliasList = aliasesRaw
-                    .split(/[,\n]/)
-                    .map(a => a.trim())
-                    .filter(Boolean);
-                for (const alias of aliasList) {
-                    const aLower = alias.toLowerCase();
-                    if (!this.charNames.has(aLower) && !this.locNames.has(aLower)) {
-                        this.codexNames.add(aLower);
-                        this.codexEntryRules.set(aLower, rules);
-                        if (caseSensitive) this.codexCaseSensitiveNames.push(alias);
+            for (const cat of this.codexManager.getCategories()) {
+                for (const entry of this.codexManager.getEntries(cat.id)) {
+                    const caseSensitive = entry.caseSensitive === true;
+                    const excludeRaw = typeof entry.excludeTerms === 'string' ? entry.excludeTerms : '';
+                    const excludeTerms = excludeRaw
+                        .split(/[,\n]/)
+                        .map(term => term.trim().toLowerCase())
+                        .filter(Boolean);
+                    const rules = { caseSensitive, excludeTerms };
+                    this.registerCodexName(entry.name, cat.id, entry.name, rules);
+                    const aliasesRaw = typeof entry.aliases === 'string' ? entry.aliases : '';
+                    for (const alias of aliasesRaw.split(/[,\n]/).map(a => a.trim()).filter(Boolean)) {
+                        this.registerCodexName(alias, cat.id, entry.name, rules);
                     }
-                }
-                // Support comma-separated nicknames for codex entries
-                const nick = (entry as unknown as Record<string, unknown>).nickname;
-                if (nick && typeof nick === 'string') {
-                    const nicks = String(nick).split(',').map(n => n.trim()).filter(Boolean);
-                    for (const n of nicks) {
-                        const nLower = n.toLowerCase();
-                        if (!this.charNames.has(nLower) && !this.locNames.has(nLower)) {
-                            this.codexNames.add(nLower);
-                            this.codexEntryRules.set(nLower, rules);
-                            if (caseSensitive) this.codexCaseSensitiveNames.push(n);
+                    const nick = (entry as unknown as Record<string, unknown>).nickname;
+                    if (typeof nick === 'string') {
+                        for (const n of nick.split(',').map(part => part.trim()).filter(Boolean)) {
+                            this.registerCodexName(n, cat.id, entry.name, rules);
                         }
                     }
                 }
@@ -295,6 +279,26 @@ export class LinkScanner {
         // so "Anna Svensson" matches before "Anna")
         this.plainTextNames = [...this.charNames, ...this.locNames, ...this.codexNames]
             .sort((a, b) => b.length - a.length);
+    }
+
+    private registerCodexName(
+        rawName: string,
+        categoryId: string,
+        canonicalName: string,
+        rules: { caseSensitive: boolean; excludeTerms: string[] },
+    ): void {
+        const lower = rawName.toLowerCase();
+        if (!lower || this.charNames.has(lower) || this.locNames.has(lower)) return;
+        this.codexNames.add(lower);
+        if (!this.codexCategoryByName.has(lower)) this.codexCategoryByName.set(lower, categoryId);
+        if (!this.codexCanonical.has(lower)) this.codexCanonical.set(lower, canonicalName);
+        this.codexEntryRules.set(lower, rules);
+        if (rules.caseSensitive) this.codexCaseSensitiveNames.push(rawName);
+    }
+
+    /** Category id for a detected Codex / Library name, if known. */
+    getCodexCategoryForName(name: string): string | undefined {
+        return this.codexCategoryByName.get(name.toLowerCase());
     }
 
     // ── Internal ───────────────────────────────────────
@@ -321,7 +325,7 @@ export class LinkScanner {
         for (const name of plainTextMentions) {
             const key = name.toLowerCase();
             // Use the canonical character name if available (maps nickname → full name)
-            const canonical = this.charCanonical.get(key) || name;
+            const canonical = this.charCanonical.get(key) || this.codexCanonical.get(key) || name;
             const canonKey = canonical.toLowerCase();
             if (!seen.has(canonKey)) seen.set(canonKey, canonical);
         }
@@ -352,7 +356,7 @@ export class LinkScanner {
             }
             if (this.charNames.has(key)) {
                 type = 'character';
-                characters.push(name);
+                characters.push(this.charCanonical.get(key) || name);
             } else if (this.locNames.has(key)) {
                 type = 'location';
                 locations.push(name);
@@ -361,7 +365,16 @@ export class LinkScanner {
             } else {
                 other.push(name);
             }
-            links.push({ name, type });
+            const display = type === 'codex'
+                ? (this.codexCanonical.get(key) || name)
+                : type === 'character'
+                    ? (this.charCanonical.get(key) || name)
+                    : name;
+            links.push({
+                name: display,
+                type,
+                ...(type === 'codex' ? { codexCategory: this.codexCategoryByName.get(key) } : {}),
+            });
         }
 
         return { links, characters, locations, other };
@@ -479,7 +492,7 @@ export class LinkScanner {
         // 2. Plain-text character/location mentions
         for (const name of this.extractPlainTextMentions(text)) {
             const key = name.toLowerCase();
-            const canonical = this.charCanonical.get(key) || name;
+            const canonical = this.charCanonical.get(key) || this.codexCanonical.get(key) || name;
             const canonKey = canonical.toLowerCase();
             if (!seen.has(canonKey)) seen.set(canonKey, canonical);
         }
@@ -518,7 +531,16 @@ export class LinkScanner {
             } else {
                 other.push(name);
             }
-            links.push({ name, type });
+            const display = type === 'codex'
+                ? (this.codexCanonical.get(key) || name)
+                : type === 'character'
+                    ? (this.charCanonical.get(key) || name)
+                    : name;
+            links.push({
+                name: display,
+                type,
+                ...(type === 'codex' ? { codexCategory: this.codexCategoryByName.get(key) } : {}),
+            });
         }
 
         return { links, characters, locations, other, tags };

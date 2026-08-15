@@ -120,6 +120,36 @@ test('Structure and Library in-place switches cannot erase the project binding',
     assert.doesNotMatch(structureSwitcher, /state:\s*\{\}/);
 });
 
+test('navigation and plot-grid link rewrites stay on the owning project', () => {
+    assert.match(mainTs, /findProjectFileForVaultPath/);
+    assert.match(mainTs, /findBoundLeafOfType/);
+    assert.match(mainTs, /async activateView\(viewType: string, projectFile\?: string \| null\)/);
+    assert.match(mainTs, /async openPlotGridAppearance[\s\S]*?activateView\(PLOTGRID_VIEW_TYPE, projectFile\)/);
+    assert.match(mainTs, /async showEntityDetails[\s\S]*?activateView\(CHARACTER_VIEW_TYPE, projectFile\)/);
+    assert.doesNotMatch(
+        mainTs.slice(mainTs.indexOf('private async updatePlotGridLinkedSceneIds'), mainTs.indexOf('private debounce<')),
+        /await this\.savePlotGrid\(data\);/,
+    );
+    assert.match(mainTs, /savePlotGrid\(data, \{ projectFilePath: projectFile \}\)/);
+    const view = projectViews[0];
+    assert.match(view, /const sourcePath = this\.getTargetProjectFile\(\)/);
+    assert.doesNotMatch(view, /collectConnectedNotes[\s\S]*?activeProject\?\.filePath/);
+});
+
+test('in-view titles follow the leaf-bound project, not the focused tab', () => {
+    assert.match(mainTs, /getProjectDisplayName\(projectFile\?: string \| null\)/);
+    assert.match(mainTs, /never borrow another tab's active project/);
+    assert.match(mainTs, /const projectLabel = this\.getProjectDisplayName\(bound\)/);
+    assert.match(mainTs, /setActiveProject\(project, \{ fromLeafFocus: true \}\)/);
+    assert.match(mainTs, /stashProjectRuntime/);
+    assert.match(mainTs, /restoreProjectRuntime/);
+    assert.match(boardView, /getProjectDisplayName\(this\.boundProjectFile\)/);
+    for (const source of projectViews) {
+        assert.match(source, /getProjectDisplayName\(this\.getBoundProjectFile\(\)\)|resolveProjectTitle\(/);
+        assert.doesNotMatch(source, /getActiveProjectDisplayName\(\)/);
+    }
+});
+
 test('Global refresh skips leaves bound to another project', () => {
     const refresh = mainTs.slice(
         mainTs.indexOf('private async doRefreshOpenViews('),

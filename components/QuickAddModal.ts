@@ -167,17 +167,16 @@ export class QuickAddModal extends Modal {
             placeholder: t('Search characters…'),
         });
 
-        // Scene location (autocomplete input). Keep this wording separate from
+        // Scene locations (tag-pill autocomplete). Keep this wording separate from
         // the Library category "Locations" (地点) in Chinese.
         const locSetting = new Setting(contentEl).setName(t('Scene location'));
-        const locContainer = locSetting.controlEl.createDiv('sl-quickadd-autocomplete');
-        renderAutocompleteInput({
+        const locContainer = locSetting.controlEl.createDiv('sl-quickadd-tagpill');
+        renderTagPillInput({
             container: locContainer,
-            value: '',
+            values: this.result.location || [],
             getSuggestions: () => this.getLocationNames(),
-            onChange: (value) => { this.result.location = value || undefined; },
-            placeholder: t('Search locations…'),
-            getDisplayLabel: this.getLocationDisplayLabel(),
+            onChange: (values) => { this.result.location = values.length > 0 ? values : undefined; },
+            placeholder: t('Add location…'),
         });
 
         // Characters (tag-pill autocomplete)
@@ -352,16 +351,6 @@ export class QuickAddModal extends Modal {
         return Array.from(names.values()).sort((a, b) =>
             a.toLowerCase().localeCompare(b.toLowerCase())
         );
-    }
-
-    /**
-     * Build a display-label function for locations (e.g., "Parent > Child").
-     */
-    private getLocationDisplayLabel(): (value: string) => string {
-        const lm = this.plugin.locationManager;
-        if (!lm) return (v) => v;
-        const displayMap = lm.getDisplayNameMap();
-        return (value: string) => displayMap.get(value) || value;
     }
 }
 /* eslint-enable @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

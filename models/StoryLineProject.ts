@@ -138,11 +138,6 @@ export const LEGACY_NCANVAS_FOLDER = 'NCanvas';
 /** Former internal location — migrated to the project-root Canvas/ folder. */
 export const LEGACY_SYSTEM_NCANVAS_FOLDER = 'System/NCanvas';
 /**
- * @deprecated Alias of {@link LEGACY_NCANVAS_FOLDER}. Older code used
- * `LEGACY_CANVAS_FOLDER = 'Canvas'` when the canonical folder was `NCanvas`.
- */
-export const LEGACY_CANVAS_FOLDER = LEGACY_NCANVAS_FOLDER;
-/**
  * Legacy multi-file Library Bases folder (`Bases/library-*.base`).
  * Live Library Base is a single file: `Library/library.base`.
  */

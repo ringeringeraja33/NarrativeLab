@@ -189,6 +189,10 @@ export interface StoryGraphHostOptions {
     onLegendAdd?: (evt?: MouseEvent) => void;
     /** Right-click on legend + — full add menu (relation / wikilink / manage). */
     onLegendAddMenu?: (evt?: MouseEvent) => void;
+    /** Toolbar: open native Graph scoped to this project's Library + Scenes. */
+    onOpenNativeGraph?: () => void;
+    /** Node click / menu: reuse that search and isolate the note. */
+    onShowInNativeGraph?: (filePath: string, reveal: boolean) => void;
 }
 
 export interface StoryGraphWikilink {
@@ -681,6 +685,8 @@ export class StoryGraph {
     private onLegendEditLinkCategory?: (category: StoryGraphRelationCategory | 'default') => void;
     private onLegendAdd?: (evt?: MouseEvent) => void;
     private onLegendAddMenu?: (evt?: MouseEvent) => void;
+    private onOpenNativeGraph?: () => void;
+    private onShowInNativeGraph?: (filePath: string, reveal: boolean) => void;
     /** Finish a user-drawn connection (wikilink and/or character relation). */
     private onConnectNodes?: (
         from: StoryGraphConnectNode,
@@ -802,6 +808,8 @@ export class StoryGraph {
         this.onLegendEditLinkCategory = host?.onLegendEditLinkCategory;
         this.onLegendAdd = host?.onLegendAdd;
         this.onLegendAddMenu = host?.onLegendAddMenu;
+        this.onOpenNativeGraph = host?.onOpenNativeGraph;
+        this.onShowInNativeGraph = host?.onShowInNativeGraph;
         this.hydrateLayout(host?.layout);
         if (filters) {
             if (filters.showScenes !== undefined) this.showScenes = filters.showScenes;
@@ -1765,6 +1773,15 @@ export class StoryGraph {
             menu.addSeparator();
         }
 
+        if (node.filePath && this.onShowInNativeGraph) {
+            menu.addItem(item => {
+                item.setTitle(t('Show in Graph view'));
+                item.setIcon('git-fork');
+                item.onClick(() => this.onShowInNativeGraph!(node.filePath!, true));
+            });
+            menu.addSeparator();
+        }
+
         if (this.onPickNodeImage) {
             const current = this.resolveNodeImagePath(node);
             menu.addItem(item => {
@@ -1952,6 +1969,17 @@ export class StoryGraph {
         obsidian.setIcon(exportIcon, 'image-down');
         exportBtn.createSpan({ text: ` ${t('Export image')}` });
         exportBtn.addEventListener('click', () => { void this.exportAsPng(); });
+
+        if (this.onOpenNativeGraph) {
+            const nativeBtn = tools.createEl('button', {
+                cls: 'story-graph-filter-btn',
+                attr: { 'aria-label': t('Open in Graph view'), type: 'button' },
+            });
+            const nativeIcon = nativeBtn.createSpan();
+            obsidian.setIcon(nativeIcon, 'git-fork');
+            nativeBtn.createSpan({ text: ` ${t('Open in Graph view')}` });
+            nativeBtn.addEventListener('click', () => this.onOpenNativeGraph?.());
+        }
 
         this.fullscreenBtn = tools.createEl('button', {
             cls: `story-graph-filter-btn ${this.isFullscreen ? 'active' : ''}`,
@@ -2476,7 +2504,9 @@ export class StoryGraph {
 
             for (const link of result.links) {
                     const configuredType = this.tagTypeOverrides[link.name.toLowerCase()] || link.type;
-                    const resolvedType = (configuredType === 'codex' ? 'codex' : configuredType) as EntityType;
+                    const resolvedType = (configuredType === 'codex' || configuredType.startsWith('codex:')
+                        ? 'codex'
+                        : configuredType) as EntityType;
                 if (resolvedType === 'character' && !this.showCharacters) continue;
                 if (resolvedType === 'location' && !this.showLocations) continue;
                     if (resolvedType === 'codex' && !this.showCodex) continue;
@@ -3483,11 +3513,18 @@ export class StoryGraph {
             this.dragging = node;
             node.pinned = true;
             let undoPushed = false;
+            let moved = false;
+            const startClientX = e.clientX;
+            const startClientY = e.clientY;
             const grab = this.clientToGraph(e.clientX, e.clientY);
             const grabOffsetX = grab ? node.x - grab.x : 0;
             const grabOffsetY = grab ? node.y - grab.y : 0;
             const onMove = (me: MouseEvent) => {
                 if (!this.svg) return;
+                if (!moved) {
+                    if (Math.hypot(me.clientX - startClientX, me.clientY - startClientY) < 5) return;
+                    moved = true;
+                }
                 if (!undoPushed) {
                     this.pushUndo();
                     undoPushed = true;
@@ -3504,6 +3541,7 @@ export class StoryGraph {
                 window.removeEventListener('mouseup', onUp);
                 this.layoutPositions.set(this.layoutKey(node), { x: node.x, y: node.y });
                 this.scheduleLayoutSave();
+                if (!moved && node.filePath) this.onShowInNativeGraph?.(node.filePath, false);
             };
             window.addEventListener('mousemove', onMove);
             window.addEventListener('mouseup', onUp);

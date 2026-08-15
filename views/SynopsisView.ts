@@ -46,7 +46,7 @@ export class SynopsisView extends ItemView {
         const container = viewContent.createDiv('sl-notes-view');
 
         const panelEl = container.createDiv('sl-inspector-panel is-active sl-inspector-panel-synopsis sl-info-panel-host');
-        this.synopsisPanel = new InfoPanelComponent(panelEl, this.plugin, this.sceneManager, 'synopsis');
+        this.synopsisPanel = new InfoPanelComponent(panelEl, this.plugin, this.sceneManager);
 
         this.emptyEl = container.createDiv('sl-scene-inspector-empty');
         this.emptyEl.createEl('p', { text: t('Open a scene file to edit its synopsis here.') });

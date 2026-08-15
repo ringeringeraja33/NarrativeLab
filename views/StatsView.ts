@@ -91,7 +91,7 @@ export class StatsView extends ProjectBoundItemView {
         // Toolbar
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
-        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getActiveProjectDisplayName() });
+        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
 
         renderViewSwitcher(toolbar, STATS_VIEW_TYPE, this.plugin, this.leaf);
 

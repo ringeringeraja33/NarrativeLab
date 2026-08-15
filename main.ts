@@ -2,11 +2,12 @@
 import { AbstractInputSuggest, App, ButtonComponent, DropdownComponent, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
 import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './settings';
 import { asRecord, isRecord } from './utils/narrow';
+import { consumeTextareaUndoKey, isLocalTextUndoTarget, isRedoKey, isUndoKey } from './utils/textareaHistory';
 import {
     getLeafNarrativeLabProjectFile,
     narrativeLabLeafState,
 } from './utils/narrativeLabLeafState';
-import type { FilterPreset } from './models/Scene';
+import type { FilterPreset, ViewType } from './models/Scene';
 import { SceneManager } from './services/SceneManager';
 import { registerCustomStatuses } from './models/Scene';
 import { setWriteSceneFieldsAsWikilinks, setWordcountExclusions, setWordcountLocale } from './services/MetadataParser';
@@ -54,6 +55,7 @@ import {
     encodePlotGridXlsx,
     extractEmbeddedNlMeta,
     countPlotGridXlsxFilledCells,
+    releasePlotGridWorkbookCache,
     legacyLibraryPlotGridNlMetaPath,
     legacyPlotGridFolderXlsxPath,
     legacySystemPlotGridXlsxPath,
@@ -92,7 +94,7 @@ import { ResearchManager } from './services/ResearchManager';
 import { LocationManager } from './services/LocationManager';
 import { CharacterManager } from './services/CharacterManager';
 import { CodexManager } from './services/CodexManager';
-import { makeCustomCodexCategory, makeProfileCodexCategory, UNCATEGORIZED_CATEGORY_ID } from './models/Codex';
+import { makeProfileCodexCategory, UNCATEGORIZED_CATEGORY_ID } from './models/Codex';
 import {
     collectMarkdownFiles,
     invalidateAllEntityCaches,
@@ -285,6 +287,14 @@ export default class SceneCardsPlugin extends Plugin {
     private _reloadEntitiesQueued = false;
     /** Bumps when Library category tabs are adopted from vault folders (live sync). */
     libraryCategoriesStructureEpoch = 0;
+    /** Last decoded datasheet — skip ExcelJS on reopen when the file is unchanged. */
+    private _plotGridDocCache: {
+        projectFile: string;
+        xlsxPath: string;
+        mtime: number;
+        size: number;
+        doc: ConceptGridDocument;
+    } | null = null;
     /** Cached plotgrid mention scan — rebuilds are expensive on large grids. */
     private _plotGridScanCache: {
         at: number;
@@ -301,6 +311,14 @@ export default class SceneCardsPlugin extends Plugin {
     private static readonly PLOTGRID_SCAN_TTL_MS = 60_000;
     /** Timestamp of the last completed reloadEntities() pass. */
     private _lastEntitiesReloadAt = 0;
+    /** In-memory entity maps for background project tabs — avoids a full disk rescan on focus. */
+    private _projectRuntimeCache = new Map<string, {
+        scenes: ReturnType<SceneManager['exportSceneIndex']>;
+        characters: ReturnType<CharacterManager['exportSnapshot']>;
+        locations: ReturnType<LocationManager['exportSnapshot']>;
+        codex: ReturnType<CodexManager['exportSnapshot']>;
+        research: ReturnType<ResearchManager['exportSnapshot']>;
+    }>();
     /** True while writing type/name frontmatter onto plain Library notes. */
     private _adoptingLibrary = false;
     /** True while UI-driven Library folder rename is in progress. */
@@ -433,6 +451,9 @@ export default class SceneCardsPlugin extends Plugin {
         this.registerView(PLOTGRID_VIEW_TYPE, (leaf) =>
             new PlotgridView(leaf, this)
         );
+        void import('./utils/loadPlotGridUniver').then(mod => {
+            try { mod.warmupPlotGridUniver(activeDocument); } catch { /* first grid open still injects */ }
+        });
         this.registerView(TIMELINE_VIEW_TYPE, (leaf) =>
             new TimelineView(leaf, this, this.sceneManager)
         );
@@ -502,12 +523,13 @@ export default class SceneCardsPlugin extends Plugin {
             await this.migrateProjectDataFromSettings();
             // Load per-project data from System/ files (tagColors, aliases, etc.)
             await this.loadProjectSystemData();
-            await this.plotlineManager.ensureSeeded();
-            // Load universal field templates from System/field-templates.json
-            await this.fieldTemplates.load();
-            await this.templateCenter.load();
-            // Load corkboard layout from System/board.json
-            await this.sceneManager.loadCorkboardPositions();
+            // These System/ reads do not depend on each other.
+            await Promise.all([
+                this.plotlineManager.ensureSeeded(),
+                this.fieldTemplates.load(),
+                this.templateCenter.load(),
+                this.sceneManager.loadCorkboardPositions(),
+            ]);
             // Load locations and characters for the active project
             try {
                 await this.loadActiveProjectEntities();
@@ -558,12 +580,25 @@ export default class SceneCardsPlugin extends Plugin {
             }
         });
 
-        // Narrative Canvas: load in the background so sidebar views can mount
-        // as soon as onload returns. Commands/openers await ensureCanvasModuleReady().
-        void this.loadEmbeddedCanvas().catch((canvasErr: unknown) => {
-            console.error('[NarrativeLab] Narrative Canvas failed to load:', canvasErr);
-            new Notice(t('Failed to open Narrative Canvas: {err}', { err: String(canvasErr) }));
-        });
+        // Narrative Canvas: wait for idle so first workspace paint is not
+        // competing with the bundled runtime. Openers still await ensureCanvasModuleReady().
+        const startEmbeddedCanvas = (): void => {
+            void this.loadEmbeddedCanvas().catch((canvasErr: unknown) => {
+                console.error('[NarrativeLab] Narrative Canvas failed to load:', canvasErr);
+                new Notice(t('Failed to open Narrative Canvas: {err}', { err: String(canvasErr) }));
+            });
+        };
+        const idleWindow = window as Window & {
+            requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+            cancelIdleCallback?: (id: number) => void;
+        };
+        if (typeof idleWindow.requestIdleCallback === 'function') {
+            const idleId = idleWindow.requestIdleCallback(startEmbeddedCanvas, { timeout: 2500 });
+            this.register(() => idleWindow.cancelIdleCallback?.(idleId));
+        } else {
+            const timerId = window.setTimeout(startEmbeddedCanvas, 400);
+            this.register(() => window.clearTimeout(timerId));
+        }
 
         // Ribbon icons — open project chooser (load/create) so users can switch projects
         this.addRibbonIcon('book-open-text', t('NarrativeLab projects'), () => {
@@ -677,45 +712,62 @@ export default class SceneCardsPlugin extends Plugin {
         this.addCommand({
             id: 'undo',
             name: t('Undo last scene change'),
-            callback: async () => {
+            checkCallback: (checking) => {
+                if (isLocalTextUndoTarget()) return false;
+                if (checking) return true;
                 const board = this.app.workspace.getActiveViewOfType(BoardView);
                 if (board) {
-                    await board.handleBoardUndo();
-                    return;
+                    void board.handleBoardUndo();
+                    return true;
                 }
-                await this.sceneManager.undoManager.undo();
+                void this.sceneManager.undoManager.undo();
+                return true;
             },
         });
 
         this.addCommand({
             id: 'redo',
             name: t('Redo last scene change'),
-            callback: async () => {
+            checkCallback: (checking) => {
+                if (isLocalTextUndoTarget()) return false;
+                if (checking) return true;
                 const board = this.app.workspace.getActiveViewOfType(BoardView);
                 if (board) {
-                    await board.handleBoardRedo();
-                    return;
+                    void board.handleBoardRedo();
+                    return true;
                 }
-                await this.sceneManager.undoManager.redo();
+                void this.sceneManager.undoManager.redo();
+                return true;
             },
         });
+
+        // Capture first so Univer / plugin hotkeys cannot steal Cmd+Z from a
+        // focused cell-editor textarea (native history is also empty after
+        // programmatic inserts such as wikilink picks).
+        const onUndoKeyCapture = (evt: KeyboardEvent) => {
+            if (!isUndoKey(evt) && !isRedoKey(evt)) return;
+            if (!consumeTextareaUndoKey(evt)) return;
+            evt.preventDefault();
+            evt.stopPropagation();
+            evt.stopImmediatePropagation();
+        };
+        const undoCaptureTarget = activeDocument.defaultView ?? window;
+        undoCaptureTarget.addEventListener('keydown', onUndoKeyCapture, true);
+        this.register(() => undoCaptureTarget.removeEventListener('keydown', onUndoKeyCapture, true));
 
         // Register a global keydown handler so Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y
         // route to NarrativeLab's undo/redo when a NarrativeLab view is active and
         // the focus is not inside a text input, textarea, or contentEditable.
         this.registerDomEvent(activeDocument, 'keydown', (evt: KeyboardEvent) => {
-            const isUndo = (evt.ctrlKey || evt.metaKey) && !evt.shiftKey && evt.key === 'z';
-            const isRedo = ((evt.ctrlKey || evt.metaKey) && evt.shiftKey && evt.key === 'Z')
-                || ((evt.ctrlKey || evt.metaKey) && evt.key === 'y');
-            if (!isUndo && !isRedo) return;
+            if (!isUndoKey(evt) && !isRedoKey(evt)) return;
+            if (consumeTextareaUndoKey(evt)) {
+                evt.preventDefault();
+                evt.stopPropagation();
+                return;
+            }
 
-            // Don't intercept if focus is in a text field
-            const active = activeDocument.activeElement;
-            if (active && (
-                active.instanceOf(HTMLInputElement) ||
-                active.instanceOf(HTMLTextAreaElement) ||
-                (active as HTMLElement).isContentEditable
-            )) return;
+            // Don't intercept if focus is in a text field or the cell editor.
+            if (isLocalTextUndoTarget()) return;
 
             // Check if a NarrativeLab view is active
             const view = this.app.workspace.getActiveViewOfType(ItemView);
@@ -737,27 +789,20 @@ export default class SceneCardsPlugin extends Plugin {
                 const board = view as BoardView;
                 evt.preventDefault();
                 evt.stopPropagation();
-                if (isUndo) void board.handleBoardUndo();
+                if (isUndoKey(evt)) void board.handleBoardUndo();
                 else void board.handleBoardRedo();
                 return;
             }
 
             evt.preventDefault();
             evt.stopPropagation();
-            if (isUndo) {
+            if (isUndoKey(evt)) {
                 void this.sceneManager.undoManager.undo();
             } else {
                 void this.sceneManager.undoManager.redo();
             }
         });
 
-        this.addCommand({
-            id: 'export-project',
-            name: t('Open converter'),
-            callback: () => {
-                this.openConverter();
-            },
-        });
         this.addCommand({
             id: 'open-converter',
             name: t('Open converter'),
@@ -920,6 +965,9 @@ export default class SceneCardsPlugin extends Plugin {
             projectDeletionQueue = projectDeletionQueue
                 .catch(() => undefined)
                 .then(async () => {
+                    for (const removed of result.removedProjectFiles) {
+                        this._projectRuntimeCache.delete(normalizePath(removed));
+                    }
                     if (result.activeProjectRemoved) {
                         // Save only the cleared global pointer. saveSettings() also
                         // writes System/* and could revive the deleted project tree.
@@ -947,6 +995,7 @@ export default class SceneCardsPlugin extends Plugin {
                 if (file instanceof TFile) {
                     if (file.extension.toLowerCase() === 'base') return;
                     const filePath = normalizePath(file.path);
+                    this.invalidateForeignProjectRuntimeCache(filePath);
                     if (this._activeFieldWrites.has(filePath)) return;
                     if (this._suppressVaultRefreshPaths.has(filePath)) return;
                     // Corkboard / Obsidian Canvas JSON must not trigger a nuclear refresh
@@ -1000,6 +1049,7 @@ export default class SceneCardsPlugin extends Plugin {
                     return;
                 }
                 if (file instanceof TFile) {
+                    this.invalidateForeignProjectRuntimeCache(file.path);
                     if (file.extension.toLowerCase() === 'base') return;
                     if (file.extension.toLowerCase() === 'md' && this.isActiveManagedPath(file.path)) {
                         void this.ensureActiveField(file).then(() =>
@@ -1040,6 +1090,7 @@ export default class SceneCardsPlugin extends Plugin {
                     return;
                 }
                 if (file instanceof TFile) {
+                    this.invalidateForeignProjectRuntimeCache(file.path);
                     const projectDelete = this.sceneManager.handleProjectTreeDelete(file.path, false);
                     if (projectDelete.changed) {
                         invalidateAllEntityCaches(file.path);
@@ -1063,6 +1114,8 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.registerEvent(
             this.app.vault.on('rename', (file, oldPath) => {
+                this.invalidateForeignProjectRuntimeCache(oldPath);
+                this.invalidateForeignProjectRuntimeCache(file.path);
                 if (file instanceof TFolder) {
                     void (async () => {
                         // A folder move emits one folder-level rename event. Rebase
@@ -1505,16 +1558,23 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     getActiveProjectDisplayName(): string {
-        const project = this.sceneManager?.activeProject;
-        if (!project) return t('No project selected');
-        const title = project.title?.trim();
-        if (title) return title;
-        const manifestName = project.filePath
-            ?.split('/')
-            .pop()
-            ?.replace(/\.md$/i, '')
-            ?.trim();
-        return manifestName || t('No project selected');
+        return this.getProjectDisplayName(this.sceneManager?.activeProject?.filePath);
+    }
+
+    /** Title for a leaf-bound project — never borrow another tab's active project. */
+    getProjectDisplayName(projectFile?: string | null): string {
+        const path = typeof projectFile === 'string' && projectFile.trim()
+            ? normalizePath(projectFile)
+            : '';
+        if (path) {
+            const project = this.sceneManager?.getProjects()
+                .find(item => normalizePath(item.filePath) === path);
+            const title = project?.title?.trim();
+            if (title) return title;
+            const manifestName = path.split('/').pop()?.replace(/\.md$/i, '')?.trim();
+            if (manifestName) return manifestName;
+        }
+        return t('No project selected');
     }
 
     async setInterfaceLanguage(value: UiLanguageSetting): Promise<void> {
@@ -2103,10 +2163,6 @@ export default class SceneCardsPlugin extends Plugin {
     private applyImageSizingVariables(): void {
         const root = activeDocument.documentElement;
         root.style.setProperty('--sl-character-card-portrait-size', `${this.settings.characterCardPortraitSize}px`);
-        root.style.setProperty('--sl-character-detail-portrait-size', `${this.settings.characterDetailPortraitSize}px`);
-        root.style.setProperty('--sl-location-tree-thumb-size', `${this.settings.locationTreeThumbSize}px`);
-        root.style.setProperty('--sl-location-detail-portrait-width', `${this.settings.locationDetailPortraitWidth}px`);
-        root.style.setProperty('--sl-location-detail-portrait-height', `${this.settings.locationDetailPortraitHeight}px`);
     }
 
     /**
@@ -2250,9 +2306,9 @@ export default class SceneCardsPlugin extends Plugin {
 
     /** Open Concept Grid focused on a plotgrid appearance hit from an archive page. */
     async openPlotGridAppearance(hit: PlotGridAppearanceHit): Promise<void> {
-        await this.activateView(PLOTGRID_VIEW_TYPE);
-        const leaves = this.app.workspace.getLeavesOfType(PLOTGRID_VIEW_TYPE);
-        const leaf = leaves[0];
+        const projectFile = this.findProjectFileForVaultPath(hit.filePath);
+        await this.activateView(PLOTGRID_VIEW_TYPE, projectFile);
+        const leaf = this.findBoundLeafOfType(PLOTGRID_VIEW_TYPE, projectFile);
         if (!leaf) return;
         this.app.workspace.revealLeaf(leaf);
         const view = leaf.view as PlotgridView;
@@ -2261,9 +2317,32 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
+    /** In-memory datasheet for the current project — skip the xlsx wait on reopen. */
+    peekPlotGridDoc(projectFile?: string | null): ConceptGridDocument | null {
+        const target = normalizePath(projectFile || this.sceneManager.activeProject?.filePath || '');
+        const cached = this._plotGridDocCache;
+        if (!cached || !target || cached.projectFile !== target) return null;
+        return structuredClone(cached.doc);
+    }
+
     /** Drop cached plotgrid mention scan (call after plotgrid writes). */
     invalidatePlotGridScanCache(): void {
         this._plotGridScanCache = null;
+    }
+
+    private rememberPlotGridDocCache(
+        projectFile: string,
+        xlsxPath: string,
+        doc: ConceptGridDocument,
+        stat?: { mtime?: number; size?: number } | null,
+    ): void {
+        this._plotGridDocCache = {
+            projectFile: normalizePath(projectFile),
+            xlsxPath: normalizePath(xlsxPath),
+            mtime: stat?.mtime ?? Date.now(),
+            size: stat?.size ?? 0,
+            doc: structuredClone(doc),
+        };
     }
 
     // ────────────────────────────────────
@@ -2827,10 +2906,8 @@ export default class SceneCardsPlugin extends Plugin {
         const previousSettings = readLibraryCategorySettings(this.settings);
         const initProjectCategoryManager = () => {
             const customDefs = (this.settings.codexCustomCategories || []).map(
-                (cc: { id: string; label: string; icon: string; hasProfilePage?: boolean }) =>
-                    cc.hasProfilePage
-                        ? makeProfileCodexCategory(cc.id, cc.label, cc.icon)
-                        : makeCustomCodexCategory(cc.id, cc.label, cc.icon),
+                (cc: { id: string; label: string; icon: string }) =>
+                    makeProfileCodexCategory(cc.id, cc.label, cc.icon),
             );
             this.codexManager.initCategories(this.settings.codexEnabledCategories || [], customDefs);
             applyCategoryFolderLabels(this);
@@ -3042,6 +3119,12 @@ export default class SceneCardsPlugin extends Plugin {
         }
         this._invalidPlotGridXlsxPaths.delete(path);
         this._reportedInvalidPlotGridXlsxPaths.delete(path);
+        this.rememberPlotGridDocCache(
+            projectFilePath,
+            path,
+            document,
+            await adapter.stat(path).catch(() => null),
+        );
         this.invalidatePlotGridScanCache();
         void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
     }
@@ -3226,6 +3309,18 @@ export default class SceneCardsPlugin extends Plugin {
             const systemFolder = normalizePath(`${baseFolder}/System`);
             const adapter = this.app.vault.adapter;
             const xlsxPath = normalizePath(plotGridXlsxPath(baseFolder));
+            const cached = this._plotGridDocCache;
+            if (
+                cached
+                && cached.projectFile === targetProjectFile
+                && cached.xlsxPath === xlsxPath
+                && await adapter.exists(xlsxPath)
+            ) {
+                const stat = await adapter.stat(xlsxPath);
+                if (stat && stat.mtime === cached.mtime && stat.size === cached.size) {
+                    return structuredClone(cached.doc);
+                }
+            }
             const metaPath = normalizePath(plotGridNlMetaPath(systemFolder));
             const legacyLibraryMetaPath = normalizePath(legacyLibraryPlotGridNlMetaPath(baseFolder));
             const legacySystemXlsxPath = normalizePath(legacySystemPlotGridXlsxPath(systemFolder));
@@ -3320,6 +3415,12 @@ export default class SceneCardsPlugin extends Plugin {
                         console.warn('[NarrativeLab] Skipping datasheet rewrite — Excel sheets have more cell text than recovered model.');
                         new Notice(t('datasheet.xlsx still has spreadsheet values that NarrativeLab could not fully merge; left the Excel file unchanged.'));
                     }
+                    this.rememberPlotGridDocCache(
+                        targetProjectFile,
+                        xlsxPath,
+                        doc,
+                        await adapter.stat(xlsxPath),
+                    );
                     return doc;
                 } catch (e) {
                     console.warn('[NarrativeLab] datasheet.xlsx unreadable:', e);
@@ -3332,6 +3433,8 @@ export default class SceneCardsPlugin extends Plugin {
                     // Return null so the view shows empty UI, but savePlotGridSafely
                     // will refuse to overwrite the corrupt file with empty data.
                     return null;
+                } finally {
+                    releasePlotGridWorkbookCache();
                 }
             }
 
@@ -3409,6 +3512,41 @@ export default class SceneCardsPlugin extends Plugin {
         return n;
     }
 
+    /** Project manifest that owns this vault path (longest matching base folder). */
+    private findProjectFileForVaultPath(filePath: string): string | null {
+        const path = normalizePath(filePath);
+        if (!path) return null;
+        let best: { filePath: string; length: number } | null = null;
+        for (const project of this.sceneManager?.getProjects() || []) {
+            const base = normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
+            if (!base) continue;
+            if (path === base || path.startsWith(`${base}/`)) {
+                if (!best || base.length > best.length) {
+                    best = { filePath: normalizePath(project.filePath), length: base.length };
+                }
+            }
+        }
+        return best?.filePath ?? null;
+    }
+
+    /** Prefer a leaf bound to `projectFile`, then the active project, then an unbound leaf. */
+    private findBoundLeafOfType(viewType: string, projectFile?: string | null): WorkspaceLeaf | null {
+        const leaves = this.app.workspace.getLeavesOfType(viewType);
+        const wanted = projectFile?.trim() ? normalizePath(projectFile) : null;
+        if (wanted) {
+            const bound = leaves.find(item => getLeafNarrativeLabProjectFile(item) === wanted);
+            if (bound) return bound;
+        }
+        const activePath = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : null;
+        if (activePath) {
+            const bound = leaves.find(item => getLeafNarrativeLabProjectFile(item) === activePath);
+            if (bound) return bound;
+        }
+        return leaves.find(item => !getLeafNarrativeLabProjectFile(item)) ?? leaves[0] ?? null;
+    }
+
     /** Find an already-open NarrativeLab main-area tab for one project. */
     private findProjectScopedLeaf(projectFile: string): WorkspaceLeaf | null {
         const normalized = normalizePath(projectFile);
@@ -3423,14 +3561,16 @@ export default class SceneCardsPlugin extends Plugin {
     /**
      * Activate a view type in the workspace
      */
-    async activateView(viewType: string): Promise<void> {
+    async activateView(viewType: string, projectFile?: string | null): Promise<void> {
         const { workspace } = this.app;
 
         let leaf: WorkspaceLeaf | null = null;
         const leaves = workspace.getLeavesOfType(viewType);
-        const activePath = this.sceneManager.activeProject?.filePath
-            ? normalizePath(this.sceneManager.activeProject.filePath)
-            : null;
+        const activePath = (projectFile?.trim()
+            ? normalizePath(projectFile)
+            : this.sceneManager.activeProject?.filePath
+                ? normalizePath(this.sceneManager.activeProject.filePath)
+                : null);
 
         if (leaves.length > 0 && activePath) {
             // Reuse only this project's leaf. Falling back to leaves[0] here
@@ -3471,16 +3611,33 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
+    /** Map the Default view setting to a registered workspace view type. */
+    private resolveDefaultProjectViewType(): string {
+        const bySetting: Record<ViewType, string> = {
+            board: BOARD_VIEW_TYPE,
+            manuscript: MANUSCRIPT_VIEW_TYPE,
+            plotgrid: PLOTGRID_VIEW_TYPE,
+            timeline: TIMELINE_VIEW_TYPE,
+            storyline: STORYLINE_VIEW_TYPE,
+            codex: CODEX_VIEW_TYPE,
+            character: CHARACTER_VIEW_TYPE,
+            location: LOCATION_VIEW_TYPE,
+            stats: STATS_VIEW_TYPE,
+        };
+        return bySetting[this.settings.defaultView] || BOARD_VIEW_TYPE;
+    }
+
     /**
      * Open a project without duplicating its existing NarrativeLab tab.
-     * Prefer its Board tab; otherwise focus any main-area tab already bound to it.
-     * A new Board tab is created only when that project has no open tab.
+     * Prefer its Default-view tab; otherwise focus any main-area tab already bound to it.
+     * A new tab is created only when that project has no open tab.
      */
     async openBoardForProject(project: StoryLineProject): Promise<void> {
         const projectFile = normalizePath(project.filePath);
         const { workspace } = this.app;
-        const boards = workspace.getLeavesOfType(BOARD_VIEW_TYPE);
-        let leaf = boards.find(item => getLeafNarrativeLabProjectFile(item) === projectFile) ?? null;
+        const defaultType = this.resolveDefaultProjectViewType();
+        const preferred = workspace.getLeavesOfType(defaultType);
+        let leaf = preferred.find(item => getLeafNarrativeLabProjectFile(item) === projectFile) ?? null;
 
         if (!leaf) {
             leaf = this.findProjectScopedLeaf(projectFile);
@@ -3494,7 +3651,7 @@ export default class SceneCardsPlugin extends Plugin {
             const hasScopedLeaves = this.countProjectScopedLeaves() > 0;
             leaf = hasScopedLeaves ? workspace.getLeaf('tab') : workspace.getLeaf(false);
             await leaf.setViewState({
-                type: BOARD_VIEW_TYPE,
+                type: defaultType,
                 active: true,
                 state: narrativeLabLeafState(projectFile),
             });
@@ -3544,7 +3701,7 @@ export default class SceneCardsPlugin extends Plugin {
                 .find(p => normalizePath(p.filePath) === bound);
             if (!project) continue;
             try {
-                await this.sceneManager.setActiveProject(project);
+                await this.sceneManager.setActiveProject(project, { fromLeafFocus: true });
             } catch (err) {
                 console.warn('[NarrativeLab] Failed to sync active project from leaf:', err);
             }
@@ -3571,29 +3728,24 @@ export default class SceneCardsPlugin extends Plugin {
      */
     async showEntityDetails(filePath: string): Promise<void> {
         const kind = this.resolveEntityType(filePath);
+        const projectFile = this.findProjectFileForVaultPath(filePath);
         switch (kind) {
             case 'character': {
-                await this.activateView(CHARACTER_VIEW_TYPE);
-                const leaves = this.app.workspace.getLeavesOfType(CHARACTER_VIEW_TYPE);
-                if (leaves.length > 0) {
-                    await (leaves[0].view as CharacterView).navigateToCharacter(filePath);
-                }
+                await this.activateView(CHARACTER_VIEW_TYPE, projectFile);
+                const leaf = this.findBoundLeafOfType(CHARACTER_VIEW_TYPE, projectFile);
+                if (leaf) await (leaf.view as CharacterView).navigateToCharacter(filePath);
                 break;
             }
             case 'location': {
-                await this.activateView(LOCATION_VIEW_TYPE);
-                const leaves = this.app.workspace.getLeavesOfType(LOCATION_VIEW_TYPE);
-                if (leaves.length > 0) {
-                    await (leaves[0].view as LocationView).navigateToItem(filePath);
-                }
+                await this.activateView(LOCATION_VIEW_TYPE, projectFile);
+                const leaf = this.findBoundLeafOfType(LOCATION_VIEW_TYPE, projectFile);
+                if (leaf) await (leaf.view as LocationView).navigateToItem(filePath);
                 break;
             }
             case 'codex': {
-                await this.activateView(CODEX_VIEW_TYPE);
-                const leaves = this.app.workspace.getLeavesOfType(CODEX_VIEW_TYPE);
-                if (leaves.length > 0) {
-                    await (leaves[0].view as CodexView).navigateToEntry(filePath);
-                }
+                await this.activateView(CODEX_VIEW_TYPE, projectFile);
+                const leaf = this.findBoundLeafOfType(CODEX_VIEW_TYPE, projectFile);
+                if (leaf) await (leaf.view as CodexView).navigateToEntry(filePath);
                 break;
             }
         }
@@ -3848,10 +4000,8 @@ export default class SceneCardsPlugin extends Plugin {
             }
 
             const customDefs = (this.settings.codexCustomCategories || []).map(
-                (cc: { id: string; label: string; icon: string; hasProfilePage?: boolean }) =>
-                    cc.hasProfilePage
-                        ? makeProfileCodexCategory(cc.id, cc.label, cc.icon)
-                        : makeCustomCodexCategory(cc.id, cc.label, cc.icon)
+                (cc: { id: string; label: string; icon: string }) =>
+                    makeProfileCodexCategory(cc.id, cc.label, cc.icon)
             );
             this.codexManager.initCategories(this.settings.codexEnabledCategories || [], customDefs);
             await ensureSeededLibraryCategoryLabels(this);
@@ -4350,6 +4500,45 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
+    stashProjectRuntime(projectFile: string): void {
+        const key = normalizePath(projectFile);
+        if (!key) return;
+        this._projectRuntimeCache.set(key, {
+            scenes: this.sceneManager.exportSceneIndex(),
+            characters: this.characterManager.exportSnapshot(),
+            locations: this.locationManager.exportSnapshot(),
+            codex: this.codexManager.exportSnapshot(),
+            research: this.researchManager.exportSnapshot(),
+        });
+    }
+
+    restoreProjectRuntime(projectFile: string): boolean {
+        const key = normalizePath(projectFile);
+        const snapshot = this._projectRuntimeCache.get(key);
+        if (!snapshot) return false;
+        this.sceneManager.restoreSceneIndex(snapshot.scenes);
+        this.characterManager.restoreSnapshot(snapshot.characters);
+        this.locationManager.restoreSnapshot(snapshot.locations);
+        this.codexManager.restoreSnapshot(snapshot.codex);
+        this.researchManager.restoreSnapshot(snapshot.research);
+        const customDefs = (this.settings.codexCustomCategories || []).map(
+            (cc: { id: string; label: string; icon: string }) =>
+                makeProfileCodexCategory(cc.id, cc.label, cc.icon),
+        );
+        this.codexManager.initCategories(this.settings.codexEnabledCategories || [], customDefs);
+        return true;
+    }
+
+    invalidateForeignProjectRuntimeCache(filePath: string): void {
+        const projectFile = this.findProjectFileForVaultPath(filePath);
+        if (!projectFile) return;
+        const active = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : '';
+        if (active && active === projectFile) return;
+        this._projectRuntimeCache.delete(projectFile);
+    }
+
     /**
      * Reload characters and locations from the active project's Codex
      * folders, then scan series-local Library folders if applicable. Used by
@@ -4364,16 +4553,20 @@ export default class SceneCardsPlugin extends Plugin {
         void this.migratePlotGridToLibraryIfNeeded().catch(() => undefined);
 
         const locFolder = this.sceneManager.getLocationFolder();
-        if (locFolder) await this.locationManager.loadAll(locFolder);
         const charFolder = this.sceneManager.getCharacterFolder();
-        if (charFolder) await this.characterManager.loadCharacters(charFolder);
+        await Promise.all([
+            locFolder ? this.locationManager.loadAll(locFolder) : Promise.resolve(),
+            charFolder ? this.characterManager.loadCharacters(charFolder) : Promise.resolve(),
+        ]);
 
         // Series mode: also scan the per-project Library folder for book-only
         // characters and locations.
         if (!this.sceneManager.getSeriesFolder()) return;
 
         const localCharFolder = this.sceneManager.getProjectLocalCharacterFolder();
-        if (localCharFolder && localCharFolder !== charFolder && await adapter.exists(localCharFolder)) {
+        const localLocFolder = this.sceneManager.getProjectLocalLocationFolder();
+        const scanLocalChars = async (): Promise<void> => {
+            if (!localCharFolder || localCharFolder === charFolder || !await adapter.exists(localCharFolder)) return;
             const listing = await adapter.list(localCharFolder);
             for (const f of listing.files) {
                 if (!f.toLowerCase().endsWith('.md') || isExcalidrawFilePath(f)) continue;
@@ -4383,10 +4576,9 @@ export default class SceneCardsPlugin extends Plugin {
                     this.characterManager.addFile(content, fp);
                 } catch { /* skip unreadable */ }
             }
-        }
-
-        const localLocFolder = this.sceneManager.getProjectLocalLocationFolder();
-        if (localLocFolder && localLocFolder !== locFolder && await adapter.exists(localLocFolder)) {
+        };
+        const scanLocalLocs = async (): Promise<void> => {
+            if (!localLocFolder || localLocFolder === locFolder) return;
             const scanLoc = async (folder: string): Promise<void> => {
                 if (!await adapter.exists(folder)) return;
                 const listing = await adapter.list(folder);
@@ -4403,7 +4595,8 @@ export default class SceneCardsPlugin extends Plugin {
                 }
             };
             await scanLoc(localLocFolder);
-        }
+        };
+        await Promise.all([scanLocalChars(), scanLocalLocs()]);
     }
 
     /**
@@ -4609,7 +4802,6 @@ export default class SceneCardsPlugin extends Plugin {
             RESEARCH_VIEW_TYPE,
         ];
 
-        const projectLabel = this.getActiveProjectDisplayName();
         const activePath = this.sceneManager.activeProject?.filePath
             ? normalizePath(this.sceneManager.activeProject.filePath)
             : null;
@@ -4624,14 +4816,16 @@ export default class SceneCardsPlugin extends Plugin {
                     continue;
                 }
                 refreshTasks.push((async () => {
-                    const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
+                    const view = leaf.view as unknown as {
+                        refresh?: (options?: { reloadFromDisk?: boolean }) => void | Promise<void>;
+                    };
                     if (view && typeof view.refresh === 'function') {
                         try {
                             await Promise.resolve(view.refresh());
                         } catch { /* non-fatal per view */ }
                     }
-                    // Keep in-view toolbar title in sync even when a view's refresh()
-                    // only rebuilds content (e.g. Board corkboard) and skips the toolbar.
+                    // Title follows the leaf binding, not whichever project is focused.
+                    const projectLabel = this.getProjectDisplayName(bound);
                     leaf.view.containerEl
                         .querySelectorAll('.story-line-view-title')
                         .forEach(el => { el.textContent = projectLabel; });
@@ -4652,10 +4846,12 @@ export default class SceneCardsPlugin extends Plugin {
         for (const leaf of leaves) {
             const bound = getLeafNarrativeLabProjectFile(leaf);
             if (bound && activePath && bound !== activePath) continue;
-            const view = leaf.view as unknown as { refresh?: () => void | Promise<void> };
+            const view = leaf.view as unknown as {
+                refresh?: (options?: { reloadFromDisk?: boolean }) => void | Promise<void>;
+            };
             if (view && typeof view.refresh === 'function') {
                 try {
-                    await Promise.resolve(view.refresh());
+                    await Promise.resolve(view.refresh({ reloadFromDisk: true }));
                 } catch { /* non-fatal */ }
             }
         }
@@ -4667,7 +4863,10 @@ export default class SceneCardsPlugin extends Plugin {
      */
     private async updatePlotGridLinkedSceneIds(oldPath: string, newPath: string): Promise<void> {
         try {
-            const data = await this.loadPlotGrid();
+            const projectFile = this.findProjectFileForVaultPath(newPath)
+                || this.findProjectFileForVaultPath(oldPath);
+            if (!projectFile) return;
+            const data = await this.loadPlotGrid(projectFile);
             if (!data?.pages?.length) return;
 
             let dirty = false;
@@ -4681,8 +4880,17 @@ export default class SceneCardsPlugin extends Plugin {
                 }
             }
 
-            if (dirty) {
-                await this.savePlotGrid(data);
+            if (!dirty) return;
+            await this.savePlotGrid(data, { projectFilePath: projectFile });
+            const target = normalizePath(projectFile);
+            for (const leaf of this.app.workspace.getLeavesOfType(PLOTGRID_VIEW_TYPE)) {
+                if (getLeafNarrativeLabProjectFile(leaf) !== target) continue;
+                const view = leaf.view as unknown as {
+                    refresh?: (options?: { reloadFromDisk?: boolean }) => void | Promise<void>;
+                };
+                if (typeof view.refresh === 'function') {
+                    await Promise.resolve(view.refresh({ reloadFromDisk: true }));
+                }
             }
         } catch {
             // non-fatal — PlotGrid may not exist yet

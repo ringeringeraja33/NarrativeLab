@@ -266,7 +266,7 @@ export class MergeSceneModal extends Modal {
         }
 
         // Location
-        const locs = [...new Set(scenes.map(s => s.location).filter(Boolean))];
+        const locs = [...new Set(scenes.flatMap(s => s.location || []))];
         if (locs.length > 1) {
             conflicts.push(`Locations differ (${locs.join(', ')}) → combining as "${locs.join(', ')}"`);
         }

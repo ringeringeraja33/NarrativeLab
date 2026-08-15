@@ -257,7 +257,7 @@ export class PlotlineNcanvasService {
             beatList: '',
             eventType: opts.plotline.label || opts.plotline.id,
             eventDescription: '',
-            location: scene?.location || '',
+            location: (scene?.location || []).join(', '),
             timeWeather: '',
             questEpisode: '',
             act: scene?.act != null ? String(scene.act) : '',

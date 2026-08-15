@@ -105,6 +105,14 @@ export class ResearchManager {
     //  Getters
     // ────────────────────────────────────
 
+    exportSnapshot(): Map<string, ResearchPost> {
+        return new Map(this.posts);
+    }
+
+    restoreSnapshot(posts: Map<string, ResearchPost>): void {
+        this.posts = new Map(posts);
+    }
+
     getAllPosts(includeInactive = false): ResearchPost[] {
         const posts = Array.from(this.posts.values());
         return includeInactive ? posts : posts.filter(post => !post.inactive);
@@ -269,14 +277,6 @@ export class ResearchManager {
 
         const newContent = `---\n${stringifyYaml(fm)}---${body}`;
         await this.app.vault.modify(file, newContent);
-    }
-
-    /**
-     * Legacy delete entry point. Research removal now means disabling the
-     * post; the Markdown file remains available for recovery.
-     */
-    async deletePost(filePath: string): Promise<void> {
-        await this.setPostActive(filePath, false);
     }
 
     /** Enable or disable a post without deleting its file. */

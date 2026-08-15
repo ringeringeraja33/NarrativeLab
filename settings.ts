@@ -545,21 +545,6 @@ export function resolveStickyNoteFontColor(
 }
 
 /**
- * Issue #205 — returns true when the given background hex is "light"
- * (relative luminance above 0.4), meaning dark text reads better on it.
- * Mirrors the threshold used by `contrastTextColor`.
- */
-export function isLightBackground(bgHex: string): boolean {
-    const h = bgHex.replace('#', '');
-    const r = Number.parseInt(h.slice(0, 2), 16) / 255;
-    const g = Number.parseInt(h.slice(2, 4), 16) / 255;
-    const b = Number.parseInt(h.slice(4, 6), 16) / 255;
-    const toLinear = (c: number) => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
-    const luminance = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
-    return luminance > 0.4;
-}
-
-/**
  * Resolve the effective color for a tag.
  * Priority: custom tagColors override > scheme auto-assignment > fallback.
  * HSL adjustments are applied to scheme-assigned colours (not custom overrides).
@@ -668,10 +653,6 @@ export interface SceneCardsSettings {
     /** What text to show beneath a scene card title: nothing, the synopsis field, or the first lines of the draft body. */
     cardPreviewSource: 'none' | 'synopsis' | 'body' | 'conflict';
     characterCardPortraitSize: number;
-    characterDetailPortraitSize: number;
-    locationTreeThumbSize: number;
-    locationDetailPortraitWidth: number;
-    locationDetailPortraitHeight: number;
 
     // Writing goals
     dailyWordGoal: number;
@@ -800,7 +781,7 @@ export interface SceneCardsSettings {
     // DOCX export settings (adapted from ToWord plugin)
     docxSettings: SLDocxSettings;
 
-    // PDF export settings (using pdf-lib)
+    // PDF export settings (desktop print-to-PDF)
     pdfSettings: SLPdfSettings;
 
     // Sticky note colour theme
@@ -851,7 +832,7 @@ export interface SceneCardsSettings {
         label: string;
         icon: string;
         showInSidebar?: boolean;
-        /** Richer profile fields + card browse, similar to Characters / Locations. */
+        /** Always true. Kept so older category JSON still round-trips. */
         hasProfilePage?: boolean;
         preset?: boolean;
     }>;
@@ -913,8 +894,6 @@ export interface SceneCardsSettings {
      * Horizontal = section columns left-to-right; vertical = stacked sections.
      */
     profileOrientations?: Record<string, 'horizontal' | 'vertical'>;
-    /** Which codex category IDs should appear in the Scene Inspector sidebar */
-    codexSidebarCategories: string[];
     /** Series name — groups projects that share a common universe / codex */
     series: string;
     /** Extra vault-relative folder paths to scan for NarrativeLab entities */
@@ -1043,10 +1022,6 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     compactCardView: false,
     cardPreviewSource: 'none',
     characterCardPortraitSize: 64,
-    characterDetailPortraitSize: 96,
-    locationTreeThumbSize: 20,
-    locationDetailPortraitWidth: 120,
-    locationDetailPortraitHeight: 80,
 
     dailyWordGoal: 1000,
     weeklyWordGoal: 7000,
@@ -1118,8 +1093,6 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     removedBuiltinFields: {},
     removedBuiltinSections: {},
     profileOrientations: {},
-    /** Which codex category IDs should appear in the Scene Inspector sidebar */
-    codexSidebarCategories: [] as string[],
     series: '',
     extraFolders: [],
 
@@ -1822,50 +1795,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             (next) => this.plugin.settings.characterCardPortraitSize = next,
         );
 
-        numberSetting(
-            imageBody,
-            t('Character detail portrait size'),
-            t('Size in px for the large character portrait in detail view (default 96).'),
-            this.plugin.settings.characterDetailPortraitSize,
-            48,
-            320,
-            96,
-            (next) => this.plugin.settings.characterDetailPortraitSize = next,
-        );
-
-        numberSetting(
-            imageBody,
-            t('Location tree thumbnail size'),
-            t('Size in px for location/world thumbnails in the tree (default 20).'),
-            this.plugin.settings.locationTreeThumbSize,
-            12,
-            80,
-            20,
-            (next) => this.plugin.settings.locationTreeThumbSize = next,
-        );
-
-        numberSetting(
-            imageBody,
-            t('Location detail image width'),
-            t('Width in px for location detail image frame (default 120).'),
-            this.plugin.settings.locationDetailPortraitWidth,
-            64,
-            480,
-            120,
-            (next) => this.plugin.settings.locationDetailPortraitWidth = next,
-        );
-
-        numberSetting(
-            imageBody,
-            t('Location detail image height'),
-            t('Height in px for location detail image frame (default 80).'),
-            this.plugin.settings.locationDetailPortraitHeight,
-            48,
-            360,
-            80,
-            (next) => this.plugin.settings.locationDetailPortraitHeight = next,
-        );
-
         new Setting(imageBody)
             .setName(t('Reset image sizes'))
             .setDesc(t('Restore all image/frame sizes to default values.'))
@@ -1873,10 +1802,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                 .setButtonText(t('Reset to defaults'))
                 .onClick(async () => {
                     this.plugin.settings.characterCardPortraitSize = DEFAULT_SETTINGS.characterCardPortraitSize;
-                    this.plugin.settings.characterDetailPortraitSize = DEFAULT_SETTINGS.characterDetailPortraitSize;
-                    this.plugin.settings.locationTreeThumbSize = DEFAULT_SETTINGS.locationTreeThumbSize;
-                    this.plugin.settings.locationDetailPortraitWidth = DEFAULT_SETTINGS.locationDetailPortraitWidth;
-                    this.plugin.settings.locationDetailPortraitHeight = DEFAULT_SETTINGS.locationDetailPortraitHeight;
                     await this.plugin.saveSettings();
                     this.refreshSettingsView();
                 }));
@@ -3467,7 +3392,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         const body = details.createDiv();
 
         body.createEl('p', {
-            text: t('Configure PDF export behavior. Uses pdf-lib for cross-platform generation (works on mobile).'),
+            text: t('Configure PDF export on desktop (page size, margins, and fonts). Generation uses Electron print-to-PDF.'),
             cls: 'setting-item-description',
         });
 

@@ -16,21 +16,12 @@ import {
 } from './LibraryModeBar';
 import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import {
-    applyCategoryFolderLabels,
     deleteLibraryCategory,
     renameLibraryCategory,
     resolveLibraryCategoryLabel,
 } from '../services/LibraryCategorySync';
 import { t } from '../utils/i18n';
-import {
-    getBuiltinCodexCategory,
-    makeCustomCodexCategory,
-    makeProfileCodexCategory,
-    UNCATEGORIZED_CATEGORY_ID,
-} from '../models/Codex';
-import { setLibraryCategoryProfileSetting } from '../utils/libraryCategoryTransactions';
-
-const FIXED_PROFILE_CATEGORY_IDS = new Set(['characters', 'locations']);
+import { UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
 
 export interface CodexTabsOptions {
     /** The view type that should be highlighted as active ('Characters' | 'Locations' | category id) */
@@ -82,10 +73,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     const activateCategory = (categoryId: string): void => {
         rememberLibraryCategory(plugin, categoryId);
         if (getLibraryContentMode(plugin) === 'story-graph') {
-            setLibraryContentMode(
-                plugin,
-                isLibraryCategoryProfilePageEnabled(plugin, categoryId) ? 'profile' : 'browse',
-            );
+            setLibraryContentMode(plugin, 'profile');
         }
         onCategoryActivate?.(categoryId);
     };
@@ -129,8 +117,10 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     }
 
     // ── Custom / built-in codex categories ──
+    const enabledCodex = new Set(plugin.settings.codexEnabledCategories || []);
     const cats = plugin.codexManager.getCategories()
-        .filter(category => category.id !== UNCATEGORIZED_CATEGORY_ID);
+        .filter(category => category.id !== UNCATEGORIZED_CATEGORY_ID)
+        .filter(category => enabledCodex.has(category.id));
     for (const cat of cats) {
         const isActive = activeId === cat.id;
         const tabLabel = resolveLibraryCategoryLabel(plugin, cat.id, cat.label);
@@ -373,21 +363,6 @@ function attachRenameMenu(
             .onClick(() => {
                 promptRenameCategory(plugin, categoryId, onCategoriesChanged);
             }));
-        if (!FIXED_PROFILE_CATEGORY_IDS.has(categoryId) && categoryId !== UNCATEGORIZED_CATEGORY_ID) {
-            const profileEnabled = isLibraryCategoryProfilePageEnabled(plugin, categoryId);
-            menu.addItem(item => item
-                .setTitle(t(profileEnabled ? 'Disable profile page' : 'Enable profile page'))
-                .setIcon('contact')
-                .setChecked(profileEnabled)
-                .onClick(() => {
-                    void setLibraryCategoryProfilePage(
-                        plugin,
-                        categoryId,
-                        !profileEnabled,
-                        onCategoriesChanged,
-                    );
-                }));
-        }
         if (allowDelete) {
             menu.addItem(item => item
                 .setTitle(t('Delete'))
@@ -398,80 +373,6 @@ function attachRenameMenu(
         }
         menu.showAtMouseEvent(e);
     });
-}
-
-function isLibraryCategoryProfilePageEnabled(
-    plugin: SceneCardsPlugin,
-    categoryId: string,
-): boolean {
-    if (FIXED_PROFILE_CATEGORY_IDS.has(categoryId)) return true;
-    return plugin.settings.codexCustomCategories
-        ?.find(category => category.id === categoryId)
-        ?.hasProfilePage === true;
-}
-
-async function setLibraryCategoryProfilePage(
-    plugin: SceneCardsPlugin,
-    categoryId: string,
-    enabled: boolean,
-    onCategoriesChanged?: () => void,
-): Promise<void> {
-    const previousCategories = (plugin.settings.codexCustomCategories || []).map(category => ({ ...category }));
-    const previousLayout = { ...(plugin.settings.libraryBrowseLayout || {}) };
-    const previousSidebar = [...(plugin.settings.codexSidebarCategories || [])];
-    const resolved = plugin.codexManager.getCategoryDef(categoryId);
-    const builtin = getBuiltinCodexCategory(categoryId);
-    const fallback = {
-        id: categoryId,
-        label: resolveLibraryCategoryLabel(
-            plugin,
-            categoryId,
-            resolved?.label || builtin?.label || plugin.sceneManager.getLibraryFolderName(categoryId),
-        ),
-        icon: resolved?.icon || builtin?.icon || 'file-text',
-        preset: Boolean(builtin),
-    };
-    plugin.settings.codexCustomCategories = setLibraryCategoryProfileSetting(
-        plugin.settings.codexCustomCategories || [],
-        fallback,
-        enabled,
-    );
-
-    if (!plugin.settings.libraryBrowseLayout) plugin.settings.libraryBrowseLayout = {};
-    if (enabled && !plugin.settings.libraryBrowseLayout[categoryId]) {
-        plugin.settings.libraryBrowseLayout[categoryId] = 'cards';
-    }
-    const sidebar = new Set(plugin.settings.codexSidebarCategories || []);
-    if (enabled) sidebar.add(categoryId);
-    else sidebar.delete(categoryId);
-    plugin.settings.codexSidebarCategories = Array.from(sidebar);
-
-    try {
-        await plugin.saveSettings();
-    } catch (error) {
-        plugin.settings.codexCustomCategories = previousCategories;
-        plugin.settings.libraryBrowseLayout = previousLayout;
-        plugin.settings.codexSidebarCategories = previousSidebar;
-        console.error('[NarrativeLab] Failed to update Library category profile page:', error);
-        new obsidian.Notice(t('Failed to update profile page'));
-        return;
-    }
-    try {
-        const customDefs = (plugin.settings.codexCustomCategories || []).map(category =>
-            category.hasProfilePage
-                ? makeProfileCodexCategory(category.id, category.label, category.icon)
-                : makeCustomCodexCategory(category.id, category.label, category.icon));
-        plugin.codexManager.initCategories(plugin.settings.codexEnabledCategories || [], customDefs);
-        applyCategoryFolderLabels(plugin);
-        plugin.libraryCategoriesStructureEpoch += 1;
-        await plugin.reloadEntities();
-        onCategoriesChanged?.();
-        void plugin.refreshOpenViews();
-        new obsidian.Notice(t(enabled ? 'Profile page enabled' : 'Profile page disabled'));
-    } catch (error) {
-        console.error('[NarrativeLab] Library category profile page saved but refresh failed:', error);
-        new obsidian.Notice(t('Profile page setting saved; refresh the view to apply it.'));
-    }
 }
 
 export function promptDeleteCategory(

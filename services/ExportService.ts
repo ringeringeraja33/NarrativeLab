@@ -263,7 +263,7 @@ export class ExportService {
             const chrono = scene.chronologicalOrder ?? '';
             const status = resolveStatusCfg(scene.status || 'idea').label;
             const pov = scene.pov || '';
-            const location = (scene.location || '').replace(/\|/g, '/');
+            const location = (scene.location || []).join(', ').replace(/\|/g, '/');
             const words = scene.wordcount ?? '';
             const emotion = scene.emotion || '';
             const intensity = scene.intensity ?? '';
@@ -639,7 +639,7 @@ ${body}
             parts.push(`<td>${scene.chapter ?? ''}</td>`);
             parts.push(`<td>${this.escHtml(resolveStatusCfg(scene.status || 'idea').label)}</td>`);
             parts.push(`<td>${this.escHtml(scene.pov || '')}</td>`);
-            parts.push(`<td>${this.escHtml(scene.location || '')}</td>`);
+            parts.push(`<td>${this.escHtml((scene.location || []).join(', '))}</td>`);
             parts.push(`<td>${scene.wordcount ?? ''}</td>`);
             parts.push(`<td>${this.escHtml(scene.emotion || '')}</td>`);
             parts.push(`<td>${this.escHtml(scene.timeline_mode || '')}</td>`);
@@ -680,7 +680,7 @@ ${body}
                     String(scene.chapter ?? ''),
                     resolveStatusCfg(scene.status || 'idea').label,
                     scene.pov || '',
-                    scene.location || '',
+                    (scene.location || []).join('; '),
                     (scene.characters || []).join('; '),
                     scene.emotion || '',
                     String(scene.intensity ?? ''),
@@ -1248,7 +1248,7 @@ ${body}
 
                 // Safety timeout (15 s)
                 const timer = window.setTimeout(() => {
-                    console.warn('NarrativeLab PDF: webview printToPDF timed out, falling back to pdf-lib');
+                    console.warn('NarrativeLab PDF: webview printToPDF timed out');
                     cleanup();
                     resolve(null);
                 }, 15000);

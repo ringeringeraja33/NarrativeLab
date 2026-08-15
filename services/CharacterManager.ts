@@ -69,6 +69,14 @@ export class CharacterManager {
     /**
      * Get all loaded characters sorted by name.
      */
+    exportSnapshot(): Map<string, Character> {
+        return new Map(this.characters);
+    }
+
+    restoreSnapshot(entries: Map<string, Character>): void {
+        this.characters = new Map(entries);
+    }
+
     getAllCharacters(): Character[] {
         return Array.from(this.characters.values()).sort((a, b) =>
             a.name.toLowerCase().localeCompare(b.name.toLowerCase())

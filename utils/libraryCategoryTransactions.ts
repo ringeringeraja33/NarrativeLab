@@ -112,6 +112,29 @@ export interface LibraryBaseReferenceState {
     hiddenFixedCategoryIds?: readonly string[];
 }
 
+export interface AdoptedLibraryCategoryVisibility {
+    /** Already in the user's enabled tab list. */
+    alreadyEnabled: boolean;
+    /** Already known to this project (customCategories or libraryFolders). */
+    alreadyRegistered: boolean;
+    /** User deleted this preset; do not resurrect it from a leftover folder. */
+    deleted: boolean;
+}
+
+/**
+ * Disk folders can discover brand-new categories, but they must not undo hide.
+ * Hidden categories stay registered so their Library folders are kept and are
+ * not treated as new tabs.
+ */
+export function shouldEnableAdoptedLibraryCategory(
+    state: AdoptedLibraryCategoryVisibility,
+): boolean {
+    if (state.deleted) return false;
+    if (state.alreadyEnabled) return true;
+    if (state.alreadyRegistered) return false;
+    return true;
+}
+
 /** Resolve category ids that still have a live Library/UI reference. */
 export function collectReferencedLibraryCategoryIds(state: LibraryBaseReferenceState): string[] {
     const ids = new Set<string>(state.alwaysCategoryIds.filter(Boolean));
@@ -126,33 +149,4 @@ export function collectReferencedLibraryCategoryIds(state: LibraryBaseReferenceS
         if (id) ids.add(id);
     }
     return [...ids];
-}
-
-export interface LibraryCategoryProfileSetting {
-    id: string;
-    label: string;
-    icon: string;
-    showInSidebar?: boolean;
-    hasProfilePage?: boolean;
-    preset?: boolean;
-}
-
-/** Set a category's profile-page flag without losing its saved label/icon overrides. */
-export function setLibraryCategoryProfileSetting(
-    categories: readonly LibraryCategoryProfileSetting[],
-    fallback: LibraryCategoryProfileSetting,
-    enabled: boolean,
-): LibraryCategoryProfileSetting[] {
-    const index = categories.findIndex(category => category.id === fallback.id);
-    const current = index >= 0 ? categories[index] : fallback;
-    const updated: LibraryCategoryProfileSetting = {
-        ...current,
-        id: fallback.id,
-        label: current.label || fallback.label,
-        icon: current.icon || fallback.icon,
-        hasProfilePage: enabled,
-        showInSidebar: enabled,
-    };
-    if (index < 0) return [...categories, updated];
-    return categories.map((category, itemIndex) => itemIndex === index ? updated : category);
 }

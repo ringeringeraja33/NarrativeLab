@@ -273,7 +273,6 @@ export class CharacterView extends ProjectBoundItemView {
         if (this.selectedCharacter) {
             this.renderCharacterDetail(content);
         } else if (this.characterOverviewMode === 'story-graph' && !isMobile) {
-            renderLibraryModeToolbar(content, actions => this.renderCharacterOverviewModes(actions));
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -293,7 +292,7 @@ export class CharacterView extends ProjectBoundItemView {
         // Toolbar
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
-        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getActiveProjectDisplayName() });
+        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
 
         renderViewSwitcher(toolbar, CHARACTER_VIEW_TYPE, this.plugin, this.leaf);
 
@@ -339,7 +338,6 @@ export class CharacterView extends ProjectBoundItemView {
         if (this.selectedCharacter) {
             this.renderCharacterDetail(content);
         } else if (this.characterOverviewMode === 'story-graph' && !isMobile) {
-            renderLibraryModeToolbar(content, actions => this.renderCharacterOverviewModes(actions));
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -426,7 +424,7 @@ export class CharacterView extends ProjectBoundItemView {
             // Character Profiles is card-only; Browse (native Base) owns table/list.
             showLayoutToggle: false,
             onLayoutChange: () => this.renderCharacterOverview(container),
-            renderTrailingActions: (actionsEl) => this.renderCharacterOverviewModes(actionsEl),
+            renderLeadingActions: (actionsEl) => this.renderCharacterOverviewModes(actionsEl),
             appendExtra: (actionsEl) => {
                 const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
                 const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
@@ -2722,8 +2720,11 @@ export class CharacterView extends ProjectBoundItemView {
             }
         };
 
-        // Navigation row: prev | thumbs | next
+        // Navigation row: prev | thumbs | next (hidden when there is only one image)
         const nav = body.createDiv('character-gallery-nav');
+        const syncNav = () => {
+            nav.toggleClass('is-single', gallery.length <= 1);
+        };
         const prevBtn = nav.createEl('button', { cls: 'character-gallery-arrow', attr: { title: t('Previous') } });
         obsidian.setIcon(prevBtn, 'chevron-left');
         prevBtn.addEventListener('click', () => {
@@ -2768,6 +2769,7 @@ export class CharacterView extends ProjectBoundItemView {
                     renderThumbs();
                 });
             }
+            syncNav();
         };
 
         renderViewer();
@@ -3638,7 +3640,7 @@ export class CharacterView extends ProjectBoundItemView {
             && this.characterOverviewMode === 'base'
             && this.containerEl.querySelector('.library-native-base-embed')
         ) {
-            const title = this.plugin.getActiveProjectDisplayName();
+            const title = this.plugin.getProjectDisplayName(this.getBoundProjectFile());
             this.containerEl.querySelectorAll('.story-line-view-title')
                 .forEach(el => { el.textContent = title; });
             return;
@@ -3652,7 +3654,7 @@ export class CharacterView extends ProjectBoundItemView {
             && this.storyGraph
             && this.containerEl.querySelector('.story-graph-page')
         ) {
-            const title = this.plugin.getActiveProjectDisplayName();
+            const title = this.plugin.getProjectDisplayName(this.getBoundProjectFile());
             this.containerEl.querySelectorAll('.story-line-view-title')
                 .forEach(el => { el.textContent = title; });
             return;

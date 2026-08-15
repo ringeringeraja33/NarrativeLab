@@ -105,8 +105,8 @@ export interface Scene {
     pov?: string;
     /** Characters present in scene (wikilinks) */
     characters?: string[];
-    /** Location (wikilink) */
-    location?: string;
+    /** Locations present in scene (wikilinks). YAML `location` may still be a scalar. */
+    location?: string[];
     /** When in story time (legacy, use storyDate/storyTime) */
     timeline?: string;
     /** Date in story (e.g. 2026-02-17, or 'Day 1') */
@@ -177,13 +177,39 @@ export interface Scene {
     inactive?: boolean;
 }
 
+/** Location names on a scene. Always returns a list. */
+export function sceneLocationNames(scene: { location?: string[] }): string[] {
+    return (scene.location || []).map(name => String(name).trim()).filter(Boolean);
+}
+
 /**
- * Represents a column in the board view
+ * Coerce YAML `location` / `locations` (string, list, or both) into unique names.
+ * Wikilink cleaning happens in MetadataParser before this runs.
  */
-export interface BoardColumn {
-    id: string;
-    title: string;
-    scenes: Scene[];
+export function coerceSceneLocations(...values: unknown[]): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (raw: unknown): void => {
+        if (raw == null || raw === '') return;
+        if (Array.isArray(raw)) {
+            for (const item of raw) add(item);
+            return;
+        }
+        if (typeof raw === 'object') return;
+        const name = String(raw).trim();
+        if (!name) return;
+        const key = name.toLowerCase();
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push(name);
+    };
+    for (const value of values) add(value);
+    return out;
+}
+
+export function sceneHasLocation(scene: { location?: string[] }, name: string): boolean {
+    const low = name.toLowerCase();
+    return sceneLocationNames(scene).some(n => n.toLowerCase() === low);
 }
 
 /**
@@ -200,8 +226,6 @@ export interface SceneFilter {
     searchText?: string;
     /** Filter by custom (universal) field values — keyed by template id → list of accepted values */
     customFields?: Record<string, string[]>;
-    /** Arc Point filter: 'all' (default) | 'scenes' (non-arc-point only) | 'arcPoints' (arc points only) */
-    arcAnchorFilter?: 'all' | 'scenes' | 'arcPoints';
     /** Active-state filter: 'active' (default) | 'all' | 'inactive' */
     activeState?: 'active' | 'all' | 'inactive';
 }
@@ -749,42 +773,6 @@ export const BUILTIN_BEAT_SHEETS: BeatSheetTemplate[] = [
         ],
     },
 ];
-
-/**
- * Default scene template
- */
-export const DEFAULT_SCENE_TEMPLATE = `---
-type: scene
-title: "{{title}}"
-act: {{act}}
-chapter: {{chapter}}
-sequence: {{sequence}}
-chronologicalOrder: {{chronologicalOrder}}
-pov: "{{pov}}"
-characters: {{characters}}
-location: "{{location}}"
-status: {{status}}
-conflict: "{{conflict}}"
-tags: {{tags}}
-created: {{created}}
-modified: {{modified}}
----
-
-# Scene Description
-{{description}}
-
-## Goal
-What does the POV character want?
-
-## Conflict
-What stands in their way?
-
-## Outcome
-How does the scene end? What changes?
-
-## Notes
-Additional thoughts, references, or reminders
-`;
 
 /**
  * Status display labels and colors — built-in statuses.

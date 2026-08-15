@@ -510,11 +510,4 @@ export class ConverterModal extends Modal {
         this.bodyEl = null;
     }
 }
-
-/** Back-compat alias — opens the converter on the manuscript export tab. */
-export class ExportModal extends ConverterModal {
-    constructor(plugin: SceneCardsPlugin) {
-        super(plugin, { tab: 'export' });
-    }
-}
 /* eslint-enable @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

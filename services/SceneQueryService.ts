@@ -193,6 +193,12 @@ export class SceneQueryService {
     getUniqueValues(field: 'act' | 'chapter' | 'pov' | 'status' | 'emotion' | 'location'): string[] {
         const values = new Set<string>();
         for (const scene of this.sceneStore.sceneValues()) {
+            if (field === 'location') {
+                for (const name of scene.location || []) {
+                    if (name) values.add(name);
+                }
+                continue;
+            }
             const val = scene[field];
             if (val !== undefined && val !== null) {
                 values.add(String(val));
@@ -292,8 +298,8 @@ export class SceneQueryService {
             }
 
             // Locations
-            if (scene.location) {
-                locationCounts[scene.location] = (locationCounts[scene.location] || 0) + 1;
+            for (const name of scene.location || []) {
+                locationCounts[name] = (locationCounts[name] || 0) + 1;
             }
 
             // Orphaned (no tags, no connections)
@@ -345,8 +351,10 @@ export class SceneQueryService {
                 return false;
             }
         }
-        if (filter.locations?.length && (!scene.location || !filter.locations.includes(scene.location))) {
-            return false;
+        if (filter.locations?.length) {
+            if (!scene.location || !filter.locations.some(l => scene.location!.includes(l))) {
+                return false;
+            }
         }
         if (filter.tags?.length) {
             if (!scene.tags || !filter.tags.some(t => scene.tags!.includes(t))) {
@@ -370,17 +378,11 @@ export class SceneQueryService {
                 scene.conflict,
                 scene.emotion,
                 scene.pov,
-                scene.location,
+                ...(scene.location || []),
                 ...(scene.characters || []),
                 ...(scene.tags || []),
             ].filter(Boolean).join(' ').toLowerCase();
             if (!searchIn.includes(searchLower)) return false;
-        }
-        if (filter.arcAnchorFilter === 'arcPoints' && !scene.arcAnchor) {
-            return false;
-        }
-        if (filter.arcAnchorFilter === 'scenes' && scene.arcAnchor) {
-            return false;
         }
         return true;
     }

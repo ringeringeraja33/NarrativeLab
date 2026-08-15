@@ -3,8 +3,9 @@
  * Library categories ↔ vault folders.
  *
  * Strict rules (every project):
- * 1. Source of truth for tabs = direct subfolders of Library/ (plus fixed
- *    Characters / Locations / Uncategorized).
+ * 1. Source of truth for folders = direct subfolders of Library/ (plus fixed
+ *    Characters / Locations / Uncategorized). Tab visibility is the user's
+ *    enabled/hidden list — hiding a category keeps its folder.
  * 2. Uncategorized = notes at Library root only — never notes inside a
  *    category subfolder (Creatures, Skills, …).
  * 3. Deleting a category removes its Library folder(s) and Library Base view,
@@ -13,9 +14,9 @@
  * 5. Stable category ids (characters, locations, items, …) never change —
  *    only the folder basename / tab label does.
  */
-import { App, Notice, TFile, TFolder, normalizePath } from 'obsidian';
+import { Notice, TFile, TFolder, normalizePath } from 'obsidian';
 import { BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
-import { DEFAULT_PROJECT_LIBRARY_FOLDERS, type StoryLineProject } from '../models/StoryLineProject';
+import type { StoryLineProject } from '../models/StoryLineProject';
 import type SceneCardsPlugin from '../main';
 import { localizeForLanguage, t } from '../utils/i18n';
 import {
@@ -23,6 +24,7 @@ import {
     findLibraryCategoriesMissingFolders,
     libraryFolderNamesMatch,
     planLibraryFolderRename,
+    shouldEnableAdoptedLibraryCategory,
     type VaultPathKind,
 } from '../utils/libraryCategoryTransactions';
 import { coerceString } from '../utils/narrow';
@@ -75,6 +77,8 @@ export function seedStorylinePresetCategories(plugin: SceneCardsPlugin): boolean
         const existing = categories.find(category => category.id === preset.id);
         if (existing) {
             existing.preset = true;
+            existing.hasProfilePage = true;
+            existing.showInSidebar = true;
             if (!existing.label?.trim()) existing.label = preset.label;
             if (!existing.icon) existing.icon = preset.icon;
         } else {
@@ -301,8 +305,6 @@ function removeLibraryCategoryState(
 ): void {
     plugin.settings.codexEnabledCategories =
         (plugin.settings.codexEnabledCategories || []).filter(id => id !== categoryId);
-    plugin.settings.codexSidebarCategories =
-        (plugin.settings.codexSidebarCategories || []).filter(id => id !== categoryId);
     plugin.settings.libraryCategoryOrder =
         (plugin.settings.libraryCategoryOrder || []).filter(id => id !== categoryId);
     if (plugin.settings.storyGraphLibraryCategoryColors?.[categoryId]) {
@@ -910,20 +912,6 @@ function findCategoryIdForFolderName(
     return null;
 }
 
-/** Seed a new project with its two fixed Library folders only. */
-export function defaultLibraryFoldersForNewProject(): Record<string, string> {
-    return { ...DEFAULT_PROJECT_LIBRARY_FOLDERS };
-}
-
-export async function ensureFoldersExist(app: App, paths: string[]): Promise<void> {
-    for (const p of paths) {
-        const path = normalizePath(p);
-        if (!path) continue;
-        if (await app.vault.adapter.exists(path)) continue;
-        await app.vault.createFolder(path).catch(() => undefined);
-    }
-}
-
 /** Per-project Library category config stored in System/library-categories.json. */
 export const LIBRARY_CATEGORIES_FILENAME = 'library-categories.json';
 
@@ -974,7 +962,11 @@ export function applyLibraryCategorySettings(
     payload: LibraryCategorySettingsPayload,
 ): void {
     plugin.settings.codexEnabledCategories = [...(payload.enabledCategories || [])];
-    plugin.settings.codexCustomCategories = (payload.customCategories || []).map(category => ({ ...category }));
+    plugin.settings.codexCustomCategories = (payload.customCategories || []).map(category => ({
+        ...category,
+        hasProfilePage: true,
+        showInSidebar: true,
+    }));
     plugin.settings.libraryCategoryOrder = [...(payload.categoryOrder || [])];
     plugin.settings.libraryHiddenFixedCategories = [...(payload.hiddenFixedCategories || [])];
     plugin.settings.codexDeletedPresetCategories = [...(payload.deletedPresetCategories || [])];
@@ -998,8 +990,8 @@ function parseLibraryCategorySettings(raw: Record<string, unknown>): LibraryCate
             id: coerceString(item.id).trim(),
             label: coerceString(item.label).trim(),
             icon: coerceString(item.icon, 'file-text').trim() || 'file-text',
-            ...(typeof item.showInSidebar === 'boolean' ? { showInSidebar: item.showInSidebar } : {}),
-            ...(typeof item.hasProfilePage === 'boolean' ? { hasProfilePage: item.hasProfilePage } : {}),
+            showInSidebar: true,
+            hasProfilePage: true,
             ...(typeof item.preset === 'boolean' ? { preset: item.preset } : {}),
         }))
         .filter(item => item.id && item.label);
@@ -1114,9 +1106,9 @@ function resolveCategoryIdForLibraryFolder(
 }
 
 /**
- * Library subfolders are the source of truth for which categories exist.
- * Any direct child of Library/ becomes an enabled category tab (Creatures,
- * custom folders like 技能, …). Fixed Characters/Locations are skipped here.
+ * Library subfolders discover which categories exist. Brand-new folders become
+ * enabled tabs; already-registered categories keep the user's hide/show choice.
+ * Fixed Characters/Locations are skipped here.
  */
 export async function adoptLibraryCategoriesFromFolders(
     plugin: SceneCardsPlugin,
@@ -1155,16 +1147,29 @@ export async function adoptLibraryCategoriesFromFolders(
     }
 
     const ensureRegistered = (id: string, label: string, icon: string, builtin: boolean, folderName: string) => {
-        if (deleted.has(id)) {
-            deleted.delete(id);
-            changed = true;
-        }
-        if (!enabled.has(id)) {
+        // Deleted presets stay deleted even if their Library folder is still on disk.
+        if (deleted.has(id)) return;
+
+        const alreadyRegistered = plugin.settings.codexCustomCategories.some(category => category.id === id)
+            || !!project.libraryFolders?.[id];
+        const enableTab = shouldEnableAdoptedLibraryCategory({
+            alreadyEnabled: enabled.has(id),
+            alreadyRegistered,
+            deleted: false,
+        });
+
+        if (enableTab && !enabled.has(id)) {
             enabled.add(id);
             changed = true;
         }
         if (!builtin && !plugin.settings.codexCustomCategories.some(category => category.id === id)) {
-            plugin.settings.codexCustomCategories.push({ id, label, icon });
+            plugin.settings.codexCustomCategories.push({
+                id,
+                label,
+                icon,
+                hasProfilePage: true,
+                showInSidebar: true,
+            });
             changed = true;
         }
         // Keep builtin display metadata in customCategories for renames/icons.
@@ -1174,10 +1179,12 @@ export async function adoptLibraryCategoriesFromFolders(
                 label,
                 icon,
                 preset: true,
+                hasProfilePage: true,
+                showInSidebar: true,
             });
             changed = true;
         }
-        if (!order.includes(id)) {
+        if (enableTab && !order.includes(id)) {
             order.push(id);
             changed = true;
         }

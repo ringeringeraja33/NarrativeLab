@@ -1274,19 +1274,6 @@ export async function migrateNativeLibraryBasesForActiveProject(
     }
 }
 
-export async function migrateNativeLibraryBasesForAllProjects(
-    plugin: SceneCardsPlugin,
-): Promise<void> {
-    const projects = plugin.sceneManager.getProjects();
-    for (const project of projects) {
-        await plugin.sceneManager.withActiveProject(project, async () => {
-            await migrateLegacyNativeBases(plugin);
-            await pruneOrphanNativeLibraryBases(plugin);
-            await syncAllNativeLibraryBases(plugin);
-        });
-    }
-}
-
 /**
  * Drop views for deleted categories and trash leftover multi-file Bases.
  */

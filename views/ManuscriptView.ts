@@ -216,7 +216,7 @@ export class ManuscriptView extends ProjectBoundItemView {
         // Toolbar
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
-        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getActiveProjectDisplayName() });
+        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
 
         // View switcher tabs
         renderViewSwitcher(toolbar, MANUSCRIPT_VIEW_TYPE, this.plugin, this.leaf);
@@ -255,7 +255,6 @@ export class ManuscriptView extends ProjectBoundItemView {
                 focusBtn.toggleClass('is-active', this._focusMode);
                 container.toggleClass('sl-manuscript-focus', this._focusMode);
                 this.applyFocusCssVars(container);
-                this.toggleSidebarVisibility(!this._focusMode);
                 if (!this._focusMode) {
                     this.scrollArea?.querySelectorAll('.sl-focus-active').forEach(
                         el => el.removeClass('sl-focus-active'),
@@ -270,7 +269,6 @@ export class ManuscriptView extends ProjectBoundItemView {
             if (this._focusMode) {
                 container.addClass('sl-manuscript-focus');
                 this.applyFocusCssVars(container);
-                this.toggleSidebarVisibility(false);
             }
 
             const plainWrap = (filterBar as HTMLElement).createEl('label', {
@@ -1294,9 +1292,6 @@ export class ManuscriptView extends ProjectBoundItemView {
             body.style.removeProperty('--sl-focus-filter');
         }
     }
-
-    /** Stub — sidebar dimming now handled via CSS filter */
-    private toggleSidebarVisibility(_visible: boolean): void { }
 
     /** IntersectionObserver to detect which scene block is most visible (for Inspector sync) */
     private setupFocusObserver(): void {

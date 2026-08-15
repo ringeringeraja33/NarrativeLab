@@ -659,9 +659,6 @@ export class FiltersComponent {
     }
 
     private emitChange(): void {
-        // Scene vs Arc Point is not a useful filter surface — drop any leftover value
-        // from old presets so it never silently narrows results.
-        delete this.currentFilter.arcAnchorFilter;
         this.onChange(this.currentFilter, this.currentSort);
     }
 

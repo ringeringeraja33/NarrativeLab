@@ -95,10 +95,6 @@ export function renameAllEntityCachePrefixes(oldFolder: string, newFolder: strin
     }
 }
 
-export function clearEntityCache(ns: string): void {
-    getCache(ns).clear();
-}
-
 /** Excalidraw drawings may be stored as `.excalidraw` or `.excalidraw.md`. */
 export function isExcalidrawFilePath(path: string): boolean {
     const name = normalizePath(path).split('/').pop()?.toLowerCase() || '';

@@ -264,6 +264,9 @@ test('project switching remounts project-bound Library embeds', () => {
         sceneManager.indexOf('async renameProject('),
     );
     assert.match(switchProject, /loadProjectSystemData\(\)/);
+    assert.match(switchProject, /fromLeafFocus/);
+    assert.match(switchProject, /stashProjectRuntime/);
+    assert.match(switchProject, /restoreProjectRuntime/);
     assert.match(switchProject, /libraryCategoriesStructureEpoch \+= 1/);
     assert.ok(
         switchProject.indexOf('libraryCategoriesStructureEpoch += 1')
@@ -311,20 +314,19 @@ test('editable Base field names stay neutral while preset category labels locali
 test('custom profile categories expose a working profile overview mode', () => {
     assert.match(codexView, /private renderOverviewModes\(parent: HTMLElement\)/);
     assert.match(libraryModeBar, /data-mode': 'profile'/);
-    assert.match(codexView, /activeCategoryHasProfilePage/);
     assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile'\)/);
-    assert.match(codexView, /showLayoutToggle: !this\.isProfileOverviewMode\(\)/);
+    assert.match(codexView, /showLayoutToggle: false/);
     assert.match(codexView, /this\.isProfileOverviewMode\(\)\s*\? 'cards'/);
 });
 
 test('async embedded views cannot repaint or leak after navigation', async () => {
-    const [manuscript, notesView, infoPanel, inspector, researchView, plotgridView] = await Promise.all([
+    const [manuscript, notesView, inspector, researchView, plotgridView, linkScanner] = await Promise.all([
         readFile(new URL('../views/ManuscriptView.ts', import.meta.url), 'utf8'),
         readFile(new URL('../views/NotesView.ts', import.meta.url), 'utf8'),
-        readFile(new URL('../components/InfoPanel.ts', import.meta.url), 'utf8'),
         readFile(new URL('../components/Inspector.ts', import.meta.url), 'utf8'),
         readFile(new URL('../views/ResearchView.ts', import.meta.url), 'utf8'),
         readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/LinkScanner.ts', import.meta.url), 'utf8'),
     ]);
 
     assert.match(manuscript, /editorMountGeneration\+\+/);
@@ -335,9 +337,17 @@ test('async embedded views cannot repaint or leak after navigation', async () =>
     assert.match(notesView, /mountGeneration !== this\.editorMountGeneration/);
     assert.match(notesView, /this\.currentNotesPath !== notesPath/);
 
-    assert.match(infoPanel, /mountGeneration !== this\.notesMountGeneration/);
-    assert.match(infoPanel, /this\.notesLeaf !== notesLeaf \|\| this\.notesPath !== notesPath/);
-
+    assert.match(inspector, /assignDetectedLink/);
+    assert.match(inspector, /resolvedType === 'location'/);
+    assert.match(inspector, /sceneHasLocation\(scene, name\)/);
+    assert.match(inspector, /const location = \[\.\.\.sceneLocationNames\(scene\), name\]/);
+    assert.match(inspector, /renderTagPillInput\(\{[\s\S]*?values: sceneLocationNames\(scene\)/);
+    assert.match(inspector, /link\.codexCategory \? `codex:\$\{link\.codexCategory\}`/);
+    assert.match(inspector, /resolvedType === 'codex' \|\| resolvedType\.startsWith\('codex:'\)/);
+    assert.match(inspector, /codexMgr\.getCategories\(\)/);
+    assert.match(linkScanner, /codexCategory\?: string/);
+    assert.match(linkScanner, /codexCategoryByName/);
+    assert.match(linkScanner, /getCodexCategoryForName/);
     assert.match(inspector, /await obsidian\.MarkdownRenderer\.render/);
     assert.match(inspector, /renderGeneration !== this\.notesRenderGeneration/);
     assert.doesNotMatch(inspector, /foundIdx = lines\.indexOf\(line\)/);
@@ -349,7 +359,7 @@ test('async embedded views cannot repaint or leak after navigation', async () =>
     for (const view of [characterView, locationView, codexView, boardView, manuscript, statsView]) {
         assert.match(view, /this\.rootContainer !== container \|\| !container\.isConnected/);
     }
-    assert.match(plotgridView, /await this\.loadData\(\);[\s\S]*?if \(!container\.isConnected\) return;/);
+    assert.match(plotgridView, /peekPlotGridDoc[\s\S]*?this\.loadData\(\)[\s\S]*?if \(!container\.isConnected\) return;/);
 });
 
 test('Story Graph is the first peer tab while profile and browse modes stay in the toolbar', () => {
@@ -358,15 +368,19 @@ test('Story Graph is the first peer tab while profile and browse modes stay in t
     assert.match(categoryTabs, /const tabs = parent\.createDiv\('codex-category-tabs'\);\s*renderLeadingTabs\?\.\(tabs\);\s*const renderedTabs/);
     assert.match(categoryTabs, /tabs\.insertBefore\(uncategorizedTab, categoryActions\)/);
     assert.match(categoryTabs, /getLibraryContentMode\(plugin\) === 'story-graph'[\s\S]*?setLibraryContentMode/);
-    assert.match(libraryBrowseLayout, /renderTrailingActions\?: \(actionsEl: HTMLElement\) => void/);
-    assert.match(libraryBrowseLayout, /toolbar\.createDiv\('library-browse-mode-actions'\)/);
+    assert.match(libraryBrowseLayout, /renderLeadingActions\?: \(actionsEl: HTMLElement\) => void/);
+    assert.match(libraryBrowseLayout, /if \(opts\.renderLeadingActions\) \{[\s\S]*?library-browse-mode-actions[\s\S]*?const actions = toolbar\.createDiv\('library-browse-actions'\)/);
     assert.match(libraryBrowseLayout, /export function renderLibraryModeToolbar/);
-    assert.match(characterView, /renderTrailingActions: \(actionsEl\) => this\.renderCharacterOverviewModes\(actionsEl\)/);
-    assert.match(locationView, /renderTrailingActions: \(actionsEl\) => this\.renderLocationOverviewModes\(actionsEl\)/);
-    assert.match(codexView, /renderTrailingActions: \(actionsEl\) => this\.renderOverviewModes\(actionsEl\)/);
-    assert.match(characterView, /renderLibraryModeToolbar\(content, actions => this\.renderCharacterOverviewModes\(actions\)\)/);
-    assert.match(locationView, /renderLibraryModeToolbar\(content, actions => this\.renderLocationOverviewModes\(actions\)\)/);
-    assert.match(codexView, /renderLibraryModeToolbar\(content, actions => this\.renderOverviewModes\(actions\)\)/);
+    assert.match(characterView, /renderLeadingActions: \(actionsEl\) => this\.renderCharacterOverviewModes\(actionsEl\)/);
+    assert.match(locationView, /renderLeadingActions: \(actionsEl\) => this\.renderLocationOverviewModes\(actionsEl\)/);
+    assert.match(codexView, /renderLeadingActions: \(actionsEl\) => this\.renderOverviewModes\(actionsEl\)/);
+    assert.doesNotMatch(libraryBrowseLayout, /renderTrailingActions/);
+    assert.match(characterView, /renderLibraryModeToolbar\(container, actions => this\.renderCharacterOverviewModes\(actions\)\)/);
+    assert.match(locationView, /renderLibraryModeToolbar\(container, actions => this\.renderLocationOverviewModes\(actions\)\)/);
+    assert.match(codexView, /renderLibraryModeToolbar\(container, actions => this\.renderOverviewModes\(actions\)\)/);
+    assert.doesNotMatch(characterView, /story-graph' && !isMobile\) \{\s*renderLibraryModeToolbar/);
+    assert.doesNotMatch(locationView, /story-graph' && !isMobile\) \{\s*renderLibraryModeToolbar/);
+    assert.doesNotMatch(codexView, /'story-graph' && !isMobile\) \{\s*renderLibraryModeToolbar/);
     assert.match(styles, /\.library-browse-toolbar\s*\{[^}]*justify-content:\s*flex-start/s);
     assert.match(styles, /\.library-browse-mode-actions\s*\{[^}]*margin-left:\s*0/s);
     assert.match(styles, /\.library-browse-toolbar \.library-layout-toggle\s*\{[^}]*margin-left:\s*0/s);
@@ -398,7 +412,9 @@ test('plot-grid text keeps Markdown source and renders rich text with native wik
     assert.match(plotgrid, /const value = textarea\.value/);
     assert.match(plotgrid, /liveCell\.content = value/);
     assert.match(plotgrid, /textarea\.addEventListener\('input',[\s\S]*scheduleAutosave\(\)/);
-    assert.match(plotgrid, /flushAutosave[\s\S]*persistDraft\(\{ pushGrid: true \}\)/);
+    assert.match(plotgrid, /flushAutosave[\s\S]*persistDraft\(\)/);
+    assert.match(plotgrid, /pushCellSourceToUniver/);
+    assert.doesNotMatch(plotgrid, /persistDraft\(\{ pushGrid: true \}\)/);
     assert.doesNotMatch(plotgrid, /openNoteLinkModal|openSceneLinkModal/);
     assert.doesNotMatch(univerHost, /canvasMarkdownSegments|fillText\(/);
     assert.match(univerHost, /onCellRender[\s\S]*drawTinyLinkIcon/);
@@ -441,6 +457,32 @@ test('project picker paints the cached list before a vault rescan', () => {
     assert.ok(fillIdx >= 0 && scanIdx > fillIdx);
 });
 
+test('library galleries hide the duplicate thumb strip when only one image exists', () => {
+    assert.match(characterView, /nav\.toggleClass\('is-single', gallery\.length <= 1\)/);
+    assert.match(locationView, /nav\.toggleClass\('is-single', gallery\.length <= 1\)/);
+    assert.match(codexView, /nav\.toggleClass\('is-single', gallery\.length <= 1\)/);
+    assert.match(codexView, /cls: `character-gallery-thumb\$\{i === activeIndex \? ' active' : ''\}`/);
+    assert.doesNotMatch(codexView, /character-gallery-thumb-item/);
+    assert.match(styles, /\.character-gallery-nav\.is-single\s*\{[^}]*display:\s*none/s);
+});
+
+test('Story Graph opens native Graph beside it instead of merging canvases', () => {
+    assert.match(storyGraph, /onOpenNativeGraph\?: \(\) => void/);
+    assert.match(storyGraph, /onShowInNativeGraph\?: \(filePath: string, reveal: boolean\) => void/);
+    assert.match(storyGraph, /t\('Open in Graph view'\)/);
+    assert.match(storyGraph, /t\('Show in Graph view'\)/);
+    assert.match(storyGraph, /this\.onShowInNativeGraph\?\.\(node\.filePath, false\)/);
+    assert.match(libraryModeBar, /function projectNativeGraphFolders/);
+    assert.match(libraryModeBar, /getCodexFolder\(\)/);
+    assert.match(libraryModeBar, /getSceneFolder\(\)/);
+    assert.match(libraryModeBar, /buildProjectGraphQuery\(projectNativeGraphFolders\(plugin\)\)/);
+    assert.match(libraryModeBar, /buildProjectFileGraphQuery\(projectNativeGraphFolders\(plugin\), filePath\)/);
+    assert.match(libraryModeBar, /openNativeGraphWithQuery\(plugin\.app, query, \{ reveal: true \}\)/);
+    assert.match(libraryModeBar, /openNativeGraphWithQuery\(plugin\.app, query, \{ reveal \}\)/);
+    assert.doesNotMatch(storyGraph, /setViewState\(\{ type: 'graph'/);
+    assert.doesNotMatch(libraryModeBar, /localgraph/);
+});
+
 test('project scan keeps the previous list until the new map is ready', () => {
     assert.match(sceneManager, /scanProjectsInner/);
     assert.match(sceneManager, /projectFromMetadataCache/);
@@ -448,4 +490,44 @@ test('project scan keeps the previous list until the new map is ready', () => {
     assert.doesNotMatch(sceneManager, /this\.projects\.clear\(\)/);
     assert.match(sceneManager, /getAbstractFileByPath\(path\) != null/);
     assert.match(sceneManager, /_scanProjectsPromise/);
+});
+
+test('startup overlaps independent project reads and defers Narrative Canvas', () => {
+    assert.match(sceneManager, /Promise\.all\(\[\s*this\.scanFolderAdapter\(sceneFolder\),\s*this\.scanFolderAdapter\(notesFolder\),/s);
+    assert.match(mainTs, /Promise\.all\(\[\s*this\.plotlineManager\.ensureSeeded\(\),\s*this\.fieldTemplates\.load\(\),\s*this\.templateCenter\.load\(\),\s*this\.sceneManager\.loadCorkboardPositions\(\),/s);
+    assert.match(mainTs, /locationManager\.loadAll\(locFolder\)/);
+    assert.match(mainTs, /characterManager\.loadCharacters\(charFolder\)/);
+    assert.match(mainTs, /requestIdleCallback\(startEmbeddedCanvas/);
+    assert.match(mainTs, /startEmbeddedCanvas/);
+});
+
+test('cancelled Arc Point filter no longer narrows scene queries', async () => {
+    const [sceneModel, query] = await Promise.all([
+        readFile(new URL('../models/Scene.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/SceneQueryService.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.doesNotMatch(sceneModel, /arcAnchorFilter/);
+    assert.doesNotMatch(query, /arcAnchorFilter/);
+});
+
+test('default view setting opens a project tab and unused portrait leftovers are gone', async () => {
+    const [settings, plotgrid, projectModel] = await Promise.all([
+        readFile(new URL('../settings.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../models/StoryLineProject.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(mainTs, /resolveDefaultProjectViewType/);
+    assert.match(mainTs, /type: defaultType/);
+    assert.match(settings, /characterCardPortraitSize/);
+    assert.doesNotMatch(settings, /characterDetailPortraitSize/);
+    assert.doesNotMatch(settings, /locationDetailPortraitWidth/);
+    assert.doesNotMatch(mainTs, /--sl-character-detail-portrait-size/);
+    assert.doesNotMatch(plotgrid, /computeTotalWidth/);
+    assert.doesNotMatch(plotgrid, /ROW_HEADER_WIDTH/);
+    assert.match(plotgrid, /Library\/datasheet\.xlsx/);
+    assert.doesNotMatch(projectModel, /LEGACY_CANVAS_FOLDER/);
+    assert.doesNotMatch(styles, /\.codex-detail-portrait\s*\{/);
+    assert.doesNotMatch(styles, /\.location-detail-portrait\s*\{/);
+    assert.doesNotMatch(styles, /\.story-graph-focus-deep-col\s*\{/);
+    assert.match(styles, /--sl-character-card-portrait-size/);
 });

@@ -321,23 +321,6 @@ export function renderAddCustomSectionButton<T extends { custom?: Record<string,
 }
 
 /**
- * Legacy entry point — renders ALL sections in interleaved order (so position
- * is still respected, but without inlining built-in sections in between).
- * Hosts that want true interleaving should use `renderCustomSectionsAtSlot`
- * between their built-in render calls.
- */
-export function renderCustomSections<T extends { custom?: Record<string, string> }>(
-    container: HTMLElement,
-    host: CustomSectionsHost<T>
-): void {
-    seedDraftCustom(host);
-    for (let slot = 0; slot <= host.builtinSectionCount; slot++) {
-        renderCustomSectionsAtSlot(container, host, slot);
-    }
-    renderAddCustomSectionButton(container, host);
-}
-
-/**
  * Render a single custom section (header + body + add-field row).
  * Used internally by `renderCustomSectionsAtSlot`.
  */

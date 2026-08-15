@@ -38,6 +38,39 @@ test('first project load restores all original Storyline presets once', async ()
     assert.match(main, /presetsSeeded \? \{ createMissingRegistered: true \} : \{\}/);
 });
 
+test('hiding a Library category does not let folder adopt resurrect the tab', async () => {
+    const source = await readFile('services/LibraryCategorySync.ts', 'utf8');
+    const tabs = await readFile('components/CodexCategoryTabs.ts', 'utf8');
+    const manager = await readFile('views/CodexView.ts', 'utf8');
+    assert.match(source, /shouldEnableAdoptedLibraryCategory/);
+    assert.match(source, /Deleted presets stay deleted even if their Library folder is still on disk/);
+    assert.doesNotMatch(source, /deleted\.delete\(id\)/);
+    assert.match(tabs, /enabledCodex\.has\(category\.id\)/);
+    assert.match(manager, /Hidden presets stay registered so Library\/ folders cannot resurrect their tabs/);
+});
+
+test('Library categories always have a profile page and no optional toggle', async () => {
+    const [source, tabs, manager, switcher, main] = await Promise.all([
+        readFile('services/LibraryCategorySync.ts', 'utf8'),
+        readFile('components/CodexCategoryTabs.ts', 'utf8'),
+        readFile('views/CodexView.ts', 'utf8'),
+        readFile('components/ViewSwitcher.ts', 'utf8'),
+        readFile('main.ts', 'utf8'),
+    ]);
+    assert.doesNotMatch(manager, /codex-category-manager-profile-toggle/);
+    assert.doesNotMatch(manager, /Include profile page/);
+    assert.doesNotMatch(tabs, /Enable profile page/);
+    assert.doesNotMatch(tabs, /Disable profile page/);
+    assert.match(manager, /hasProfilePage: true/);
+    assert.match(source, /hasProfilePage: true/);
+    assert.match(manager, /setLibraryContentMode\(this\.plugin, 'profile'\)/);
+    assert.doesNotMatch(manager, /profileAvailable/);
+    assert.doesNotMatch(manager, /activeCategoryHasProfilePage/);
+    assert.match(switcher, /makeProfileCodexCategory\(c\.id, c\.label, c\.icon\)/);
+    assert.doesNotMatch(switcher, /c\.hasProfilePage/);
+    assert.doesNotMatch(main, /cc\.hasProfilePage/);
+});
+
 test('Library search and filter controls start closed', async () => {
     for (const path of ['views/CharacterView.ts', 'views/LocationView.ts', 'views/CodexView.ts']) {
         const source = await readFile(path, 'utf8');

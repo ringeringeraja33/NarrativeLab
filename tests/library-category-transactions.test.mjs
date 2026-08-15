@@ -17,7 +17,7 @@ const {
     collectReferencedLibraryCategoryIds,
     findLibraryCategoriesMissingFolders,
     planLibraryFolderRename,
-    setLibraryCategoryProfileSetting,
+    shouldEnableAdoptedLibraryCategory,
 } = await import(
     `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`
 );
@@ -144,27 +144,30 @@ test('does not keep orphan Bases from an unreferenced custom definition', () => 
     assert.equal(referenced.includes('uncategorized'), false);
 });
 
-test('profile-page toggle preserves category metadata and stores explicit off state', () => {
-    const enabled = setLibraryCategoryProfileSetting(
-        [{ id: 'skills', label: '技能', icon: 'sparkles', preset: false }],
-        { id: 'skills', label: 'Skills', icon: 'file-text' },
-        true,
-    );
-    assert.deepEqual(enabled, [{
-        id: 'skills',
-        label: '技能',
-        icon: 'sparkles',
-        preset: false,
-        hasProfilePage: true,
-        showInSidebar: true,
-    }]);
-
-    const disabled = setLibraryCategoryProfileSetting(
-        enabled,
-        { id: 'skills', label: 'Skills', icon: 'file-text' },
-        false,
-    );
-    assert.equal(disabled[0].hasProfilePage, false);
-    assert.equal(disabled[0].showInSidebar, false);
-    assert.equal(disabled[0].label, '技能');
+test('adopting a Library folder does not resurrect a hidden or deleted category tab', () => {
+    assert.equal(shouldEnableAdoptedLibraryCategory({
+        alreadyEnabled: false,
+        alreadyRegistered: true,
+        deleted: false,
+    }), false);
+    assert.equal(shouldEnableAdoptedLibraryCategory({
+        alreadyEnabled: true,
+        alreadyRegistered: true,
+        deleted: false,
+    }), true);
+    assert.equal(shouldEnableAdoptedLibraryCategory({
+        alreadyEnabled: false,
+        alreadyRegistered: false,
+        deleted: false,
+    }), true);
+    assert.equal(shouldEnableAdoptedLibraryCategory({
+        alreadyEnabled: false,
+        alreadyRegistered: false,
+        deleted: true,
+    }), false);
+    assert.equal(shouldEnableAdoptedLibraryCategory({
+        alreadyEnabled: true,
+        alreadyRegistered: true,
+        deleted: true,
+    }), false);
 });

@@ -1,14 +1,12 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { WorkspaceLeaf, Menu, Modal, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
+import { WorkspaceLeaf, Menu, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
 import * as obsidian from 'obsidian';
 import {
     CellData,
     PlotGridData,
     ConceptGridDocument,
     ConceptGridPage,
-    cloneConceptGridPage,
     createEmptyConceptGridDocument,
-    createEmptyConceptGridPage,
     getActiveConceptGridPage,
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
@@ -33,13 +31,20 @@ import {
     installObsidianMarkdownShortcuts,
     type MarkdownInputAction,
 } from '../utils/markdownInput';
+import { installTextareaUndoHistory, replaceTextareaValue } from '../utils/textareaHistory';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 import { deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 
 // Basic Plot Grid implementation (ground-up) following the supplied guide.
 // This file implements the core model, rendering, editing, and persistence.
 
-const ROW_HEADER_WIDTH = 120;
+function nextPaint(): Promise<void> {
+    return new Promise(resolve => {
+        window.requestAnimationFrame(() => {
+            window.requestAnimationFrame(() => resolve());
+        });
+    });
+}
 
 function makeId(prefix = '') {
     return prefix + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
@@ -47,7 +52,7 @@ function makeId(prefix = '') {
 
 export class PlotgridView extends ProjectBoundItemView {
     plugin: SceneCardsPlugin | undefined;
-    /** Full multi-page document persisted to plotgrid.json */
+    /** Full multi-page document persisted to Library/datasheet.xlsx */
     // eslint-disable-next-line obsidianmd/prefer-active-doc -- Concept Grid data model, not the browser Document.
     document: ConceptGridDocument = createEmptyConceptGridDocument();
     /** Active page working set (same object reference as the page in `document`). */
@@ -55,7 +60,6 @@ export class PlotgridView extends ProjectBoundItemView {
     saveDebounce: number | null = null;
 
     private bodyEl: HTMLDivElement | null = null;
-    private sidebarEl: HTMLDivElement | null = null;
     private wrapperEl: HTMLDivElement | null = null;
     private scrollAreaEl: HTMLDivElement | null = null;
     private canvasEl: HTMLDivElement | null = null;
@@ -116,14 +120,22 @@ export class PlotgridView extends ProjectBoundItemView {
 
         this.univerLoadFailed = false;
         this.univerLoadError = null;
-        await this.loadData();
-        if (!container.isConnected) return;
-
         this.buildLayout(container);
-        this.renderPageSidebar();
         this.renderToolbar();
-        // keep main scroll area untouched (no forced scrolling)
-        this.renderGrid();
+        const peeked = this.plugin?.peekPlotGridDoc?.(this.getTargetProjectFile()) ?? null;
+        if (peeked) {
+            this.document = normalizeConceptGridDocument(peeked);
+            this.bindActivePage();
+        }
+        this.showSpreadsheetLoading();
+        const peekedFp = peeked ? conceptGridContentFingerprint(this.document) : '';
+        const loadP = this.loadData();
+        if (peeked) this.renderGrid();
+        await loadP;
+        if (!container.isConnected) return;
+        this.renderToolbar();
+        const loadedChanged = !!peeked && conceptGridContentFingerprint(this.document) !== peekedFp;
+        this.renderGrid(loadedChanged ? { forcePush: true } : {});
 
         // Watch for file renames to update linkedSceneId paths AND row sourceIds
         this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
@@ -286,7 +298,7 @@ export class PlotgridView extends ProjectBoundItemView {
         }
     }
 
-    /** Undo Univer absolute/fill styles so the legacy DOM grid can lay out again. */
+    /** Undo Univer host layout so the next mount measures a clean flex canvas. */
     private resetUniverCanvasLayout(): void {
         this.wrapperEl?.removeClass('is-univer-mode');
         this.scrollAreaEl?.removeClass('is-univer-host');
@@ -486,7 +498,7 @@ export class PlotgridView extends ProjectBoundItemView {
                 // Always write to the folder this workbook was loaded from. If the
                 // global active project changed, path-scoped save keeps edits in
                 // the bound book instead of aborting or bleeding into another project.
-                if (this.univerHost) {
+                if (this.univerHost && this.cellEditorWindows.size === 0) {
                     try {
                         this.univerHost.flush();
                         this.document = normalizeConceptGridDocument(this.univerHost.getDocument());
@@ -519,12 +531,11 @@ export class PlotgridView extends ProjectBoundItemView {
             minHeight: '0',
         });
 
-        // Main grid area (fills remaining height above the sheet tabs)
+        // Main grid area. Univer's own footer owns worksheet tabs.
         this.wrapperEl = this.bodyEl.createDiv('plot-grid-wrapper concept-grid-main');
         this.wrapperEl.setCssStyles({
             display: 'flex',
             flexDirection: 'column',
-            // Must NOT be height:100% — that pushes the bottom sheet bar off-screen.
             flex: '1 1 auto',
             minWidth: '0',
             minHeight: '0',
@@ -551,128 +562,6 @@ export class PlotgridView extends ProjectBoundItemView {
             width: '100%',
             boxSizing: 'border-box',
         });
-
-        // Excel-style worksheet tabs along the bottom edge
-        this.sidebarEl = this.bodyEl.createDiv('concept-grid-sheet-bar');
-    }
-
-    private renderPageSidebar(): void {
-        if (!this.sidebarEl) return;
-        this.sidebarEl.empty();
-        this.sidebarEl.setAttribute('aria-label', t('Concept Grid pages'));
-
-        const list = this.sidebarEl.createDiv('concept-grid-page-list');
-        let activeTab: HTMLElement | null = null;
-        let draggedPageId: string | null = null;
-        let blockClickAfterDrag = false;
-        const clearDropIndicators = (): void => {
-            list.querySelectorAll('.is-drop-before, .is-drop-after').forEach(el => {
-                el.removeClass('is-drop-before', 'is-drop-after');
-            });
-        };
-
-        this.document.pages.forEach((page, index) => {
-            const isActive = page.id === this.document.activePageId;
-            const tab = list.createEl('button', {
-                cls: `concept-grid-page-tab${isActive ? ' is-active' : ''}`,
-                attr: {
-                    type: 'button',
-                    'aria-pressed': String(isActive),
-                    title: page.title,
-                    'data-page-id': page.id,
-                    draggable: 'true',
-                },
-            });
-            tab.createSpan({
-                cls: 'concept-grid-page-tab-label',
-                text: page.title || `${t('Page')} ${index + 1}`,
-            });
-
-            tab.addEventListener('click', (event) => {
-                if (blockClickAfterDrag) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    return;
-                }
-                if (page.id !== this.document.activePageId) this.switchPage(page.id);
-            });
-            tab.addEventListener('dblclick', (evt) => {
-                evt.preventDefault();
-                evt.stopPropagation();
-                this.renamePage(page.id);
-            });
-            tab.addEventListener('contextmenu', (evt) => {
-                evt.preventDefault();
-                const menu = new Menu();
-                menu.addItem(item => item.setTitle(t('Rename page')).onClick(() => this.renamePage(page.id)));
-                menu.addItem(item => item.setTitle(t('Duplicate page')).onClick(() => this.duplicatePage(page.id)));
-                menu.addSeparator();
-                menu.addItem(item => {
-                    item.setTitle(t('Delete page'));
-                    item.setDisabled(this.document.pages.length <= 1);
-                    item.onClick(() => this.deletePage(page.id));
-                });
-                menu.showAtMouseEvent(evt);
-            });
-            tab.addEventListener('dragstart', (event) => {
-                if (tab.querySelector('.concept-grid-page-tab-rename')) {
-                    event.preventDefault();
-                    return;
-                }
-                draggedPageId = page.id;
-                blockClickAfterDrag = true;
-                tab.addClass('is-dragging');
-                if (event.dataTransfer) {
-                    event.dataTransfer.effectAllowed = 'move';
-                    event.dataTransfer.setData('text/plain', page.id);
-                }
-            });
-            tab.addEventListener('dragover', (event) => {
-                if (!draggedPageId || draggedPageId === page.id) return;
-                event.preventDefault();
-                if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-                clearDropIndicators();
-                const rect = tab.getBoundingClientRect();
-                tab.addClass(event.clientX < rect.left + rect.width / 2
-                    ? 'is-drop-before'
-                    : 'is-drop-after');
-            });
-            tab.addEventListener('drop', (event) => {
-                if (!draggedPageId || draggedPageId === page.id) return;
-                event.preventDefault();
-                event.stopPropagation();
-                const rect = tab.getBoundingClientRect();
-                const placeAfter = event.clientX >= rect.left + rect.width / 2;
-                this.reorderPage(draggedPageId, page.id, placeAfter);
-                draggedPageId = null;
-                clearDropIndicators();
-            });
-            tab.addEventListener('dragend', () => {
-                draggedPageId = null;
-                tab.removeClass('is-dragging');
-                clearDropIndicators();
-                window.setTimeout(() => { blockClickAfterDrag = false; }, 0);
-            });
-
-            if (isActive) activeTab = tab;
-        });
-
-        const addBtn = this.sidebarEl.createEl('button', {
-            cls: 'clickable-icon concept-grid-add-page-btn',
-            attr: {
-                type: 'button',
-                'aria-label': t('New page'),
-                title: t('New page'),
-            },
-        });
-        obsidian.setIcon(addBtn, 'plus');
-        addBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.createPage();
-        });
-
-        const tabToScroll = activeTab as HTMLElement | null;
-        tabToScroll?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     }
 
     private switchPage(pageId: string): void {
@@ -686,43 +575,8 @@ export class PlotgridView extends ProjectBoundItemView {
             this.univerHost?.syncMeta(this.document);
         } catch { /* ignore an unavailable host during initial mount */ }
         this.scheduleSave();
-        if (!this.updatePageTabSelection()) this.renderPageSidebar();
         this.renderToolbar();
         this.renderGrid();
-    }
-
-    /** Update active-tab styling without replacing the DOM, so double-click rename remains reliable. */
-    private updatePageTabSelection(): boolean {
-        if (!this.sidebarEl) return false;
-        const tabs = Array.from(
-            this.sidebarEl.querySelectorAll<HTMLButtonElement>('.concept-grid-page-tab'),
-        );
-        if (tabs.length !== this.document.pages.length) return false;
-        let activeTab: HTMLButtonElement | null = null;
-        for (const tab of tabs) {
-            const active = tab.dataset.pageId === this.document.activePageId;
-            tab.toggleClass('is-active', active);
-            tab.setAttribute('aria-pressed', String(active));
-            if (active) activeTab = tab;
-        }
-        activeTab?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        return activeTab !== null;
-    }
-
-    /** Move a worksheet before/after another worksheet and persist the new page order. */
-    private reorderPage(sourcePageId: string, targetPageId: string, placeAfter: boolean): void {
-        this.flushUniverIntoDocument();
-        const source = this.document.pages.find(page => page.id === sourcePageId);
-        if (!source || sourcePageId === targetPageId) return;
-        const remaining = this.document.pages.filter(page => page.id !== sourcePageId);
-        const targetIndex = remaining.findIndex(page => page.id === targetPageId);
-        if (targetIndex < 0) return;
-        remaining.splice(targetIndex + (placeAfter ? 1 : 0), 0, source);
-        this.document.pages = remaining;
-        this.bindActivePage();
-        this.scheduleSave();
-        this.renderPageSidebar();
-        this.renderGrid({ forcePush: true });
     }
 
     /** Jump to a datasheet page/row from a Library archive appearance link. */
@@ -754,142 +608,6 @@ export class PlotgridView extends ProjectBoundItemView {
         }, 80);
     }
 
-    private createPage(): void {
-        this.flushUniverIntoDocument();
-        const page = createEmptyConceptGridPage(t('Page {n}', { n: this.document.pages.length + 1 }));
-        this.document.pages.push(page);
-        this.switchPage(page.id);
-    }
-
-    private duplicatePage(pageId: string): void {
-        this.flushUniverIntoDocument();
-        const source = this.document.pages.find(p => p.id === pageId);
-        if (!source) return;
-        const copy = cloneConceptGridPage(source, `${source.title} ${t('copy')}`);
-        const index = this.document.pages.findIndex(p => p.id === pageId);
-        this.document.pages.splice(index + 1, 0, copy);
-        this.switchPage(copy.id);
-    }
-
-    private renamePage(pageId: string): void {
-        this.flushUniverIntoDocument();
-        const page = this.document.pages.find(p => p.id === pageId);
-        if (!page) return;
-        const applyTitle = (next: string): void => {
-            const title = next.trim();
-            if (!title || title === page.title) return;
-            page.title = title;
-            try {
-                this.univerHost?.setSheetTitle(page.id, title);
-                this.univerHost?.syncMeta(this.document);
-            } catch { /* ignore */ }
-            this.scheduleSave();
-            this.renderPageSidebar();
-        };
-
-        // Prefer inline rename on the tab (Excel-like). Fall back to a modal.
-        const labelEl = this.sidebarEl?.querySelector(
-            `.concept-grid-page-tab[data-page-id="${CSS.escape(pageId)}"] .concept-grid-page-tab-label`,
-        ) as HTMLElement | null;
-        if (labelEl) {
-            this.beginInlinePageRename(labelEl, page, applyTitle);
-            return;
-        }
-
-        const modal = new Modal(this.app);
-        modal.titleEl.setText(t('Rename page'));
-        const inp = modal.contentEl.createEl('input', { type: 'text', cls: 'plot-grid-rename-input' });
-        inp.setCssStyles({ width: '100%' });
-        inp.value = page.title;
-        const commit = () => {
-            applyTitle(inp.value);
-            modal.close();
-        };
-        inp.addEventListener('keydown', (ke) => {
-            if (ke.key === 'Enter') commit();
-            else if (ke.key === 'Escape') modal.close();
-        });
-        const btn = modal.contentEl.createEl('button', { text: t('OK'), cls: 'mod-cta' });
-        btn.setCssStyles({ marginTop: '8px' });
-        btn.addEventListener('click', () => commit());
-        modal.open();
-        inp.focus();
-        inp.select();
-    }
-
-    private beginInlinePageRename(
-        labelEl: HTMLElement,
-        page: { id: string; title: string },
-        applyTitle: (next: string) => void,
-    ): void {
-        if (labelEl.querySelector('input')) return;
-        const original = page.title || labelEl.textContent || '';
-        const input = labelEl.ownerDocument.createElement('input');
-        input.type = 'text';
-        input.className = 'concept-grid-page-tab-rename';
-        input.value = original;
-        input.setAttribute('aria-label', t('Rename page'));
-        labelEl.textContent = '';
-        labelEl.appendChild(input);
-        let finished = false;
-        const finish = (commit: boolean) => {
-            if (finished) return;
-            finished = true;
-            const next = input.value;
-            input.remove();
-            labelEl.textContent = commit && next.trim() ? next.trim() : original;
-            if (commit) applyTitle(next);
-            else this.renderPageSidebar();
-        };
-        input.addEventListener('keydown', (event) => {
-            event.stopPropagation();
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                finish(true);
-            } else if (event.key === 'Escape') {
-                event.preventDefault();
-                finish(false);
-            }
-        });
-        input.addEventListener('blur', () => finish(true));
-        input.addEventListener('click', (event) => event.stopPropagation());
-        input.addEventListener('mousedown', (event) => event.stopPropagation());
-        window.setTimeout(() => {
-            input.focus();
-            input.select();
-        }, 0);
-    }
-
-    private deletePage(pageId: string): void {
-        if (this.document.pages.length <= 1) {
-            new Notice(t('At least one page is required.'));
-            return;
-        }
-        const page = this.document.pages.find(p => p.id === pageId);
-        if (!page) return;
-        openConfirmModal(this.app, {
-            title: t('Delete page'),
-            message: t('Delete page "{title}"? This cannot be undone.', { title: page.title }),
-            confirmLabel: t('Delete'),
-            onConfirm: () => {
-                this.flushUniverIntoDocument();
-                const index = this.document.pages.findIndex(p => p.id === pageId);
-                if (index < 0) return;
-                this.document.pages.splice(index, 1);
-                if (this.document.activePageId === pageId) {
-                    const next = this.document.pages[Math.max(0, index - 1)] || this.document.pages[0];
-                    if (!next) return;
-                    this.document.activePageId = next.id;
-                }
-                this.bindActivePage();
-                this.scheduleSave();
-                this.renderPageSidebar();
-                this.renderToolbar();
-                this.renderGrid();
-            },
-        });
-    }
-
     private renderToolbar() {
         if (!this.wrapperEl) return;
         const toolbar = this.wrapperEl.querySelector('.plot-grid-toolbar') as HTMLDivElement | null;
@@ -897,7 +615,7 @@ export class PlotgridView extends ProjectBoundItemView {
         toolbar.empty();
 
         const titleRow = toolbar.createDiv('story-line-title-row');
-        const projectTitle = this.plugin?.getActiveProjectDisplayName() || '';
+        const projectTitle = this.plugin?.getProjectDisplayName(this.getBoundProjectFile()) || '';
         titleRow.createEl('h3', {
             cls: 'story-line-view-title',
             text: projectTitle,
@@ -910,15 +628,10 @@ export class PlotgridView extends ProjectBoundItemView {
             renderViewSwitcher(toolbar, PLOTGRID_VIEW_TYPE, this.plugin, this.leaf);
         }
 
-        const controls = toolbar.createDiv('story-line-toolbar-controls');
-        // add a small left margin so there's a bit more space between the view switcher and action buttons
-        controls.setCssStyles({ marginLeft: '24px' });
+        const controls = toolbar.createDiv('story-line-toolbar-controls is-plotgrid-controls');
 
-        // Plot-grid controls sit before the shared Stats / Converter / Playmode
-        // group. Reappend that group so it is the rightmost toolbar item; its
-        // existing left border becomes the single separator between the groups.
-        const trailingActions = toolbar.querySelector(':scope > .story-line-view-actions');
-        if (trailingActions) toolbar.appendChild(trailingActions);
+        // Stats / Converter / Playmode stay on the title/tab row. This control
+        // row is created last and takes the full next line, left-aligned.
 
         const left = controls.createDiv('plot-grid-toolbar-left');
         left.setCssStyles({
@@ -931,7 +644,6 @@ export class PlotgridView extends ProjectBoundItemView {
         actions.setCssStyles({
             display: 'flex',
             gap: '2px',
-            marginLeft: 'auto',
         });
 
         // Toolbar icon styling lives in styles.css under `.plot-grid-toolbar`.
@@ -1128,23 +840,14 @@ export class PlotgridView extends ProjectBoundItemView {
 
     private setZoom(z: number) {
         this.data.zoom = z;
-        if (this.univerHost) {
-            this.univerHost.setZoom(this.document.activePageId, z);
-            this.univerHost.syncMeta(this.document);
-        } else if (this.canvasEl && this.scrollAreaEl) {
-            // Use CSS zoom instead of transform: scale() to preserve position: sticky
-            (this.canvasEl.style as unknown as Record<string, unknown>).zoom = String(z);
-            const totalWidth = this.computeTotalWidth();
-            this.canvasEl.setCssStyles({ width: totalWidth + 'px' });
-        }
+        try {
+            this.univerHost?.setZoom(this.document.activePageId, z);
+            this.univerHost?.syncMeta(this.document);
+        } catch { /* host may still be mounting */ }
         this.scheduleSave();
         const toolbar = this.wrapperEl?.querySelector('.plot-grid-toolbar') || this.wrapperEl?.querySelector('.story-line-toolbar');
         const label = toolbar?.querySelector('.plot-grid-zoom-label') as HTMLElement | null;
         if (label) label.textContent = Math.round(z * 100) + '%';
-    }
-
-    private computeTotalWidth() {
-        return ROW_HEADER_WIDTH + this.data.columns.reduce((s, c) => s + c.width, 0);
     }
 
     private univerStructureSig = '';
@@ -1240,6 +943,15 @@ export class PlotgridView extends ProjectBoundItemView {
                     minWidth: '0',
                     cursor: 'default',
                 });
+                this.showSpreadsheetLoading();
+                // Only wait for layout when the flex host has not received a height yet.
+                if (this.canvasEl && this.canvasEl.clientHeight < 48) {
+                    this.canvasEl.setCssStyles({ minHeight: '240px' });
+                    await nextPaint();
+                }
+                if (mountGen !== this.univerMountGeneration || !this.canvasEl) {
+                    return;
+                }
 
                 const mod = await loadPlotGridUniverModule(this.plugin!);
                 if (mountGen !== this.univerMountGeneration || !this.canvasEl) {
@@ -1251,6 +963,7 @@ export class PlotgridView extends ProjectBoundItemView {
                     initialDocument: this.document,
                     locale,
                     getAuthoritativeDocument: () => this.document,
+                    isExternalEditorBusy: () => this.cellEditorWindows.size > 0,
                     shouldBlockUniverCellEdit: (sheetId, row, col) => {
                         const cell = this.getDataCellAt(sheetId, row, col);
                         const mode = this.plugin?.settings?.plotGridMarkdownEditMode === true;
@@ -1312,6 +1025,10 @@ export class PlotgridView extends ProjectBoundItemView {
                         this.document = normalizeConceptGridDocument(doc);
                         this.synchronizeWikilinkCells();
                         this.bindActivePage();
+                        // Univer already applied sheet-bar / cell mutations.
+                        // Keep the structure sig current so a later toolbar
+                        // render does not remount and wipe those edits.
+                        this.univerStructureSig = this.getUniverStructureSig();
                         this.scheduleSave();
                     },
                     onSelectionChange: (info) => {
@@ -1322,7 +1039,6 @@ export class PlotgridView extends ProjectBoundItemView {
                             if (page) {
                                 this.document.activePageId = page.id;
                                 this.bindActivePage();
-                                this.renderPageSidebar();
                                 this.scheduleSave();
                             }
                         }
@@ -1340,7 +1056,9 @@ export class PlotgridView extends ProjectBoundItemView {
                 try { host.refreshLinkMarkers(); } catch { /* ignore */ }
                 // Let layout settle, then nudge Univer to measure the filled host.
                 window.requestAnimationFrame(() => {
-                    window.dispatchEvent(new Event('resize'));
+                    window.requestAnimationFrame(() => {
+                        window.dispatchEvent(new Event('resize'));
+                    });
                 });
             } catch (e) {
                 if (mountGen !== this.univerMountGeneration) return;
@@ -1357,6 +1075,13 @@ export class PlotgridView extends ProjectBoundItemView {
         })();
 
         await this.univerMountPromise;
+    }
+
+    private showSpreadsheetLoading(): void {
+        if (!this.canvasEl) return;
+        this.canvasEl.empty();
+        const panel = this.canvasEl.createDiv('plot-grid-univer-loading');
+        panel.createEl('p', { text: t('Loading spreadsheet…') });
     }
 
     private renderUniverLoadError(): void {
@@ -1470,7 +1195,7 @@ export class PlotgridView extends ProjectBoundItemView {
         if (!cell) return [];
         const seen = new Set<string>();
         const out: Array<{ path: string; name: string }> = [];
-        const sourcePath = this.plugin?.sceneManager?.activeProject?.filePath ?? '';
+        const sourcePath = this.getTargetProjectFile();
         const addPath = (rawPath: string, displayName?: string) => {
             const path = rawPath.replace(/\\/g, '/').trim();
             if (!path) return;
@@ -1650,7 +1375,7 @@ export class PlotgridView extends ProjectBoundItemView {
         // Structural link draft; content lives in the textarea and autosaves.
         let editorLinkedSceneId: string | undefined = cell.linkedSceneId;
         let autosaveTimer: number | null = null;
-        const persistDraft = (opts: { pushGrid?: boolean } = {}): void => {
+        const persistDraft = (): void => {
             if (!textarea) return;
             const liveCell = this.ensureCellInData(cell);
             const value = textarea.value;
@@ -1663,19 +1388,15 @@ export class PlotgridView extends ProjectBoundItemView {
                 liveCell.linkedSceneId = editorLinkedSceneId;
                 if (!editorLinkedSceneId) liveCell.linkedViaWikilink = undefined;
             }
-            this.synchronizeWikilinkCells();
+            this.synchronizeWikilinkCell(liveCell);
+            this.pushCellSourceToUniver(liveCell);
             this.scheduleSave();
-            if (opts.pushGrid) {
-                this.renderGrid({ forcePush: true });
-            } else {
-                try { this.univerHost?.refreshLinkMarkers(); } catch { /* ignore */ }
-            }
         };
         const scheduleAutosave = (): void => {
             if (autosaveTimer) window.clearTimeout(autosaveTimer);
             autosaveTimer = window.setTimeout(() => {
                 autosaveTimer = null;
-                persistDraft({ pushGrid: false });
+                persistDraft();
             }, 500);
         };
         const flushAutosave = (): void => {
@@ -1683,7 +1404,7 @@ export class PlotgridView extends ProjectBoundItemView {
                 window.clearTimeout(autosaveTimer);
                 autosaveTimer = null;
             }
-            persistDraft({ pushGrid: true });
+            persistDraft();
         };
 
         type EditorWin = HTMLElement & {
@@ -1716,6 +1437,7 @@ export class PlotgridView extends ProjectBoundItemView {
         let previewEl: HTMLDivElement | null = null;
         let suggest: WikilinkSuggest | null = null;
         let removeShortcuts: (() => void) | null = null;
+        let removeUndoHistory: (() => void) | null = null;
         const renderer = new Component();
         renderer.load();
 
@@ -1895,13 +1617,12 @@ export class PlotgridView extends ProjectBoundItemView {
                 /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g,
                 (full, target: string) => (draftMatchesNote(target, note.path) ? '' : full),
             ).replace(/[ \t]{2,}/g, ' ').replace(/ ?\n ?/g, '\n');
-            textarea.value = next;
+            replaceTextareaValue(textarea, next);
             if (editorLinkedSceneId && notePathKey(editorLinkedSceneId) === notePathKey(note.path)) {
                 editorLinkedSceneId = undefined;
             } else if (editorLinkedSceneId && draftMatchesNote(editorLinkedSceneId, note.path)) {
                 editorLinkedSceneId = undefined;
             }
-            textarea.dispatchEvent(new Event('input', { bubbles: true }));
             refreshLinkedNotesBar();
         };
         const addConnectedNoteViaPicker = (): void => {
@@ -1909,11 +1630,8 @@ export class PlotgridView extends ProjectBoundItemView {
                 if (!textarea) return;
                 const current = textarea.value;
                 const prefix = current && !/\s$/.test(current) ? ' ' : '';
-                textarea.value = `${current}${prefix}[[`;
-                const end = textarea.value.length;
-                textarea.setSelectionRange(end, end);
+                replaceTextareaValue(textarea, `${current}${prefix}[[`);
                 textarea.focus();
-                textarea.dispatchEvent(new Event('input', { bubbles: true }));
                 suggest?.refresh();
             });
         };
@@ -2005,6 +1723,17 @@ export class PlotgridView extends ProjectBoundItemView {
             return best === win;
         };
 
+        removeUndoHistory = installTextareaUndoHistory(textarea, {
+            captureTarget: activeDocument.defaultView,
+            shouldHandle: (event) => {
+                if (!isFrontmostEditor()) return false;
+                const target = event.target;
+                if (target instanceof Node && win.contains(target)) return true;
+                const active = activeDocument.activeElement;
+                return !!(active && win.contains(active));
+            },
+        });
+
         const cleanup = (): void => {
             if (autosaveTimer) {
                 window.clearTimeout(autosaveTimer);
@@ -2015,6 +1744,8 @@ export class PlotgridView extends ProjectBoundItemView {
             suggest = null;
             removeShortcuts?.();
             removeShortcuts = null;
+            removeUndoHistory?.();
+            removeUndoHistory = null;
             renderer.unload();
             if (this.cellEditorWindows.get(cellKey) === win) this.cellEditorWindows.delete(cellKey);
             delete win.__nlCellEditorCleanup;
@@ -2044,10 +1775,7 @@ export class PlotgridView extends ProjectBoundItemView {
             if (!textarea) return;
             const current = textarea.value;
             const prefix = current && !/\s$/.test(current) ? ' ' : '';
-            textarea.value = `${current}${prefix}[[`;
-            const end = textarea.value.length;
-            textarea.setSelectionRange(end, end);
-            textarea.dispatchEvent(new Event('input', { bubbles: true }));
+            replaceTextareaValue(textarea, `${current}${prefix}[[`);
             suggest?.refresh();
         };
 
@@ -2149,17 +1877,23 @@ export class PlotgridView extends ProjectBoundItemView {
             if (options.insertWikilink) textarea.dispatchEvent(new Event('input', { bubbles: true }));
         });
     }
-    async refresh(): Promise<void> {
+    async refresh(options?: { reloadFromDisk?: boolean }): Promise<void> {
         try {
             const projectFile = this.getTargetProjectFile();
             const projectChanged = this.loadedProjectFile != null
                 && projectFile.length > 0
                 && this.loadedProjectFile !== projectFile;
+            const reloadFromDisk = options?.reloadFromDisk === true;
 
             if (projectChanged) {
                 // Always reload on project switch — never skip for pending saves / focus.
                 await this.persistBoundPlotGrid();
                 this.disposeUniverHost({ persist: false });
+            } else if (!reloadFromDisk && this.univerHost && this.loadedProjectFile === projectFile) {
+                // Generic view refresh / tab focus must not re-read datasheet.xlsx
+                // or remount Univer. External xlsx edits call reloadFromDisk.
+                this.renderToolbar();
+                return;
             } else {
                 // Pull pending Univer edits into memory before deciding whether disk
                 // reload is safe. Otherwise a vault refresh can overwrite the grid
@@ -2198,7 +1932,6 @@ export class PlotgridView extends ProjectBoundItemView {
                 return;
             }
 
-            this.renderPageSidebar();
             this.renderToolbar();
             // Content-only disk changes must push into Univer (structure sig alone skips remount).
             if (this.univerHost && !projectChanged) {
@@ -2250,33 +1983,64 @@ export class PlotgridView extends ProjectBoundItemView {
         return f instanceof TFile ? f : null;
     }
 
+    private findCellUniverCoords(cell: CellData): { sheetId: string; row: number; col: number } | null {
+        for (const page of this.document.pages) {
+            for (let rowIndex = 0; rowIndex < page.rows.length; rowIndex++) {
+                for (let colIndex = 0; colIndex < page.columns.length; colIndex++) {
+                    const key = `${page.rows[rowIndex].id}-${page.columns[colIndex].id}`;
+                    const found = page.cells[key];
+                    if (found === cell || found?.id === cell.id) {
+                        return { sheetId: page.id, row: rowIndex + 1, col: colIndex + 1 };
+                    }
+                }
+            }
+        }
+        return this.lastUniverSel;
+    }
+
+    private pushCellSourceToUniver(cell: CellData): void {
+        const coords = this.findCellUniverCoords(cell);
+        if (!coords || !this.univerHost) {
+            try { this.univerHost?.refreshLinkMarkers(); } catch { /* ignore */ }
+            return;
+        }
+        try {
+            this.univerHost.applyCellSource(coords.sheetId, coords.row, coords.col, cell.content || '');
+        } catch {
+            try { this.univerHost.refreshLinkMarkers(); } catch { /* ignore */ }
+        }
+    }
+
+    private synchronizeWikilinkCell(cell: CellData): void {
+        const sourcePath = this.getTargetProjectFile();
+        const match = cell.content.match(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/);
+        if (!match) {
+            if (cell.linkedViaWikilink) {
+                cell.linkedSceneId = undefined;
+                cell.linkedViaWikilink = undefined;
+            }
+            return;
+        }
+        if (cell.linkedSceneId && !cell.linkedViaWikilink) return;
+        const target = match[1]?.trim();
+        if (!target) return;
+        let file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+        if (!file) {
+            const direct = this.app.vault.getAbstractFileByPath(target)
+                ?? this.app.vault.getAbstractFileByPath(`${target}.md`);
+            if (direct instanceof TFile) file = direct;
+        }
+        if (file instanceof TFile) {
+            cell.linkedSceneId = file.path;
+            cell.linkedViaWikilink = true;
+        }
+    }
+
     /** Keep Obsidian-style [[wikilinks]] in worksheet text connected to vault notes. */
     private synchronizeWikilinkCells(): void {
-        const sourcePath = this.plugin?.sceneManager?.activeProject?.filePath ?? '';
         for (const page of this.document.pages) {
             for (const cell of Object.values(page.cells || {})) {
-                if (!cell) continue;
-                const match = cell.content.match(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/);
-                if (!match) {
-                    if (cell.linkedViaWikilink) {
-                        cell.linkedSceneId = undefined;
-                        cell.linkedViaWikilink = undefined;
-                    }
-                    continue;
-                }
-                if (cell.linkedSceneId && !cell.linkedViaWikilink) continue;
-                const target = match[1]?.trim();
-                if (!target) continue;
-                let file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
-                if (!file) {
-                    const direct = this.app.vault.getAbstractFileByPath(target)
-                        ?? this.app.vault.getAbstractFileByPath(`${target}.md`);
-                    if (direct instanceof TFile) file = direct;
-                }
-                if (file instanceof TFile) {
-                    cell.linkedSceneId = file.path;
-                    cell.linkedViaWikilink = true;
-                }
+                if (cell) this.synchronizeWikilinkCell(cell);
             }
         }
         try { this.univerHost?.syncMeta(this.document); } catch { /* ignore */ }
@@ -2308,8 +2072,8 @@ export class PlotgridView extends ProjectBoundItemView {
         }
         // Keep host meta aligned so the next Univer pull does not erase the link.
         try { this.univerHost?.syncMeta(this.document); } catch { /* ignore */ }
+        this.pushCellSourceToUniver(liveCell);
         this.scheduleSave();
-        this.renderGrid({ forcePush: true });
     }
 
     private unlinkCell(cellKey: string): void {

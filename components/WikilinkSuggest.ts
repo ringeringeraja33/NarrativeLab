@@ -541,16 +541,12 @@ export class WikilinkSuggest {
         }
         const value = this.textareaEl.value;
         const caret = this.textareaEl.selectionStart ?? value.length;
-        const before = value.slice(0, this.triggerStart);
         const after = value.slice(caret);
         // Insert "<name>]]" replacing the in-progress query.
         // If the toolbar already closed with `]]`, drop the duplicate closer.
         const inserted = after.startsWith(']]') ? name : `${name}]]`;
-        const newValue = `${before}${inserted}${after.startsWith(']]') ? after.slice(2) : after}`;
-        const newCaret = before.length + inserted.length;
-        this.textareaEl.value = newValue;
-        this.textareaEl.setSelectionRange(newCaret, newCaret);
-        // Trigger input + change so listeners (e.g. autosave) react.
+        const replaceEnd = after.startsWith(']]') ? caret + 2 : caret;
+        this.textareaEl.setRangeText(inserted, this.triggerStart, replaceEnd, 'end');
         this.textareaEl.dispatchEvent(new Event('input', { bubbles: true }));
         this.textareaEl.dispatchEvent(new Event('change', { bubbles: true }));
         this.removeDropdown();

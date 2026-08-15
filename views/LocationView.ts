@@ -12,7 +12,7 @@ import {
 import { SceneManager } from '../services/SceneManager';
 import { LocationManager } from '../services/LocationManager';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { pickImage as pickImageModal, resolveImagePath } from '../components/ImagePicker';
+import { absorbCoverIntoGallery, libraryCoverPath, pickImage as pickImageModal, resolveImagePath, syncLibraryCoverFromGallery } from '../components/ImagePicker';
 import { AddFieldModal } from '../components/AddFieldModal';
 import {
     isCustomSectionKey,
@@ -179,7 +179,7 @@ export class LocationView extends ProjectBoundItemView {
 
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
-        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getActiveProjectDisplayName() });
+        titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
 
         renderViewSwitcher(toolbar, LOCATION_VIEW_TYPE, this.plugin, this.leaf);
 
@@ -224,7 +224,6 @@ export class LocationView extends ProjectBoundItemView {
         if (this.selectedItem) {
             this.renderDetail(content);
         } else if (this.locationOverviewMode === 'story-graph' && !isMobile) {
-            renderLibraryModeToolbar(content, actions => this.renderLocationOverviewModes(actions));
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -327,7 +326,7 @@ export class LocationView extends ProjectBoundItemView {
             // Location Profiles is card-only; Browse (native Base) owns table/list.
             showLayoutToggle: false,
             onLayoutChange: () => this.renderOverview(container),
-            renderTrailingActions: (actionsEl) => this.renderLocationOverviewModes(actionsEl),
+            renderLeadingActions: (actionsEl) => this.renderLocationOverviewModes(actionsEl),
             appendExtra: (actionsEl) => {
                 const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
                 const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
@@ -394,9 +393,11 @@ export class LocationView extends ProjectBoundItemView {
         // One pass for scene counts — avoid O(locations × scenes) per tree node.
         this._locationSceneCounts = new Map<string, number>();
         for (const scene of scenes) {
-            const loc = scene.location?.toLowerCase();
-            if (!loc) continue;
-            this._locationSceneCounts.set(loc, (this._locationSceneCounts.get(loc) ?? 0) + 1);
+            for (const name of scene.location || []) {
+                const loc = name.toLowerCase();
+                if (!loc) continue;
+                this._locationSceneCounts.set(loc, (this._locationSceneCounts.get(loc) ?? 0) + 1);
+            }
         }
 
         // Filter worlds: show a world if its name OR any child location name matches
@@ -552,8 +553,9 @@ export class LocationView extends ProjectBoundItemView {
 
         const portrait = card.createDiv('character-card-portrait');
         const placeholderIcon = item.type === 'world' ? 'globe' : 'map-pin';
-        if (item.image) {
-            const imgSrc = resolveImagePath(this.app, item.image);
+        const coverPath = libraryCoverPath(item);
+        if (coverPath) {
+            const imgSrc = resolveImagePath(this.app, coverPath);
             if (imgSrc) {
                 const img = portrait.createEl('img', {
                     cls: 'character-portrait-img',
@@ -771,7 +773,7 @@ export class LocationView extends ProjectBoundItemView {
             plugin: this.plugin,
             notePath: item.filePath,
             name: draft.name || item.name,
-            image: draft.image,
+            image: libraryCoverPath(draft),
             onCreated: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
@@ -801,51 +803,6 @@ export class LocationView extends ProjectBoundItemView {
         const typeLabel = container.createDiv('location-detail-type');
         obsidian.setIcon(typeLabel, isWorld ? 'globe' : 'map-pin');
         typeLabel.createSpan({ text: ` ${t(isWorld ? 'World' : 'Location')}` });
-
-        // Portrait area (clickable to change)
-        const portraitArea = container.createDiv('location-detail-portrait');
-        const renderPortrait = () => {
-            portraitArea.empty();
-            if (draft.image) {
-                try {
-                    // Use the helper function to resolve the image path
-                    const imgSrc = resolveImagePath(this.app, draft.image);
-
-                    const img = portraitArea.createEl('img', { attr: { src: imgSrc, alt: draft.name } });
-                    img.classList.add('location-detail-portrait-img');
-
-                    // Add error handler to show placeholder if image fails to load
-                    img.onerror = () => {
-                        img.remove();
-                        const ph = portraitArea.createDiv('location-detail-portrait-placeholder');
-                        obsidian.setIcon(ph, 'image');
-                    };
-                } catch {
-                    const ph = portraitArea.createDiv('location-detail-portrait-placeholder');
-                    obsidian.setIcon(ph, 'image');
-                }
-            } else {
-                const ph = portraitArea.createDiv('location-detail-portrait-placeholder');
-                obsidian.setIcon(ph, 'image');
-                ph.createEl('span', { text: t('Click to add image') });
-            }
-            const changeLabel = portraitArea.createDiv('location-portrait-change-label');
-            changeLabel.textContent = draft.image ? t('Change image') : '';
-        };
-        renderPortrait();
-        portraitArea.addEventListener('click', () => {
-            this.pickImage(draft.image).then(async (picked) => {
-                if (picked !== undefined) {
-                    draft.image = picked || undefined;
-                    if (draft.type === 'world') {
-                        await this.locationManager.saveWorld(draft as StoryWorld);
-                    } else {
-                        await this.locationManager.saveLocation(draft as StoryLocation);
-                    }
-                    renderPortrait();
-                }
-            });
-        });
 
         // Layout: horizontal board columns, or stacked sections + side rail
         container.toggleClass('location-detail--board', horizontalProfile);
@@ -1647,7 +1604,9 @@ export class LocationView extends ProjectBoundItemView {
 
         // Collect scenes across all locations in this world
         const locNames = new Set(locations.map(l => l.name.toLowerCase()));
-        const worldScenes = scenes.filter(s => s.location && locNames.has(s.location.toLowerCase()));
+        const worldScenes = scenes.filter(s =>
+            (s.location || []).some(name => locNames.has(name.toLowerCase())),
+        );
         this.renderStat(statGrid, String(worldScenes.length), 'Scenes');
 
         // Location list
@@ -1680,7 +1639,9 @@ export class LocationView extends ProjectBoundItemView {
             { field: 'sequence', direction: 'asc' }
         );
         const locLower = loc.name.toLowerCase();
-        const locScenes = scenes.filter(s => s.location?.toLowerCase() === locLower);
+        const locScenes = scenes.filter(s =>
+            (s.location || []).some(name => name.toLowerCase() === locLower),
+        );
 
         // Stats
         const statsBox = container.createDiv('location-side-stats');
@@ -2195,7 +2156,7 @@ export class LocationView extends ProjectBoundItemView {
             && this.locationOverviewMode === 'base'
             && this.rootContainer?.querySelector('.library-native-base-embed')
         ) {
-            const title = this.plugin.getActiveProjectDisplayName();
+            const title = this.plugin.getProjectDisplayName(this.getBoundProjectFile());
             this.rootContainer.querySelectorAll('.story-line-view-title')
                 .forEach(el => { el.textContent = title; });
             return;
@@ -2208,7 +2169,7 @@ export class LocationView extends ProjectBoundItemView {
             && this.storyGraph
             && this.rootContainer?.querySelector('.story-graph-page')
         ) {
-            const title = this.plugin.getActiveProjectDisplayName();
+            const title = this.plugin.getProjectDisplayName(this.getBoundProjectFile());
             this.rootContainer.querySelectorAll('.story-line-view-title')
                 .forEach(el => { el.textContent = title; });
             return;
@@ -2225,7 +2186,7 @@ export class LocationView extends ProjectBoundItemView {
         const SECTION_KEY = '__Gallery';
 
         const wrapper = container.createDiv('character-gallery');
-
+        if (absorbCoverIntoGallery(draft)) this.scheduleSave(draft);
         const gallery = draft.gallery ?? [];
 
         // Collapsible header with add button
@@ -2248,6 +2209,7 @@ export class LocationView extends ProjectBoundItemView {
                     if (picked && picked !== '') {
                         gallery.push({ path: picked, caption: '' });
                         draft.gallery = [...gallery];
+                        syncLibraryCoverFromGallery(draft);
                         if (draft.type === 'world') {
                             await this.locationManager.saveWorld(draft as StoryWorld);
                         } else {
@@ -2336,6 +2298,7 @@ export class LocationView extends ProjectBoundItemView {
                 removeBtn.addEventListener('click', () => {
                     gallery.splice(idx, 1);
                     draft.gallery = gallery.length ? [...gallery] : undefined;
+                    syncLibraryCoverFromGallery(draft);
                     this.scheduleSave(draft);
                     activeIndex = gallery.length > 0 ? Math.min(idx, gallery.length - 1) : -1;
                     renderViewer();
@@ -2347,8 +2310,11 @@ export class LocationView extends ProjectBoundItemView {
             }
         };
 
-        // Navigation row: prev | thumbs | next
+        // Navigation row: prev | thumbs | next (hidden when there is only one image)
         const nav = body.createDiv('character-gallery-nav');
+        const syncNav = () => {
+            nav.toggleClass('is-single', gallery.length <= 1);
+        };
         const prevBtn = nav.createEl('button', { cls: 'character-gallery-arrow', attr: { title: t('Previous') } });
         obsidian.setIcon(prevBtn, 'chevron-left');
         prevBtn.addEventListener('click', () => {
@@ -2393,6 +2359,7 @@ export class LocationView extends ProjectBoundItemView {
                     renderThumbs();
                 });
             }
+            syncNav();
         };
 
         renderViewer();

@@ -32,6 +32,15 @@ export class LocationManager {
      * Uses the vault adapter (filesystem) for reliable discovery of
      * externally-created or synced files.
      */
+    exportSnapshot(): { worlds: Map<string, StoryWorld>; locations: Map<string, StoryLocation> } {
+        return { worlds: new Map(this.worlds), locations: new Map(this.locations) };
+    }
+
+    restoreSnapshot(snapshot: { worlds: Map<string, StoryWorld>; locations: Map<string, StoryLocation> }): void {
+        this.worlds = new Map(snapshot.worlds);
+        this.locations = new Map(snapshot.locations);
+    }
+
     async loadAll(folderPath: string): Promise<void> {
         this.worlds.clear();
         this.locations.clear();
