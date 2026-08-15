@@ -49,3 +49,12 @@ test('does not hide categorized wikilinks or character relations', () => {
     ];
     assert.deepEqual(suppressDefaultReferenceEdges(edges), edges);
 });
+
+test('right-click connect queues the drop menu instead of showing it on mouseup', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(new URL('../components/StoryGraph.ts', import.meta.url), 'utf8');
+    assert.match(source, /queueConnectDropMenu/);
+    assert.match(source, /pendingConnectMenu/);
+    assert.doesNotMatch(source, /this\.showConnectDropMenu\(ue/);
+    assert.match(source, /revealWikilink/);
+});

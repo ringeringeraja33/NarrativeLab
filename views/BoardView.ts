@@ -22,6 +22,7 @@ import type SceneCardsPlugin from '../main';
 import { compareActChapter, parseActChapterInput, getActDisplayLabel } from '../utils/actChapter';
 import { deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import {
     NARRATIVE_LAB_PROJECT_FILE_STATE_KEY,
     narrativeLabLeafState,
@@ -3115,7 +3116,7 @@ export class BoardView extends ItemView {
                 .onClick(() => { void this.convertCorkboardNoteToScene(scene); }));
         }
 
-        menu.showAtMouseEvent(event);
+        showMenuSafely(menu, event);
     }
 
     private moveCorkboardLayer(scenePath: string, direction: 'top' | 'up' | 'down' | 'bottom'): void {
@@ -3701,7 +3702,7 @@ export class BoardView extends ItemView {
                         });
                 });
             });
-            menu.showAtMouseEvent(e);
+            showMenuSafely(menu, e);
         });
 
         // Bulk move to act
@@ -3747,7 +3748,7 @@ export class BoardView extends ItemView {
                     });
                 });
             }
-            menu.showAtMouseEvent(e);
+            showMenuSafely(menu, e);
         });
 
         // Bulk add tag
@@ -3826,7 +3827,7 @@ export class BoardView extends ItemView {
                     });
             });
 
-            menu.showAtMouseEvent(e);
+            showMenuSafely(menu, e);
         });
 
         // Bulk delete
@@ -4115,7 +4116,7 @@ export class BoardView extends ItemView {
             }
         });
 
-        menu.showAtMouseEvent(event);
+        showMenuSafely(menu, event);
     }
 
     /**
@@ -4373,7 +4374,7 @@ export class BoardView extends ItemView {
             });
         }
 
-        menu.showAtMouseEvent(event);
+        showMenuSafely(menu, event);
     }
 
     /**

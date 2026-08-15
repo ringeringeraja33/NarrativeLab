@@ -188,7 +188,7 @@ const ZH_CORE: Record<string, string> = {
     'No matching strands': '无匹配指向',
     'No strands yet — use the arrow tool or add one below': '还没有指向 — 用箭头工具拖线，或在下方添加',
     'Arrow tool: drag a handle to the other side to add a strand': '连线工具：从把手拖到另一侧以添加指向',
-    'Drag mid-point to bend · double-click line to edit label · open Strands to manage': '拖动中点弯曲 · 双击连线编辑文字 · 打开「指向」管理',
+    'Drag mid-point to bend · double-click line to edit label · right-click a strand to remove it · open Strands to manage': '拖动中点弯曲 · 双击连线编辑文字 · 右键下级连线可删除 · 打开「指向」管理',
     'Drag to bend': '拖动以弯曲',
     'Add handle': '添加把手',
     'Delete handle': '删除把手',

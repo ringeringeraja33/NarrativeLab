@@ -722,7 +722,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /registerNarrativeLabContextMenu/);
     assert.match(host, /onContextMenuRequest/);
     assert.match(view, /new Menu\(\)/);
-    assert.match(view, /showAtPosition\(position\)/);
+    assert.match(view, /showMenuSafely\(menu, position\)/);
     assert.match(host, /removeEventListener\('contextmenu'/);
     assert.doesNotMatch(host, /title:\s*'NarrativeLab'/);
     assert.doesNotMatch(host, /createSubmenu\(\{\s*id:\s*'narrativelab\.plot-grid\.submenu'/);

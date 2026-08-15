@@ -4,6 +4,7 @@ import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { attachTooltip } from './Tooltip';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 
 export interface LibraryFilterFieldOption {
     key: string;
@@ -207,7 +208,7 @@ export function renderLibraryArchiveFilterBar(
                 });
             });
         }
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     });
 
     const chipHost = host.createDiv('library-archive-filter-chips');

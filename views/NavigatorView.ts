@@ -13,6 +13,7 @@ import { Scene, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import type { ProjectDraft, StoryLineProject } from '../models/StoryLineProject';
 import { RESEARCH_TYPE_CONFIG, type ResearchPost } from '../models/Research';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import { showProjectNavigatorMenu } from '../components/ProjectNavigatorMenu';
 
 /**
@@ -168,7 +169,7 @@ export class NavigatorView extends ItemView {
                     });
                 });
             }
-            menu.showAtMouseEvent(e as MouseEvent);
+            showMenuSafely(menu, e as MouseEvent);
         });
 
         const detailsBtn = toolbar.createDiv('sl-nav-icon-btn');
@@ -784,7 +785,7 @@ export class NavigatorView extends ItemView {
             item.setIcon('trash');
             item.onClick(() => this.confirmDeletePlotline(plotline, sceneCount));
         });
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     }
 
     private pickPlotlineColor(plotline: string, currentColor: string): void {
@@ -968,7 +969,7 @@ export class NavigatorView extends ItemView {
                     item.onClick(() => this.promptRenameDraft(active));
                 });
             }
-            menu.showAtMouseEvent(e);
+            showMenuSafely(menu, e);
         });
     }
 
@@ -1080,7 +1081,7 @@ export class NavigatorView extends ItemView {
                     this.plugin.refreshOpenViews();
                 });
             });
-            menu.showAtMouseEvent(e);
+            showMenuSafely(menu, e);
         });
     }
 
@@ -1200,7 +1201,7 @@ export class NavigatorView extends ItemView {
                 item.setIcon('library-big');
                 item.onClick(() => { void this.plugin.openResearch(); });
             });
-            menu.showAtMouseEvent(e);
+            showMenuSafely(menu, e);
         });
     }
 
@@ -1257,7 +1258,7 @@ export class NavigatorView extends ItemView {
             item.setIcon('plus');
             item.onClick(() => this.promptNewDraft());
         });
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     }
 
     /** Quick-add a scene into the active project (and scoped draft if needed). */
@@ -1880,7 +1881,7 @@ export class NavigatorView extends ItemView {
                 });
             }
 
-            menu.showAtMouseEvent(e);
+            showMenuSafely(menu, e);
         });
     }
 

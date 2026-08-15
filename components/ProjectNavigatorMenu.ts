@@ -11,6 +11,7 @@ import {
 } from '../models/Scene';
 import { readLibraryCategorySettings } from '../services/LibraryCategorySync';
 import { localizeBeatSheet, localizeSceneTemplate, t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import {
     ProjectPresetEditorModal,
     StructureTemplateEditorModal,
@@ -114,7 +115,7 @@ export function showProjectNavigatorMenu(
         });
     });
 
-    menu.showAtMouseEvent(event);
+    showMenuSafely(menu, event);
 }
 
 function openCaptureGlobalPresetModal(plugin: SceneCardsPlugin): void {

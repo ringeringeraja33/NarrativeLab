@@ -43,6 +43,7 @@ import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { seedUiLanguage, t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
     attachBuiltinFieldVisibilityControls,
@@ -3727,7 +3728,7 @@ export class CharacterView extends ProjectBoundItemView {
                     .onClick(() => this.setCharacterBooks(char, [])));
         }
 
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     }
 
     private async promoteCharacterToSeries(char: Character, seriesCharFolder: string): Promise<void> {
@@ -3797,7 +3798,7 @@ export class CharacterView extends ProjectBoundItemView {
                         });
                 });
             }
-            menu.showAtMouseEvent(e);
+            showMenuSafely(menu, e);
         });
     }
 

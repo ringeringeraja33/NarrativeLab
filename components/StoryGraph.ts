@@ -16,7 +16,8 @@
  */
 
 import * as obsidian from 'obsidian';
-import { Menu, Notice } from 'obsidian';
+import { Menu, Notice, normalizePath } from 'obsidian';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import type { Scene } from '../models/Scene';
 import type { Character } from '../models/Character';
 import { extractCharacterProps, extractCharacterLocationTags } from '../models/Character';
@@ -709,10 +710,29 @@ export class StoryGraph {
     private suppressNodeContextMenu = false;
     /** Touch / menu-driven: pick source, then tap a target node. */
     private connectPick: null | { from: StoryGraphConnectNode; fromNodeId: string } = null;
+    /**
+     * Last node that opened a node menu via right-click. A following right-click
+     * on a *different* node completes a connection (click-click, no drag).
+     */
+    private connectClickFrom: StoryGraphConnectNode | null = null;
+    /**
+     * Menu to open after the trailing `contextmenu` event. Showing an Obsidian
+     * Menu from right-`mouseup` lets that `contextmenu` immediately dismiss it.
+     */
+    private pendingConnectMenu: null | {
+        kind: 'drop' | 'node';
+        from?: StoryGraphConnectNode;
+        to?: StoryGraphConnectNode;
+        node?: StoryGraphNode;
+        clientX: number;
+        clientY: number;
+    } = null;
+    private pendingConnectMenuTimer = 0;
     private connectBanner: HTMLElement | null = null;
     private onConnectKeyDown: ((e: KeyboardEvent) => void) | null = null;
     private onConnectDragMove: ((e: MouseEvent) => void) | null = null;
     private onConnectDragUp: ((e: MouseEvent) => void) | null = null;
+    private onConnectContextMenu: ((e: MouseEvent) => void) | null = null;
 
     /** Persist filter changes (e.g. onto the plugin session state) */
     private onFiltersChange?: (filters: StoryGraphFilterState) => void;
@@ -1045,6 +1065,21 @@ export class StoryGraph {
 
     // ── Public API ─────────────────────────────────────
 
+    /**
+     * Draw a wikilink immediately (before metadataCache catches up) so a
+     * newly created connection does not wait on a full Library remount.
+     */
+    revealWikilink(sourcePath: string, targetPath: string): void {
+        const src = normalizePath(sourcePath);
+        const tgt = normalizePath(targetPath);
+        if (!src || !tgt || src === tgt) return;
+        if (this.wikilinks.some(link => link.sourcePath === src && link.targetPath === tgt)) {
+            return;
+        }
+        this.wikilinks = [...this.wikilinks, { sourcePath: src, targetPath: tgt }];
+        this.render();
+    }
+
     render(): void {
         this.captureLivePositions();
         const keepPanX = this.panX;
@@ -1107,6 +1142,7 @@ export class StoryGraph {
         // Pan support — transform only (panX/panY are viewBox units).
         this.svg.addEventListener('mousedown', (e) => {
             if (e.target === this.svg || e.target === this.layer) {
+                this.connectClickFrom = null;
                 const vb = this.clientToViewBox(e.clientX, e.clientY);
                 if (!vb) return;
                 this.isPanning = true;
@@ -1150,8 +1186,15 @@ export class StoryGraph {
 
         this.svg.addEventListener('contextmenu', (e) => {
             const target = e.target as Element | null;
+            if (this.pendingConnectMenu) {
+                e.preventDefault();
+                this.scheduleFlushPendingConnectMenu();
+                return;
+            }
             if (target === this.svg || target === this.layer) {
                 e.preventDefault();
+                this.connectClickFrom = null;
+                if (this.connectPick) return;
                 this.showCanvasConnectMenu(e);
             }
         });
@@ -1168,6 +1211,9 @@ export class StoryGraph {
     destroy(): void {
         this.clearConnectDrag(false);
         this.clearConnectPick(false);
+        this.connectClickFrom = null;
+        this.clearPendingConnectMenu();
+        this.disarmConnectContextGuard();
         // Keep CSS fullscreen across filter re-renders; only tear down listeners here.
         this.unbindFullscreenKeys();
         activeWindow.removeEventListener('keydown', this.boundGraphKeyDown, true);
@@ -1391,6 +1437,97 @@ export class StoryGraph {
         };
     }
 
+    private armConnectContextGuard(): void {
+        if (this.onConnectContextMenu) return;
+        this.onConnectContextMenu = (e: MouseEvent) => {
+            if (this.connectDrag) {
+                // Right-drag in progress: never let the browser/Obsidian menu steal the gesture.
+                e.preventDefault();
+                return;
+            }
+            if (this.pendingConnectMenu) {
+                e.preventDefault();
+                this.scheduleFlushPendingConnectMenu();
+            }
+        };
+        window.addEventListener('contextmenu', this.onConnectContextMenu, true);
+    }
+
+    private disarmConnectContextGuard(): void {
+        if (!this.onConnectContextMenu) return;
+        if (this.connectDrag || this.pendingConnectMenu) return;
+        window.removeEventListener('contextmenu', this.onConnectContextMenu, true);
+        this.onConnectContextMenu = null;
+    }
+
+    private clearPendingConnectMenu(): void {
+        this.pendingConnectMenu = null;
+        if (this.pendingConnectMenuTimer) {
+            window.clearTimeout(this.pendingConnectMenuTimer);
+            this.pendingConnectMenuTimer = 0;
+        }
+        this.suppressNodeContextMenu = false;
+    }
+
+    /**
+     * Open the queued connect/node menu *after* the trailing contextmenu event
+     * has finished, so Obsidian's Menu is not immediately dismissed.
+     */
+    private scheduleFlushPendingConnectMenu(): void {
+        if (this.pendingConnectMenuTimer) {
+            window.clearTimeout(this.pendingConnectMenuTimer);
+        }
+        this.pendingConnectMenuTimer = window.setTimeout(() => {
+            this.pendingConnectMenuTimer = 0;
+            this.flushPendingConnectMenu();
+        }, 0);
+    }
+
+    private flushPendingConnectMenu(): void {
+        const pending = this.pendingConnectMenu;
+        this.pendingConnectMenu = null;
+        this.suppressNodeContextMenu = false;
+        this.disarmConnectContextGuard();
+        if (!pending) return;
+        if (pending.kind === 'node' && pending.node) {
+            this.showNodeContextMenuAt(pending.clientX, pending.clientY, pending.node);
+            return;
+        }
+        if (pending.kind === 'drop' && pending.from && pending.to) {
+            this.showConnectDropMenuAt(pending.clientX, pending.clientY, pending.from, pending.to);
+        }
+    }
+
+    private queueConnectDropMenu(
+        clientX: number,
+        clientY: number,
+        from: StoryGraphConnectNode,
+        to: StoryGraphConnectNode,
+    ): void {
+        this.armConnectContextGuard();
+        this.suppressNodeContextMenu = true;
+        this.pendingConnectMenu = { kind: 'drop', from, to, clientX, clientY };
+        // Some browsers skip `contextmenu` after a long right-drag — still show the menu.
+        if (!this.pendingConnectMenuTimer) {
+            this.pendingConnectMenuTimer = window.setTimeout(() => {
+                this.pendingConnectMenuTimer = 0;
+                this.flushPendingConnectMenu();
+            }, 80);
+        }
+    }
+
+    private queueNodeContextMenu(clientX: number, clientY: number, node: StoryGraphNode): void {
+        this.armConnectContextGuard();
+        this.suppressNodeContextMenu = true;
+        this.pendingConnectMenu = { kind: 'node', node, clientX, clientY };
+        if (!this.pendingConnectMenuTimer) {
+            this.pendingConnectMenuTimer = window.setTimeout(() => {
+                this.pendingConnectMenuTimer = 0;
+                this.flushPendingConnectMenu();
+            }, 80);
+        }
+    }
+
     private clearConnectDrag(showNotice = false): void {
         const wasActive = !!this.connectDrag;
         if (this.connectDrag?.hoverId) {
@@ -1415,6 +1552,7 @@ export class StoryGraph {
             window.removeEventListener('mouseup', this.onConnectDragUp);
             this.onConnectDragUp = null;
         }
+        this.disarmConnectContextGuard();
         if (wasActive && showNotice) {
             new Notice(t('Connect cancelled'));
         }
@@ -1450,6 +1588,7 @@ export class StoryGraph {
         }
         this.clearConnectDrag(false);
         this.clearConnectPick(false);
+        this.connectClickFrom = null;
         this.connectPick = { from, fromNodeId: node.id };
         this.wrapper?.addClass('is-connecting');
         this.setNodeConnectHover(node.id, true);
@@ -1483,7 +1622,12 @@ export class StoryGraph {
         this.connectBanner = banner;
     }
 
-    private completeConnectPick(target: StoryGraphNode, clientX: number, clientY: number): void {
+    private completeConnectPick(
+        target: StoryGraphNode,
+        clientX: number,
+        clientY: number,
+        evt?: MouseEvent,
+    ): void {
         if (!this.connectPick) return;
         const from = this.connectPick.from;
         if (target.id === this.connectPick.fromNodeId) {
@@ -1495,8 +1639,9 @@ export class StoryGraph {
             new Notice(t('This node has no vault file'));
             return;
         }
+        this.connectClickFrom = null;
         this.clearConnectPick(false);
-        this.showConnectDropMenuAt(clientX, clientY, from, to);
+        this.showConnectDropMenuAt(clientX, clientY, from, to, evt);
     }
 
     /** Map client (CSS) pixels into SVG viewBox user units. */
@@ -1552,6 +1697,7 @@ export class StoryGraph {
             return;
         }
         this.clearConnectDrag(false);
+        this.armConnectContextGuard();
         const svgNS = 'http://www.w3.org/2000/svg';
         const r = this.nodeRadius(node);
         const port = activeDocument.createElementNS(svgNS, 'circle');
@@ -1646,16 +1792,16 @@ export class StoryGraph {
             const from = drag.from;
             const hover = this.hitTestNode(ue.clientX, ue.clientY, drag.fromNode.id);
             this.clearConnectDrag(false);
-            // Suppress the trailing contextmenu event after right mouseup.
-            this.suppressNodeContextMenu = true;
-            window.setTimeout(() => { this.suppressNodeContextMenu = false; }, 0);
             if (!moved) {
-                // Treat as a plain right-click → node menu (image etc.)
-                this.showNodeContextMenu(ue, node);
+                // Plain right-click → node menu (image etc.). Remember the source
+                // so a following right-click on another node can complete a link.
+                this.queueNodeContextMenu(ue.clientX, ue.clientY, node);
                 return;
             }
             if (!hover) {
-                new Notice(t('Drop on a target node to connect'));
+                // Released on empty canvas: stay armed so the next click/right-click
+                // on a node can finish the connection (click-click, no hold).
+                this.beginConnectPick(node);
                 return;
             }
             const to = this.toConnectNode(hover);
@@ -1663,18 +1809,10 @@ export class StoryGraph {
                 new Notice(t('This node has no vault file'));
                 return;
             }
-            this.showConnectDropMenu(ue, from, to);
+            this.queueConnectDropMenu(ue.clientX, ue.clientY, from, to);
         };
         window.addEventListener('mousemove', this.onConnectDragMove);
         window.addEventListener('mouseup', this.onConnectDragUp);
-    }
-
-    private showConnectDropMenu(
-        e: MouseEvent,
-        from: StoryGraphConnectNode,
-        to: StoryGraphConnectNode,
-    ): void {
-        this.showConnectDropMenuAt(e.clientX, e.clientY, from, to);
     }
 
     private showConnectDropMenuAt(
@@ -1682,6 +1820,7 @@ export class StoryGraph {
         y: number,
         from: StoryGraphConnectNode,
         to: StoryGraphConnectNode,
+        evt?: MouseEvent,
     ): void {
         if (!this.onConnectNodes) return;
         const menu = new Menu();
@@ -1713,7 +1852,7 @@ export class StoryGraph {
                 });
             }
         }
-        menu.showAtPosition({ x, y });
+        showMenuSafely(menu, evt || { x, y });
     }
 
     private showCanvasConnectMenu(e: MouseEvent): void {
@@ -1734,10 +1873,20 @@ export class StoryGraph {
                 item.onClick(() => this.clearConnectPick(true));
             });
         }
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     }
 
     private showNodeContextMenu(e: MouseEvent, node: StoryGraphNode): void {
+        this.showNodeContextMenuAt(e.clientX, e.clientY, node, e);
+    }
+
+    private showNodeContextMenuAt(
+        x: number,
+        y: number,
+        node: StoryGraphNode,
+        evt?: MouseEvent,
+    ): void {
+        this.connectClickFrom = this.toConnectNode(node);
         const menu = new Menu();
         menu.addItem(item => {
             item.setTitle(node.label);
@@ -1802,7 +1951,7 @@ export class StoryGraph {
                 });
             }
         }
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, evt || { x, y });
     }
 
     private async pickImageForNode(node: StoryGraphNode): Promise<void> {
@@ -2434,7 +2583,9 @@ export class StoryGraph {
             document.entityType === 'scene'
                 ? `scene::${document.filePath}`
                 : `${document.entityType}::${document.label.toLowerCase()}`;
-        const documentByPath = new Map(this.documents.map(document => [document.filePath, document]));
+        const documentByPath = new Map(
+            this.documents.map(document => [normalizePath(document.filePath), document]),
+        );
         const documentByName = new Map(
             this.documents.map(document => [document.label.toLowerCase(), document]),
         );
@@ -2449,8 +2600,8 @@ export class StoryGraph {
 
         // ── 1. Real Obsidian wikilinks between Library / scene files ──
         for (const link of this.wikilinks) {
-            const sourceDocument = documentByPath.get(link.sourcePath);
-            const targetDocument = documentByPath.get(link.targetPath);
+            const sourceDocument = documentByPath.get(normalizePath(link.sourcePath));
+            const targetDocument = documentByPath.get(normalizePath(link.targetPath));
             if (!sourceDocument || !targetDocument) continue;
             if (!isVisible(sourceDocument.entityType) || !isVisible(targetDocument.entityType)) continue;
 
@@ -3015,7 +3166,7 @@ export class StoryGraph {
                             item.setIcon('scan-eye');
                             item.onClick(() => this.onEdgeFocus?.(focusEdge, e));
                         });
-                        menu.showAtMouseEvent(e);
+                        showMenuSafely(menu, e);
                     }
                 };
                 hit.addEventListener('contextmenu', openMenu);
@@ -3497,6 +3648,11 @@ export class StoryGraph {
             // Right-drag: pull out a connection line to another node (mouse).
             if (e.button === 2) {
                 e.preventDefault();
+                // Already connecting: wait for contextmenu to complete the link.
+                // Starting a new rubber-band from the target is what made the
+                // drop menu flash and disappear.
+                if (this.connectPick) return;
+                if (this.connectClickFrom && this.connectClickFrom.id !== node.id) return;
                 this.startConnectDrag(node, e);
                 return;
             }
@@ -3559,6 +3715,23 @@ export class StoryGraph {
         el.addEventListener('contextmenu', (e) => {
             e.preventDefault();
             e.stopPropagation();
+            if (this.connectPick && node.id !== this.connectPick.fromNodeId) {
+                this.completeConnectPick(node, e.clientX, e.clientY, e);
+                return;
+            }
+            if (this.connectClickFrom && this.connectClickFrom.id !== node.id) {
+                const to = this.toConnectNode(node);
+                if (to) {
+                    const from = this.connectClickFrom;
+                    this.connectClickFrom = null;
+                    this.showConnectDropMenuAt(e.clientX, e.clientY, from, to, e);
+                    return;
+                }
+            }
+            if (this.pendingConnectMenu) {
+                this.scheduleFlushPendingConnectMenu();
+                return;
+            }
             if (this.suppressNodeContextMenu || this.connectDrag?.moved) {
                 this.suppressNodeContextMenu = false;
                 return;

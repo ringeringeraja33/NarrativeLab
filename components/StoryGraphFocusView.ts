@@ -24,6 +24,7 @@ import {
     type StoryGraphStrandMid,
 } from '../utils/storyGraphStrands';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 
 interface FocusUndoSnapshot {
     strands: StoryGraphStrand[];
@@ -285,7 +286,7 @@ export class StoryGraphFocusView {
         this.hintBar.setText(
             this.tool === 'arrow'
                 ? t('Arrow tool: drag a handle to the other side to add a strand')
-                : t('Drag mid-point to bend · double-click line to edit label · open Strands to manage'),
+                : t('Drag mid-point to bend · double-click line to edit label · right-click a strand to remove it · open Strands to manage'),
         );
     }
 
@@ -565,7 +566,7 @@ export class StoryGraphFocusView {
                 item.onClick(() => { void this.setEndpointLayoutImage(side, ''); });
             });
         }
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     }
 
     private async pickImageForEndpoint(side: 'left' | 'right'): Promise<void> {
@@ -705,7 +706,7 @@ export class StoryGraphFocusView {
                             .setIcon('trash-2')
                             .onClick(() => this.deletePort(side, port.id));
                     });
-                    menu.showAtMouseEvent(e);
+                    showMenuSafely(menu, e);
                 });
             });
 
@@ -849,8 +850,7 @@ export class StoryGraphFocusView {
         list.empty();
         const q = this.strandSearchQuery.trim().toLowerCase();
         const entries = this.strands
-            .map((strand, index) => ({ strand, index }))
-            .filter(({ strand }) => !q || strand.label.toLowerCase().includes(q));
+            .filter((strand) => !q || strand.label.toLowerCase().includes(q));
         if (entries.length === 0) {
             list.createDiv({
                 cls: 'story-graph-focus-strand-empty',
@@ -860,8 +860,8 @@ export class StoryGraphFocusView {
             });
             return;
         }
-        for (const { strand, index } of entries) {
-            list.appendChild(this.makeStrandCard(strand, index));
+        for (const strand of entries) {
+            list.appendChild(this.makeStrandCard(strand));
         }
         window.requestAnimationFrame(() => {
             const selected = list.querySelector('.story-graph-focus-strand-card.is-selected');
@@ -888,7 +888,7 @@ export class StoryGraphFocusView {
         this.redrawCanvas();
     }
 
-    private makeStrandCard(strand: StoryGraphStrand, index: number): HTMLElement {
+    private makeStrandCard(strand: StoryGraphStrand): HTMLElement {
         const row = activeDocument.createElement('div');
         row.className = `story-graph-focus-strand-card${this.selectedId === strand.id ? ' is-selected' : ''}`;
         row.setAttribute('data-strand-id', strand.id);
@@ -1018,21 +1018,45 @@ export class StoryGraphFocusView {
         }
         remove.addEventListener('click', (e) => {
             e.stopPropagation();
-            if (this.strands.length <= 1) {
-                new Notice(t('Keep at least one strand. To remove the link entirely, delete it on the Story Graph.'));
-                return;
-            }
-            this.pushUndo();
-            this.strands.splice(index, 1);
-            if (this.selectedId === strand.id) {
-                this.selectedId = this.strands[0]?.id || null;
-            }
-            this.dirty = true;
-            this.renderCanvasToolbar();
-            this.redrawCanvas();
+            this.removeStrandById(strand.id);
         });
 
         return row;
+    }
+
+    /** Child strands only — the parent edge is removed from the main Story Graph. */
+    private removeStrandById(strandId: string): void {
+        if (this.strands.length <= 1) {
+            new Notice(t('Keep at least one strand. To remove the link entirely, delete it on the Story Graph.'));
+            return;
+        }
+        const index = this.strands.findIndex(s => s.id === strandId);
+        if (index < 0) return;
+        this.pushUndo();
+        this.strands.splice(index, 1);
+        if (this.selectedId === strandId) {
+            this.selectedId = this.strands[0]?.id || null;
+        }
+        this.dirty = true;
+        this.renderCanvasToolbar();
+        this.redrawCanvas();
+    }
+
+    private showStrandContextMenu(e: MouseEvent, strand: StoryGraphStrand): void {
+        const menu = new Menu();
+        const title = strand.label.trim() || t('New strand');
+        menu.addItem(item => {
+            item.setTitle(title);
+            item.setDisabled(true);
+        });
+        menu.addSeparator();
+        menu.addItem(item => {
+            item.setTitle(t('Remove strand'));
+            item.setIcon('trash-2');
+            if (this.strands.length <= 1) item.setDisabled(true);
+            item.onClick(() => this.removeStrandById(strand.id));
+        });
+        showMenuSafely(menu, e);
     }
 
     private paintStrandPreview(el: HTMLElement, strand: StoryGraphStrand): void {
@@ -1591,6 +1615,13 @@ export class StoryGraphFocusView {
                 });
                 g.appendChild(midHandle);
             }
+
+            g.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.selectedId = strand.id;
+                this.showStrandContextMenu(e, strand);
+            });
 
             this.svg!.appendChild(g);
         });

@@ -21,6 +21,7 @@ import {
     resolveLibraryCategoryLabel,
 } from '../services/LibraryCategorySync';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import { UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
 
 export interface CodexTabsOptions {
@@ -371,7 +372,7 @@ function attachRenameMenu(
                     promptDeleteCategory(plugin, categoryId, onDeleted);
                 }));
         }
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     });
 }
 

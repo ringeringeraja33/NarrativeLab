@@ -21,7 +21,7 @@ function uniqueFolders(folders: string[]): string[] {
 export function buildProjectGraphQuery(folders: string[]): string {
     const parts = uniqueFolders(folders).map(folder => `path:${quoteGraphSearchTerm(folder)}`);
     if (parts.length === 0) return '';
-    if (parts.length === 1) return parts[0]!;
+    if (parts.length === 1) return parts[0];
     return parts.join(' OR ');
 }
 

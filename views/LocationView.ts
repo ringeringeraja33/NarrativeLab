@@ -24,6 +24,7 @@ import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
     attachBuiltinFieldVisibilityControls,
@@ -320,7 +321,7 @@ export class LocationView extends ProjectBoundItemView {
                 const menu = new Menu();
                 menu.addItem(item => item.setTitle(t('New World')).onClick(() => this.promptNewWorld()));
                 menu.addItem(item => item.setTitle(t('New Location')).onClick(() => this.promptNewLocation()));
-                menu.showAtMouseEvent(ev);
+                showMenuSafely(menu, ev);
             },
             newLabel: t('New'),
             // Location Profiles is card-only; Browse (native Base) owns table/list.
@@ -685,7 +686,7 @@ export class LocationView extends ProjectBoundItemView {
                     .onClick(() => this.setItemBooks(item, [])));
         }
 
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     }
 
     private async moveItemTo(item: WorldOrLocation, target: string, verb: 'promoted' | 'demoted'): Promise<void> {

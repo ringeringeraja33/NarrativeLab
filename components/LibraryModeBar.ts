@@ -77,6 +77,7 @@ import {
     type StoryGraphCharacterRelationType,
 } from '../utils/storyGraphCharacterRelations';
 import { localizeForLanguage, seedUiLanguage, t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 import {
     buildProjectFileGraphQuery,
@@ -450,6 +451,18 @@ export function syncStoryGraphLibraryNodeTypes(plugin: SceneCardsPlugin): boolea
     return true;
 }
 
+const pendingStoryGraphWikilinks: StoryGraphWikilink[] = [];
+
+function rememberPendingStoryGraphWikilink(sourcePath: string, targetPath: string): void {
+    const src = normalizePath(sourcePath);
+    const tgt = normalizePath(targetPath);
+    if (!src || !tgt || src === tgt) return;
+    if (pendingStoryGraphWikilinks.some(link => link.sourcePath === src && link.targetPath === tgt)) {
+        return;
+    }
+    pendingStoryGraphWikilinks.push({ sourcePath: src, targetPath: tgt });
+}
+
 function collectStoryGraphWikilinks(
     plugin: SceneCardsPlugin,
     documents: StoryGraphDocument[],
@@ -485,6 +498,18 @@ function collectStoryGraphWikilinks(
             if (dest) add(sourcePath, dest.path);
         }
     }
+
+    const stillPending: StoryGraphWikilink[] = [];
+    for (const pending of pendingStoryGraphWikilinks) {
+        const key = `${pending.sourcePath}=>${pending.targetPath}`;
+        if (seen.has(key)) continue;
+        if (!knownPaths.has(pending.sourcePath) || !knownPaths.has(pending.targetPath)) continue;
+        stillPending.push(pending);
+        add(pending.sourcePath, pending.targetPath);
+    }
+    pendingStoryGraphWikilinks.length = 0;
+    pendingStoryGraphWikilinks.push(...stillPending);
+
     return links;
 }
 
@@ -615,6 +640,7 @@ export function renderLibraryStoryGraph(
         });
     };
 
+    let graph: StoryGraph | null = null;
     const connectNodes = async (
         from: StoryGraphConnectNode,
         to: StoryGraphConnectNode,
@@ -628,9 +654,9 @@ export function renderLibraryStoryGraph(
                     to.label,
                     to.filePath,
                 );
-                // Wait for Obsidian to resolve the link so the next graph rebuild
-                // can draw the edge as「默认引用」instead of looking unchanged.
                 if (to.filePath) {
+                    rememberPendingStoryGraphWikilink(from.filePath, to.filePath);
+                    graph?.revealWikilink(from.filePath, to.filePath);
                     await waitForResolvedWikilink(plugin.app, from.filePath, to.filePath);
                 } else {
                     await new Promise<void>(r => window.setTimeout(r, 120));
@@ -657,7 +683,7 @@ export function renderLibraryStoryGraph(
         || plugin.sceneManager.getSceneFolder()
         || '';
 
-    const graph = new StoryGraph(
+    const instance = new StoryGraph(
         graphContainer,
         scenes,
         characters,
@@ -707,8 +733,9 @@ export function renderLibraryStoryGraph(
             },
         },
     );
-    graph.render();
-    return graph;
+    graph = instance;
+    instance.render();
+    return instance;
 }
 
 /** Legend “+” — add a general relation, a character-only relation, or open the manager. */
@@ -742,14 +769,14 @@ function showStoryGraphLegendAddMenu(
             : null;
     if (anchor) {
         const rect = anchor.getBoundingClientRect();
-        menu.showAtPosition({ x: Math.round(rect.left), y: Math.round(rect.bottom + 4) });
+        showMenuSafely(menu, { x: Math.round(rect.left), y: Math.round(rect.bottom + 4) });
         return;
     }
     if (evt) {
-        menu.showAtMouseEvent(evt);
+        showMenuSafely(menu, evt);
         return;
     }
-    menu.showAtPosition({ x: Math.round(window.innerWidth / 2 - 80), y: 120 });
+    showMenuSafely(menu, { x: Math.round(window.innerWidth / 2 - 80), y: 120 });
 }
 
 type AddStoryGraphRelationKind = 'wikilink' | 'character';
@@ -1007,7 +1034,7 @@ export function showRelationEdgeMenu(
         });
     });
 
-    menu.showAtMouseEvent(evt);
+    showMenuSafely(menu, evt);
 }
 
 /** Right-click a real Obsidian wikilink edge → category / focus / full delete. */
@@ -1161,7 +1188,7 @@ export function showStoryGraphLinkEdgeMenu(
             });
         });
     });
-    menu.showAtMouseEvent(evt);
+    showMenuSafely(menu, evt);
 }
 
 function makeRelationCategoryId(label: string): string {

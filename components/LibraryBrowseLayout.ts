@@ -7,6 +7,7 @@ import * as obsidian from 'obsidian';
 import { Menu } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 
 export type LibraryBrowseLayout = 'list' | 'cards' | 'table';
 
@@ -543,7 +544,7 @@ function openLibraryPropertiesPopover(
                             void commit(next);
                         }));
                 }
-                menu.showAtMouseEvent(event);
+                showMenuSafely(menu, event);
             });
             const toggle = () => {
                 const next = selected.has(option.key)
@@ -636,7 +637,7 @@ export function renderLibraryBrowseToolbar(
                 .setChecked(opt.value === opts.sortBy)
                 .onClick(() => opts.onSortChange(opt.value)));
         }
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     });
 
     const filterActive = opts.filterCount > 0;

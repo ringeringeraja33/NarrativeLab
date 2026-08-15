@@ -18,6 +18,7 @@ import * as obsidian from 'obsidian';
 import { BUILTIN_BEAT_SHEETS, BUILTIN_SCENE_TEMPLATES, Scene, SceneStatus, TIMELINE_MODES, TIMELINE_MODE_ICONS, TIMELINE_MODE_LABELS, TimelineMode, formatSceneLength, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import { getActDisplayLabel } from '../utils/actChapter';
 import { t, localizeBeatSheet, localizeSceneTemplate } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 /**
@@ -1190,7 +1191,7 @@ export class TimelineView extends ProjectBoundItemView {
                 });
         });
 
-        menu.showAtMouseEvent(event);
+        showMenuSafely(menu, event);
     }
 
     /**

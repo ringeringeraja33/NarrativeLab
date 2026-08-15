@@ -41,8 +41,8 @@ function withNarrativeLabZhTerminology(base: unknown): Record<string, unknown> {
     };
 }
 
-export function warmupPlotGridUniver(activeDocument: Document = document): void {
-    injectUniverCss(activeDocument);
+export function warmupPlotGridUniver(targetDocument: Document): void {
+    injectUniverCss(targetDocument);
 }
 
 function injectUniverCss(activeDocument: Document): void {

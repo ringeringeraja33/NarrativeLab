@@ -7,6 +7,7 @@ import type { SceneFilter, SortConfig, SortField, FilterPreset } from '../models
 import { getStatusOrder } from '../models/Scene';
 import { getActDisplayLabel } from '../utils/actChapter';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 
 export interface FiltersComponentOptions {
     /** Show sort controls in the overflow menu. Default true; Concept Grid passes false. */
@@ -264,7 +265,7 @@ export class FiltersComponent {
                 });
         });
         const rect = anchor.getBoundingClientRect();
-        menu.showAtPosition({ x: rect.left, y: rect.bottom + 4 });
+        showMenuSafely(menu, { x: rect.left, y: rect.bottom + 4 });
     }
 
     /** Removable chips summarizing non-default filters */

@@ -58,7 +58,7 @@ export async function openNativeGraphWithQuery(
             return false;
         }
     } else if (reveal) {
-        app.workspace.revealLeaf(leaf);
+        await app.workspace.revealLeaf(leaf);
     }
 
     await waitForGraphReady(leaf);

@@ -15,7 +15,7 @@ export function isUndoKey(event: UndoKeyLike): boolean {
 /** True when Cmd+Z should stay with the focused field, not workspace undo. */
 export function isLocalTextUndoTarget(doc: Document = activeDocument): boolean {
     const active = doc.activeElement;
-    if (!active || !(active instanceof HTMLElement)) return false;
+    if (!active || !active.instanceOf(HTMLElement)) return false;
     const tag = active.tagName;
     if (tag === 'TEXTAREA' || tag === 'INPUT') return true;
     if (active.isContentEditable) return true;

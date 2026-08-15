@@ -549,10 +549,13 @@ export class MetadataParser {
      */
     private static parseLocationList(location: unknown, locations?: unknown): string[] | undefined {
         const clean = (raw: unknown): unknown => {
-            if (Array.isArray(raw)) return raw.map(item => this.cleanWikilink(String(item)) ?? '');
+            if (Array.isArray(raw)) {
+                return raw.map(item => this.cleanWikilink(coerceString(item)) ?? '');
+            }
             if (raw == null || raw === '') return undefined;
-            if (typeof raw === 'object') return undefined;
-            return this.cleanWikilink(String(raw)) ?? '';
+            const text = coerceString(raw);
+            if (!text) return undefined;
+            return this.cleanWikilink(text) ?? '';
         };
         const names = coerceSceneLocations(clean(location), clean(locations));
         return names.length ? names : undefined;
@@ -564,7 +567,7 @@ export class MetadataParser {
     private static parseCharacters(chars: unknown): string[] | undefined {
         if (!Array.isArray(chars)) return undefined;
         return chars
-            .map((c: unknown) => this.cleanWikilink(String(c)) ?? '')
+            .map((c: unknown) => this.cleanWikilink(coerceString(c)) ?? '')
             .filter(s => s.length > 0);
     }
 
@@ -574,7 +577,7 @@ export class MetadataParser {
     private static parseStringArray(arr: unknown): string[] | undefined {
         if (!Array.isArray(arr)) return undefined;
         return arr
-            .map((s: unknown) => this.cleanWikilink(String(s)) ?? '')
+            .map((s: unknown) => this.cleanWikilink(coerceString(s)) ?? '')
             .filter(s => s.length > 0);
     }
 

@@ -195,7 +195,7 @@ export function coerceSceneLocations(...values: unknown[]): string[] {
             for (const item of raw) add(item);
             return;
         }
-        if (typeof raw === 'object') return;
+        if (typeof raw !== 'string' && typeof raw !== 'number' && typeof raw !== 'boolean') return;
         const name = String(raw).trim();
         if (!name) return;
         const key = name.toLowerCase();

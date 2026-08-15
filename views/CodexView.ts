@@ -50,6 +50,7 @@ import {
 } from '../components/CustomSectionsRenderer';
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import {
     attachBuiltinFieldVisibilityControls,
@@ -1069,7 +1070,7 @@ export class CodexView extends ProjectBoundItemView {
                         this.renderList(container);
                     }));
             }
-            menu.showAtMouseEvent(evt);
+            showMenuSafely(menu, evt);
         });
 
         if (hasMore) {

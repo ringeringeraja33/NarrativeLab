@@ -14,6 +14,7 @@ import { resolveTagColor, getPlotlineHSL, contrastTextColor } from '../settings'
 import { attachTooltip } from '../components/Tooltip';
 import { compareScenesByActChapter, getActDisplayLabel } from '../utils/actChapter';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 
 type SortMode = 'alpha' | 'scenes-desc' | 'scenes-asc' | 'reading-order';
@@ -157,7 +158,7 @@ export class StorylineView extends ProjectBoundItemView {
                 item.setTitle(`${this.sortMode === 'reading-order' ? '✓ ' : ''}${t('Reading order (chapter #)')}`)
                     .onClick(() => { this.setSortMode('reading-order'); });
             });
-            menu.showAtPosition({ x: e.clientX, y: e.clientY });
+            showMenuSafely(menu, { x: e.clientX, y: e.clientY });
         });
 
         // New plotline button
@@ -204,7 +205,7 @@ export class StorylineView extends ProjectBoundItemView {
                             });
                     });
                 }
-                menu.showAtPosition({ x: e.clientX, y: e.clientY });
+                showMenuSafely(menu, { x: e.clientX, y: e.clientY });
             });
 
             const tagToggle = controls.createEl('button', {
@@ -992,7 +993,7 @@ export class StorylineView extends ProjectBoundItemView {
         });
 
         const rect = anchorEl.getBoundingClientRect();
-        menu.showAtPosition({ x: rect.left, y: rect.bottom });
+        showMenuSafely(menu, { x: rect.left, y: rect.bottom });
     }
 
     // ── Rename ─────────────────────────────────────────────
@@ -1104,7 +1105,7 @@ export class StorylineView extends ProjectBoundItemView {
                 .setIcon('trash-2')
                 .onClick(() => this.confirmDeletePlotline(plotline, sceneCount));
         });
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     }
 
     private confirmDeletePlotline(plotline: string, sceneCount: number): void {

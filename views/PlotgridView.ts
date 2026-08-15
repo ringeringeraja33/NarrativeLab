@@ -11,6 +11,7 @@ import {
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
 import { getActiveUiLanguage, t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 import {
     loadPlotGridUniverModule,
     type PlotGridUniverContextAction,
@@ -1018,7 +1019,7 @@ export class PlotgridView extends ProjectBoundItemView {
                         add('Convert to Research', 'search', 'convert-to-research');
                         menu.addSeparator();
                         add('Reset spreadsheet', 'rotate-ccw', 'reset-grid');
-                        menu.showAtPosition(position);
+                        showMenuSafely(menu, position);
                     },
                     onDocumentChange: (doc) => {
                         if (mountGen !== this.univerMountGeneration) return;
@@ -1260,7 +1261,7 @@ export class PlotgridView extends ProjectBoundItemView {
     private showConnectedNotesMenu(position: { x: number; y: number }): void {
         const menu = new Menu();
         this.appendConnectedNotesMenuItems(menu);
-        menu.showAtPosition(position);
+        showMenuSafely(menu, position);
     }
 
     /** Read-only cell lookup (Univer coords; does not expand the grid). */

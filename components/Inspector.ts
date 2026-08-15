@@ -13,6 +13,7 @@ import { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { parseActChapterInput, actChapterHasIllegalPathChars, isPrologueAct, isEpilogueAct, PROLOGUE_ACT, EPILOGUE_ACT } from '../utils/actChapter';
 import { Scene, SceneStatus, TIMELINE_MODES, TIMELINE_MODE_LABELS, TimelineMode, getStatusOrder, resolveStatusCfg, sceneHasLocation, sceneLocationNames } from '../models/Scene';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 
 /**
  * Scene inspector sidebar component
@@ -1288,7 +1289,7 @@ export class InspectorComponent {
                     });
             });
         }
-        menu.showAtMouseEvent(e);
+        showMenuSafely(menu, e);
     }
 
     /**

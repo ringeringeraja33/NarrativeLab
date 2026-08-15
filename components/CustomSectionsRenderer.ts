@@ -16,6 +16,7 @@ import { App, Menu, Modal, Notice, Setting, setIcon } from 'obsidian';
 import { attachTooltip } from './Tooltip';
 import { openConfirmModal } from './ConfirmModal';
 import { t } from '../utils/i18n';
+import { showMenuSafely } from '../utils/obsidianMenu';
 
 /** Composite-key separator used to namespace fields inside custom sections. */
 export const CUSTOM_SECTION_KEY_SEP = ' :: ';
@@ -773,7 +774,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                             host.requestRerender();
                         }));
                 }
-                menu.showAtMouseEvent(e);
+                showMenuSafely(menu, e);
             });
 
             const removeBtn = row.createSpan({
