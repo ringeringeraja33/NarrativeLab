@@ -344,6 +344,29 @@ const CONNECTED_NOTES_MENU_ID = 'narrativelab.plot-grid.connected';
 const CONNECTED_NOTES_EMPTY_ID = 'narrativelab.plot-grid.connected.empty';
 const CONNECTED_NOTES_SLOT_MAX = 24;
 
+type UniverInjector = {
+    get: (id: string) => unknown;
+};
+
+type UniverMenuManager = {
+    mergeMenu: (schema: unknown) => void;
+};
+
+type UniverCommandService = {
+    hasCommand?: (id: string) => boolean;
+    registerCommand: (command: unknown) => void;
+};
+
+function getUniverInjector(univer: Univer): UniverInjector | null {
+    const host = univer as Univer & { __getInjector?: () => unknown };
+    const getInjector = host.__getInjector;
+    if (typeof getInjector !== 'function') return null;
+    const injector: unknown = getInjector.call(host);
+    if (!injector || typeof injector !== 'object') return null;
+    const get = (injector as UniverInjector).get;
+    return typeof get === 'function' ? { get } : null;
+}
+
 function registerConnectedNotesHoverSubmenu(
     univerAPI: UniverAPI,
     univer: Univer,
@@ -356,12 +379,9 @@ function registerConnectedNotesHoverSubmenu(
 ): boolean {
     if (typeof univerAPI.createSubmenu !== 'function') return false;
     try {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-        const injector = univer.__getInjector();
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-        const menuManager = injector.get('univer.menu-manager-service');
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-        const commandService = injector.get('univer.core.command-service');
+        const injector = getUniverInjector(univer);
+        const menuManager = injector?.get('univer.menu-manager-service') as UniverMenuManager | undefined;
+        const commandService = injector?.get('univer.core.command-service') as UniverCommandService | undefined;
         if (typeof menuManager?.mergeMenu !== 'function' || typeof commandService?.registerCommand !== 'function') {
             return false;
         }

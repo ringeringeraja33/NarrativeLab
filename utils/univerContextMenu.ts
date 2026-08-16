@@ -8,6 +8,7 @@
 const UNIVER_POPUP_SELECTOR = '.univer-popup';
 const UNIVER_SUBMENU_SELECTOR = '[data-u-context-menu-submenu]';
 const RETIRED_SUBMENU_CLASS = 'narrativelab-univer-submenu-retired';
+const LIVE_SUBMENU_CLASS = 'narrativelab-univer-submenu-live';
 
 export function isUniverContextMenuTarget(target: EventTarget | null): boolean {
     if (!target || typeof target !== 'object') return false;
@@ -60,14 +61,13 @@ export function pointInMenuCorridor(
 }
 
 function revealUniverSubmenu(el: HTMLElement): boolean {
-    if (el.style.visibility === 'visible' && el.style.pointerEvents !== 'none') return true;
+    if (el.classList.contains(LIVE_SUBMENU_CLASS)) return true;
     const left = Number.parseFloat(el.style.left || '0');
     const top = Number.parseFloat(el.style.top || '0');
     if (el.style.visibility === 'hidden' && left === 0 && top === 0) return false;
     const rect = el.getBoundingClientRect();
     if (rect.width < 2 || rect.height < 2) return false;
-    el.style.pointerEvents = 'auto';
-    el.style.visibility = 'visible';
+    el.classList.add(LIVE_SUBMENU_CLASS);
     return true;
 }
 

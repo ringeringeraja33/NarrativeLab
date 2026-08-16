@@ -7613,6 +7613,11 @@ button.library-profile-orientation-btn.is-active:hover,
     pointer-events: none !important;
 }
 
+[data-u-context-menu-submenu="true"].narrativelab-univer-submenu-live {
+    visibility: visible !important;
+    pointer-events: auto !important;
+}
+
 .plot-grid-univer-loading {
     align-self: center;
     display: flex;
