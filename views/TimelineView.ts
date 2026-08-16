@@ -1788,6 +1788,7 @@ export class TimelineView extends ProjectBoundItemView {
      */
     refresh(): void {
         if (!this.rootContainer) return;
+        if (!this.isBoundToActiveProject(this.sceneManager)) return;
         // Coalesce rapid calls into a single rAF, but never skip —
         // data may have changed again since the last queued render.
         if (this._pendingRefresh) {

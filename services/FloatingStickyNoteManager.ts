@@ -7,6 +7,7 @@ import {
     FLOATING_NOTES_FILENAME,
     FLOATING_NOTES_HIDDEN_CLASS,
     parseFloatingStickyNotes,
+    stickyNoteBelongsToProject,
     type FloatingStickyNoteState,
 } from '../utils/floatingStickyNote';
 
@@ -127,14 +128,20 @@ export class FloatingStickyNoteManager {
     }
 
     restoreFloatingNotes(): void {
+        this.syncVisibleNotesForProject(this.plugin.sceneManager.activeProject?.filePath ?? null);
+    }
+
+    /** Show only this book's notes; legacy notes without `projectFile` stay visible. */
+    syncVisibleNotesForProject(projectFile: string | null): void {
         if (!Platform.isDesktop || this.unloading) return;
         this.applyHiddenClass();
-        const ids = new Set(this.notes.map(note => note.id));
+        const visible = this.notes.filter(note => stickyNoteBelongsToProject(note, projectFile));
+        const ids = new Set(visible.map(note => note.id));
         for (const note of [...this.activeNotes]) {
             if (!ids.has(note.state.id)) note.destroy();
         }
         const activeIds = new Set(this.activeNotes.map(note => note.state.id));
-        for (const state of this.notes) {
+        for (const state of visible) {
             if (activeIds.has(state.id)) {
                 this.activeNotes.find(note => note.state.id === state.id)?.updateFromState(state);
                 continue;

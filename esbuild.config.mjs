@@ -1,41 +1,101 @@
 import esbuild from "esbuild";
 import process from "process";
-import { copyFileSync, existsSync, mkdirSync } from "fs";
+import { copyFileSync, existsSync, readdirSync, realpathSync } from "fs";
 import { homedir } from "os";
-import { delimiter, dirname, join, resolve } from "path";
+import { basename, delimiter, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
 const prod = process.argv[2] === "production";
 const projectRoot = dirname(fileURLToPath(import.meta.url));
 const home = homedir();
 
-/** Known local vault plugin folders. Missing paths are skipped. */
-const DEFAULT_DEPLOY_DIRS = [
-  join(home, "Library/CloudStorage/OneDrive-个人/My Library/.obsidian/plugins/narrative-lab"),
-  join(home, "Library/CloudStorage/OneDrive-个人/My Library/.obsidianMac/plugins/narrative-lab"),
-  join(home, "Documents/Obsidian/.obsidian/plugins/narrative-lab"),
-  join(home, "Documents/Obsidian/.obsidianMac/plugins/narrative-lab"),
-  join(home, "OneDrive/My Library/.obsidian/plugins/narrative-lab"),
-  join(home, "OneDrive/My Library/.obsidianMac/plugins/narrative-lab"),
-  join(home, "iCloudDrive/Documents/Obsidian/.obsidian/plugins/narrative-lab"),
-  join(home, "OneDrive/My Library/Projects/Game Design/.obsidian/plugins/narrative-lab"),
+const SKIP_DIR_NAMES = new Set([
+  "node_modules",
+  ".git",
+  ".Trash",
+  ".npm",
+  ".cache",
+  "Caches",
+  "Cache",
+  "DerivedData",
+  "Logs",
+]);
+
+const SEARCH_ROOTS = [
+  join(home, "Documents"),
+  join(home, "Desktop"),
+  join(home, "Library/CloudStorage"),
+  join(home, "OneDrive"),
+  join(home, "iCloudDrive"),
+  join(home, "Library/Mobile Documents"),
+  join(home, "Library/Group Containers"),
 ];
 
-/** Optional, path-delimited vault plugin folders that receive build outputs. */
-const DEPLOY_DIRS = (process.env.NARRATIVE_LAB_DEPLOY_DIRS
-  ? process.env.NARRATIVE_LAB_DEPLOY_DIRS.split(delimiter)
-  : DEFAULT_DEPLOY_DIRS)
-  .map((dir) => dir.trim())
-  .filter(Boolean)
-  .map((dir) => resolve(dir));
+function extraPaths(envName) {
+  return (process.env[envName] || "")
+    .split(delimiter)
+    .map((dir) => dir.trim())
+    .filter(Boolean)
+    .map((dir) => resolve(dir));
+}
+
+function isPluginDir(dir) {
+  return basename(dir) === "narrative-lab" && basename(dirname(dir)) === "plugins";
+}
+
+function collectNarrativeLabPluginDirs(root, found, walked) {
+  if (!existsSync(root)) return;
+  let real;
+  try {
+    real = realpathSync(root);
+  } catch {
+    return;
+  }
+  if (walked.has(real)) return;
+  walked.add(real);
+
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const name = entry.name;
+    if (SKIP_DIR_NAMES.has(name)) continue;
+    if (name.startsWith(".") && name !== ".obsidian" && name !== ".obsidianMac") continue;
+    const full = join(root, name);
+    if (name === "narrative-lab" && isPluginDir(full)) {
+      if (resolve(full) === projectRoot) continue;
+      found.add(full);
+      continue;
+    }
+    collectNarrativeLabPluginDirs(full, found, walked);
+  }
+}
+
+function discoverDeployDirs() {
+  const found = new Set();
+  const walked = new Set();
+  for (const root of [...SEARCH_ROOTS, ...extraPaths("NARRATIVE_LAB_DEPLOY_ROOTS")]) {
+    collectNarrativeLabPluginDirs(root, found, walked);
+  }
+  for (const dir of extraPaths("NARRATIVE_LAB_DEPLOY_DIRS")) {
+    if (existsSync(dir) && isPluginDir(dir)) found.add(dir);
+  }
+  return [...found].sort();
+}
 
 function deployPluginFiles() {
-  // These are the only files downloaded by an Obsidian community install.
   const files = ["main.js", "manifest.json", "styles.css"];
-  for (const dir of DEPLOY_DIRS) {
-    const parent = dirname(dir);
-    if (!existsSync(dir) && !existsSync(parent)) continue;
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const dirs = discoverDeployDirs();
+  if (dirs.length === 0) {
+    console.warn("[deploy] no narrative-lab plugin folders found");
+    return;
+  }
+  for (const dir of dirs) {
     for (const file of files) {
       const src = join(projectRoot, file);
       if (!existsSync(src)) continue;

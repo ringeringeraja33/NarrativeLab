@@ -31,6 +31,11 @@ let _lastManuscriptState: {
     cursorHead?: number;
 } | null = null;
 
+/** Drop the module-level cursor snapshot so it cannot restore into another book. */
+export function clearLastManuscriptState(): void {
+    _lastManuscriptState = null;
+}
+
 /**
  * Manuscript View — Scrivenings-style continuous document view.
  *
@@ -179,6 +184,7 @@ export class ManuscriptView extends ProjectBoundItemView {
 
     /** Called by refreshOpenViews() */
     refresh(): void {
+        if (!this.isBoundToActiveProject(this.sceneManager)) return;
         // Don't re-render while user is editing, during mount sequence,
         // or while the cross-scene search panel is open (Issue #195).
         if (this._hasActiveFocus || this._isMounting || this.isSearchOpen()) {

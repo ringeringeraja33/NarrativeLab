@@ -279,7 +279,7 @@ export class CharacterView extends ProjectBoundItemView {
         } else if (this.characterOverviewMode === 'story-graph' && !isMobile) {
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
-            });
+            }, this.getBoundProjectFile());
         } else {
             this.renderCharacterOverview(content);
         }
@@ -344,7 +344,7 @@ export class CharacterView extends ProjectBoundItemView {
         } else if (this.characterOverviewMode === 'story-graph' && !isMobile) {
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
-            });
+            }, this.getBoundProjectFile());
         } else {
             this.renderCharacterOverview(content);
         }
@@ -3621,6 +3621,7 @@ export class CharacterView extends ProjectBoundItemView {
      * save (within the grace window), skip the re-render to avoid stealing focus.
      */
     async refresh(): Promise<void> {
+        if (!this.isBoundToActiveProject(this.sceneManager)) return;
         // refreshOpenViews already reloaded entities — only re-render here.
         if (
             this.selectedCharacter &&

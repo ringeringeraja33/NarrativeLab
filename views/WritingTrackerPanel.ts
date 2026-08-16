@@ -119,7 +119,7 @@ export class WritingTrackerPanel extends ItemView {
 
         renderVerticalWordHeatmap(
             body,
-            this.plugin.globalWritingTracker.tracker.getFullHistory(),
+            this.source().getFullHistory(),
             weekCountFromSettings(this.plugin.settings.writingTrackerHeatmapWeeks),
             this.plugin.settings.dailyWordGoal || 1000,
         );

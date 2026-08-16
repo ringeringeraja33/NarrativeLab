@@ -94,6 +94,16 @@ export class SynopsisView extends ItemView {
         this.synopsisPanel = null;
     }
 
+    refresh(): void {
+        const current = this.synopsisPanel?.getCurrentScene();
+        if (!current || !this.sceneManager.getScene(current.filePath)) {
+            this.synopsisPanel?.hide();
+            this.refreshEmptyState();
+            return;
+        }
+        this.refreshCurrentScene();
+    }
+
     private showScene(filePath: string): void {
         const scene = this.sceneManager.getScene(filePath);
         if (!scene) return;

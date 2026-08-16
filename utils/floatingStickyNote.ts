@@ -12,6 +12,8 @@ export const FLOATING_NOTE_CLASS = 'nl-floating-sticky-note';
 
 export interface FloatingStickyNoteState {
     id: string;
+    /** Owning project `.md` path. Missing on legacy vault-wide notes. */
+    projectFile?: string;
     filePath?: string;
     content?: string;
     title?: string;
@@ -47,7 +49,20 @@ export function parseFloatingStickyNotes(raw: unknown): FloatingStickyNoteState[
         isPinned: note.isPinned === true,
         zoomLevel: clampStickyNoteZoom(typeof note.zoomLevel === 'number' ? note.zoomLevel : 1),
         textColor: typeof note.textColor === 'string' && note.textColor ? note.textColor : '#111111',
+        projectFile: typeof note.projectFile === 'string' && note.projectFile.trim()
+            ? note.projectFile
+            : undefined,
     }));
+}
+
+/** Legacy notes without `projectFile` stay vault-wide. */
+export function stickyNoteBelongsToProject(
+    note: FloatingStickyNoteState,
+    projectFile: string | null | undefined,
+): boolean {
+    if (!note.projectFile) return true;
+    if (!projectFile) return true;
+    return note.projectFile.replace(/\\/g, '/') === projectFile.replace(/\\/g, '/');
 }
 
 export function clampStickyNoteZoom(zoom: number): number {

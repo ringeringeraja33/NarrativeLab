@@ -52,9 +52,34 @@ export class WritingTrackerView extends ItemView {
         if (this.root?.isConnected) this.render();
     }
 
+    private findScrollParent(el: HTMLElement): HTMLElement {
+        let node: HTMLElement | null = el;
+        const view = el.ownerDocument.defaultView;
+        while (node) {
+            const overflowY = view?.getComputedStyle(node).overflowY ?? '';
+            if (
+                (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
+                && node.scrollHeight > node.clientHeight + 1
+            ) {
+                return node;
+            }
+            node = node.parentElement;
+        }
+        return el;
+    }
+
+    private restoreScroll(scroller: HTMLElement, top: number): void {
+        scroller.scrollTop = top;
+        scroller.ownerDocument.defaultView?.requestAnimationFrame(() => {
+            if (scroller.isConnected) scroller.scrollTop = top;
+        });
+    }
+
     private render(): void {
         const container = this.root;
         if (!container) return;
+        const scroller = this.findScrollParent(container);
+        const top = scroller.scrollTop;
         container.empty();
 
         const header = container.createDiv('nl-tracker-page-header');
@@ -120,6 +145,7 @@ export class WritingTrackerView extends ItemView {
         const thisYearBtn = yearRow.createEl('button', { text: t('This year') });
         thisYearBtn.setAttr('type', 'button');
         thisYearBtn.addEventListener('click', () => {
+            if (this.year === new Date().getFullYear()) return;
             this.year = new Date().getFullYear();
             this.render();
         });
@@ -134,6 +160,16 @@ export class WritingTrackerView extends ItemView {
         const chartHead = container.createDiv('nl-tracker-chart-toolbar');
         chartHead.createEl('h4', { text: t('Recent writing') });
         const ranges = chartHead.createDiv('nl-tracker-range-row');
+        const chartsHost = container.createDiv('nl-tracker-recent-charts');
+        const paintRecentCharts = () => {
+            chartsHost.empty();
+            const recent = source.getRecentDays(this.chartDays).reverse();
+            renderTrackerSparkline(chartsHost, t('Net words'), recent);
+            const revisions = source.getRecentRevisionDays(this.chartDays).reverse();
+            if (revisions.some(d => d.words > 0)) {
+                renderTrackerSparkline(chartsHost, t('Revisions'), revisions, 'is-revision');
+            }
+        };
         for (const days of [7, 30, 90]) {
             const btn = ranges.createEl('button', {
                 cls: 'nl-tracker-range-btn' + (this.chartDays === days ? ' is-active' : ''),
@@ -141,15 +177,15 @@ export class WritingTrackerView extends ItemView {
             });
             btn.setAttr('type', 'button');
             btn.addEventListener('click', () => {
+                if (this.chartDays === days) return;
                 this.chartDays = days;
-                this.render();
+                for (const other of Array.from(ranges.children)) {
+                    other.classList.toggle('is-active', other === btn);
+                }
+                paintRecentCharts();
             });
         }
-        const recent = source.getRecentDays(this.chartDays).reverse();
-        renderTrackerSparkline(container, t('Net words'), recent);
-        const revisions = source.getRecentRevisionDays(this.chartDays).reverse();
-        if (revisions.some(d => d.words > 0)) {
-            renderTrackerSparkline(container, t('Revisions'), revisions, 'is-revision');
-        }
+        paintRecentCharts();
+        this.restoreScroll(scroller, top);
     }
 }

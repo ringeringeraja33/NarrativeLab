@@ -1003,6 +1003,14 @@ export class PlotgridView extends ProjectBoundItemView {
                         if (mountGen !== this.univerMountGeneration) return;
                         this.showConnectedNotesMenu(position);
                     },
+                    getConnectedNotes: () => {
+                        if (mountGen !== this.univerMountGeneration) return [];
+                        return this.collectConnectedNotes(this.getActiveDataCellFromUniver());
+                    },
+                    onOpenConnectedNote: (path) => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        this.openConnectedNote(path);
+                    },
                     onContextMenuRequest: (position) => {
                         if (mountGen !== this.univerMountGeneration) return;
                         const menu = new Menu();

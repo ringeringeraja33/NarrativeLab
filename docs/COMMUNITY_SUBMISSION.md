@@ -22,7 +22,7 @@ The ID `narrative-lab` was checked against the public Community Plugins list bef
 - [x] `README.md` explains purpose, setup, use, privacy, support, and licensing.
 - [x] `README.zh-CN.md` provides Simplified Chinese user documentation.
 - [x] `LICENSE` contains AGPL-3.0-only.
-- [x] `LICENSE-NarrativeCanvas`, `LICENSE-Storyline`, and `NOTICE.md` retain upstream notices.
+- [x] `LICENSE-NarrativeCanvas`, `LICENSE-Storyline`, `LICENSE-WebNovelAssistant`, and `NOTICE.md` retain upstream notices.
 - [x] `manifest.json` is at the repository root and matches `package.json`.
 - [x] `versions.json` maps the current release to `minAppVersion`.
 - [x] `main.js` and `styles.css` are production build outputs.

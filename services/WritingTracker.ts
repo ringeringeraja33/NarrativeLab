@@ -362,17 +362,24 @@ export class WritingTracker {
         };
     }
 
-    /** Import previously saved data */
+    /**
+     * Replace persisted history with another project's (or empty) ledger.
+     * Session / sprint baselines are cleared so totals cannot leak across books.
+     */
     importData(data: WritingTrackerData | undefined): void {
-        if (data?.history) {
-            this.history = { ...data.history };
-        }
-        if (data?.revisionHistory) {
-            this.revisionHistory = { ...data.revisionHistory };
-        }
-        if (data?.sprintLog) {
-            this._sprintLog = [...data.sprintLog];
-        }
+        this.history = data?.history ? { ...data.history } : {};
+        this.revisionHistory = data?.revisionHistory ? { ...data.revisionHistory } : {};
+        this._sprintLog = data?.sprintLog ? [...data.sprintLog] : [];
+        this.resetSession();
+    }
+
+    /** Drop the in-memory session so the next startSession belongs to this project. */
+    resetSession(): void {
+        this.baselineWords = null;
+        this.lastKnownTotal = null;
+        this._flushedSessionWords = 0;
+        this.sessionStart = Date.now();
+        this.resetSprint();
     }
 
     // ── Helpers ────────────────────────────────────────

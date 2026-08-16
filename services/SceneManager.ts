@@ -264,6 +264,9 @@ export class SceneManager implements ISceneStore {
      * Temporarily point `activeProject` at another project without a full
      * switch (no save/reload). Used by one-shot migrations that resolve paths
      * via the active project helpers.
+     *
+     * Unsafe for entity/scanner/tracker reads: managers stay on the previous
+     * book. Never call isolateProjectTransientState() from inside this loop.
      */
     async withActiveProject<T>(
         project: StoryLineProject | null,
@@ -822,7 +825,10 @@ export class SceneManager implements ISceneStore {
         const previousFile = this._activeProject?.filePath
             ? normalizePath(this._activeProject.filePath)
             : '';
-        // Save per-project data for the previous project before switching
+        // Flush and save the previous project's tracker before swapping ledgers.
+        if (previousFile) {
+            try { this.plugin.flushWritingTrackers(); } catch { /* scenes may be empty */ }
+        }
         await this.plugin.saveProjectSystemData();
         if (previousFile) this.plugin.stashProjectRuntime(previousFile);
 
@@ -868,14 +874,16 @@ export class SceneManager implements ISceneStore {
             await this.plugin.plotlineManager.ensureSeeded();
             await this.plugin.syncNarrativeCanvasToActiveProject();
         }
-        // Ask the plugin to refresh any open NarrativeLab views so the UI updates
+        try {
+            if (fromLeafFocus && !restored) {
+                await this.plugin.reloadEntities();
+            }
+        } catch { /* project may not be set yet */ }
+        // Drop the previous book's session caches after this book's indexes
+        // are in memory, and before any view reads them.
+        this.plugin.isolateProjectTransientState();
         try {
             if (fromLeafFocus) {
-                // Entities must match the focused project; skip wikilink rescan,
-                // plot-grid migration, and digest rebuild on a mere tab focus.
-                if (!restored) {
-                    await this.plugin.reloadEntities();
-                }
                 await this.plugin.refreshViewsOnly();
             } else if (this.plugin && typeof this.plugin.refreshOpenViews === 'function') {
                 await this.plugin.refreshOpenViews();
@@ -883,6 +891,18 @@ export class SceneManager implements ISceneStore {
         } catch (e) {
             // non-fatal; UI may refresh on next file event
         }
+        this.plugin.rebindWritingTrackerSession();
+    }
+
+    /** Rebuild setup/payoff wikilink stems from the active project's scenes. */
+    rebuildSceneTitleToStemMap(): void {
+        const stemMap = new Map<string, string>();
+        for (const [path, scene] of this.scenes) {
+            if (!scene.title) continue;
+            const stem = path.split('/').pop()?.replace(/\.md$/i, '') ?? scene.title;
+            stemMap.set(scene.title, stem);
+        }
+        setSceneTitleToStemMap(stemMap);
     }
 
     /**
@@ -1532,14 +1552,7 @@ export class SceneManager implements ISceneStore {
         // are written as `[[stem|title]]`, letting Obsidian’s graph resolve the
         // link to the real file while NarrativeLab still matches by title.
         if (updates.setup_scenes !== undefined || updates.payoff_scenes !== undefined) {
-            const stemMap = new Map<string, string>();
-            for (const [p, s] of this.scenes) {
-                if (s.title) {
-                    const stem = p.split('/').pop()?.replace(/\.md$/, '') ?? s.title;
-                    stemMap.set(s.title, stem);
-                }
-            }
-            setSceneTitleToStemMap(stemMap);
+            this.rebuildSceneTitleToStemMap();
         }
 
         await MetadataParser.updateFrontmatter(this.app, file, updates);

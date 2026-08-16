@@ -111,6 +111,7 @@ function normalizeLibraryContentMode(value: unknown): LibraryContentMode | null 
 type LibraryUiMemory = {
     contentMode?: LibraryContentMode;
     categoryId?: string;
+    storyGraphFilters?: StoryGraphFilterState;
 };
 
 type LibraryUiHost = SceneCardsPlugin & {
@@ -163,15 +164,27 @@ function writeLibraryUi(
 ): void {
     const key = resolveLibraryUiProjectFile(plugin, projectFile);
     const current = readLibraryUi(plugin, key || projectFile);
+    const prevStored = key ? plugin.settings.libraryUiByProject?.[key] : undefined;
+    const prevMem = key ? libraryUiMemory(plugin).get(key) : undefined;
     const next: LibraryUiMemory = {
         contentMode: patch.contentMode ?? current.contentMode,
         categoryId: (patch.categoryId ?? current.categoryId)?.trim() || current.categoryId,
+        storyGraphFilters: patch.storyGraphFilters
+            ?? prevMem?.storyGraphFilters
+            ?? (prevStored?.storyGraphFilters
+                ? { ...DEFAULT_FILTERS, ...prevStored.storyGraphFilters }
+                : undefined),
     };
     if (key) {
         libraryUiMemory(plugin).set(key, next);
         plugin.settings.libraryUiByProject = {
             ...(plugin.settings.libraryUiByProject || {}),
-            [key]: next,
+            [key]: {
+                ...(prevStored || {}),
+                contentMode: next.contentMode,
+                categoryId: next.categoryId,
+                ...(next.storyGraphFilters ? { storyGraphFilters: next.storyGraphFilters } : {}),
+            },
         };
     }
     const active = normalizeLibraryProjectFile(plugin.sceneManager?.activeProject?.filePath);
@@ -242,13 +255,22 @@ export function resolveLibraryViewType(
     return CODEX_VIEW_TYPE;
 }
 
-export function getStoryGraphFilters(plugin: SceneCardsPlugin): StoryGraphFilterState {
-    const p = plugin as SceneCardsPlugin & { libraryStoryGraphFilters?: StoryGraphFilterState };
-    return { ...DEFAULT_FILTERS, ...(p.libraryStoryGraphFilters || {}) };
+export function getStoryGraphFilters(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+): StoryGraphFilterState {
+    const key = resolveLibraryUiProjectFile(plugin, projectFile);
+    const fromMemory = key ? libraryUiMemory(plugin).get(key)?.storyGraphFilters : undefined;
+    const fromProject = key ? plugin.settings?.libraryUiByProject?.[key]?.storyGraphFilters : undefined;
+    return { ...DEFAULT_FILTERS, ...(fromProject || {}), ...(fromMemory || {}) };
 }
 
-export function setStoryGraphFilters(plugin: SceneCardsPlugin, filters: StoryGraphFilterState): void {
-    (plugin as SceneCardsPlugin & { libraryStoryGraphFilters?: StoryGraphFilterState }).libraryStoryGraphFilters = { ...filters };
+export function setStoryGraphFilters(
+    plugin: SceneCardsPlugin,
+    filters: StoryGraphFilterState,
+    projectFile?: string | null,
+): void {
+    writeLibraryUi(plugin, { storyGraphFilters: { ...filters } }, projectFile);
 }
 
 /** Profile / Browse toggle rendered inside the active Library category. */
@@ -315,20 +337,24 @@ export function renderLibraryStoryGraphAction(
     return button;
 }
 
-function storyGraphLayoutKey(plugin: SceneCardsPlugin): string {
-    return plugin.sceneManager.activeProject?.filePath || '__global__';
+function storyGraphLayoutKey(plugin: SceneCardsPlugin, projectFile?: string | null): string {
+    return resolveLibraryUiProjectFile(plugin, projectFile) || '__global__';
 }
 
-function getStoryGraphLayout(plugin: SceneCardsPlugin): StoryGraphLayoutState | undefined {
+function getStoryGraphLayout(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+): StoryGraphLayoutState | undefined {
     const layouts = plugin.settings.storyGraphLayouts || {};
-    return layouts[storyGraphLayoutKey(plugin)];
+    return layouts[storyGraphLayoutKey(plugin, projectFile)];
 }
 
 async function saveStoryGraphLayout(
     plugin: SceneCardsPlugin,
     layout: StoryGraphLayoutState,
+    projectFile?: string | null,
 ): Promise<void> {
-    const key = storyGraphLayoutKey(plugin);
+    const key = storyGraphLayoutKey(plugin, projectFile);
     plugin.settings.storyGraphLayouts = {
         ...(plugin.settings.storyGraphLayouts || {}),
         [key]: layout,
@@ -548,6 +574,10 @@ export function syncStoryGraphLibraryNodeTypes(plugin: SceneCardsPlugin): boolea
 
 const pendingStoryGraphWikilinks: StoryGraphWikilink[] = [];
 
+export function clearPendingStoryGraphWikilinks(): void {
+    pendingStoryGraphWikilinks.length = 0;
+}
+
 function rememberPendingStoryGraphWikilink(sourcePath: string, targetPath: string): void {
     const src = normalizePath(sourcePath);
     const tgt = normalizePath(targetPath);
@@ -624,6 +654,7 @@ export function renderLibraryStoryGraph(
     container: HTMLElement,
     plugin: SceneCardsPlugin,
     onRefresh: () => void,
+    projectFile?: string | null,
 ): StoryGraph {
     // Keep sibling Library chrome (Profiles / Base) intact. The graph owns a
     // dedicated page host, just as the native Base owns only its embed host.
@@ -789,8 +820,8 @@ export function renderLibraryStoryGraph(
         },
         plugin.settings.tagTypeOverrides,
         (edge, evt) => showRelationEdgeMenu(plugin, edge, evt, onRefresh, openFocusFromRelation),
-        getStoryGraphFilters(plugin),
-        (filters) => setStoryGraphFilters(plugin, filters),
+        getStoryGraphFilters(plugin, projectFile),
+        (filters) => setStoryGraphFilters(plugin, filters, projectFile),
         documents,
         wikilinks,
         relationCategories,
@@ -800,10 +831,10 @@ export function renderLibraryStoryGraph(
         (edge) => openFocus(edge),
         connectNodes,
         {
-            layout: getStoryGraphLayout(plugin),
+            layout: getStoryGraphLayout(plugin, projectFile),
             imageByPath: collectStoryGraphImageMap(plugin),
             resolveImageUrl: (imagePath) => resolveImagePath(plugin.app, imagePath),
-            onLayoutChange: (layout) => saveStoryGraphLayout(plugin, layout),
+            onLayoutChange: (layout) => saveStoryGraphLayout(plugin, layout, projectFile),
             onPickNodeImage: async (_node, current) => pickImage(plugin.app, attachmentFolder, current),
             focusBundles,
             characterRelationTypes,

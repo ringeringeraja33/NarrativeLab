@@ -21,13 +21,25 @@ const {
     WRITING_TRACKER_FILENAME,
 } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
-const [mainTs, settings, panel, page, widgets, globalTracker] = await Promise.all([
+const trackerBuild = await build({
+    entryPoints: ['services/WritingTracker.ts'],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    write: false,
+});
+const { WritingTracker } = await import(
+    `data:text/javascript;base64,${Buffer.from(trackerBuild.outputFiles[0].text).toString('base64')}`
+);
+
+const [mainTs, settings, panel, page, widgets, globalTracker, sceneManager] = await Promise.all([
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
     readFile(new URL('../settings.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/WritingTrackerPanel.ts', import.meta.url), 'utf8'),
     readFile(new URL('../views/WritingTrackerView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../components/WritingTrackerWidgets.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/GlobalWritingTracker.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../services/SceneManager.ts', import.meta.url), 'utf8'),
 ]);
 
 test('heatmap levels follow the daily goal', () => {
@@ -71,34 +83,65 @@ test('parseWritingTrackerFile keeps dated totals only', () => {
     assert.equal(WRITING_TRACKER_FILENAME, 'writing-tracker.json');
 });
 
-test('sidebar panel splits vault/project and pins a vertical global heatmap', () => {
+test('sidebar panel splits vault/project and pins a vertical heatmap for the active scope', async () => {
+    const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
     assert.match(panel, /WRITING_TRACKER_PANEL_TYPE/);
     assert.match(panel, /trackerScope: WritingTrackerScope = 'global'/);
     assert.match(panel, /renderVerticalWordHeatmap/);
-    assert.match(panel, /globalWritingTracker\.tracker\.getFullHistory\(\)/);
+    assert.match(panel, /this\.source\(\)\.getFullHistory\(\)/);
     assert.match(widgets, /buildVerticalHeatmapWeeks/);
+    assert.match(styles, /\.nl-tracker-heatmap-vertical \.nl-tracker-heatmap-week \{[^}]*grid-template-columns:\s*repeat\(7, 11px\)/s);
+    assert.match(styles, /\.nl-tracker-heatmap-vertical \.nl-tracker-heat-cell \{[^}]*width:\s*11px/s);
+    assert.match(styles, /\.nl-tracker-panel,\s*\n\.nl-tracker-page \{[^}]*text-align:\s*center/s);
+    assert.match(styles, /\.nl-tracker-cards,\s*\n\.nl-tracker-page-cards \{[^}]*justify-content:\s*center/s);
 });
 
 test('ribbon tracker page is vault-wide and not project-bound', () => {
     assert.match(page, /WRITING_TRACKER_VIEW_TYPE/);
     assert.doesNotMatch(page, /ProjectBoundItemView/);
     assert.match(page, /renderYearWordHeatmap/);
+    assert.match(page, /paintRecentCharts/);
+    assert.match(page, /restoreScroll/);
     assert.match(mainTs, /addRibbonIcon\('activity', t\('Open writing tracker'\)/);
     assert.match(mainTs, /ensureSideLeaf\.call\(workspace, WRITING_TRACKER_PANEL_TYPE, 'right'/);
     assert.match(mainTs, /async openWritingTracker\(/);
 });
 
 test('tracker settings are a dedicated settings tab', () => {
-    assert.match(settings, /id: 'tracker'/);
-    assert.match(settings, /renderTrackerSettingsTab/);
+    assert.match(settings, /id: 'tracking'/);
+    assert.match(settings, /renderTrackingSettingsTab/);
     assert.match(settings, /autoOpenWritingTrackerPanel/);
     assert.match(settings, /writingTrackerHeatmapWeeks/);
     assert.match(settings, /sprintDurationMinutes/);
+    const trackingStart = settings.indexOf('private renderTrackingSettingsTab');
+    const trackingEnd = settings.indexOf('private renderExportAdvancedSettingsTab');
+    const trackingTab = settings.slice(trackingStart, trackingEnd);
+    assert.doesNotMatch(trackingTab, /writeFieldsAsWikilinks/);
+    assert.doesNotMatch(trackingTab, /defaultSceneFrontmatter/);
+    assert.match(settings, /private renderScenesSettingsTab[\s\S]*writeFieldsAsWikilinks/);
 });
 
 test('session flush records into the vault-wide tracker file', () => {
     assert.match(mainTs, /flushWritingTrackers/);
     assert.match(mainTs, /globalWritingTracker\?\.recordFlush\(delta\)/);
+    assert.match(mainTs, /rebindWritingTrackerSession/);
+    assert.match(sceneManager, /flushWritingTrackers/);
+    assert.match(sceneManager, /rebindWritingTrackerSession/);
     assert.match(globalTracker, /WRITING_TRACKER_FILENAME/);
     assert.match(globalTracker, /seedFromProjectIfEmpty/);
+});
+
+test('importing another project ledger replaces history and clears the session', () => {
+    const tracker = new WritingTracker();
+    tracker.importData({ history: {} });
+    tracker.startSession(1000);
+    tracker.flushSession(1250);
+    assert.equal(tracker.getTodayWords(), 250);
+    const today = Object.keys(tracker.getFullHistory())[0];
+    tracker.importData({ history: { [today]: 40 } });
+    assert.equal(tracker.getTodayWords(), 40);
+    assert.equal(tracker.getSessionWords(2000), 0);
+    tracker.startSession(2000);
+    assert.equal(tracker.flushSession(2100).words, 100);
+    assert.equal(tracker.getTodayWords(), 140);
 });

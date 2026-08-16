@@ -97,6 +97,10 @@ npm run check
 
 社区安装所需的运行时代码全部位于 `main.js`，不依赖额外 JavaScript 文件。
 
+## 吸收与致谢
+
+写作追踪侧栏、字数热力图和浮动便签等能力吸收并改编自 [obsidian-webnovel-assistant](https://github.com/HatanoChihiro/obsidian-webnovel-assistant)（HatanoChihiro，MIT）。
+
 ## 许可
 
-NarrativeLab 采用 **AGPL-3.0-only**。项目包含从 NarrativeCanvas（AGPL-3.0）和 obsidian-storyline（MIT）派生的代码，原始许可见 `LICENSE-NarrativeCanvas`、`LICENSE-Storyline` 和 `NOTICE.md`。
+NarrativeLab 采用 **AGPL-3.0-only**。项目包含从 NarrativeCanvas（AGPL-3.0）、obsidian-storyline（MIT）和 obsidian-webnovel-assistant（MIT）派生或吸收的代码，原始许可见 `LICENSE-NarrativeCanvas`、`LICENSE-Storyline`、`LICENSE-WebNovelAssistant` 和 `NOTICE.md`。

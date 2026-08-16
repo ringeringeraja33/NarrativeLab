@@ -53,6 +53,14 @@ export abstract class ProjectBoundItemView extends ItemView {
         this.ensureProjectBinding(sceneManager.activeProject?.filePath);
     }
 
+    /** True when this tab should render from the live scene/entity indexes. */
+    protected isBoundToActiveProject(sceneManager: SceneManager): boolean {
+        const bound = this.getBoundProjectFile();
+        const active = sceneManager.activeProject?.filePath;
+        if (!bound || !active) return true;
+        return normalizePath(bound) === normalizePath(active);
+    }
+
     /** Resolve a stable title without reading another tab's active project. */
     protected resolveProjectTitle(
         projects: Iterable<ProjectIdentity>,

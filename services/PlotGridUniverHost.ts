@@ -56,6 +56,7 @@ function injectUniverCss(activeDocument: Document): void {
     activeDocument.head.appendChild(style);
 }
 
+import { installUniverContextMenuHoverAssist } from '../utils/univerContextMenu';
 import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
 import { cellHasNoteLink, getPlotGridCellAtUniverCoords } from '../utils/plotGridCellEdit';
 import {
@@ -87,6 +88,10 @@ export interface PlotGridUniverHostOptions {
     onContextMenuRequest?: (position: { x: number; y: number }) => void;
     /** Show the expanded Connected notes menu (filenames → open note). */
     onShowConnectedNotes?: (position: { x: number; y: number }) => void;
+    /** Notes linked from the active cell — used to fill the hover submenu. */
+    getConnectedNotes?: () => Array<{ path: string; name: string }>;
+    /** Open a connected note from the Univer hover submenu. */
+    onOpenConnectedNote?: (path: string) => void;
     /**
      * Return true to cancel Univer's in-cell editor for this coordinate and
      * route editing through NarrativeLab's Markdown cell editor instead.
@@ -335,6 +340,93 @@ function installUniverContextMenuGuard(
     };
 }
 
+const CONNECTED_NOTES_MENU_ID = 'narrativelab.plot-grid.connected';
+const CONNECTED_NOTES_EMPTY_ID = 'narrativelab.plot-grid.connected.empty';
+const CONNECTED_NOTES_SLOT_MAX = 24;
+
+function registerConnectedNotesHoverSubmenu(
+    univerAPI: UniverAPI,
+    univer: Univer,
+    opts: {
+        title: string;
+        emptyTitle: string;
+        getNotes: () => Array<{ path: string; name: string }>;
+        onOpenNote: (path: string) => void;
+    },
+): boolean {
+    if (typeof univerAPI.createSubmenu !== 'function') return false;
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        const injector = univer.__getInjector();
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        const menuManager = injector.get('univer.menu-manager-service');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        const commandService = injector.get('univer.core.command-service');
+        if (typeof menuManager?.mergeMenu !== 'function' || typeof commandService?.registerCommand !== 'function') {
+            return false;
+        }
+
+        univerAPI.createSubmenu({
+            id: CONNECTED_NOTES_MENU_ID,
+            title: opts.title,
+            order: -200,
+        }).appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+
+        const group: Record<string, { order: number; menuItemFactory: () => unknown }> = {
+            [CONNECTED_NOTES_EMPTY_ID]: {
+                order: 0,
+                menuItemFactory: () => {
+                    if (opts.getNotes().length > 0) return null;
+                    return {
+                        id: CONNECTED_NOTES_EMPTY_ID,
+                        type: 0,
+                        title: opts.emptyTitle,
+                    };
+                },
+            },
+        };
+        for (let i = 0; i < CONNECTED_NOTES_SLOT_MAX; i++) {
+            const itemId = `${CONNECTED_NOTES_MENU_ID}.note-${i}`;
+            const commandId = `${itemId}.action`;
+            if (typeof commandService.hasCommand !== 'function' || !commandService.hasCommand(commandId)) {
+                commandService.registerCommand({
+                    id: commandId,
+                    type: 0,
+                    handler: () => {
+                        const note = opts.getNotes()[i];
+                        if (note) opts.onOpenNote(note.path);
+                    },
+                });
+            }
+            group[itemId] = {
+                order: i + 1,
+                menuItemFactory: () => {
+                    const note = opts.getNotes()[i];
+                    if (!note) return null;
+                    return {
+                        id: itemId,
+                        type: 0,
+                        title: note.name,
+                        commandId,
+                    };
+                },
+            };
+        }
+        menuManager.mergeMenu({
+            'contextMenu.mainArea': {
+                'contextMenu.others': {
+                    [CONNECTED_NOTES_MENU_ID]: {
+                        [`${CONNECTED_NOTES_MENU_ID}-group-0`]: group,
+                    },
+                },
+            },
+        });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function registerNarrativeLabContextMenu(
     univerAPI: UniverAPI,
     univer: Univer,
@@ -342,6 +434,8 @@ function registerNarrativeLabContextMenu(
     opts: {
         locale: 'en' | 'zh';
         onShowConnectedNotes?: (position: { x: number; y: number }) => void;
+        getConnectedNotes?: () => Array<{ path: string; name: string }>;
+        onOpenConnectedNote?: (path: string) => void;
         onAction?: (action: PlotGridUniverContextAction) => void;
         onRequest?: (position: { x: number; y: number }) => void;
     },
@@ -354,6 +448,7 @@ function registerNarrativeLabContextMenu(
 
     const zh = opts.locale === 'zh';
     const connectedTitle = zh ? '已连接笔记' : 'Connected notes';
+    const emptyTitle = zh ? '暂无已连接笔记' : 'No connected notes';
 
     const openConnectedNotesMenu = () => {
         hideUniverContextMenu(univer);
@@ -363,13 +458,30 @@ function registerNarrativeLabContextMenu(
         }, 0);
     };
 
-    // Top-level entry — expands into a filename list (Obsidian menu).
-    univerAPI.createMenu({
-        id: 'narrativelab.plot-grid.connected',
+    const registeredHoverSubmenu = registerConnectedNotesHoverSubmenu(univerAPI, univer, {
         title: connectedTitle,
-        action: openConnectedNotesMenu,
-        order: -200,
-    }).appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+        emptyTitle,
+        getNotes: () => {
+            try {
+                return opts.getConnectedNotes?.() ?? [];
+            } catch {
+                return [];
+            }
+        },
+        onOpenNote: (path) => {
+            hideUniverContextMenu(univer);
+            if (opts.onOpenConnectedNote) opts.onOpenConnectedNote(path);
+            else openConnectedNotesMenu();
+        },
+    });
+    if (!registeredHoverSubmenu) {
+        univerAPI.createMenu({
+            id: CONNECTED_NOTES_MENU_ID,
+            title: connectedTitle,
+            action: openConnectedNotesMenu,
+            order: -200,
+        }).appendTo(['contextMenu.mainArea', 'contextMenu.others']);
+    }
 
     if (opts.onAction) {
         const append = (id: string, title: string, action: PlotGridUniverContextAction, order: number) => {
@@ -794,6 +906,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             {
                 locale: opts.locale,
                 onShowConnectedNotes: opts.onShowConnectedNotes,
+                getConnectedNotes: opts.getConnectedNotes,
+                onOpenConnectedNote: opts.onOpenConnectedNote,
                 onAction: opts.onContextMenuAction,
                 onRequest: opts.onContextMenuRequest,
             },
@@ -1136,6 +1250,16 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }, 80);
     };
 
+    let stopHoverAssist: (() => void) | null = null;
+    const startHoverAssist = () => {
+        if (stopHoverAssist) return;
+        stopHoverAssist = installUniverContextMenuHoverAssist(opts.container.ownerDocument);
+    };
+    const endHoverAssist = () => {
+        stopHoverAssist?.();
+        stopHoverAssist = null;
+    };
+    disposers.push(endHoverAssist);
     disposers.push(installUniverContextMenuGuard(
         univerInstance,
         opts.container.ownerDocument,
@@ -1143,12 +1267,14 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         () => {
             pendingAfterMenu = true;
             menuHoldUntil = Date.now() + 500;
+            startHoverAssist();
             if (timer) {
                 window.clearTimeout(timer);
                 timer = 0;
             }
         },
         () => {
+            endHoverAssist();
             if (disposed || !pendingAfterMenu) return;
             pendingAfterMenu = false;
             schedulePull();

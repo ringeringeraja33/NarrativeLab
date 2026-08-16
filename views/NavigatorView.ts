@@ -80,6 +80,8 @@ export class NavigatorView extends ItemView {
     private filterDebounceTimer: number | null = null;
     /** Last scene clicked in the binder (visual selection). */
     private selectedScenePath: string | null = null;
+    /** Active project when filters/selection were last applied. */
+    private lastActiveProjectFile: string | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -179,6 +181,13 @@ export class NavigatorView extends ItemView {
             void this.plugin.openSceneInspector();
         });
 
+        const trackerBtn = toolbar.createDiv('sl-nav-icon-btn');
+        setIcon(trackerBtn, 'activity');
+        attachTooltip(trackerBtn, t('Open writing tracker panel'));
+        trackerBtn.addEventListener('click', () => {
+            void this.plugin.openWritingTrackerPanel();
+        });
+
         // ── Binder tree (projects → plotlines / drafts / scenes) ──
         this.listEl = container.createDiv('sl-nav-list');
 
@@ -209,9 +218,28 @@ export class NavigatorView extends ItemView {
             } catch {
                 /* research folder may not exist yet */
             }
+            this.syncTransientUiToActiveProject();
             this.renderList();
             this.renderProgress();
         })();
+    }
+
+    /** Drop search / plotline / scene selection that belonged to another book. */
+    resetProjectTransientUi(): void {
+        this.filterText = '';
+        this.plotlineFilter = null;
+        this.selectedScenePath = null;
+        if (this.searchInput) this.searchInput.value = '';
+        this.lastActiveProjectFile = this.sceneManager.activeProject?.filePath ?? null;
+    }
+
+    private syncTransientUiToActiveProject(): void {
+        const current = this.sceneManager.activeProject?.filePath ?? null;
+        if (this.lastActiveProjectFile && current && this.lastActiveProjectFile !== current) {
+            this.resetProjectTransientUi();
+            return;
+        }
+        this.lastActiveProjectFile = current;
     }
 
     // ────────────────────────────────────────────────────────

@@ -230,9 +230,9 @@ export function renderGoalRings(
     });
 
     const rings = parent.createDiv('nl-tracker-rings');
-    renderTrackerProgressRing(rings, t('Today'), todayWords, dailyGoal, 'var(--sl-info, #2196F3)');
-    renderTrackerProgressRing(rings, t('This week'), weekWords, weeklyGoal, 'var(--sl-accent, #9c6bff)');
-    renderTrackerProgressRing(rings, t('This month'), monthWords, monthlyGoal, 'var(--sl-warning, #ffb74d)');
+    renderTrackerProgressRing(rings, t("Today's goal"), todayWords, dailyGoal, 'var(--sl-info, #2196F3)');
+    renderTrackerProgressRing(rings, t("This week's goal"), weekWords, weeklyGoal, 'var(--sl-accent, #9c6bff)');
+    renderTrackerProgressRing(rings, t("This month's goal"), monthWords, monthlyGoal, 'var(--sl-warning, #ffb74d)');
 }
 
 export function weekCountFromSettings(weeks: number | undefined): number {

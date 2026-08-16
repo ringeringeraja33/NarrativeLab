@@ -532,7 +532,7 @@ export class StorylineView extends ProjectBoundItemView {
             const y = laneY(li);
 
             // Plotline label in the sticky HTML column
-            const lblDiv = labelCol.createDiv('subway-lane-label');
+            const lblDiv = labelCol.createDiv('subway-lane-label is-clickable');
             lblDiv.setCssStyles({
                 position: 'absolute',
                 left: `${LABEL_LEFT}px`,
@@ -543,6 +543,7 @@ export class StorylineView extends ProjectBoundItemView {
                 whiteSpace: 'nowrap',
                 fontFamily: 'var(--font-interface)',
                 cursor: 'context-menu',
+                pointerEvents: 'auto',
             });
             lblDiv.textContent = this.formatPlotlineName(pk);
             lblDiv.addEventListener('contextmenu', (e) => {
@@ -1436,6 +1437,7 @@ export class StorylineView extends ProjectBoundItemView {
      */
     refresh(): void {
         if (!this.rootContainer) return;
+        if (!this.isBoundToActiveProject(this.sceneManager)) return;
         // Coalesce rapid calls into a single rAF, but do NOT skip if
         // a render is already queued — the data may have changed again.
         if (this._pendingRefresh) {

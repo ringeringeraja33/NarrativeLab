@@ -1,5 +1,17 @@
 # NarrativeLab — Changelog
 
+## 1.2.0
+
+- Switching projects isolates session state that used to leak between books: link-scanner lookups, Concept Grid mention cache, undo, setup/payoff stems, story-graph filters, navigator search/selection, manuscript cursor restore, floating sticky notes, and scene inspector / notes / synopsis sidebars.
+- Writing-tracker session baselines no longer carry one book's word total into another. Importing a project ledger replaces history instead of merging it.
+- Bound project tabs skip refresh when another book is focused.
+- Word counts ignore comments, HTML, fenced code, and Markdown syntax while still counting readable prose.
+- Writing tracker: fixed-size heatmap cells, a full-width daily total bar, range charts that no longer rebuild the whole page, and goal rings labeled Today's / Weekly / Monthly goal.
+- Settings: writing-goal options live under Tracker; YAML, wikilink, and count options live under Scenes.
+- Concept Grid: plotline subway labels are right-clickable, Univer menus keep a hover assist, and Connected notes open as a real hover submenu.
+- Floating sticky notes are stamped with the active project. Legacy notes without a stamp stay vault-wide.
+- Attribution for obsidian-webnovel-assistant in the README and NOTICE.
+
 ## 1.0.1
 
 - Concept Grid unlink (chip × and 「取消链接」) now keeps the visible note name as plain text instead of wiping the cell.

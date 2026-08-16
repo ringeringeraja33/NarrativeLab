@@ -163,6 +163,16 @@ export class DetailsView extends ItemView {
         this.refreshEmptyState();
     }
 
+    refresh(): void {
+        const current = this.inspectorComponent?.getCurrentScene?.();
+        if (!current || !this.sceneManager.getScene(current.filePath)) {
+            this.inspectorComponent?.hide();
+            this.refreshEmptyState();
+            return;
+        }
+        this.refreshCurrentScene();
+    }
+
     private refreshCurrentScene(): void {
         const current = this.inspectorComponent?.getCurrentScene?.();
         if (!current) return;

@@ -47,6 +47,15 @@ export class SceneQueryService {
 
     constructor(private sceneStore: ISceneStore) {}
 
+    /** Drop memoized filter/statistics results (call on project switch). */
+    clearCaches(): void {
+        this._lastFilterKey = '';
+        this._lastVersion = -1;
+        this._lastResult = [];
+        this._statisticsVersion = -1;
+        this._statisticsCache.clear();
+    }
+
     /** Build a cheap cache key from filter+sort objects */
     private computeFilterKey(filter?: SceneFilter, sort?: SortConfig): string {
         return JSON.stringify([filter ?? null, sort ?? null]);

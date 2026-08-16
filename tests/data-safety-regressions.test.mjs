@@ -262,6 +262,7 @@ test('Library Archive/Browse chrome is keyed by project, not a global plugin fie
     assert.match(libraryModeBar, /libraryUiByProject/);
     assert.match(libraryModeBar, /resolveLibraryUiProjectFile/);
     assert.doesNotMatch(libraryModeBar, /p\.libraryContentMode/);
+    assert.doesNotMatch(libraryModeBar, /libraryStoryGraphFilters/);
     assert.match(codexView, /getBoundProjectFile\(\)/);
 });
 
@@ -280,6 +281,7 @@ test('project switching remounts project-bound Library embeds', () => {
             < switchProject.indexOf('loadProjectSystemData()'),
         'plotline registry must swap before System JSON load so a late save cannot mix projects',
     );
+    assert.match(switchProject, /isolateProjectTransientState\(\)/);
     assert.match(switchProject, /libraryCategoriesStructureEpoch \+= 1/);
     assert.ok(
         switchProject.indexOf('libraryCategoriesStructureEpoch += 1')

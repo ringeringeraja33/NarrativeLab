@@ -80,6 +80,7 @@ export class ResearchView extends ProjectBoundItemView {
     }
 
     refresh(): void {
+        if (!this.isBoundToActiveProject(this.plugin.sceneManager)) return;
         const mountGeneration = ++this.mountGeneration;
         const host = this.rootEl;
         this.manager.scan().then(() => {

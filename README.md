@@ -7,6 +7,7 @@ NarrativeLab is a unified Obsidian workspace for narrative planning. It combines
 - **Obsidian native Canvas** — project corkboards and optional narrative projections use Obsidian's `.canvas` format and Canvas view.
 - **Obsidian native Bases (Database)** — Library browsing uses Obsidian Bases as the native database/table surface for Markdown entities.
 - **[Storyline](https://github.com/PixeroJan/obsidian-storyline)** — the project, scene, character, location, Library, and narrative-planning workflow builds on and extends ideas and code from the Storyline plugin.
+- **[obsidian-webnovel-assistant](https://github.com/HatanoChihiro/obsidian-webnovel-assistant)** — the writing tracker sidebar, word-count heatmap, and floating sticky notes absorb and adapt work from HatanoChihiro's Web Novel Assistant.
 - **[Univer](https://github.com/dream-num/univer)** — the Concept Grid embeds Univer Sheets for workbook editing, formulas, formatting, filtering, and Excel-compatible data exchange.
 - **[Obsidian Univer Plugin](https://github.com/dream-num/obsidian-univer)** — NarrativeLab acknowledges the earlier Obsidian integration of Univer as an implementation reference. NarrativeLab's Concept Grid is integrated into its own project and data model rather than requiring the separate plugin.
 - **[Narrative Canvas](https://github.com/ringeringeraja33/NarrativeCanvas)** — the node-based narrative workspace is bundled as an internal project view.
@@ -127,7 +128,7 @@ Useful commands:
 - `npm run dev` — watch and build.
 - `npm test` — typecheck, translation audit, unit tests, and release metadata checks.
 - `npm run lint:obsidian` — Obsidian plugin review lint rules.
-- `npm run build` — production bundle. Set the path-delimited `NARRATIVE_LAB_DEPLOY_DIRS` environment variable to copy build outputs into one or more development-vault plugin folders.
+- `npm run build` — production bundle. Copies `main.js`, `manifest.json`, and `styles.css` into every discovered `plugins/narrative-lab` folder (`.obsidian` and `.obsidianMac`).
 
 The Community Plugins runtime is fully contained in `main.js`; releases do not require extra JavaScript chunks.
 
@@ -139,6 +140,7 @@ NarrativeLab combines, adapts, or integrates the following projects:
 
 - [NarrativeCanvas](https://github.com/ringeringeraja33/NarrativeCanvas) by ringeringeraja33 — GNU Affero General Public License v3.
 - [obsidian-storyline](https://github.com/PixeroJan/obsidian-storyline) by Jan Sandström / PixeroJan — MIT License.
+- [obsidian-webnovel-assistant](https://github.com/HatanoChihiro/obsidian-webnovel-assistant) by HatanoChihiro — MIT License.
 - [Univer](https://github.com/dream-num/univer) and the bundled `@univerjs/*` runtime packages — Apache License 2.0.
 - [Obsidian Univer Plugin](https://github.com/dream-num/obsidian-univer) by DreamNum — Apache License 2.0; acknowledged as an Obsidian integration reference.
 
@@ -148,5 +150,6 @@ The combined NarrativeLab project is distributed under AGPL-3.0. Upstream licens
 
 - `LICENSE-NarrativeCanvas`
 - `LICENSE-Storyline`
+- `LICENSE-WebNovelAssistant`
 - `LICENSE-Univer`
 - `LICENSE-Obsidian-Univer`

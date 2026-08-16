@@ -437,9 +437,9 @@ export class StatsView extends ProjectBoundItemView {
 
         // Trio of progress rings (Today / This week / This month)
         const ringsRow = section.createDiv('stats-rings');
-        this.renderProgressRing(ringsRow, t('Today'), todayWords, dailyGoal, 'var(--sl-info, #2196F3)');
-        this.renderProgressRing(ringsRow, t('This week'), weekWords, weeklyGoal, 'var(--sl-accent, #9c6bff)');
-        this.renderProgressRing(ringsRow, t('This month'), monthWords, monthlyGoal, 'var(--sl-warning, #ffb74d)');
+        this.renderProgressRing(ringsRow, t("Today's goal"), todayWords, dailyGoal, 'var(--sl-info, #2196F3)');
+        this.renderProgressRing(ringsRow, t("This week's goal"), weekWords, weeklyGoal, 'var(--sl-accent, #9c6bff)');
+        this.renderProgressRing(ringsRow, t("This month's goal"), monthWords, monthlyGoal, 'var(--sl-warning, #ffb74d)');
 
         // 7-day sparkline
         const recent = tracker.getRecentDays(7).reverse();
@@ -1910,6 +1910,7 @@ export class StatsView extends ProjectBoundItemView {
      * Public refresh called by the plugin on file changes
      */
     refresh(): void {
+        if (!this.isBoundToActiveProject(this.sceneManager)) return;
         this.proseCache = null;
         this.echoCache = null;
         if (this.rootContainer) {

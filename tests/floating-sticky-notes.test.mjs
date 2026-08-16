@@ -13,6 +13,7 @@ const result = await build({
 const source = result.outputFiles[0].text;
 const {
     parseFloatingStickyNotes,
+    stickyNoteBelongsToProject,
     hexToRgba,
     clampStickyNoteZoom,
     clampStickyNoteOpacity,
@@ -35,7 +36,7 @@ const [mainTs, settings, manager, noteUi, styles] = await Promise.all([
 
 test('parseFloatingStickyNotes drops invalid entries and keeps ids', () => {
     const notes = parseFloatingStickyNotes([
-        { id: 'a1', top: '10px', left: '10px', width: '320px', height: '420px', color: '#FFF8CC', isEditing: true },
+        { id: 'a1', top: '10px', left: '10px', width: '320px', height: '420px', color: '#FFF8CC', isEditing: true, projectFile: 'Books/A.md' },
         { id: 12, top: '10px' },
         {},
         { id: 'b2', top: '20px', left: '20px', width: '200px', height: '200px', color: '#D8EAFD' },
@@ -43,8 +44,13 @@ test('parseFloatingStickyNotes drops invalid entries and keeps ids', () => {
     assert.equal(notes.length, 2);
     assert.equal(notes[0].id, 'a1');
     assert.equal(notes[0].isEditing, true);
+    assert.equal(notes[0].projectFile, 'Books/A.md');
     assert.equal(notes[1].id, 'b2');
+    assert.equal(notes[1].projectFile, undefined);
     assert.deepEqual(parseFloatingStickyNotes({}), []);
+    assert.equal(stickyNoteBelongsToProject(notes[0], 'Books/A.md'), true);
+    assert.equal(stickyNoteBelongsToProject(notes[0], 'Books/B.md'), false);
+    assert.equal(stickyNoteBelongsToProject(notes[1], 'Books/B.md'), true);
 });
 
 test('hex, zoom, opacity, stagger, and path helpers', () => {

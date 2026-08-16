@@ -3598,6 +3598,16 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .subway-label-col {
     border-right: 1px solid var(--background-modifier-border);
 }
+.subway-lane-label {
+    pointer-events: auto;
+    padding: 2px 6px;
+    margin-left: -6px;
+    border-radius: 4px;
+    user-select: none;
+}
+.subway-lane-label:hover {
+    background: var(--background-modifier-hover);
+}
 .subway-map-wrapper svg {
     display: block;
 }
@@ -9775,7 +9785,7 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     transform: rotate(90deg);
 }
 .story-line-color-section > div {
-    padding: 4px 14px 14px;
+    padding: 8px 16px 16px;
 }
 
 /* Plotline color scheme — compact equal-width card grid */
@@ -9809,10 +9819,10 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
-    gap: 3px;
+    gap: 4px;
     box-sizing: border-box;
     min-width: 0;
-    padding: 6px 7px 7px;
+    padding: 10px 10px 9px;
     border: 1.5px solid var(--background-modifier-border);
     border-radius: 6px;
     background: transparent;
@@ -15796,23 +15806,33 @@ body .nl-floating-sticky-save-location input[type="text"] {
 
 .nl-tracker-panel,
 .nl-tracker-page {
-    padding: 12px;
+    padding: 16px 18px 20px;
     overflow: auto;
+    text-align: center;
+}
+
+.nl-tracker-page {
+    padding: 28px 32px 40px;
+    max-width: 880px;
+    margin: 0 auto;
 }
 
 .nl-tracker-tabs {
     display: flex;
-    gap: 4px;
-    margin-bottom: 12px;
+    justify-content: center;
+    gap: 6px;
+    margin: 0 auto 16px;
+    max-width: 240px;
 }
 
 .nl-tracker-tab {
     flex: 1;
-    padding: 4px 8px;
+    padding: 5px 10px;
     border: 1px solid var(--background-modifier-border);
     background: var(--background-secondary);
-    border-radius: 6px;
+    border-radius: 8px;
     cursor: pointer;
+    font-size: 12px;
 }
 
 .nl-tracker-tab.is-active {
@@ -15824,15 +15844,37 @@ body .nl-floating-sticky-save-location input[type="text"] {
 .nl-tracker-panel-body {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    align-items: center;
+    gap: 18px;
     min-height: calc(100% - 40px);
+}
+
+.nl-tracker-section,
+.nl-tracker-goal,
+.nl-tracker-sparkline,
+.nl-tracker-heatmap {
+    width: 100%;
 }
 
 .nl-tracker-section h4,
 .nl-tracker-page h3,
 .nl-tracker-page h4,
 .nl-tracker-subtitle {
-    margin: 0 0 8px;
+    margin: 0 0 10px;
+    text-align: center;
+    font-weight: 600;
+}
+
+.nl-tracker-section h4,
+.nl-tracker-subtitle,
+.nl-tracker-page h4 {
+    font-size: 13px;
+    letter-spacing: 0.02em;
+}
+
+.nl-tracker-page h3 {
+    font-size: 1.55em;
+    letter-spacing: -0.02em;
 }
 
 .nl-tracker-empty {
@@ -15843,25 +15885,37 @@ body .nl-floating-sticky-save-location input[type="text"] {
 .nl-tracker-sprint {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    align-items: center;
+    gap: 10px;
 }
 
 .nl-tracker-duration-row {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
-    font-size: 0.9em;
+    font-size: 12px;
+    color: var(--text-muted);
 }
 
 .nl-tracker-duration-input {
-    width: 4em;
+    width: 3.6em;
+    text-align: center;
+}
+
+.nl-tracker-timer {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
 }
 
 .nl-tracker-timer-display {
-    font-size: 2em;
+    font-size: 2.35em;
+    line-height: 1.1;
     font-variant-numeric: tabular-nums;
-    font-weight: 600;
-    letter-spacing: 0.04em;
+    font-weight: 650;
+    letter-spacing: 0.06em;
 }
 
 .nl-tracker-timer-display.is-overtime {
@@ -15871,21 +15925,25 @@ body .nl-floating-sticky-save-location input[type="text"] {
 .nl-tracker-timer-meta {
     display: block;
     color: var(--text-muted);
-    font-size: 0.85em;
+    font-size: 12px;
 }
 
 .nl-tracker-btn-row {
     display: flex;
-    gap: 6px;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    max-width: 260px;
 }
 
 .nl-tracker-btn {
     flex: 1;
-    padding: 4px 8px;
-    border-radius: 6px;
+    padding: 6px 10px;
+    border-radius: 8px;
     border: 1px solid var(--background-modifier-border);
     background: var(--background-secondary);
     cursor: pointer;
+    font-size: 12px;
 }
 
 .nl-tracker-btn.is-start {
@@ -15900,41 +15958,62 @@ body .nl-floating-sticky-save-location input[type="text"] {
 
 .nl-tracker-cards,
 .nl-tracker-page-cards {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
 }
 
 .nl-tracker-page-cards {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    margin-bottom: 16px;
+    margin: 0 auto 28px;
 }
 
 .nl-tracker-card {
+    box-sizing: border-box;
+    flex: 1 1 96px;
+    min-width: 96px;
+    max-width: 132px;
     border: 1px solid var(--background-modifier-border);
-    border-radius: 8px;
-    padding: 8px;
+    border-radius: 10px;
+    padding: 12px 10px 10px;
     background: var(--background-secondary);
+    text-align: center;
+}
+
+.nl-tracker-page .nl-tracker-card {
+    flex: 1 1 140px;
+    max-width: 180px;
+    padding: 16px 12px 14px;
 }
 
 .nl-tracker-card-icon {
-    display: inline-flex;
+    display: flex;
+    justify-content: center;
     color: var(--interactive-accent);
 }
 
 .nl-tracker-card-value {
-    font-size: 1.15em;
+    font-size: 1.2em;
     font-weight: 650;
-    margin-top: 2px;
+    margin-top: 6px;
+    line-height: 1.2;
+}
+
+.nl-tracker-page .nl-tracker-card-value {
+    font-size: 1.35em;
 }
 
 .nl-tracker-card-label {
-    font-size: 0.75em;
+    font-size: 11px;
     color: var(--text-muted);
+    margin-top: 4px;
 }
 
 .nl-tracker-goal {
-    font-size: 0.9em;
+    font-size: 13px;
+    color: var(--text-muted);
+    max-width: none;
+    margin: 0 auto 8px;
 }
 
 .nl-tracker-bar {
@@ -15942,7 +16021,9 @@ body .nl-floating-sticky-save-location input[type="text"] {
     border-radius: 99px;
     background: var(--background-modifier-border);
     overflow: hidden;
-    margin-top: 4px;
+    margin: 8px auto 0;
+    width: 100%;
+    max-width: none;
 }
 
 .nl-tracker-bar-fill {
@@ -15952,20 +16033,21 @@ body .nl-floating-sticky-save-location input[type="text"] {
 .nl-tracker-rings {
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
-    justify-content: space-around;
+    gap: 20px 28px;
+    justify-content: center;
+    margin: 8px 0 8px;
 }
 
 .nl-tracker-ring {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
 }
 
 .nl-tracker-ring-label,
 .nl-tracker-ring-sub {
-    font-size: 0.75em;
+    font-size: 12px;
     color: var(--text-muted);
 }
 
@@ -15976,8 +16058,10 @@ body .nl-floating-sticky-save-location input[type="text"] {
 }
 
 .nl-tracker-sparkline-label {
-    font-size: 0.8em;
+    display: block;
+    font-size: 12px;
     color: var(--text-muted);
+    margin-bottom: 6px;
 }
 
 .nl-tracker-spark-row {
@@ -16017,7 +16101,7 @@ body .nl-floating-sticky-save-location input[type="text"] {
 
 .nl-tracker-heatmap-vertical {
     margin-top: auto;
-    padding-top: 12px;
+    padding: 12px 10px 4px;
 }
 
 .nl-tracker-heatmap-header {
@@ -16025,7 +16109,8 @@ body .nl-floating-sticky-save-location input[type="text"] {
     justify-content: space-between;
     align-items: baseline;
     font-size: 0.85em;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
+    padding: 0 2px;
 }
 
 .nl-tracker-heatmap-today {
@@ -16037,6 +16122,14 @@ body .nl-floating-sticky-save-location input[type="text"] {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
     gap: 3px;
+}
+
+.nl-tracker-heatmap-vertical .nl-tracker-heatmap-dow,
+.nl-tracker-heatmap-vertical .nl-tracker-heatmap-week {
+    grid-template-columns: repeat(7, 11px);
+    justify-content: center;
+    column-gap: 4px;
+    row-gap: 4px;
 }
 
 .nl-tracker-heatmap-dow {
@@ -16052,12 +16145,24 @@ body .nl-floating-sticky-save-location input[type="text"] {
     gap: 3px;
 }
 
+.nl-tracker-heatmap-vertical .nl-tracker-heatmap-grid {
+    gap: 4px;
+}
+
 .nl-tracker-heat-cell {
     aspect-ratio: 1;
     min-width: 10px;
     min-height: 10px;
     border-radius: 2px;
     background: var(--background-modifier-border);
+}
+
+.nl-tracker-heatmap-vertical .nl-tracker-heat-cell {
+    width: 11px;
+    height: 11px;
+    min-width: 11px;
+    min-height: 11px;
+    border-radius: 3px;
 }
 
 .nl-tracker-heat-l0 { background: var(--background-modifier-border); }
@@ -16070,8 +16175,9 @@ body .nl-floating-sticky-save-location input[type="text"] {
 .nl-tracker-heatmap-legend {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 4px;
-    margin-top: 8px;
+    margin-top: 10px;
     font-size: 10px;
     color: var(--text-muted);
 }
@@ -16084,21 +16190,25 @@ body .nl-floating-sticky-save-location input[type="text"] {
 }
 
 .nl-tracker-page-header {
-    margin-bottom: 16px;
+    margin: 0 auto 28px;
+    max-width: 36em;
 }
 
 .nl-tracker-page-lead {
     color: var(--text-muted);
-    margin: 4px 0 0;
+    margin: 8px 0 0;
+    font-size: 13px;
+    line-height: 1.5;
 }
 
 .nl-tracker-heatmap-toolbar,
 .nl-tracker-chart-toolbar {
     display: flex;
-    justify-content: space-between;
+    justify-content: center;
     align-items: center;
-    gap: 8px;
-    margin: 16px 0 8px;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    margin: 28px 0 12px;
 }
 
 .nl-tracker-year-row,
@@ -16128,6 +16238,7 @@ body .nl-floating-sticky-save-location input[type="text"] {
 
 .nl-tracker-heatmap-year-grid {
     display: flex;
+    justify-content: center;
     gap: 8px;
     overflow-x: auto;
     padding-bottom: 8px;
@@ -16171,8 +16282,13 @@ body .nl-floating-sticky-save-location input[type="text"] {
 }
 
 @media (max-width: 720px) {
-    .nl-tracker-page-cards {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+    .nl-tracker-page {
+        padding: 20px 16px 28px;
+    }
+
+    .nl-tracker-page .nl-tracker-card {
+        flex-basis: calc(50% - 10px);
+        max-width: none;
     }
 }
 

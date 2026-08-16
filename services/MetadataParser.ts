@@ -4,6 +4,7 @@ import { App, TFile, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceSceneLocations, Scene, SceneStatus, TIMELINE_MODES, TimelineMode } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { tokenizeWords, DEFAULT_STORYLINE_LOCALE, resolveLocale, type StoryLineLocale } from '../utils/locale';
+import { prepareTextForWordcount } from '../utils/wordcountText';
 
 /**
  * Issue #73 — frontmatter scene fields that point at other entities (scenes,
@@ -619,53 +620,27 @@ export class MetadataParser {
     }
 
     /**
-     * Count words in body text. Issue #78 — strips Obsidian `%%comments%%`
-     * (and optionally markdown task lines) before tokenising so production
-     * wordcounts match what will actually be exported.
+     * Count words in body text. Comments, HTML, and Markdown syntax are
+     * stripped first so the total follows readable prose.
      */
     private static countWords(text: string): number {
-        if (!text) return 0;
-        let working = text;
-        // Issue #78 — strip Obsidian comment blocks first (multiline, non-greedy)
-        if (_excludeCommentsFromWordcount) {
-            working = working.replace(/%%[\s\S]*?%%/g, '');
-        }
-        // Issue #78 — optionally drop checkbox/task lines (`- [ ]`, `- [x]`, `* [X]`)
-        if (_excludeChecklistFromWordcount) {
-            working = working.replace(/^[ \t]*[-*+]\s*\[[ xX]\]\s.*$/gm, '');
-        }
-        // Remove markdown headers, links, etc
-        const cleaned = working
-            .replace(/^#+\s+.*/gm, '')
-            .replace(/\[\[.*?\]\]/g, '')
-            .replace(/[*_~`]/g, '')
-            .trim();
+        const cleaned = prepareTextForWordcount(text, {
+            excludeComments: _excludeCommentsFromWordcount,
+            excludeChecklists: _excludeChecklistFromWordcount,
+        });
         if (!cleaned) return 0;
         return tokenizeWords(cleaned, resolveLocale(_wordcountLocale, cleaned, DEFAULT_STORYLINE_LOCALE)).length;
     }
 
     /**
      * Count characters in the scene body, applying the same exclusions as
-     * `countWords` (comments, checklists, markdown markup) so the two counts
-     * stay aligned. Whitespace is collapsed but not stripped, so the count
-     * reflects the readable prose length.
+     * `countWords` so the two counts stay aligned.
      */
     private static countChars(text: string): number {
-        if (!text) return 0;
-        let working = text;
-        if (_excludeCommentsFromWordcount) {
-            working = working.replace(/%%[\s\S]*?%%/g, '');
-        }
-        if (_excludeChecklistFromWordcount) {
-            working = working.replace(/^[ \t]*[-*+]\s*\[[ xX]\]\s.*$/gm, '');
-        }
-        const cleaned = working
-            .replace(/^#+\s+.*/gm, '')
-            .replace(/\[\[.*?\]\]/g, '')
-            .replace(/[*_~`]/g, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-        return cleaned.length;
+        return prepareTextForWordcount(text, {
+            excludeComments: _excludeCommentsFromWordcount,
+            excludeChecklists: _excludeChecklistFromWordcount,
+        }).length;
     }
 
     /**

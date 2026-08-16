@@ -230,7 +230,7 @@ export class LocationView extends ProjectBoundItemView {
         } else if (this.locationOverviewMode === 'story-graph' && !isMobile) {
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
-            });
+            }, this.getBoundProjectFile());
         } else {
             this.renderOverview(content);
         }
@@ -2143,6 +2143,7 @@ export class LocationView extends ProjectBoundItemView {
     }
 
     async refresh(): Promise<void> {
+        if (!this.isBoundToActiveProject(this.sceneManager)) return;
         // refreshOpenViews already reloaded entities — only re-render here.
         if (
             this.selectedItem &&

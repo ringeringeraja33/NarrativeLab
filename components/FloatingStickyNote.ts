@@ -73,6 +73,9 @@ export class FloatingStickyNote extends Component {
             const origin = staggerStickyNoteOrigin(this.plugin.floatingStickyNotes.activeNotes.length);
             this.state = {
                 id: crypto.randomUUID().slice(0, 8),
+                projectFile: this.plugin.sceneManager.activeProject?.filePath
+                    ? normalizePath(this.plugin.sceneManager.activeProject.filePath)
+                    : undefined,
                 filePath: options.file?.path,
                 content: options.content || '',
                 title: options.title || (options.file ? options.file.basename : t('Sticky note')),

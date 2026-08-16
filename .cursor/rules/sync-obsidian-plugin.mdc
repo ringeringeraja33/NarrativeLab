@@ -1,29 +1,26 @@
 ---
-description: After source changes, always build and sync to the Obsidian plugin copy
+description: After source changes, always build and sync to every narrative-lab plugin folder
 alwaysApply: true
 ---
 
-# Sync to Obsidian plugin copy
+# Sync to Obsidian plugin copies
 
-Whenever NarrativeLab source is changed, finish by building and deploying to the Obsidian vault plugin folder. Do not leave the plugin copy stale.
+Whenever NarrativeLab source is changed, finish by building and deploying to **every** Obsidian plugin folder named `narrative-lab`. Do not leave any copy stale.
 
 ## Paths
 
 - **Source**: NarrativeLab repo
-- **Plugin copies** (copy `main.js`, `manifest.json`, `styles.css` to each):
-  - `~/Library/CloudStorage/OneDrive-个人/My Library/.obsidian/plugins/narrative-lab`
-  - `~/Library/CloudStorage/OneDrive-个人/My Library/.obsidianMac/plugins/narrative-lab`
-  - `~/Documents/Obsidian/.obsidian/plugins/narrative-lab`
+- **Plugin copies**: every folder named `narrative-lab` whose parent is `plugins` (both `.obsidian` and `.obsidianMac`). `esbuild.config.mjs` discovers these on each build and copies `main.js`, `manifest.json`, `styles.css` into all of them.
 
 ## Required steps after code changes
 
-1. Edit source in the NarrativeLab repo (not the plugin folder).
+1. Edit source in the NarrativeLab repo (not a vault plugin folder).
 2. Build: `npm run build` (esbuild production; deploys via `esbuild.config.mjs`).
-3. Confirm deploy reached every plugin copy listed above (`main.js`, `styles.css`, `manifest.json` as applicable).
-4. If deploy did not run, copy those built files into the plugin folder manually.
+3. Confirm the deploy log listed every `narrative-lab` plugin folder, including `.obsidianMac`.
+4. If deploy did not run, copy those built files into each plugin folder manually.
 
 ## Notes
 
-- Prefer the build deploy path over hand-editing files under `.obsidian/plugins/narrative-lab` or `.obsidianMac/plugins/narrative-lab`.
-- Set `NARRATIVE_LAB_DEPLOY_DIRS` to a path-delimited list of those plugin folders so `esbuild.config.mjs` copies build outputs to every copy.
+- Prefer the build deploy path over hand-editing files under any `*/plugins/narrative-lab`.
+- Optional: `NARRATIVE_LAB_DEPLOY_ROOTS` adds extra search roots; `NARRATIVE_LAB_DEPLOY_DIRS` adds extra plugin folders.
 - Remind the user to reload the plugin in Obsidian when a reload is needed to see changes.

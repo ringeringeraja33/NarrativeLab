@@ -329,6 +329,7 @@ export class CodexView extends ProjectBoundItemView {
 
     /** Called by refreshOpenViews after entities are already reloaded. */
     async refresh(): Promise<void> {
+        if (!this.isBoundToActiveProject(this.sceneManager)) return;
         // Grace period — skip re-render if we just saved ourselves
         if (this.selectedEntry && (Date.now() - this._lastSaveTime) < CodexView.SAVE_REFRESH_GRACE_MS) {
             return;
@@ -418,7 +419,7 @@ export class CodexView extends ProjectBoundItemView {
         } else if (getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'story-graph' && !isMobile) {
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
-            });
+            }, this.getBoundProjectFile());
         } else {
             this.renderOverview(content);
         }

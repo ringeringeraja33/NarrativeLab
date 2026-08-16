@@ -142,6 +142,16 @@ export class SceneInspectorView extends ItemView {
 
     // ── Scene wiring ──────────────────────────────────────────────
 
+    refresh(): void {
+        const current = this.inspectorComponent?.getCurrentScene?.() || null;
+        if (!current || !this.sceneManager.getScene(current.filePath)) {
+            this.inspectorComponent?.hide();
+            this.refreshEmptyState();
+            return;
+        }
+        this.refreshCurrentScene();
+    }
+
     private showScene(filePath: string): void {
         const scene = this.sceneManager.getScene(filePath);
         if (!scene) return;

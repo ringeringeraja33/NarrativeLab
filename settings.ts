@@ -618,6 +618,15 @@ export interface SceneCardsSettings {
     libraryUiByProject: Record<string, {
         contentMode?: 'profile' | 'browse' | 'story-graph';
         categoryId?: string;
+        storyGraphFilters?: {
+            showScenes?: boolean;
+            showCharacters?: boolean;
+            showLocations?: boolean;
+            showCodex?: boolean;
+            showRelationships?: boolean;
+            showProps?: boolean;
+            showOther?: boolean;
+        };
     }>;
     /**
      * Remembered Structure sub-tab:
@@ -1148,7 +1157,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
 };
 
 /** Settings page horizontal tab ids */
-type NarrativeLabSettingsTabId = 'general' | 'scenes' | 'templates' | 'display' | 'colors' | 'writing' | 'tracker' | 'export';
+type NarrativeLabSettingsTabId = 'general' | 'scenes' | 'templates' | 'display' | 'colors' | 'tracking' | 'export';
 
 /**
  * Settings tab for the NarrativeLab plugin
@@ -1181,8 +1190,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             { id: 'templates', label: 'Template Center' },
             { id: 'display', label: 'Display' },
             { id: 'colors', label: 'Colors' },
-            { id: 'writing', label: 'Writing' },
-            { id: 'tracker', label: 'Tracker' },
+            { id: 'tracking', label: 'Tracking' },
             { id: 'export', label: 'Converter / Export & Import' },
         ];
         const tabBar = containerEl.createDiv('nl-settings-tabs');
@@ -1213,11 +1221,8 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             case 'colors':
                 this.renderColorsSettingsTab(panel);
                 break;
-            case 'writing':
-                this.renderWritingSettingsTab(panel);
-                break;
-            case 'tracker':
-                this.renderTrackerSettingsTab(panel);
+            case 'tracking':
+                this.renderTrackingSettingsTab(panel);
                 break;
             case 'export':
                 this.renderExportAdvancedSettingsTab(panel);
@@ -1350,6 +1355,108 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     this.plugin.settings.defaultTargetWordCount = Number(value) || 800;
                     await this.plugin.saveSettings();
                 }));
+
+        new Setting(panel)
+            .setName(t('Write scene references as wikilinks'))
+            .setDesc(t('Store scene references such as POV, location, characters, setup_scenes, and payoff_scenes as Obsidian [[wikilinks]] so they update automatically when files are renamed. Existing plain-text values continue to work.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.writeFieldsAsWikilinks !== false)
+                .onChange(async (value) => {
+                    this.plugin.settings.writeFieldsAsWikilinks = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Mirror custom fields to top-level YAML'))
+            .setDesc(t('Also write Universal Field values as top-level YAML keys, using each template\'s “Top-level key”, so they appear in Obsidian Properties, Bases, and Dataview. Reserved NarrativeLab keys are skipped.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.universalFieldsMirrorTopLevel !== false)
+                .onChange(async (value) => {
+                    const wasOn = this.plugin.settings.universalFieldsMirrorTopLevel !== false;
+                    this.plugin.settings.universalFieldsMirrorTopLevel = value;
+                    await this.plugin.saveSettings();
+                    // When the user flips the toggle ON, retro-mirror every
+                    // existing entity so values already saved in
+                    // `universalFields:` flow into the top-level YAML keys
+                    // without requiring a manual re-edit per record.
+                    if (value && !wasOn) {
+                        try { await this.plugin.migrateUniversalFieldMirror(); }
+                        catch (e) { console.error('[NarrativeLab] mirror toggle migration:', e); }
+                    }
+                }));
+
+        new Setting(panel)
+            .setName(t('Default scene frontmatter'))
+            .setDesc(t('Raw YAML merged into every newly created scene. Useful for companion plugins (e.g. `cssclasses: [fountain]`). NarrativeLab\'s own keys (type, title, act, chapter, sequence, status…) take priority on conflict.'))
+            .addTextArea(ta => {
+                // eslint-disable-next-line obsidianmd/ui/sentence-case -- YAML keys are case-sensitive.
+                ta.setPlaceholder('cssclasses:\n  - fountain\n')
+                    .setValue(this.plugin.settings.defaultSceneFrontmatter || '')
+                    .onChange(async (value) => {
+                        this.plugin.settings.defaultSceneFrontmatter = value;
+                        await this.plugin.saveSettings();
+                    });
+                ta.inputEl.rows = 4;
+                ta.inputEl.setCssStyles({
+                    width: '100%',
+                    fontFamily: 'var(--font-monospace)',
+                });
+            });
+
+        new Setting(panel).setName(t('Word count')).setHeading();
+
+        new Setting(panel)
+            .setName(t('Count unit for scene lengths'))
+            .setDesc(t('Choose whether scene cards, the Timeline, and the Inspector display scene length in words or characters. Useful for prose writers who track length in characters (e.g. Russian, Chinese, Japanese).'))
+            .addDropdown(dropdown => {
+                dropdown.addOption('words', t('Words'));
+                dropdown.addOption('chars', t('Characters'));
+                dropdown.setValue(this.plugin.settings.countUnit === 'chars' ? 'chars' : 'words');
+                dropdown.onChange(async (value) => {
+                    this.plugin.settings.countUnit = value as 'words' | 'chars';
+                    await this.plugin.saveSettings();
+                    this.plugin.refreshOpenViews();
+                });
+            });
+
+        new Setting(panel)
+            .setName(t('Exclude `%%comments%%` from wordcount'))
+            .setDesc(t('Exclude `%%comment%%` and `<!-- HTML -->` comment bodies. Markdown and HTML syntax are always ignored; only readable prose is counted.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.excludeCommentsFromWordcount !== false)
+                .onChange(async (value) => {
+                    this.plugin.settings.excludeCommentsFromWordcount = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Also ignore checkbox lines (`- [ ]`, `- [x]`)'))
+            .setDesc(t('Also exclude Markdown task lines from the word count. Off by default because some authors keep checklists in the manuscript body.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.excludeChecklistFromWordcount === true)
+                .onChange(async (value) => {
+                    this.plugin.settings.excludeChecklistFromWordcount = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Default project language'))
+            .setDesc(t('BCP-47 tag used for word counting, reading time, dialogue %, stop-word filtering and PDF line wrapping. Choose Auto-detect to infer the script from manuscript text. Per-project overrides still use the `language:` field in the project frontmatter.'))
+            .addDropdown(dropdown => {
+                dropdown.addOption('auto', t('Auto-detect from text'));
+                for (const { code, label } of SUPPORTED_STORYLINE_LOCALES) {
+                    dropdown.addOption(code, `${label} (${code})`);
+                }
+                dropdown.setValue(this.plugin.settings.defaultProjectLanguage ?? 'en');
+                dropdown.onChange(async (value) => {
+                    this.plugin.settings.defaultProjectLanguage = value;
+                    try {
+                        const { setWordcountLocale } = await import('./services/MetadataParser');
+                        setWordcountLocale(normalizeStoryLineLocale(value));
+                    } catch { /* non-fatal */ }
+                    await this.plugin.saveSettings();
+                });
+            });
 
         // ── Custom Statuses ──
         new Setting(panel).setName(t('Custom Statuses')).setHeading();
@@ -1824,7 +1931,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         const imageDetails = panel.createEl('details', { cls: 'story-line-color-section' });
         imageDetails.createEl('summary', { text: t('Image & frame sizes') });
         const imageBody = imageDetails.createDiv();
-        imageBody.setCssStyles({ padding: '8px 0' });
 
         const numberSetting = (
             parent: HTMLElement,
@@ -2043,7 +2149,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         colorDetails.createEl('summary', { text: t('Plotline Color Scheme') });
 
         const colorBody = colorDetails.createDiv();
-        colorBody.setCssStyles({ padding: '8px 0' });
         colorBody.createEl('p', {
             cls: 'setting-item-description',
             text: t('These are global color defaults. To use different colors for one project, right-click it in the Navigator and enable project-specific colors.'),
@@ -2301,12 +2406,11 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         const noteColorDetails = panel.createEl('details', { cls: 'story-line-color-section' });
         noteColorDetails.createEl('summary', { text: t('Sticky Note Colors') });
         const noteColorBody = noteColorDetails.createDiv();
-        noteColorBody.setCssStyles({ padding: '8px 0' });
         this.renderStickyNoteSettings(noteColorBody);
 
     }
 
-    private renderTrackerSettingsTab(panel: HTMLElement): void {
+    private renderTrackingSettingsTab(panel: HTMLElement): void {
         new Setting(panel).setName(t('Writing tracker')).setHeading();
 
         new Setting(panel)
@@ -2399,171 +2503,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     this.plugin.settings.sprintEndSound = value;
                     await this.plugin.saveSettings();
                 }));
-    }
-
-    private renderWritingSettingsTab(panel: HTMLElement): void {
-        // ═══════════════════════════════════════════
-        //  Writing Goals & Focus
-        // ═══════════════════════════════════════════
-        new Setting(panel).setName(t('Writing Goals')).setHeading();
-
-        new Setting(panel)
-            .setName(t('Daily word goal'))
-            .setDesc(t('Target number of words per day (shown in Stats view)'))
-            .addText(text => text
-                .setPlaceholder('1000')
-                .setValue(String(this.plugin.settings.dailyWordGoal))
-                .onChange(async (value) => {
-                    this.plugin.settings.dailyWordGoal = Number(value) || 1000;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(panel)
-            .setName(t('Weekly word goal'))
-            .setDesc(t('Target number of words per week (Monday → today, shown in Stats view)'))
-            .addText(text => text
-                .setPlaceholder('7000')
-                .setValue(String(this.plugin.settings.weeklyWordGoal))
-                .onChange(async (value) => {
-                    this.plugin.settings.weeklyWordGoal = Number(value) || 7000;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(panel)
-            .setName(t('Monthly word goal'))
-            .setDesc(t('Target number of words for the current calendar month (shown in Stats view)'))
-            .addText(text => text
-                .setPlaceholder('30000')
-                .setValue(String(this.plugin.settings.monthlyWordGoal))
-                .onChange(async (value) => {
-                    this.plugin.settings.monthlyWordGoal = Number(value) || 30000;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(panel)
-            .setName(t('Project word goal'))
-            .setDesc(t('Target total words for the active project (shown in Stats view)'))
-            .addText(text => text
-                .setPlaceholder('80000')
-                .setValue(String(this.plugin.settings.projectWordGoal))
-                .onChange(async (value) => {
-                    this.plugin.settings.projectWordGoal = Number(value) || 80000;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(panel)
-            .setName(t('Sprint end sound'))
-            .setDesc(t('Play a chime when the writing sprint timer reaches zero'))
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.sprintEndSound)
-                .onChange(async (value) => {
-                    this.plugin.settings.sprintEndSound = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(panel)
-            .setName(t('Write scene references as wikilinks'))
-            .setDesc(t('Store scene references such as POV, location, characters, setup_scenes, and payoff_scenes as Obsidian [[wikilinks]] so they update automatically when files are renamed. Existing plain-text values continue to work.'))
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.writeFieldsAsWikilinks !== false)
-                .onChange(async (value) => {
-                    this.plugin.settings.writeFieldsAsWikilinks = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(panel)
-            .setName(t('Mirror custom fields to top-level YAML'))
-            .setDesc(t('Also write Universal Field values as top-level YAML keys, using each template\'s “Top-level key”, so they appear in Obsidian Properties, Bases, and Dataview. Reserved NarrativeLab keys are skipped.'))
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.universalFieldsMirrorTopLevel !== false)
-                .onChange(async (value) => {
-                    const wasOn = this.plugin.settings.universalFieldsMirrorTopLevel !== false;
-                    this.plugin.settings.universalFieldsMirrorTopLevel = value;
-                    await this.plugin.saveSettings();
-                    // When the user flips the toggle ON, retro-mirror every
-                    // existing entity so values already saved in
-                    // `universalFields:` flow into the top-level YAML keys
-                    // without requiring a manual re-edit per record.
-                    if (value && !wasOn) {
-                        try { await this.plugin.migrateUniversalFieldMirror(); }
-                        catch (e) { console.error('[NarrativeLab] mirror toggle migration:', e); }
-                    }
-                }));
-
-        // ── Count unit (words vs characters) ──
-        new Setting(panel)
-            .setName(t('Count unit for scene lengths'))
-            .setDesc(t('Choose whether scene cards, the Timeline, and the Inspector display scene length in words or characters. Useful for prose writers who track length in characters (e.g. Russian, Chinese, Japanese).'))
-            .addDropdown(dropdown => {
-                dropdown.addOption('words', t('Words'));
-                dropdown.addOption('chars', t('Characters'));
-                dropdown.setValue(this.plugin.settings.countUnit === 'chars' ? 'chars' : 'words');
-                dropdown.onChange(async (value) => {
-                    this.plugin.settings.countUnit = value as 'words' | 'chars';
-                    await this.plugin.saveSettings();
-                    this.plugin.refreshOpenViews();
-                });
-            });
-
-        // ── Issue #78 — Wordcount exclusions ──
-        new Setting(panel)
-            .setName(t('Exclude `%%comments%%` from wordcount'))
-            .setDesc(t('Exclude Obsidian comment blocks (text between `%%` markers) so the word count matches what readers see.'))
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.excludeCommentsFromWordcount !== false)
-                .onChange(async (value) => {
-                    this.plugin.settings.excludeCommentsFromWordcount = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        new Setting(panel)
-            .setName(t('Also ignore checkbox lines (`- [ ]`, `- [x]`)'))
-            .setDesc(t('Also exclude Markdown task lines from the word count. Off by default because some authors keep checklists in the manuscript body.'))
-            .addToggle(toggle => toggle
-                .setValue(this.plugin.settings.excludeChecklistFromWordcount === true)
-                .onChange(async (value) => {
-                    this.plugin.settings.excludeChecklistFromWordcount = value;
-                    await this.plugin.saveSettings();
-                }));
-
-        // ── Multi-language support — default project language ──
-        new Setting(panel)
-            .setName(t('Default project language'))
-            .setDesc(t('BCP-47 tag used for word counting, reading time, dialogue %, stop-word filtering and PDF line wrapping. Choose Auto-detect to infer the script from manuscript text. Per-project overrides still use the `language:` field in the project frontmatter.'))
-            .addDropdown(dropdown => {
-                dropdown.addOption('auto', t('Auto-detect from text'));
-                for (const { code, label } of SUPPORTED_STORYLINE_LOCALES) {
-                    dropdown.addOption(code, `${label} (${code})`);
-                }
-                dropdown.setValue(this.plugin.settings.defaultProjectLanguage ?? 'en');
-                dropdown.onChange(async (value) => {
-                    this.plugin.settings.defaultProjectLanguage = value;
-                    try {
-                        const { setWordcountLocale } = await import('./services/MetadataParser');
-                        setWordcountLocale(normalizeStoryLineLocale(value));
-                    } catch { /* non-fatal */ }
-                    await this.plugin.saveSettings();
-                });
-            });
-
-        // ── Issue #77 — Default scene frontmatter ──
-        new Setting(panel)
-            .setName(t('Default scene frontmatter'))
-            .setDesc(t('Raw YAML merged into every newly created scene. Useful for companion plugins (e.g. `cssclasses: [fountain]`). NarrativeLab\'s own keys (type, title, act, chapter, sequence, status…) take priority on conflict.'))
-            .addTextArea(ta => {
-                // eslint-disable-next-line obsidianmd/ui/sentence-case -- YAML keys are case-sensitive.
-                ta.setPlaceholder('cssclasses:\n  - fountain\n')
-                    .setValue(this.plugin.settings.defaultSceneFrontmatter || '')
-                    .onChange(async (value) => {
-                        this.plugin.settings.defaultSceneFrontmatter = value;
-                        await this.plugin.saveSettings();
-                    });
-                ta.inputEl.rows = 4;
-                ta.inputEl.setCssStyles({
-                    width: '100%',
-                    fontFamily: 'var(--font-monospace)',
-                });
-            });
 
     }
 
@@ -2632,7 +2571,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         const extraDetails = advancedBody.createEl('details', { cls: 'story-line-color-section' });
         extraDetails.createEl('summary', { text: t('Additional Source Folders (Experimental)') });
         const extraBody = extraDetails.createDiv();
-        extraBody.setCssStyles({ padding: '8px 0' });
 
         const extraWarn = extraBody.createDiv({ cls: 'setting-item-description' });
         extraWarn.setCssStyles({

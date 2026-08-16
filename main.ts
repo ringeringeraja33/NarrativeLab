@@ -90,7 +90,7 @@ import { SceneInspectorView } from './views/SceneInspectorView';
 import { NotesView } from './views/NotesView';
 import { SynopsisView } from './views/SynopsisView';
 import { DetailsView } from './views/DetailsView';
-import { ManuscriptView } from './views/ManuscriptView';
+import { ManuscriptView, clearLastManuscriptState } from './views/ManuscriptView';
 import { ResearchView } from './views/ResearchView';
 import { WritingTrackerPanel } from './views/WritingTrackerPanel';
 import { WritingTrackerView } from './views/WritingTrackerView';
@@ -132,6 +132,7 @@ import {
     libraryProfileLayoutFromUnknown,
     readLibraryProfileLayout,
 } from './utils/libraryProfileLayout';
+import { clearPendingStoryGraphWikilinks } from './components/LibraryModeBar';
 import { QuickAddModal } from './components/QuickAddModal';
 import { ConverterModal, type ConverterTab } from './components/ConverterModal';
 import { syncAllNativeLibraryBases } from './components/NativeLibraryBase';
@@ -309,6 +310,7 @@ export default class SceneCardsPlugin extends Plugin {
     } | null = null;
     /** Cached plotgrid mention scan — rebuilds are expensive on large grids. */
     private _plotGridScanCache: {
+        projectFile: string;
         at: number;
         result: {
             characters: Map<string, Set<string>>;
@@ -2277,8 +2279,13 @@ export default class SceneCardsPlugin extends Plugin {
         tagHits: Map<string, PlotGridAppearanceHit[]>;
         filePath: string;
     }> {
+        const projectFile = normalizePath(this.sceneManager.activeProject?.filePath || '');
         const cached = this._plotGridScanCache;
-        if (cached && Date.now() - cached.at < SceneCardsPlugin.PLOTGRID_SCAN_TTL_MS) {
+        if (
+            cached
+            && cached.projectFile === projectFile
+            && Date.now() - cached.at < SceneCardsPlugin.PLOTGRID_SCAN_TTL_MS
+        ) {
             return cached.result;
         }
 
@@ -2302,7 +2309,7 @@ export default class SceneCardsPlugin extends Plugin {
 
         const data = await this.loadPlotGrid();
         if (!data?.pages?.length) {
-            this._plotGridScanCache = { at: Date.now(), result: empty };
+            this._plotGridScanCache = { projectFile, at: Date.now(), result: empty };
             return empty;
         }
 
@@ -2394,7 +2401,7 @@ export default class SceneCardsPlugin extends Plugin {
             tagHits,
             filePath,
         };
-        this._plotGridScanCache = { at: Date.now(), result };
+        this._plotGridScanCache = { projectFile, at: Date.now(), result };
         return result;
     }
 
@@ -2975,10 +2982,13 @@ export default class SceneCardsPlugin extends Plugin {
             this.settings.ignoredCharacters = [];
         }
 
-        // Writing tracker data
-        if (isRecord(stats.writingTrackerData)) {
-            this.writingTracker.importData(stats.writingTrackerData as unknown as Parameters<typeof this.writingTracker.importData>[0]);
-        }
+        // Always replace the in-memory ledger. Skipping this when a project
+        // has no stats.json would keep the previous book's daily totals.
+        this.writingTracker.importData(
+            isRecord(stats.writingTrackerData)
+                ? stats.writingTrackerData as unknown as Parameters<typeof this.writingTracker.importData>[0]
+                : undefined,
+        );
 
         // Persist migrated / folder-adopted Library categories immediately so
         // the next project switch cannot fall back to the shared legacy seed.
@@ -4026,9 +4036,46 @@ export default class SceneCardsPlugin extends Plugin {
 
     flushWritingTrackers(totalWords?: number): void {
         try {
-            const words = totalWords ?? this.sceneManager.queryService.getStatistics().totalWords;
+            const words = totalWords ?? this.sceneManager.queryService.getStatistics(
+                this.settings.excludeArcAnchorFromWordcount ?? true,
+            ).totalWords;
             const delta = this.writingTracker.flushSession(words);
             this.globalWritingTracker?.recordFlush(delta);
+        } catch { /* project may not be set yet */ }
+    }
+
+    /**
+     * Drop in-memory caches that are not keyed by project. Call after the new
+     * project's System data + scene/entity indexes are loaded, and before views
+     * refresh. Do not call from `withActiveProject()`.
+     */
+    isolateProjectTransientState(): void {
+        this.invalidatePlotGridScanCache();
+        this.linkScanner.invalidateAll();
+        this.linkScanner.rebuildLookups(this.settings.characterAliases);
+        this.linkScanner.scanAll(this.sceneManager.getAllScenes());
+        this.sceneManager.undoManager.clear();
+        this.sceneManager.queryService.clearCaches();
+        this.sceneManager.rebuildSceneTitleToStemMap();
+        clearPendingStoryGraphWikilinks();
+        clearLastManuscriptState();
+        this.floatingStickyNotes?.syncVisibleNotesForProject(
+            this.sceneManager.activeProject?.filePath ?? null,
+        );
+        for (const leaf of this.app.workspace.getLeavesOfType(NAVIGATOR_VIEW_TYPE)) {
+            const view = leaf.view as NavigatorView;
+            view.resetProjectTransientUi?.();
+        }
+    }
+
+    /** After a project switch, baseline the session on that book's scene total. */
+    rebindWritingTrackerSession(): void {
+        try {
+            const words = this.sceneManager.queryService.getStatistics(
+                this.settings.excludeArcAnchorFromWordcount ?? true,
+            ).totalWords;
+            this.writingTracker.resetSession();
+            if (words > 0) this.writingTracker.startSession(words);
         } catch { /* project may not be set yet */ }
     }
 
@@ -4998,6 +5045,10 @@ export default class SceneCardsPlugin extends Plugin {
             RESEARCH_VIEW_TYPE,
             WRITING_TRACKER_PANEL_TYPE,
             WRITING_TRACKER_VIEW_TYPE,
+            SCENE_INSPECTOR_VIEW_TYPE,
+            DETAILS_VIEW_TYPE,
+            NOTES_VIEW_TYPE,
+            SYNOPSIS_VIEW_TYPE,
         ];
 
         const activePath = this.sceneManager.activeProject?.filePath

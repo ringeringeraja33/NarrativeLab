@@ -120,6 +120,17 @@ export class NotesView extends ItemView {
         this.currentNotesPath = null;
     }
 
+    refresh(): void {
+        if (this.currentScenePath && !this.sceneManager.getScene(this.currentScenePath)) {
+            this.currentScenePath = null;
+            this.currentNotesPath = null;
+            this.detachEditor();
+            this.refreshEmptyState();
+            return;
+        }
+        this.updateForActiveFile();
+    }
+
     private async showScene(filePath: string): Promise<void> {
         const scene = this.sceneManager.getScene(filePath);
         if (!scene) return;

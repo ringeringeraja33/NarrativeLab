@@ -776,8 +776,12 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /removeEventListener\('contextmenu'/);
     assert.doesNotMatch(host, /title:\s*'NarrativeLab'/);
     assert.doesNotMatch(host, /createSubmenu\(\{\s*id:\s*'narrativelab\.plot-grid\.submenu'/);
+    assert.match(host, /createSubmenu\(\{\s*id:\s*CONNECTED_NOTES_MENU_ID/);
+    assert.match(host, /registerConnectedNotesHoverSubmenu/);
     assert.match(host, /已连接笔记|Connected notes/);
     assert.match(host, /onShowConnectedNotes/);
+    assert.match(host, /getConnectedNotes/);
+    assert.match(host, /onOpenConnectedNote/);
     assert.doesNotMatch(host, /打开已链接笔记/);
     assert.match(view, /collectConnectedNotes|showConnectedNotesMenu/);
     assert.match(host, /contextMenu\.mainArea/);
@@ -827,6 +831,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /data-u-context-menu-submenu/);
     assert.match(host, /isUniverContextMenuOpen/);
     assert.match(host, /desktop-context-menu/);
+    assert.match(host, /installUniverContextMenuHoverAssist/);
     assert.match(host, /retireOlderVisibleUniverSubmenus/);
     assert.match(host, /style\.visibility !== 'hidden'/);
     assert.match(host, /kickUniverSubmenuPosition/);

@@ -1,4 +1,5 @@
 import { Menu } from 'obsidian';
+import { isUniverContextMenuTarget } from './univerContextMenu';
 
 export type MenuAnchor = MouseEvent | { x: number; y: number };
 
@@ -86,6 +87,7 @@ function resolveEventWindow(anchor: MenuAnchor): Window {
 function swallowRightButtonTail(event: Event): void {
     const button = (event as MouseEvent).button;
     if (event.type !== 'contextmenu' && event.type !== 'auxclick' && button !== 2) return;
+    if (isUniverContextMenuTarget((event as MouseEvent).target)) return;
     event.preventDefault();
     event.stopPropagation();
     if ('stopImmediatePropagation' in event) {
