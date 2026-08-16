@@ -1,13 +1,9 @@
 export const VIEWS_ZH: Record<string, string> = {
     // View titles
-    'Plot Grid': '表格',
-    'Concept Grid pages': '表格页面',
     'Loading spreadsheet…': '正在加载表格…',
     'Spreadsheet failed to load': '表格加载失败',
     'The spreadsheet could not initialize. Try loading it again.': '表格无法初始化，请重试加载。',
     'Reload spreadsheet': '重新加载表格',
-    'Pages': '页面',
-    'Page': '页面',
     'Page {n}': '页面 {n}',
     'Row {n}': '行 {n}',
     'Col {n}': '列 {n}',

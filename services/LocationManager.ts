@@ -139,7 +139,7 @@ export class LocationManager {
                 ) as Record<string, string | string[]> | undefined,
                 created: fmEff.created,
                 modified: fmEff.modified,
-                notes: body || undefined,
+                notes: body || coerceString(fmEff.notes) || undefined,
             };
             return world;
         }
@@ -172,7 +172,7 @@ export class LocationManager {
             ) as Record<string, string | string[]> | undefined,
             created: fmEff.created,
             modified: fmEff.modified,
-            notes: body || undefined,
+            notes: body || coerceString(fmEff.notes) || undefined,
         };
         return loc;
     }

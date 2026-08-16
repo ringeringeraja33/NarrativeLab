@@ -100,9 +100,6 @@ let _wordcountLocale: StoryLineLocale = DEFAULT_STORYLINE_LOCALE;
 export function setWordcountLocale(locale: StoryLineLocale): void {
     _wordcountLocale = locale || DEFAULT_STORYLINE_LOCALE;
 }
-export function getWordcountLocale(): StoryLineLocale {
-    return _wordcountLocale;
-}
 function wrapScalar(v: unknown): unknown {
     if (!_writeSceneFieldsAsWikilinks) return v;
     if (v === undefined || v === null || v === '') return v;

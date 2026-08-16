@@ -12,13 +12,6 @@ export function axisRowCellId(rowId: string): string {
     return `${AXIS_ROW_PREFIX}${rowId}`;
 }
 
-export function isAxisCellId(id: string | undefined): boolean {
-    if (!id) return false;
-    return id === AXIS_CORNER_CELL_ID
-        || id.startsWith(AXIS_COL_PREFIX)
-        || id.startsWith(AXIS_ROW_PREFIX);
-}
-
 type PlotGridAxisPage = {
     cornerLabel?: string;
     rows: Array<{ id: string; label: string }>;

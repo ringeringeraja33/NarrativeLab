@@ -182,6 +182,98 @@ export function resolveLibraryCategoryLabel(
     return t(english);
 }
 
+/** Visible Library tabs for canvas / other hosts — same set as CodexCategoryTabs. */
+export function listVisibleLibraryCategories(plugin: SceneCardsPlugin): Array<{
+    id: string;
+    label: string;
+    folder: string;
+}> {
+    const hiddenFixed = new Set(plugin.settings.libraryHiddenFixedCategories || []);
+    const enabled = new Set(plugin.settings.codexEnabledCategories || []);
+
+    const items: Array<{ id: string; label: string; folder: string }> = [];
+    if (!hiddenFixed.has('characters')) {
+        items.push({
+            id: 'characters',
+            label: resolveLibraryCategoryLabel(plugin, 'characters', 'Characters'),
+            folder: resolveLibraryFolderName(plugin, 'characters'),
+        });
+    }
+    if (!hiddenFixed.has('locations')) {
+        items.push({
+            id: 'locations',
+            label: resolveLibraryCategoryLabel(plugin, 'locations', 'Locations'),
+            folder: resolveLibraryFolderName(plugin, 'locations'),
+        });
+    }
+    for (const category of plugin.codexManager.getCategories()) {
+        if (category.id === UNCATEGORIZED_CATEGORY_ID) continue;
+        if (!enabled.has(category.id)) continue;
+        items.push({
+            id: category.id,
+            label: resolveLibraryCategoryLabel(plugin, category.id, category.label),
+            folder: resolveLibraryFolderName(plugin, category.id),
+        });
+    }
+
+    const seen = new Set(items.map(item => item.id));
+    for (const custom of plugin.settings.codexCustomCategories || []) {
+        if (!custom?.id || seen.has(custom.id)) continue;
+        if (custom.id === UNCATEGORIZED_CATEGORY_ID) continue;
+        if (!enabled.has(custom.id)) continue;
+        seen.add(custom.id);
+        items.push({
+            id: custom.id,
+            label: resolveLibraryCategoryLabel(plugin, custom.id, custom.label),
+            folder: resolveLibraryFolderName(plugin, custom.id),
+        });
+    }
+
+    const order = plugin.settings.libraryCategoryOrder || [];
+    const orderIndex = new Map(order.map((id, index) => [id, index]));
+    items.sort((left, right) => {
+        const leftIndex = orderIndex.get(left.id);
+        const rightIndex = orderIndex.get(right.id);
+        if (leftIndex === undefined && rightIndex === undefined) return 0;
+        if (leftIndex === undefined) return 1;
+        if (rightIndex === undefined) return -1;
+        return leftIndex - rightIndex;
+    });
+    return items;
+}
+
+/** Display name for a canvas kind / NL category id, including custom-* orphans. */
+export function resolveLibraryCategoryLabelForKind(plugin: SceneCardsPlugin, kind: string): string {
+    const raw = String(kind || '').trim();
+    if (!raw) return '';
+    const categories = listVisibleLibraryCategories(plugin);
+    const match = categories.find(category => {
+        const id = String(category.id || '').toLowerCase();
+        const label = String(category.label || '').toLowerCase();
+        const folder = String(category.folder || '').toLowerCase();
+        const key = raw.toLowerCase();
+        return id === key || label === key || folder === key
+            || (id === 'characters' && (key === 'character' || key === 'characters'))
+            || (id === 'locations' && (key === 'location' || key === 'locations'))
+            || (id === 'items' && (key === 'item' || key === 'items'));
+    });
+    if (match?.label) return match.label;
+    const custom = (plugin.settings.codexCustomCategories || []).find(category => (
+        category.id === raw || category.id.toLowerCase() === raw.toLowerCase()
+    ));
+    if (custom?.label?.trim()) return custom.label.trim();
+    const mapped = raw.toLowerCase() === 'character' ? 'characters'
+        : raw.toLowerCase() === 'location' ? 'locations'
+        : raw.toLowerCase() === 'item' ? 'items'
+        : raw;
+    const resolved = resolveLibraryCategoryLabel(plugin, mapped, custom?.label || '');
+    if (resolved && resolved !== mapped && resolved !== raw) return resolved;
+    const folder = plugin.sceneManager.activeProject?.libraryFolders?.[mapped]
+        || plugin.sceneManager.activeProject?.libraryFolders?.[raw];
+    if (folder?.trim()) return folder.trim();
+    return resolved || raw;
+}
+
 function setLibraryCategoryDisplayMetadata(
     plugin: SceneCardsPlugin,
     categoryId: string,
@@ -1044,7 +1136,7 @@ export async function handleLibraryFolderVaultRename(
     return true;
 }
 
-function findCategoryIdForFolderName(
+export function findCategoryIdForFolderName(
     plugin: SceneCardsPlugin,
     project: StoryLineProject,
     folderName: string,
@@ -1056,14 +1148,14 @@ function findCategoryIdForFolderName(
         ...(plugin.settings.codexCustomCategories || []).map(c => c.id),
     ]);
     for (const id of candidates) {
-        if (resolveLibraryFolderName(plugin, id, project) === folderName) return id;
+        if (libraryFolderNamesMatch(resolveLibraryFolderName(plugin, id, project), folderName)) return id;
     }
     // Also match defaults / builtin folder even if not currently enabled
     for (const [id, defName] of Object.entries(DEFAULT_LIBRARY_FOLDER_NAMES)) {
-        if (defName === folderName) return id;
+        if (libraryFolderNamesMatch(defName, folderName)) return id;
     }
     for (const cc of plugin.settings.codexCustomCategories || []) {
-        if (cc.label === folderName) return cc.id;
+        if (libraryFolderNamesMatch(cc.label, folderName)) return cc.id;
     }
     return null;
 }

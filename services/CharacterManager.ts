@@ -403,7 +403,7 @@ export class CharacterManager {
             ) as Record<string, string | string[]> | undefined,
             created: safeFm.created,
             modified: safeFm.modified,
-            notes: body || undefined,
+            notes: body || coerceString(safeFm.notes) || undefined,
         };
 
         return character;

@@ -1157,7 +1157,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
 };
 
 /** Settings page horizontal tab ids */
-type NarrativeLabSettingsTabId = 'general' | 'scenes' | 'templates' | 'display' | 'colors' | 'tracking' | 'export';
+type NarrativeLabSettingsTabId = 'general' | 'canvas' | 'scenes' | 'templates' | 'display' | 'colors' | 'tracking' | 'export';
 
 /**
  * Settings tab for the NarrativeLab plugin
@@ -1186,6 +1186,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         const tabs: Array<{ id: NarrativeLabSettingsTabId; label: string }> = [
             { id: 'general', label: 'General' },
+            { id: 'canvas', label: 'Canvas' },
             { id: 'scenes', label: 'Scenes' },
             { id: 'templates', label: 'Template Center' },
             { id: 'display', label: 'Display' },
@@ -1209,6 +1210,9 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         const panel = containerEl.createDiv('nl-settings-panel');
         switch (this.settingsTabId) {
+            case 'canvas':
+                this.renderNarrativeCanvasSettings(panel);
+                break;
             case 'scenes':
                 this.renderScenesSettingsTab(panel);
                 break;
@@ -1309,7 +1313,136 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                     this.plugin.updateToolbarVisibility();
                 }));
+    }
 
+    private canvasSettingsBag(): {
+        contentFont?: string;
+        spellCheck?: boolean;
+        autoSaveIntervalSeconds?: number | string;
+        aiEndpoint?: string;
+        aiApiKey?: string;
+        aiModel?: string;
+        aiNarrativeKnowledge?: boolean;
+    } {
+        const canvas = this.plugin.canvasModule as { settings?: Record<string, unknown> } | undefined;
+        if (canvas?.settings) return canvas.settings;
+        const data = (this.plugin.settings.narrativeCanvasData ||= {}) as { settings?: Record<string, unknown> };
+        if (!data.settings) data.settings = {};
+        return data.settings;
+    }
+
+    private async persistCanvasSettings(): Promise<void> {
+        const canvas = this.plugin.canvasModule as {
+            savePluginData?: () => Promise<void>;
+            notifyCanvasSettingsChanged?: () => void;
+        } | undefined;
+        if (canvas?.savePluginData) {
+            await canvas.savePluginData();
+            canvas.notifyCanvasSettingsChanged?.();
+            return;
+        }
+        await this.plugin.saveSettings();
+    }
+
+    private renderNarrativeCanvasSettings(panel: HTMLElement): void {
+        new Setting(panel).setName(t('Canvas')).setHeading();
+        const bag = this.canvasSettingsBag();
+
+        new Setting(panel)
+            .setName(t('Content font'))
+            .setDesc(t('Font used for Play preview and narrative text on the canvas.'))
+            .addDropdown(dropdown => dropdown
+                .addOption('obsidian', t('Follow Obsidian'))
+                .addOption('system', t('System font'))
+                // eslint-disable-next-line obsidianmd/ui/sentence-case -- Font family name.
+                .addOption('cascadia', 'Cascadia Code')
+                .addOption('serif', t('Classic serif'))
+                .setValue(String(bag.contentFont || 'obsidian'))
+                .onChange(async value => {
+                    bag.contentFont = value;
+                    await this.persistCanvasSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Spell-check in canvas fields'))
+            .setDesc(t('Show the browser spell-check underlines in Narrative Canvas text fields.'))
+            .addToggle(toggle => toggle
+                .setValue(Boolean(bag.spellCheck))
+                .onChange(async value => {
+                    bag.spellCheck = value;
+                    await this.persistCanvasSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Canvas auto-save (seconds)'))
+            .setDesc(t('How often the open .ncanvas file is written. Leave empty for the canvas default.'))
+            .addText(text => text
+                .setPlaceholder(t('Default'))
+                .setValue(bag.autoSaveIntervalSeconds == null || bag.autoSaveIntervalSeconds === ''
+                    ? ''
+                    : String(bag.autoSaveIntervalSeconds))
+                .onChange(async value => {
+                    const trimmed = value.trim();
+                    bag.autoSaveIntervalSeconds = trimmed === '' ? '' : Number(trimmed) || '';
+                    await this.persistCanvasSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Canvas AI endpoint'))
+            .addText(text => text
+                // eslint-disable-next-line obsidianmd/ui/sentence-case -- URL placeholder, not UI copy.
+                .setPlaceholder('https://api.example.com/v1/chat/completions')
+                .setValue(String(bag.aiEndpoint || ''))
+                .onChange(async value => {
+                    bag.aiEndpoint = value.trim();
+                    await this.persistCanvasSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Canvas AI key'))
+            .addText(text => {
+                text.inputEl.type = 'password';
+                text.setValue(String(bag.aiApiKey || ''))
+                    .onChange(async value => {
+                        bag.aiApiKey = value.trim();
+                        await this.persistCanvasSettings();
+                    });
+            });
+
+        new Setting(panel)
+            .setName(t('Canvas AI model'))
+            .addText(text => text
+                .setValue(String(bag.aiModel || ''))
+                .onChange(async value => {
+                    bag.aiModel = value.trim();
+                    await this.persistCanvasSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Narrative craft guidance'))
+            .setDesc(t('Prime canvas AI replies with condensed storytelling craft. Adds tokens to each request.'))
+            .addToggle(toggle => toggle
+                .setValue(Boolean(bag.aiNarrativeKnowledge))
+                .onChange(async value => {
+                    bag.aiNarrativeKnowledge = value;
+                    await this.persistCanvasSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Create canvas backup'))
+            .setDesc(t('Create or restore a versioned snapshot of the open .ncanvas file.'))
+            .addButton(button => button
+                .setButtonText(t('Backup'))
+                .onClick(async () => {
+                    const canvas = await this.plugin.ensureCanvasModuleReady();
+                    await canvas?.createCurrentProjectBackup?.();
+                }))
+            .addButton(button => button
+                .setButtonText(t('Restore'))
+                .onClick(async () => {
+                    const canvas = await this.plugin.ensureCanvasModuleReady();
+                    await canvas?.chooseProjectBackupToRestore?.();
+                }));
     }
 
     private renderScenesSettingsTab(panel: HTMLElement): void {

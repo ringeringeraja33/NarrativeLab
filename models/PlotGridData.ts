@@ -16,6 +16,8 @@ export interface CellData {
     formula?: string;
     /** When true, sync will not overwrite this cell's content */
     manualContent?: boolean;
+    /** Full Univer IStyleData (borders, wrap, nfmt, font…) so remounts keep formatting. */
+    univerStyle?: Record<string, unknown>;
 }
 
 export interface ColumnMeta {
@@ -90,6 +92,25 @@ export interface PlotGridData {
     labelColumnWidth?: number;
 }
 
+/**
+ * Univer IWorksheetData fields NarrativeLab does not model itself.
+ * mergeData / gridlines / hidden row flags must survive remount + save.
+ */
+export interface UniverSheetSnapshotExtras {
+    mergeData?: unknown[];
+    defaultColumnWidth?: number;
+    defaultRowHeight?: number;
+    defaultStyle?: unknown;
+    rowHeader?: unknown;
+    columnHeader?: unknown;
+    showGridlines?: number | boolean;
+    gridlinesColor?: string;
+    rightToLeft?: number | boolean;
+    custom?: Record<string, unknown>;
+    rowFlags?: Record<string, Record<string, unknown>>;
+    columnFlags?: Record<string, Record<string, unknown>>;
+}
+
 /** One page inside a multi-page Concept Grid document. */
 export interface ConceptGridPage extends PlotGridData {
     id: string;
@@ -98,6 +119,14 @@ export interface ConceptGridPage extends PlotGridData {
     hidden?: boolean;
     /** Worksheet tab color as `#rrggbb` (Univer / Excel tabColor). */
     tabColor?: string;
+    /** Opaque Univer sheet fields (merges, gridlines, hidden axes…). */
+    univerExtras?: UniverSheetSnapshotExtras;
+}
+
+/** Opaque Univer plugin snapshot (drawings, CF, validation, notes, filter…). */
+export interface UniverWorkbookResource {
+    name: string;
+    data: string;
 }
 
 /** Persisted Concept Grid document (v2). */
@@ -106,6 +135,106 @@ export interface ConceptGridDocument {
     pages: ConceptGridPage[];
     activePageId: string;
     sidebarCollapsed?: boolean;
+    /**
+     * Univer workbook.resources minus NarrativeLab's own meta blob.
+     * Images / notes / validation live here so a remount or save cannot drop them.
+     */
+    univerResources?: UniverWorkbookResource[];
+    /** Univer workbook.styles registry (cells may reference style ids). */
+    univerStyles?: Record<string, unknown>;
+}
+
+const NL_UNIVER_META_RESOURCE = 'NARRATIVELAB_PLOTGRID_META';
+
+export function normalizeUniverWorkbookResources(raw: unknown): UniverWorkbookResource[] | undefined {
+    if (!Array.isArray(raw)) return undefined;
+    const next: UniverWorkbookResource[] = [];
+    for (const item of raw) {
+        if (!item || typeof item !== 'object') continue;
+        const name = typeof (item as { name?: unknown }).name === 'string'
+            ? (item as { name: string }).name.trim()
+            : '';
+        const data = (item as { data?: unknown }).data;
+        if (!name || name === NL_UNIVER_META_RESOURCE) continue;
+        if (typeof data !== 'string' || !data) continue;
+        next.push({ name, data });
+    }
+    return next.length ? next : undefined;
+}
+
+function cloneJsonValue<T>(value: T): T {
+    return value == null ? value : JSON.parse(JSON.stringify(value)) as T;
+}
+
+function normalizeJsonObject(raw: unknown): Record<string, unknown> | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    return cloneJsonValue(raw as Record<string, unknown>);
+}
+
+function normalizeFlagMap(raw: unknown): Record<string, Record<string, unknown>> | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const next: Record<string, Record<string, unknown>> = {};
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        const item = normalizeJsonObject(value);
+        if (item) next[key] = item;
+    }
+    return Object.keys(next).length ? next : undefined;
+}
+
+export function normalizeUniverStyleMap(raw: unknown): Record<string, unknown> | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const next: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        const name = key.trim();
+        if (!name || value == null) continue;
+        next[name] = cloneJsonValue(value);
+    }
+    return Object.keys(next).length ? next : undefined;
+}
+
+export function normalizeUniverSheetExtras(raw: unknown): UniverSheetSnapshotExtras | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const src = raw as UniverSheetSnapshotExtras;
+    const extras: UniverSheetSnapshotExtras = {};
+    if (Array.isArray(src.mergeData) && src.mergeData.length) extras.mergeData = cloneJsonValue(src.mergeData);
+    if (typeof src.defaultColumnWidth === 'number' && Number.isFinite(src.defaultColumnWidth)) {
+        extras.defaultColumnWidth = src.defaultColumnWidth;
+    }
+    if (typeof src.defaultRowHeight === 'number' && Number.isFinite(src.defaultRowHeight)) {
+        extras.defaultRowHeight = src.defaultRowHeight;
+    }
+    if (src.defaultStyle != null) extras.defaultStyle = cloneJsonValue(src.defaultStyle);
+    if (src.rowHeader != null) extras.rowHeader = cloneJsonValue(src.rowHeader);
+    if (src.columnHeader != null) extras.columnHeader = cloneJsonValue(src.columnHeader);
+    if (typeof src.showGridlines === 'number' || typeof src.showGridlines === 'boolean') {
+        extras.showGridlines = src.showGridlines;
+    }
+    if (typeof src.gridlinesColor === 'string' && src.gridlinesColor.trim()) {
+        extras.gridlinesColor = src.gridlinesColor.trim();
+    }
+    if (typeof src.rightToLeft === 'number' || typeof src.rightToLeft === 'boolean') {
+        extras.rightToLeft = src.rightToLeft;
+    }
+    const custom = normalizeJsonObject(src.custom);
+    if (custom) extras.custom = custom;
+    const rowFlags = normalizeFlagMap(src.rowFlags);
+    if (rowFlags) extras.rowFlags = rowFlags;
+    const columnFlags = normalizeFlagMap(src.columnFlags);
+    if (columnFlags) extras.columnFlags = columnFlags;
+    return Object.keys(extras).length ? extras : undefined;
+}
+
+function pageHasUniverExtras(page: ConceptGridPage): boolean {
+    const extras = page.univerExtras;
+    if (!extras) return false;
+    return (extras.mergeData?.length ?? 0) > 0
+        || Boolean(extras.rowFlags && Object.keys(extras.rowFlags).length)
+        || Boolean(extras.columnFlags && Object.keys(extras.columnFlags).length)
+        || extras.showGridlines != null
+        || extras.rightToLeft != null
+        || extras.defaultStyle != null
+        || extras.rowHeader != null
+        || extras.columnHeader != null;
 }
 
 function makePageId(): string {
@@ -173,6 +302,7 @@ function normalizeCells(value: unknown): Record<string, CellData> {
             linkedViaWikilink: cell.linkedViaWikilink === true ? true : undefined,
             formula: typeof cell.formula === 'string' ? cell.formula : undefined,
             manualContent: cell.manualContent === true ? true : undefined,
+            univerStyle: normalizeJsonObject(cell.univerStyle),
         };
     }
     return cells;
@@ -202,6 +332,7 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             labelColumnWidth: normalizeAxisSize(page.labelColumnWidth),
             hidden: page.hidden === true,
             tabColor: typeof page.tabColor === 'string' ? page.tabColor.trim() : '',
+            univerExtras: normalizeUniverSheetExtras(page.univerExtras),
         }));
         const firstPage = pages[0] ?? createEmptyConceptGridPage();
         const activePageId = pages.some(p => p.id === raw.activePageId)
@@ -212,6 +343,8 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             pages,
             activePageId,
             sidebarCollapsed: Boolean(raw.sidebarCollapsed),
+            univerResources: normalizeUniverWorkbookResources(raw.univerResources),
+            univerStyles: normalizeUniverStyleMap(raw.univerStyles),
         };
     }
 
@@ -275,40 +408,32 @@ export function isConceptGridDocumentEmpty(doc: ConceptGridDocument): boolean {
     return countConceptGridFilledCells(doc) === 0;
 }
 
+/** Placeholder workbook — no user axis yet. Header-only sheets are not this. */
+export function isDefaultEmptyConceptGrid(doc: ConceptGridDocument): boolean {
+    return !(doc.pages || []).some(page =>
+        (page.rows?.length ?? 0) > 0 || (page.columns?.length ?? 0) > 0,
+    );
+}
+
 /**
- * Refuse writing a default/empty in-memory grid over an existing workbook.
- * Reset Grid is the only caller that may pass allowEmptyOverwrite.
+ * Refuse only an unhydrated placeholder over an existing workbook.
+ * A live Univer flush (user cleared cells/rows) must be allowed to save.
+ * Reset Grid may pass allowEmptyOverwrite; persist after a live editor
+ * passes fromLiveEditor.
  */
 export function shouldRefuseEmptyPlotGridWrite(
     incoming: ConceptGridDocument,
-    options: { allowEmptyOverwrite?: boolean; existed: boolean; existingFilledCells?: number },
+    options: {
+        allowEmptyOverwrite?: boolean;
+        fromLiveEditor?: boolean;
+        existed: boolean;
+        existingFilledCells?: number;
+    },
 ): boolean {
-    if (options.allowEmptyOverwrite || !options.existed) return false;
-    if (isConceptGridDocumentEmpty(incoming)) return true;
-    const existingFilled = options.existingFilledCells ?? 0;
-    return countConceptGridFilledCells(incoming) === 0 && existingFilled > 0;
-}
-
-export function cloneConceptGridPage(page: ConceptGridPage, title?: string): ConceptGridPage {
-    const cells: Record<string, CellData> = {};
-    for (const [key, cell] of Object.entries(page.cells || {})) {
-        cells[key] = { ...cell, id: key };
-    }
-    return {
-        id: makePageId(),
-        title: title ?? `${page.title} copy`,
-        rows: (page.rows || []).map(r => ({ ...r })),
-        columns: (page.columns || []).map(c => ({ ...c })),
-        cells,
-        zoom: page.zoom ?? 1,
-        stickyHeaders: page.stickyHeaders,
-        frozenColumns: page.frozenColumns,
-        frozenRows: page.frozenRows,
-        cornerLabel: page.cornerLabel,
-        headerRowHeight: page.headerRowHeight,
-        labelColumnWidth: page.labelColumnWidth,
-        hidden: page.hidden === true,
-        tabColor: page.tabColor || '',
-    };
+    if (options.allowEmptyOverwrite || options.fromLiveEditor || !options.existed) return false;
+    if ((incoming.univerResources?.length ?? 0) > 0) return false;
+    if (incoming.univerStyles && Object.keys(incoming.univerStyles).length > 0) return false;
+    if ((incoming.pages || []).some(pageHasUniverExtras)) return false;
+    return isDefaultEmptyConceptGrid(incoming);
 }
 /* eslint-enable @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

@@ -101,6 +101,12 @@ export function isExcalidrawFilePath(path: string): boolean {
     return name.endsWith('.excalidraw') || name.endsWith('.excalidraw.md');
 }
 
+/** Attachment dumps and canvas conflict backups are not Library entities. */
+export function isSkippedLibraryScanFolder(name: string): boolean {
+    const n = String(name || '').trim().toLowerCase();
+    return n === 'attachments' || n === 'conflicts';
+}
+
 /** Markdown files that NarrativeLab may treat as Library entities. */
 export function isLibraryEntityMarkdownFile(file: TFile): boolean {
     return file.extension.toLowerCase() === 'md' && !isExcalidrawFilePath(file.path);
@@ -114,8 +120,9 @@ export async function collectMarkdownFiles(app: App, folderPath: string): Promis
     if (abstract instanceof TFolder) {
         const walk = (folder: TFolder) => {
             for (const child of folder.children) {
-                if (child instanceof TFolder) walk(child);
-                else if (child instanceof TFile && isLibraryEntityMarkdownFile(child)) out.push(child);
+                if (child instanceof TFolder) {
+                    if (!isSkippedLibraryScanFolder(child.name)) walk(child);
+                } else if (child instanceof TFile && isLibraryEntityMarkdownFile(child)) out.push(child);
             }
         };
         walk(abstract);
@@ -133,7 +140,10 @@ export async function collectMarkdownFiles(app: App, folderPath: string): Promis
                 if (tf instanceof TFile) out.push(tf);
             }
         }
-        for (const sub of listing.folders) await scan(normalizePath(sub));
+        for (const sub of listing.folders) {
+            const name = normalizePath(sub).split('/').pop() || '';
+            if (!isSkippedLibraryScanFolder(name)) await scan(normalizePath(sub));
+        }
     };
     await scan(normalized);
     return out;

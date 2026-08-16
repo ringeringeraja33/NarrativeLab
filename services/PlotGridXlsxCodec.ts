@@ -36,12 +36,18 @@ import type {
     ConceptGridDocument,
     ConceptGridPage,
     RowMeta,
+    UniverSheetSnapshotExtras,
+    UniverWorkbookResource,
 } from '../models/PlotGridData';
 import {
     createEmptyConceptGridDocument,
     createEmptyConceptGridPage,
     normalizeConceptGridDocument,
+    normalizeUniverSheetExtras,
+    normalizeUniverStyleMap,
+    normalizeUniverWorkbookResources,
 } from '../models/PlotGridData';
+import { t } from '../utils/i18n';
 
 export const PLOTGRID_XLSX_FILENAME = 'datasheet.xlsx';
 /** Sidecar next to datasheet.xlsx — NarrativeLab links / ids / styles. */
@@ -96,6 +102,10 @@ export interface PlotGridNlMeta {
     schema: number;
     activePageId: string;
     sidebarCollapsed?: boolean;
+    /** Univer plugin snapshots (images, notes, CF, validation, filter…). */
+    univerResources?: UniverWorkbookResource[];
+    /** Univer workbook.styles registry. */
+    univerStyles?: Record<string, unknown>;
     /** sheet name → page id */
     pageIds: Record<string, string>;
     pages: Record<string, {
@@ -109,9 +119,10 @@ export interface PlotGridNlMeta {
         labelColumnWidth?: number;
         hidden?: boolean;
         tabColor?: string;
+        univerExtras?: UniverSheetSnapshotExtras;
         rows: RowMeta[];
         columns: ColumnMeta[];
-        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align'> & {
+        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align' | 'univerStyle'> & {
             /** Canonical cell display / Markdown text (schema ≥ 2). */
             content?: string;
             /** Original Markdown source when the visible xlsx cell stores rendered link text. */
@@ -313,6 +324,7 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
                 bold: saved.bold,
                 italic: saved.italic,
                 align: saved.align || 'left',
+                univerStyle: saved.univerStyle,
             });
         }
         return {
@@ -334,8 +346,14 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
                 : 0,
             hidden: pageMeta?.hidden === true,
             tabColor: typeof pageMeta?.tabColor === 'string' ? pageMeta.tabColor : '',
+            univerExtras: normalizeUniverSheetExtras(pageMeta?.univerExtras),
         };
-    }).filter(page => page.rows.length > 0 || page.columns.length > 0 || Object.keys(page.cells).length > 0);
+    }).filter(page =>
+        page.rows.length > 0
+        || page.columns.length > 0
+        || Object.keys(page.cells).length > 0
+        || Boolean(page.univerExtras),
+    );
 
     if (pages.length === 0) return createEmptyConceptGridDocument();
 
@@ -348,6 +366,8 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
         pages,
         activePageId,
         sidebarCollapsed: !!meta.sidebarCollapsed,
+        univerResources: normalizeUniverWorkbookResources(meta.univerResources),
+        univerStyles: normalizeUniverStyleMap(meta.univerStyles),
     });
 }
 
@@ -611,6 +631,7 @@ type UniverStyleSnapshot = {
     bl?: number | boolean | null;
     it?: number | boolean | null;
     ht?: number | null;
+    [key: string]: unknown;
 };
 type UniverCellSnapshot = {
     v?: unknown;
@@ -626,8 +647,160 @@ function resolveUniverStyle(
 ): UniverStyleSnapshot | null {
     if (!raw?.s) return null;
     if (typeof raw.s === 'string') return styles?.[raw.s] || null;
-    if (typeof raw.s === 'object') return raw.s;
+    if (typeof raw.s === 'object') return raw.s as UniverStyleSnapshot;
     return null;
+}
+
+function cloneStyleObject(style: UniverStyleSnapshot | Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+    if (!style || typeof style !== 'object') return undefined;
+    try {
+        return JSON.parse(JSON.stringify(style)) as Record<string, unknown>;
+    } catch {
+        return undefined;
+    }
+}
+
+function mergeOwnedUniverCellStyle(data?: CellData): UniverStyleSnapshot {
+    const base = cloneStyleObject(data?.univerStyle) || {};
+    return {
+        ...base,
+        bg: data?.bgColor ? { rgb: data.bgColor } : (base.bg as UniverStyleSnapshot['bg']),
+        cl: data?.textColor ? { rgb: data.textColor } : (base.cl as UniverStyleSnapshot['cl']),
+        bl: data?.bold ? 1 : 0,
+        it: data?.italic ? 1 : 0,
+        ht: data?.align === 'center' ? 2 : data?.align === 'right' ? 3 : 1,
+    };
+}
+
+function axisFlagsAt(
+    flags: Record<string, Record<string, unknown>> | undefined,
+    index: number,
+): Record<string, unknown> | undefined {
+    if (!flags) return undefined;
+    return flags[String(index)] || flags[index as unknown as string];
+}
+
+function extractAxisFlags(
+    data: Record<number, Record<string, unknown>> | undefined,
+): Record<string, Record<string, unknown>> | undefined {
+    if (!data) return undefined;
+    const next: Record<string, Record<string, unknown>> = {};
+    for (const [key, raw] of Object.entries(data)) {
+        if (!raw || typeof raw !== 'object') continue;
+        const flags: Record<string, unknown> = {};
+        if (raw.hd != null) flags.hd = raw.hd;
+        if (raw.s != null) flags.s = raw.s;
+        if (raw.custom != null) flags.custom = raw.custom;
+        if (Object.keys(flags).length) next[key] = flags;
+    }
+    return Object.keys(next).length ? next : undefined;
+}
+
+export function extractUniverSheetExtras(sheet: Record<string, unknown> | UniverSheetChromeSnapshot | undefined): UniverSheetSnapshotExtras | undefined {
+    if (!sheet) return undefined;
+    return normalizeUniverSheetExtras({
+        mergeData: sheet.mergeData,
+        defaultColumnWidth: sheet.defaultColumnWidth,
+        defaultRowHeight: sheet.defaultRowHeight,
+        defaultStyle: sheet.defaultStyle,
+        rowHeader: sheet.rowHeader,
+        columnHeader: sheet.columnHeader,
+        showGridlines: sheet.showGridlines,
+        gridlinesColor: sheet.gridlinesColor,
+        rightToLeft: sheet.rightToLeft,
+        custom: sheet.custom,
+        rowFlags: extractAxisFlags(sheet.rowData as Record<number, Record<string, unknown>> | undefined),
+        columnFlags: extractAxisFlags(sheet.columnData as Record<number, Record<string, unknown>> | undefined),
+    });
+}
+
+export function applyUniverFreezeToPage(page: ConceptGridPage, freeze: unknown): boolean {
+    if (!freeze || typeof freeze !== 'object') return false;
+    const raw = freeze as { startRow?: unknown; startColumn?: unknown; ySplit?: unknown; xSplit?: unknown };
+    const y = Number(raw.ySplit ?? raw.startRow ?? 0);
+    const x = Number(raw.xSplit ?? raw.startColumn ?? 0);
+    if (!Number.isFinite(y) || !Number.isFinite(x)) return false;
+    let changed = false;
+    if (y <= 0 && x <= 0) {
+        if (page.stickyHeaders !== false) {
+            page.stickyHeaders = false;
+            changed = true;
+        }
+        return changed;
+    }
+    if (page.stickyHeaders === false) {
+        page.stickyHeaders = true;
+        changed = true;
+    }
+    const frozenRows = Math.max(1, Math.floor(y || 1));
+    const frozenColumns = Math.max(1, Math.floor(x || 1));
+    if (page.frozenRows !== frozenRows) {
+        page.frozenRows = frozenRows;
+        changed = true;
+    }
+    if (page.frozenColumns !== frozenColumns) {
+        page.frozenColumns = frozenColumns;
+        changed = true;
+    }
+    return changed;
+}
+
+function applyExcelMerges(
+    sheet: ExcelJS.Worksheet,
+    extras: UniverSheetSnapshotExtras | undefined,
+    maxRow: number,
+    maxCol: number,
+): void {
+    for (const item of extras?.mergeData || []) {
+        if (!item || typeof item !== 'object') continue;
+        const range = item as { startRow?: unknown; endRow?: unknown; startColumn?: unknown; endColumn?: unknown };
+        const startRow = Number(range.startRow);
+        const endRow = Number(range.endRow ?? range.startRow);
+        const startCol = Number(range.startColumn);
+        const endCol = Number(range.endColumn ?? range.startColumn);
+        if (![startRow, endRow, startCol, endCol].every(Number.isFinite)) continue;
+        if (endRow < startRow || endCol < startCol) continue;
+        // Merges past the written grid inflate Excel rowCount and look like new NL rows.
+        if (startRow > maxRow || startCol > maxCol) continue;
+        try {
+            sheet.mergeCells(
+                startRow + 1,
+                startCol + 1,
+                Math.min(endRow, maxRow) + 1,
+                Math.min(endCol, maxCol) + 1,
+            );
+        } catch { /* overlapping / already merged */ }
+    }
+}
+
+function excelA1ToUniverCell(a1: string): { row: number; col: number } | null {
+    const match = /^([A-Z]+)(\d+)$/i.exec(a1.trim());
+    if (!match) return null;
+    let col = 0;
+    for (const ch of match[1].toUpperCase()) col = col * 26 + (ch.charCodeAt(0) - 64);
+    const row = Number(match[2]);
+    if (!Number.isFinite(row) || row < 1 || col < 1) return null;
+    return { row: row - 1, col: col - 1 };
+}
+
+function excelMergesToUniver(sheet: ExcelJS.Worksheet): unknown[] | undefined {
+    const refs = (sheet as ExcelJS.Worksheet & { model?: { merges?: string[] } }).model?.merges;
+    if (!Array.isArray(refs) || refs.length === 0) return undefined;
+    const merges: unknown[] = [];
+    for (const ref of refs) {
+        if (typeof ref !== 'string' || !ref.includes(':')) continue;
+        const [startRef, endRef] = ref.split(':');
+        const start = excelA1ToUniverCell(startRef || '');
+        const end = excelA1ToUniverCell(endRef || '');
+        if (!start || !end) continue;
+        merges.push({
+            startRow: Math.min(start.row, end.row),
+            endRow: Math.max(start.row, end.row),
+            startColumn: Math.min(start.col, end.col),
+            endColumn: Math.max(start.col, end.col),
+        });
+    }
+    return merges.length ? merges : undefined;
 }
 
 /** Prefer Univer rich-text `p` (live edits) over plain `v`. Null when neither is present. */
@@ -638,6 +811,37 @@ function univerCellPlainText(raw: UniverCellSnapshot | null): string | null {
     if ('v' in raw && cellValueText(raw.v) === '') return '';
     const richText = univerDocumentPlainText(raw.p);
     return richText || cellValueText(raw.v);
+}
+
+function univerCellHasPersistableValue(raw: UniverCellSnapshot | null | undefined): boolean {
+    if (!raw) return false;
+    if (typeof raw.f === 'string' && raw.f.trim()) return true;
+    const text = univerCellPlainText(raw);
+    return Boolean(text && text.trim());
+}
+
+/** Grow NL axes to cover typed Univer cells. Empty reserved matrix cells do not count. */
+function ensureOccupiedGridExtents(
+    page: ConceptGridPage,
+    cellData: Record<number, Record<number, UniverCellSnapshot>>,
+): boolean {
+    let maxRow = 0;
+    let maxCol = 0;
+    for (const [rowKey, bucket] of Object.entries(cellData || {})) {
+        const row = Number(rowKey);
+        if (!Number.isFinite(row) || !bucket) continue;
+        for (const [colKey, raw] of Object.entries(bucket)) {
+            const col = Number(colKey);
+            if (!Number.isFinite(col) || !univerCellHasPersistableValue(raw)) continue;
+            if (row > maxRow) maxRow = row;
+            if (col > maxCol) maxCol = col;
+        }
+    }
+    if (maxRow <= 0 && maxCol <= 0) return false;
+    const beforeRows = page.rows.length;
+    const beforeCols = page.columns.length;
+    ensureGridExtents(page, maxRow, maxCol);
+    return page.rows.length !== beforeRows || page.columns.length !== beforeCols;
 }
 
 /** Apply Univer cell style onto a row/column header meta (label cells at row0/col0). */
@@ -695,6 +899,7 @@ function defaultCell(partial?: Partial<CellData>): CellData {
         linkedViaWikilink: partial?.linkedViaWikilink,
         formula: partial?.formula,
         manualContent: partial?.manualContent,
+        univerStyle: partial?.univerStyle,
     };
 }
 
@@ -721,6 +926,7 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
                 bold: cell.bold,
                 italic: cell.italic,
                 align: cell.align,
+                univerStyle: cell.univerStyle,
             };
         }
         pages[page.id] = {
@@ -734,6 +940,7 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
             labelColumnWidth: page.labelColumnWidth || 0,
             hidden: page.hidden === true,
             tabColor: page.tabColor || '',
+            univerExtras: normalizeUniverSheetExtras(page.univerExtras),
             rows: page.rows.map(r => ({ ...r })),
             columns: page.columns.map(c => ({ ...c })),
             cells,
@@ -743,6 +950,8 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
         schema: META_SCHEMA,
         activePageId: doc.activePageId,
         sidebarCollapsed: doc.sidebarCollapsed,
+        univerResources: normalizeUniverWorkbookResources(doc.univerResources),
+        univerStyles: normalizeUniverStyleMap(doc.univerStyles),
         pageIds,
         pages,
     };
@@ -887,6 +1096,7 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
         if (rows.length === 0 && cols.length === 0) {
             sheet.getCell(1, 1).value = '';
         }
+        applyExcelMerges(sheet, page.univerExtras, rows.length, cols.length);
     }
 
     // Default: no embedded meta — Excel/Univer only see data sheets.
@@ -1167,6 +1377,7 @@ export async function decodePlotGridXlsx(
                     bold: saved?.bold ?? !!excelCell.font?.bold,
                     italic: saved?.italic ?? !!excelCell.font?.italic,
                     align: saved?.align || (excelCell.alignment?.horizontal as CellData['align']) || 'left',
+                    univerStyle: saved?.univerStyle,
                 });
             });
         });
@@ -1205,6 +1416,9 @@ export async function decodePlotGridXlsx(
                     : 0),
             hidden: sheet.state === 'hidden' || sheet.state === 'veryHidden' || pageMeta?.hidden === true,
             tabColor: argbToCss(sheet.properties?.tabColor?.argb) || pageMeta?.tabColor || '',
+            univerExtras: normalizeUniverSheetExtras(pageMeta?.univerExtras) || normalizeUniverSheetExtras({
+                mergeData: excelMergesToUniver(sheet),
+            }),
         });
     });
 
@@ -1256,6 +1470,8 @@ export async function decodePlotGridXlsx(
         pages,
         activePageId,
         sidebarCollapsed: !!meta?.sidebarCollapsed,
+        univerResources: normalizeUniverWorkbookResources(meta?.univerResources),
+        univerStyles: normalizeUniverStyleMap(meta?.univerStyles),
     });
 }
 
@@ -1320,32 +1536,35 @@ export function documentToUniverWorkbookData(
                     f: data?.formula,
                     p: options.richText === false ? undefined : rich?.cellDocument,
                     custom: source ? { [PLOTGRID_SOURCE_FIELD]: source } : undefined,
-                    s: {
-                        bg: data?.bgColor ? { rgb: data.bgColor } : undefined,
-                        cl: data?.textColor ? { rgb: data.textColor } : undefined,
-                        bl: data?.bold ? 1 : undefined,
-                        it: data?.italic ? 1 : undefined,
-                        ht: data?.align === 'center' ? 2 : data?.align === 'right' ? 3 : 1,
-                    },
+                    s: mergeOwnedUniverCellStyle(data),
                 };
             });
         });
 
         // ia:0 locks manual row height. Univer prefers auto-height (ah) when ia is
         // null/1, so a later column-resize auto-fit would wipe custom row heights.
-        const rowData: Record<number, { h: number; ia: number }> = {};
-        const columnData: Record<number, { w: number }> = {};
+        const extras = normalizeUniverSheetExtras(page.univerExtras);
+        const rowData: Record<number, Record<string, unknown>> = {};
+        const columnData: Record<number, Record<string, unknown>> = {};
         if ((page.headerRowHeight || 0) > 0) {
-            rowData[0] = { h: page.headerRowHeight || 0, ia: 0 };
+            rowData[0] = { h: page.headerRowHeight || 0, ia: 0, ...axisFlagsAt(extras?.rowFlags, 0) };
+        } else if (axisFlagsAt(extras?.rowFlags, 0)) {
+            rowData[0] = { ...axisFlagsAt(extras?.rowFlags, 0) };
         }
         if ((page.labelColumnWidth || 0) > 0) {
-            columnData[0] = { w: page.labelColumnWidth || 0 };
+            columnData[0] = { w: page.labelColumnWidth || 0, ...axisFlagsAt(extras?.columnFlags, 0) };
+        } else if (axisFlagsAt(extras?.columnFlags, 0)) {
+            columnData[0] = { ...axisFlagsAt(extras?.columnFlags, 0) };
         }
         rows.forEach((row, ri) => {
-            if (row.height > 0) rowData[ri + 1] = { h: row.height, ia: 0 };
+            const flags = axisFlagsAt(extras?.rowFlags, ri + 1);
+            if (row.height > 0) rowData[ri + 1] = { h: row.height, ia: 0, ...flags };
+            else if (flags) rowData[ri + 1] = { ...flags };
         });
         cols.forEach((col, ci) => {
-            if (col.width > 0) columnData[ci + 1] = { w: col.width };
+            const flags = axisFlagsAt(extras?.columnFlags, ci + 1);
+            if (col.width > 0) columnData[ci + 1] = { w: col.width, ...flags };
+            else if (flags) columnData[ci + 1] = { ...flags };
         });
 
         sheets[id] = {
@@ -1369,6 +1588,16 @@ export function documentToUniverWorkbookData(
             columnData,
             showCellStatusBar: 0,
             status: 1,
+            ...(extras?.mergeData ? { mergeData: extras.mergeData } : {}),
+            ...(extras?.defaultColumnWidth != null ? { defaultColumnWidth: extras.defaultColumnWidth } : {}),
+            ...(extras?.defaultRowHeight != null ? { defaultRowHeight: extras.defaultRowHeight } : {}),
+            ...(extras?.defaultStyle != null ? { defaultStyle: extras.defaultStyle } : {}),
+            ...(extras?.rowHeader != null ? { rowHeader: extras.rowHeader } : {}),
+            ...(extras?.columnHeader != null ? { columnHeader: extras.columnHeader } : {}),
+            ...(extras?.showGridlines != null ? { showGridlines: extras.showGridlines } : {}),
+            ...(extras?.gridlinesColor ? { gridlinesColor: extras.gridlinesColor } : {}),
+            ...(extras?.rightToLeft != null ? { rightToLeft: extras.rightToLeft } : {}),
+            ...(extras?.custom ? { custom: extras.custom } : {}),
         };
     });
 
@@ -1377,7 +1606,7 @@ export function documentToUniverWorkbookData(
         name: 'Concept Grid',
         appVersion: 'NarrativeLab',
         locale: 'zhCN',
-        styles: {},
+        styles: normalizeUniverStyleMap(doc.univerStyles) || {},
         sheetOrder,
         sheets,
         resources: [
@@ -1385,6 +1614,7 @@ export function documentToUniverWorkbookData(
                 name: 'NARRATIVELAB_PLOTGRID_META',
                 data: JSON.stringify(buildNlMeta(doc, doc.pages.map(p => p.title))),
             },
+            ...(normalizeUniverWorkbookResources(doc.univerResources) || []),
         ],
     };
 }
@@ -1396,6 +1626,19 @@ export type UniverSheetChromeSnapshot = {
     tabColor?: string;
     hidden?: number | boolean | string;
     zoomRatio?: number;
+    freeze?: unknown;
+    mergeData?: unknown;
+    defaultColumnWidth?: unknown;
+    defaultRowHeight?: unknown;
+    defaultStyle?: unknown;
+    rowHeader?: unknown;
+    columnHeader?: unknown;
+    showGridlines?: unknown;
+    gridlinesColor?: unknown;
+    rightToLeft?: unknown;
+    custom?: unknown;
+    rowData?: Record<number, Record<string, unknown>>;
+    columnData?: Record<number, Record<string, unknown>>;
 };
 
 function normalizeUniverTabColor(value: unknown): string {
@@ -1450,6 +1693,8 @@ export function reconcileUniverSheetsIntoDocument(
             if (typeof sheet.zoomRatio === 'number' && Number.isFinite(sheet.zoomRatio) && sheet.zoomRatio > 0) {
                 existing.zoom = sheet.zoomRatio;
             }
+            applyUniverFreezeToPage(existing, sheet.freeze);
+            existing.univerExtras = extractUniverSheetExtras(sheet);
             nextPages.push(existing);
             continue;
         }
@@ -1461,6 +1706,8 @@ export function reconcileUniverSheetsIntoDocument(
         if (typeof sheet.zoomRatio === 'number' && Number.isFinite(sheet.zoomRatio) && sheet.zoomRatio > 0) {
             page.zoom = sheet.zoomRatio;
         }
+        applyUniverFreezeToPage(page, sheet.freeze);
+        page.univerExtras = extractUniverSheetExtras(sheet);
         nextPages.push(page);
     }
     if (nextPages.length === 0) return raw;
@@ -1501,12 +1748,11 @@ export function mergeUniverCellDataIntoDocument(
     const page = doc.pages.find(p => p.id === sheetId);
     if (!page) return doc;
 
-    // Do NOT expand extents from Univer's sparse/full matrix dump — that grows
-    // the model to the sheet's reserved rowCount (e.g. 50) and causes remount loops.
+    let changed = ensureOccupiedGridExtents(page, cellData);
+    // Do NOT expand from empty reserved cells — Univer always dumps ~50×20.
+    // Occupied cells above already grew the model so in-sheet typing persists.
     const cols = page.columns || [];
     const rows = page.rows || [];
-
-    let changed = false;
 
     if (mergeDimensions) {
         const headerHeight = rowData?.[0]?.h ?? rowData?.[0]?.ah;
@@ -1548,6 +1794,9 @@ export function mergeUniverCellDataIntoDocument(
         if (next != null && (page.cornerLabel || '') !== next) {
             page.cornerLabel = next;
             changed = true;
+        } else if (clearMissing && next == null && (page.cornerLabel || '')) {
+            page.cornerLabel = '';
+            changed = true;
         }
     }
     cols.forEach((col, ci) => {
@@ -1555,6 +1804,9 @@ export function mergeUniverCellDataIntoDocument(
         const next = univerCellPlainText(raw);
         if (next != null && col.label !== next) {
             col.label = next;
+            changed = true;
+        } else if (clearMissing && next == null && col.label) {
+            col.label = '';
             changed = true;
         }
         if (applyHeaderStyleFromUniver(col, raw, styles)) changed = true;
@@ -1564,6 +1816,9 @@ export function mergeUniverCellDataIntoDocument(
         const next = univerCellPlainText(raw);
         if (next != null && row.label !== next) {
             row.label = next;
+            changed = true;
+        } else if (clearMissing && next == null && row.label) {
+            row.label = '';
             changed = true;
         }
         if (applyHeaderStyleFromUniver(row, raw, styles)) changed = true;
@@ -1627,6 +1882,7 @@ export function mergeUniverCellDataIntoDocument(
                 bold: style?.bl == null ? existing.bold : !!style.bl,
                 italic: style?.it == null ? existing.italic : !!style.it,
                 align: style?.ht === 2 ? 'center' : style?.ht === 3 ? 'right' : style?.ht === 1 ? 'left' : existing.align,
+                univerStyle: cloneStyleObject(style) || existing.univerStyle,
             };
             if (page.cells[key]
                 && existing.content === nextCell.content
@@ -1635,7 +1891,8 @@ export function mergeUniverCellDataIntoDocument(
                 && existing.textColor === nextCell.textColor
                 && existing.bold === nextCell.bold
                 && existing.italic === nextCell.italic
-                && existing.align === nextCell.align) return;
+                && existing.align === nextCell.align
+                && JSON.stringify(existing.univerStyle || null) === JSON.stringify(nextCell.univerStyle || null)) return;
             page.cells[key] = nextCell;
             changed = true;
         });
@@ -1657,6 +1914,7 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
             `labelW:${page.labelColumnWidth || 0}`,
             `hidden:${page.hidden ? 1 : 0}`,
             `tab:${page.tabColor || ''}`,
+            `freeze:${page.stickyHeaders === false ? 0 : 1}:${page.frozenRows || 0}:${page.frozenColumns || 0}`,
         );
         for (const row of page.rows || []) {
             parts.push(
@@ -1671,8 +1929,14 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
         for (const [key, cell] of Object.entries(page.cells || {})) {
             if (!cell) continue;
             parts.push(`${key}=${cell.content || ''}::${cell.formula || ''}`);
+            if (cell.univerStyle) parts.push(`style:${key}:${JSON.stringify(cell.univerStyle)}`);
         }
+        if (page.univerExtras) parts.push(`extras:${page.id}:${JSON.stringify(page.univerExtras)}`);
     }
+    for (const resource of doc.univerResources || []) {
+        parts.push(`res:${resource.name}:${resource.data.length}:${resource.data.slice(0, 48)}`);
+    }
+    if (doc.univerStyles) parts.push(`styles:${JSON.stringify(doc.univerStyles)}`);
     return parts.join('\n');
 }
 
@@ -1833,19 +2097,22 @@ export function ensureGridExtents(
     maxColIndex: number,
 ): void {
     // maxRowIndex/maxColIndex are 0-based including header at 0
+    const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     while (page.columns.length < Math.max(0, maxColIndex)) {
+        const index = page.columns.length + 1;
         page.columns.push({
-            id: `col-${Date.now().toString(36)}-${page.columns.length}`,
-            label: `Col ${page.columns.length + 1}`,
+            id: `col-${nonce}-${page.columns.length}`,
+            label: t('Col {n}', { n: index }),
             width: 120,
             bgColor: '',
             sourceType: 'manual',
         });
     }
     while (page.rows.length < Math.max(0, maxRowIndex)) {
+        const index = page.rows.length + 1;
         page.rows.push({
-            id: `row-${Date.now().toString(36)}-${page.rows.length}`,
-            label: `Row ${page.rows.length + 1}`,
+            id: `row-${nonce}-${page.rows.length}`,
+            label: t('Row {n}', { n: index }),
             height: 32,
             bgColor: '',
             sourceType: 'manual',

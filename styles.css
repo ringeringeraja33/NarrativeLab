@@ -405,14 +405,6 @@ body.narrative-lab-theme-dark .plot-grid-root {
 .workspace-leaf-content[data-type^="narrative-lab-"] > .view-header {
     display: none;
 }
-/* Project name shown next to the NarrativeLab header */
-.story-line-project-name {
-    font-size: 0.95em;
-    color: var(--text-muted);
-    font-weight: 500;
-    margin-left: 6px;
-}
-
 /* ?? Series management modal ?? */
 .sl-series-modal {
     max-width: 500px;
@@ -479,13 +471,8 @@ body.narrative-lab-theme-dark .plot-grid-root {
     z-index: 100000;
 }
 
-.nl-stacked-modal-content,
-.nl-wikilink-suggest-container {
+.nl-stacked-modal-content {
     z-index: 100001;
-}
-
-.modal-container.nl-wikilink-suggest-shell {
-    z-index: 100000;
 }
 
 .sl-series-card {
@@ -533,19 +520,6 @@ body.narrative-lab-theme-dark .plot-grid-root {
 
 .sl-series-book-row:hover {
     background: var(--background-modifier-hover);
-}
-
-.sl-series-book-order {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: var(--background-modifier-hover);
-    font-size: 0.75em;
-    font-weight: 600;
-    flex-shrink: 0;
 }
 
 .sl-series-book-name {
@@ -604,22 +578,6 @@ body.narrative-lab-theme-dark .plot-grid-root {
 
 .sl-series-dissolve-btn {
     color: var(--text-warning);
-}
-
-/* Shared entity badge (shown on codex entries that live in the series folder) */
-.sl-shared-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    font-size: 0.7em;
-    color: var(--text-accent);
-    opacity: 0.8;
-    margin-left: 4px;
-}
-
-.sl-shared-badge svg {
-    width: 10px;
-    height: 10px;
 }
 
 /* Prevent tiled dropdown-arrow artifacts (seen on some Win11/Electron setups) */
@@ -1008,7 +966,6 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     line-height: 1;
 }
 
-.story-line-filter-more,
 .story-line-sort.story-line-filter-toggle {
     display: inline-flex;
     align-items: center;
@@ -1017,7 +974,6 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     color: var(--text-muted);
 }
 
-.story-line-filter-more:hover,
 .story-line-sort.story-line-filter-toggle:hover {
     color: var(--text-normal);
 }
@@ -1073,41 +1029,6 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     color: var(--text-normal);
 }
 
-/* Type segmented control (inside panel) */
-.story-line-arc-filter {
-    display: inline-flex;
-    align-items: center;
-    gap: 0;
-    border: 1px solid var(--sc-card-border);
-    border-radius: var(--sc-radius);
-    overflow: hidden;
-}
-.story-line-arc-filter-btn {
-    background: transparent;
-    border: none;
-    padding: 3px 10px;
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: background 0.15s, color 0.15s;
-}
-.story-line-arc-filter-btn:hover {
-    background: var(--background-secondary);
-}
-.story-line-arc-filter-btn.is-active {
-    background: var(--interactive-accent);
-    color: var(--text-on-accent);
-}
-
-.relation-builder-hidden-select {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    opacity: 0;
-    pointer-events: none;
-}
-
 .relation-builder-add-picker {
     width: 100%;
 }
@@ -1152,12 +1073,6 @@ body.sl-auto-hide-tab-labels .story-line-view-switcher.sl-collapsed .story-line-
     gap: 10px;
     margin-bottom: 8px;
     flex-wrap: wrap;
-}
-
-.story-line-filter-row-label {
-    font-size: 0.8em;
-    color: var(--text-muted);
-    min-width: 48px;
 }
 
 .story-line-inactive-toggle {
@@ -1613,8 +1528,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     white-space: nowrap;
 }
 
-.story-line-corkboard-note-card .scene-card-meta,
-.story-line-corkboard-note-card .scene-card-conflict,
 .story-line-corkboard-note-card .scene-card-characters,
 .story-line-corkboard-note-card .scene-card-footer {
     display: none;
@@ -1640,8 +1553,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .scene-card.story-line-kanban-note .scene-card-status-icon {
     display: none;
 }
-.scene-card.story-line-kanban-note .scene-card-meta,
-.scene-card.story-line-kanban-note .scene-card-conflict,
 .scene-card.story-line-kanban-note .scene-card-characters,
 .scene-card.story-line-kanban-note .scene-card-footer {
     display: none;
@@ -2200,11 +2111,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     outline-offset: -1px;
 }
 
-.scene-card-dragging {
-    opacity: 0.5;
-    transform: rotate(2deg);
-}
-
 /* Drop indicators for card-level reordering */
 
 /* Timeline drag indicators */
@@ -2287,23 +2193,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     line-height: 1.3;
     margin-bottom: 4px;
     color: var(--sc-text);
-}
-
-.scene-card-meta {
-    font-size: 0.8em;
-    color: var(--sc-text-muted);
-    margin-bottom: 4px;
-}
-
-.scene-card-pov {
-    font-style: italic;
-}
-
-.scene-card-conflict {
-    font-size: 0.78em;
-    color: var(--sc-text-faint);
-    line-height: 1.3;
-    margin-bottom: 6px;
 }
 
 .scene-card-footer {
@@ -2401,6 +2290,154 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     line-height: 1;
     padding: 2px 6px;
     cursor: pointer;
+}
+
+/* Narrative Canvas host — match official plugin.css so the shadow app
+   fills the leaf instead of sitting in Obsidian's padded view-content. */
+.narrative-canvas-plugin-host {
+    display: block;
+    width: 100%;
+    height: 100%;
+    padding: 0 !important;
+    overflow: hidden;
+    --nc-font-interface: var(--font-interface, system-ui, "Segoe UI", sans-serif);
+    --nc-font-text: var(--nc-plugin-content-font, var(--font-text, var(--font-interface, system-ui, "Segoe UI", sans-serif)));
+    --nc-font-monospace: var(--font-monospace, "Cascadia Code", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+}
+
+.workspace-leaf-content[data-type="narrative-lab-canvas-view"] {
+    padding: 0;
+    position: relative;
+}
+
+.nl-canvas-library-profile-host {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+    background: var(--background-primary);
+    color: var(--text-normal);
+    overflow: hidden;
+}
+
+.nl-canvas-library-profile-rail {
+    overflow: auto;
+    padding: 16px 14px 20px;
+    border-right: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+}
+
+.nl-canvas-library-backlinks-title {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.nl-canvas-library-backlinks-title small,
+.nl-canvas-library-backlink-group summary small {
+    color: var(--text-muted);
+    font-weight: 500;
+}
+
+.nl-canvas-library-backlinks-empty {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.nl-canvas-library-backlink-group {
+    margin-bottom: 10px;
+}
+
+.nl-canvas-library-backlink-group summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.nl-canvas-library-backlink-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.nl-canvas-library-backlink {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    text-align: left;
+    cursor: pointer;
+}
+
+.nl-canvas-library-backlink:hover {
+    background: var(--background-modifier-hover);
+}
+
+.nl-canvas-library-backlink-icon {
+    display: inline-flex;
+    margin-top: 2px;
+    color: var(--text-muted);
+}
+
+.nl-canvas-library-backlink-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.nl-canvas-library-backlink-main strong {
+    font-size: 13px;
+}
+
+.nl-canvas-library-backlink-main small {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.nl-canvas-library-profile-main {
+    overflow: auto;
+    min-width: 0;
+    padding: 0;
+}
+
+.nl-canvas-library-profile-main .character-detail-header,
+.nl-canvas-library-profile-main .location-detail-header,
+.nl-canvas-library-profile-main .codex-detail-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--background-primary);
+}
+
+@media (max-width: 720px) {
+    .nl-canvas-library-profile-host {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(120px, 30%) minmax(0, 1fr);
+    }
+}
+
+.workspace-leaf-content[data-type="narrative-lab-canvas-view"] > .view-content,
+.workspace-leaf-content[data-type="narrative-lab-canvas-view"] .view-content.narrative-canvas-plugin-host {
+    padding: 0 !important;
+    overflow: hidden;
+    height: 100%;
+    flex: 1 1 auto;
 }
 
 /* Per-project NCanvas manager */
@@ -2511,9 +2548,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     justify-content: space-between;
     gap: 8px;
 }
-.project-row-title {
-    font-weight: 600;
-}
 .project-actions {
     display: flex;
     gap: 8px;
@@ -2539,9 +2573,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .project-actions-cancel {
     order: 99;
     margin-left: auto;
-}
-.project-open-btn {
-    padding: 6px 10px;
 }
 
 .project-select-dropdown {
@@ -2572,13 +2603,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     margin-bottom: 16px;
 }
 
-.inspector-seq {
-    font-size: 0.85em;
-    font-family: var(--font-monospace);
-    color: var(--sc-text-muted);
-    margin-bottom: 4px;
-}
-
 .inspector-title-section h4 {
     margin: 4px 0 0;
     font-size: 1em;
@@ -2595,24 +2619,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     display: inline-block;
     position: relative;
     margin-left: 6px;
-}
-
-/* Location dropdown in inspector */
-.inspector-location-select {
-    margin-left: 4px;
-    padding: 3px 8px;
-    border: 1px solid var(--sc-card-border);
-    border-radius: var(--sc-radius);
-    background: var(--background-primary);
-    color: var(--sc-text);
-    font-size: 0.85em;
-    cursor: pointer;
-    max-width: 200px;
-}
-
-.inspector-location-select:focus {
-    border-color: var(--interactive-accent);
-    outline: none;
 }
 
 .inspector-status-button {
@@ -2739,37 +2745,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     border-color: var(--interactive-accent);
 }
 
-.inspector-target {
-    color: var(--sc-text-faint);
-    font-size: 0.85em;
-}
-
-.inspector-list {
-    list-style: none;
-    padding: 4px 0 0 8px;
-    margin: 0;
-}
-
-.inspector-list li {
-    font-size: 0.85em;
-    padding: 2px 0;
-}
-
-.inspector-pov-badge {
-    font-size: 0.8em;
-    color: var(--sc-accent);
-    font-weight: 600;
-}
-
-.inspector-tag-swatch {
-    display: inline-block;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    margin-right: 6px;
-    vertical-align: middle;
-}
-
 .inspector-description {
     font-size: 0.85em;
     color: var(--sc-text);
@@ -2824,7 +2799,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .inspector-sp-remove { border: none; background: none; cursor: pointer; color: var(--sc-text-muted); font-size: 1em; padding: 0 2px; line-height: 1; }
 .inspector-sp-remove:hover { color: var(--text-error); }
 .inspector-sp-empty { font-size: 0.8em; color: var(--sc-text-muted); font-style: italic; }
-.inspector-sp-add.inspector-sp-add { font-size: 0.75em; margin-top: 2px; }
 .inspector-sp-warning { display: flex; align-items: center; gap: 4px; margin-top: 6px; padding: 4px 8px; font-size: 0.8em; color: var(--text-error); background: var(--sl-warning-tint); border-radius: 4px; }
 
 /* Inspector Notes / Comments */
@@ -3251,10 +3225,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     font-size: var(--font-ui-small);
 }
 
-.structure-number-input {
-    width: 60px;
-}
-
 /* ????????????????????????????????????????
    Swimlane (multi-lane) timeline mode
    ???????????????????????????????????????? */
@@ -3543,49 +3513,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     height: 14px;
 }
 
-/* Subway / List view toggle */
-.storyline-view-toggle {
-    display: inline-flex;
-    gap: 0;
-    border: none;
-    border-radius: 0;
-    overflow: visible;
-    margin-left: 8px;
-    background: transparent;
-}
-.storyline-toggle-btn.storyline-toggle-btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 4px 8px;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
-    cursor: pointer;
-    color: var(--text-muted);
-    outline: none;
-    box-shadow: none;
-    transition: color 0.15s, border-color 0.15s;
-}
-.storyline-toggle-btn.storyline-toggle-btn:hover {
-    background: transparent;
-    color: var(--text-normal);
-}
-.storyline-toggle-btn.storyline-toggle-btn.active {
-    background: transparent;
-    color: var(--interactive-accent);
-    border-bottom: 2px solid var(--interactive-accent);
-}
-.storyline-toggle-btn.storyline-toggle-btn:focus {
-    outline: none;
-    box-shadow: none;
-}
-.storyline-toggle-btn svg {
-    width: 16px;
-    height: 16px;
-}
-
 /* Subway map */
 .subway-map-wrapper {
     border: 1px solid var(--background-modifier-border);
@@ -3626,19 +3553,6 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     font-weight: 400;
     color: var(--sc-text-faint);
     margin-left: 4px;
-}
-
-/* Add scene to plotline button in header */
-.storyline-add-scene-btn {
-    margin-left: auto;
-    font-size: 1em;
-    font-weight: 700;
-    width: 24px;
-    height: 24px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
 }
 
 /* Plotline header actions (rename, add, delete) */
@@ -5048,9 +4962,6 @@ button.library-profile-orientation-btn.is-active:hover,
     padding-top: 12px;
     border-top: 1px solid var(--background-modifier-border);
 }
-.storyline-add-field-spacer {
-    flex: 1;
-}
 .storyline-field-delete-btn {
     margin-right: auto;
 }
@@ -5669,15 +5580,6 @@ button.library-profile-orientation-btn.is-active:hover,
     font-size: 1.15em;
 }
 
-/* Add buttons */
-.location-add-btn {
-    margin-left: 6px;
-    font-size: 0.8em;
-    padding: 4px 10px;
-    border-radius: 6px;
-    cursor: pointer;
-}
-
 .location-type-badge,
 .location-type-badge-sm {
     font-size: 0.7em;
@@ -5767,10 +5669,6 @@ button.library-profile-orientation-btn.is-active:hover,
 .location-detail-header-right button:hover {
     background: var(--background-modifier-hover);
     color: var(--text-normal);
-}
-
-.location-delete-btn.location-delete-btn:hover {
-    color: var(--text-error);
 }
 
 .location-detail-type {
@@ -6113,11 +6011,6 @@ button.library-profile-orientation-btn.is-active:hover,
     margin: 0 0 10px;
     font-size: 0.95em;
     color: var(--sc-text);
-}
-
-.stats-big-number {
-    font-size: 1.3em;
-    font-weight: 700;
 }
 
 .stats-list {
@@ -6724,43 +6617,6 @@ button.library-profile-orientation-btn.is-active:hover,
     color: var(--sc-text-faint);
     margin-top: 2px;
     white-space: nowrap;
-}
-
-/* ?? Cumulative / line chart ?? */
-.stats-line-chart-wrap {
-    margin-top: 12px;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 6px;
-    overflow: hidden;
-    background: var(--background-primary);
-}
-
-.stats-line-chart {
-    width: 100%;
-    height: 120px;
-    display: block;
-}
-
-.stats-goal-line {
-    stroke: var(--sl-warning, #FF9800);
-    stroke-width: 1;
-    stroke-dasharray: 6 3;
-}
-
-.stats-goal-label {
-    fill: var(--sl-warning, #FF9800);
-    font-size: 9px;
-}
-
-.stats-cumulative-line {
-    fill: none;
-    stroke: var(--sc-accent);
-    stroke-width: 2;
-}
-
-.stats-cumulative-area {
-    fill: var(--sc-accent);
-    opacity: 0.12;
 }
 
 /* ?? Outlier highlighting ?? */
@@ -8085,13 +7941,6 @@ body.nl-wikilink-picker-open .plot-grid-cell-editor-window {
     min-height: 120px;
 }
 
-.nl-converter-hint {
-    color: var(--text-muted);
-    font-size: 12px;
-    margin: 0 0 12px;
-    line-height: 1.45;
-}
-
 .nl-converter-plotline-list {
     display: flex;
     flex-direction: column;
@@ -8128,8 +7977,7 @@ body.nl-wikilink-picker-open .plot-grid-cell-editor-window {
 
 /* Shared badge styling for timeline mode indicators */
 .timeline-mode-badge,
-.scene-card-timeline-mode,
-.inspector-timeline-mode-badge {
+.scene-card-timeline-mode {
     display: inline-flex;
     align-items: center;
     gap: 3px;
@@ -8143,8 +7991,7 @@ body.nl-wikilink-picker-open .plot-grid-cell-editor-window {
 }
 
 .timeline-mode-badge svg,
-.scene-card-timeline-mode svg,
-.inspector-timeline-mode-badge svg {
+.scene-card-timeline-mode svg {
     width: 12px;
     height: 12px;
 }
@@ -8156,17 +8003,9 @@ body.nl-wikilink-picker-open .plot-grid-cell-editor-window {
 }
 
 .scene-card-strand,
-.timeline-strand-label,
-.inspector-strand-label {
+.timeline-strand-label {
     opacity: 0.75;
     font-weight: 400;
-}
-
-/* Inspector variant */
-.inspector-timeline-mode-badge {
-    font-size: 11px;
-    padding: 3px 8px;
-    margin: 4px 0;
 }
 
 /* Arc Point badge (issue #128) */
@@ -8577,9 +8416,6 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
 .story-graph-filter-btn svg {
     width: 14px;
     height: 14px;
-}
-.story-graph-manage-relations {
-    margin-left: 0;
 }
 
 .story-graph-legend {
@@ -9452,21 +9288,6 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     background: color-mix(in srgb, var(--background-primary) 70%, transparent) !important;
 }
 
-.story-graph-focus-mid {
-    display: grid;
-    grid-template-columns: 140px 1fr 140px;
-    gap: 16px;
-    align-items: center;
-    min-height: 260px;
-}
-
-.story-graph-focus-portrait {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-}
-
 .story-graph-focus-avatar {
     width: 96px;
     height: 96px;
@@ -9529,97 +9350,6 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     max-width: calc(100% - 32px);
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-.story-graph-focus-arc {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 6px;
-    padding: 0 120px;
-}
-
-.story-graph-focus-arc-arrow {
-    width: min(70%, 520px);
-    height: 18px;
-    border: 2px solid var(--text-normal);
-    border-bottom: none;
-    border-radius: 260px 260px 0 0;
-    position: relative;
-}
-
-.story-graph-focus-arc.is-bottom .story-graph-focus-arc-arrow {
-    border: 2px solid var(--text-normal);
-    border-top: none;
-    border-radius: 0 0 260px 260px;
-}
-
-.story-graph-focus-arc-arrow.is-rtl::before,
-.story-graph-focus-arc-arrow.is-ltr::after {
-    content: '';
-    position: absolute;
-    top: -1px;
-    width: 0;
-    height: 0;
-    border-top: 6px solid transparent;
-    border-bottom: 6px solid transparent;
-}
-
-.story-graph-focus-arc-arrow.is-rtl::before {
-    left: -2px;
-    border-right: 10px solid var(--text-normal);
-}
-
-.story-graph-focus-arc-arrow.is-ltr::after {
-    right: -2px;
-    border-left: 10px solid var(--text-normal);
-}
-
-.story-graph-focus-arc.is-bottom .story-graph-focus-arc-arrow.is-ltr::after {
-    top: auto;
-    bottom: -1px;
-}
-
-.story-graph-focus-text {
-    width: 100%;
-    max-width: 560px;
-    margin: 0 auto;
-}
-
-.story-graph-focus-text-label {
-    font-size: 11px;
-    color: var(--text-muted);
-    margin-bottom: 4px;
-}
-
-.story-graph-focus-textarea {
-    width: 100%;
-    resize: vertical;
-    min-height: 64px;
-    border-radius: 8px;
-    border: 1px solid var(--background-modifier-border);
-    background: color-mix(in srgb, var(--background-primary) 92%, transparent);
-    color: var(--text-normal);
-    padding: 8px 10px;
-    font: inherit;
-    line-height: 1.45;
-}
-
-.story-graph-focus-textarea:focus {
-    outline: none;
-    border-color: var(--interactive-accent);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 25%, transparent);
-}
-
-@media (max-width: 720px) {
-    .story-graph-focus-mid {
-        grid-template-columns: 1fr;
-        gap: 12px;
-    }
-    .story-graph-focus-arc {
-        padding: 0 16px;
-    }
 }
 
 .story-graph-relation-manager {
@@ -10158,22 +9888,6 @@ body.narrative-lab-theme-dark .timeline-mode-circular {
     flex: 0 0 auto;
 }
 
-/* Clamp conflict / summary text on mobile */
-.sl-mobile.sl-mobile .scene-card-conflict {
-    display: -webkit-box;
-    line-clamp: 3;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-height: 3.9em;  /* 3 lines fallback: 3 ? 1.3 line-height */
-}
-.sl-phone .scene-card-conflict {
-    line-clamp: 2;
-    -webkit-line-clamp: 2;
-    max-height: 2.6em;  /* 2 lines fallback */
-}
-
 body /* Clamp title on mobile too, in case it's very long */
 .sl-mobile.sl-mobile .scene-card-title {
     display: -webkit-box;
@@ -10327,12 +10041,6 @@ body /* Clamp title on mobile too, in case it's very long */
     width: 100%;
 }
 
-.sl-mobile .filter-dropdown,
-.sl-mobile .filter-select {
-    min-height: 44px;
-    min-width: 44px;
-}
-
 /* ?? Bulk action bar on mobile ??????????????????????? */
 
 .sl-mobile .story-line-bulk-bar {
@@ -10361,28 +10069,6 @@ body /* Clamp title on mobile too, in case it's very long */
 .sl-mobile .character-mode-btn[data-mode="story-graph"],
 .sl-mobile .library-mode-toggle {
     display: none;
-}
-
-/* ?? Timeline view adjustments ??????????????????????? */
-
-.sl-mobile .timeline-zoom-controls button {
-    min-width: 44px;
-    min-height: 44px;
-}
-
-.sl-phone .timeline-swimlane-header {
-    font-size: 12px;
-    min-width: 80px;
-}
-
-/* ?? Stats view: stack cards on phones ??????????????? */
-
-.sl-phone .stats-overview {
-    flex-direction: column;
-}
-
-.sl-phone .stats-card {
-    width: 100%;
 }
 
 /* ?? Quick Add modal on mobile ??????????????????????? */
@@ -10638,12 +10324,6 @@ body /* Clamp title on mobile too, in case it's very long */
     -webkit-overflow-scrolling: touch;
 }
 
-/* Timeline zoom controls: wrap on phones so they don't overflow. */
-.sl-phone .timeline-zoom-controls {
-    flex-wrap: wrap;
-    gap: 4px;
-}
-
 /*
  * Codex / Character / Location detail forms: on phones the side
  * panel stacks below the form. Make sure the form area scrolls
@@ -10738,9 +10418,7 @@ body /* Clamp title on mobile too, in case it's very long */
     line-height: 1;
 }
 
-.sl-nav-icon-btn,
-.sl-nav-sort-btn,
-.sl-nav-details-btn {
+.sl-nav-icon-btn {
     flex-shrink: 0;
     cursor: pointer;
     display: inline-flex;
@@ -10753,25 +10431,14 @@ body /* Clamp title on mobile too, in case it's very long */
     border: none;
     background: transparent;
 }
-.sl-nav-icon-btn:hover,
-.sl-nav-sort-btn:hover,
-.sl-nav-details-btn:hover {
+.sl-nav-icon-btn:hover {
     background: var(--background-modifier-hover);
     color: var(--text-normal);
 }
 .sl-nav-icon-btn svg,
-.sl-nav-sort-btn svg,
-.sl-nav-details-btn svg,
-.sl-nav-icon-btn .svg-icon,
-.sl-nav-sort-btn .svg-icon,
-.sl-nav-details-btn .svg-icon {
+.sl-nav-icon-btn .svg-icon {
     width: 15px;
     height: 15px;
-}
-
-/* Legacy details row — hidden if an old build still emits it */
-.sl-nav-details-row {
-    display: none;
 }
 
 /* Plotline filter (nested under active project) */
@@ -11055,43 +10722,6 @@ body /* Clamp title on mobile too, in case it's very long */
     color: var(--interactive-accent);
 }
 
-.sl-nav-draft-row {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0 var(--sl-nav-pad-x);
-    min-height: var(--sl-nav-row-h);
-    cursor: pointer;
-    font-size: 12px;
-    color: var(--text-muted);
-}
-.sl-nav-draft-row:hover {
-    background: var(--background-modifier-hover);
-    color: var(--text-normal);
-}
-.sl-nav-draft-row.is-active {
-    color: var(--interactive-accent);
-    font-weight: 600;
-    background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
-}
-.sl-nav-draft-mark {
-    width: 12px;
-    text-align: center;
-    flex-shrink: 0;
-    font-size: 9px;
-    line-height: 1;
-}
-.sl-nav-draft-title {
-    flex: 1;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.sl-nav-draft-scope {
-    display: none;
-}
-
 /* Act / chapter group headers */
 .sl-nav-act-header,
 .sl-nav-chapter-header {
@@ -11183,29 +10813,6 @@ body /* Clamp title on mobile too, in case it's very long */
     width: var(--sl-nav-leaf-dot-size);
     height: var(--sl-nav-leaf-dot-size);
     border-radius: 50%;
-}
-/* Legacy class kept if any leftover markup references it */
-.sl-nav-seq {
-    flex-shrink: 0;
-    width: var(--sl-nav-seq-w);
-    min-width: var(--sl-nav-seq-w);
-    font-size: 10px;
-    color: var(--text-faint);
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-}
-.sl-nav-row-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: var(--sl-nav-icon-w);
-    height: var(--sl-nav-icon-w);
-    flex-shrink: 0;
-    color: var(--text-muted);
-}
-.sl-nav-row-icon svg {
-    width: var(--sl-nav-leaf-icon-size);
-    height: var(--sl-nav-leaf-icon-size);
 }
 .sl-nav-title {
     flex: 1 1 auto;
@@ -11793,10 +11400,6 @@ body /* Clamp title on mobile too, in case it's very long */
     font-weight: 600;
     line-height: 1.3;
 }
-.codex-entry-card-meta {
-    font-size: 11px;
-    color: var(--text-muted);
-}
 .library-base-table-wrap {
     width: 100%;
     overflow: auto;
@@ -12035,12 +11638,6 @@ body /* Clamp title on mobile too, in case it's very long */
     line-height: 1;
     display: inline-flex;
     align-items: center;
-}
-.codex-tab-badge {
-    display: none;
-}
-.codex-tab.active .codex-tab-badge {
-    display: none;
 }
 
 /* Pseudo-tabs (Characters / Locations) ??same style as regular tabs */
@@ -12815,45 +12412,6 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     line-height: 1.4;
 }
 
-/* Gallery grid */
-.codex-gallery-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    margin-bottom: 8px;
-}
-.codex-gallery-thumb {
-    position: relative;
-    border-radius: 4px;
-    overflow: hidden;
-    aspect-ratio: 1;
-    background: var(--background-modifier-border);
-}
-.codex-gallery-thumb img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-}
-.codex-gallery-remove {
-    position: absolute;
-    top: 2px;
-    right: 2px;
-    width: 18px;
-    height: 18px;
-    background: rgba(0,0,0,0.6);
-    border: none;
-    border-radius: 50%;
-    color: white;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    opacity: 0;
-    transition: opacity 0.15s;
-}
-.codex-gallery-thumb:hover .codex-gallery-remove { opacity: 1; }
-.codex-gallery-remove svg { width: 12px; height: 12px; }
-
 /* Notes textarea (side panel) */
 .codex-notes-textarea {
     width: 100%;
@@ -13021,10 +12579,6 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
 .codex-category-manager-preset.is-custom {
     color: var(--interactive-accent);
 }
-.codex-category-manager-preset.is-profile {
-    color: var(--text-on-accent, #fff);
-    background: var(--interactive-accent);
-}
 .codex-category-manager-fields {
     white-space: nowrap;
     min-width: 0;
@@ -13132,23 +12686,6 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     }
 }
 
-/* ?? Toolbar buttons ?????????????????????????????????? */
-
-.codex-manage-categories-btn {
-    background: none;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    padding: 4px 8px;
-    cursor: pointer;
-    color: var(--text-muted);
-    display: flex;
-    align-items: center;
-}
-.codex-manage-categories-btn:hover {
-    color: var(--text-normal);
-    background: var(--background-modifier-hover);
-}
-
 /* ?? Back to Codex navigation button ?????????????????? */
 
 .codex-nav-back {
@@ -13172,34 +12709,6 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     background: none;
 }
 .codex-nav-back-link svg { width: 18px; height: 18px; }
-
-/* ?? Codex icon-only toolbar buttons ?????????????????? */
-
-.codex-toolbar-icon-btn.codex-toolbar-icon-btn {
-    background: none;
-    border: none;
-    box-shadow: none;
-    outline: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 2px;
-    border-radius: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: auto;
-    height: auto;
-}
-.codex-toolbar-icon-btn.codex-toolbar-icon-btn:hover {
-    color: var(--text-normal);
-    background: none;
-}
-.codex-toolbar-icon-btn.codex-toolbar-icon-btn:focus,
-.codex-toolbar-icon-btn.codex-toolbar-icon-btn:focus-visible {
-    outline: none;
-    box-shadow: none;
-}
-.codex-toolbar-icon-btn svg { width: 16px; height: 16px; }
 
 /* ?? Codex dropdown (ViewSwitcher) ???????????????????? */
 
@@ -13252,12 +12761,6 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     color: var(--interactive-accent);
 }
 .codex-dropdown-item-icon svg { width: 16px; height: 16px; }
-
-.codex-dropdown-divider {
-    height: 1px;
-    background: var(--background-modifier-border);
-    margin: 4px 8px;
-}
 
 /* ??? Instant JS tooltips (plotgrid toolbar etc.) ??????????? */
 .sl-instant-tooltip {
@@ -13387,7 +12890,6 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
 .sl-manuscript-focus.sl-manuscript-focus .story-line-filter-bar > .story-line-search-wrapper,
 .sl-manuscript-focus.sl-manuscript-focus .story-line-filter-bar > .story-line-sort,
 .sl-manuscript-focus.sl-manuscript-focus .story-line-filter-bar > .story-line-filter-toggle,
-.sl-manuscript-focus.sl-manuscript-focus .story-line-filter-bar > .story-line-filter-more,
 .sl-manuscript-focus.sl-manuscript-focus .story-line-filter-bar > .story-line-filter-spacer,
 .sl-manuscript-focus.sl-manuscript-focus .story-line-filter-bar > button:not(.sl-focus-btn),
 .sl-manuscript-focus.sl-manuscript-focus .story-line-filter-bar > .sl-toggle-wrap,
@@ -14907,60 +14409,6 @@ body.sl-focus-active-global .titlebar {
     flex-direction: column;
     overflow: hidden;
 }
-.sl-inspector-tabbar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 10px 6px 10px;
-    border-bottom: 1px solid var(--background-modifier-border);
-    background: var(--background-secondary);
-    flex: 0 0 auto;
-}
-.sl-inspector-tab.sl-inspector-tab {
-    flex: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 0 10px;
-    margin: 0;
-    border: none;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
-    background: none;
-    box-shadow: none;
-    outline: none;
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
-    min-width: 0;
-    line-height: 1;
-}
-.sl-inspector-tab.sl-inspector-tab:hover {
-    background: none;
-    color: var(--text-normal);
-}
-.sl-inspector-tab.sl-inspector-tab:focus,
-.sl-inspector-tab.sl-inspector-tab:focus-visible {
-    outline: none;
-    box-shadow: none;
-}
-.sl-inspector-tab.sl-inspector-tab.active {
-    background: none;
-    color: var(--interactive-accent);
-    border-bottom-color: var(--interactive-accent);
-    cursor: default;
-}
-.sl-inspector-tab-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-}
-.sl-inspector-tab-icon svg,
-.sl-inspector-tab-icon .svg-icon {
-    width: 16px;
-    height: 16px;
-}
 .sl-inspector-panels {
     position: relative;
     flex: 1 1 auto;
@@ -14976,31 +14424,7 @@ body.sl-focus-active-global .titlebar {
     inset: 0;
     overflow-y: auto;
     box-sizing: border-box;
-}
-.sl-inspector-panel.is-active:not(.sl-inspector-embed) {
     padding: 8px 10px 32px;
-}
-/* Embedded full-views: no panel-level padding; the inner view owns its own
-   padding, identical to when mounted as a standalone view. */
-.sl-inspector-panel.is-active.sl-inspector-embed {
-    overflow-y: auto;
-}
-/* Bottom breathing room for the embedded scroll containers so the last
-   item is fully visible when scrolled to the end. */
-.sl-inspector-panel.is-active.sl-inspector-embed > .sl-research-panel {
-    padding-bottom: 40px;
-}
-.sl-inspector-shortcut {
-    padding: 12px 4px;
-    color: var(--text-muted);
-    font-size: var(--font-ui-small);
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    align-items: flex-start;
-}
-.sl-inspector-shortcut p {
-    margin: 0;
 }
 
 /* Info panel layout */
@@ -15015,26 +14439,6 @@ body.sl-focus-active-global .titlebar {
     font-weight: 700;
     color: var(--text-normal);
     margin-bottom: 4px;
-}
-.sl-info-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 28px;
-}
-.sl-info-label {
-    flex: 0 0 70px;
-    font-size: var(--font-ui-smaller);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--text-muted);
-}
-.sl-info-field {
-    flex: 1;
-    min-width: 0;
-}
-.sl-info-value {
-    color: var(--text-normal);
 }
 .sl-info-section {
     display: flex;
@@ -15062,143 +14466,8 @@ body.sl-focus-active-global .titlebar {
     color: var(--text-normal);
     box-sizing: border-box;
 }
-.sl-info-notes-textarea {
-    width: 100%;
-    min-height: 260px;
-    resize: vertical;
-    font-family: var(--font-text);
-    font-size: var(--font-ui-small);
-    line-height: 1.4;
-    padding: 8px;
-    border-radius: 6px;
-    border: 1px solid var(--background-modifier-border);
-    background: var(--background-primary);
-    color: var(--text-normal);
-    box-sizing: border-box;
-}
-.sl-info-notes-open-btn {
-    float: right;
-    padding: 2px 4px;
-    color: var(--text-muted);
-    cursor: pointer;
-    border: none;
-    background: none;
-}
-.sl-info-notes-open-btn:hover {
-    color: var(--interactive-accent);
-}
-.sl-info-notes-header {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-.sl-info-notes-header .sl-info-section-label { flex: 1; }
-.sl-info-notes-header .clickable-icon {
-    padding: 2px 4px;
-    color: var(--text-muted);
-    cursor: pointer;
-    border: none;
-    background: none;
-}
-.sl-info-notes-header .clickable-icon:hover { color: var(--interactive-accent); }
-.sl-info-notes-container { width: 100%; }
-.sl-info-notes-editor-host {
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-    display: flex;
-    overflow: hidden;
-}
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split {
-    position: relative;
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-    width: 100%;
-    overflow: hidden;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-}
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .workspace-tabs,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .workspace-tab-container,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .workspace-leaf,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .workspace-leaf-content,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .view-content,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .markdown-source-view,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .markdown-reading-view,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .cm-editor {
-    height: 100%;
-    min-height: 0;
-    width: 100%;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-}
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .view-header,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .workspace-tab-header-container,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .workspace-leaf-resize-handle {
-    display: none;
-}
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .inline-title.inline-title {
-    display: none;
-}
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .view-content {
-    padding: 0;
-    overflow: hidden;
-}
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .markdown-source-view .cm-scroller.cm-scroller,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .markdown-reading-view .cm-scroller.cm-scroller,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .cm-editor .cm-scroller.cm-scroller {
-    overflow: auto;
-}
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .cm-content,
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .markdown-preview-sizer {
-    min-height: 100%;
-}
-.sl-info-notes-embedded-split.sl-info-notes-embedded-split .sl-notes-hidden-heading.sl-notes-hidden-heading {
-    display: none;
-}
-.sl-info-notes-live {
-    width: 100%;
-    min-height: 40px;
-    border-radius: 6px;
-    font-size: var(--font-ui-small);
-    line-height: 1.5;
-}
-.sl-info-notes-live.is-preview {
-    padding: 8px;
-    border: 1px solid var(--background-modifier-border);
-    background: var(--background-primary);
-    color: var(--text-normal);
-    cursor: text;
-    max-height: 300px;
-    overflow-y: auto;
-}
-.sl-info-notes-live.is-preview:hover {
-    border-color: var(--interactive-accent);
-}
-.sl-info-notes-live.is-preview p { margin: 0.3em 0; }
-.sl-info-notes-live.is-preview ul, .sl-info-notes-live.is-preview ol { margin: 0.3em 0; padding-left: 1.5em; }
-.sl-info-notes-live.is-preview input[type="checkbox"] { margin-right: 4px; cursor: pointer; }
-.sl-info-notes-live.is-preview .task-list-item { list-style: none; }
-.sl-info-notes-live.is-preview a { color: var(--interactive-accent); }
-.sl-info-notes-live.is-empty {
-    padding: 16px 8px;
-    border: 1px dashed var(--background-modifier-border);
-    cursor: pointer;
-}
-.sl-info-notes-live.is-empty:hover {
-    border-color: var(--interactive-accent);
-    background: var(--background-primary);
-}
-.sl-info-notes-placeholder {
-    color: var(--text-muted);
-    font-style: italic;
-    text-align: center;
-}
 
-/* Issue #200 ??placeholder shown in the Notes sidebar view when a scene has
+/* Issue #200 — placeholder shown in the Notes sidebar view when a scene has
    no notes file yet. Clicking it creates the file lazily (no empty files
    spawned just by opening a scene). */
 .sl-notes-placeholder {
@@ -15221,23 +14490,14 @@ body.sl-focus-active-global .titlebar {
     cursor: pointer;
 }
 
-/* Dedicated Synopsis / Notes inspector tabs: full-width, full-height,
-   no resize handle on the textarea ??the textarea grows to fill the
-   available tab pane and scrolls internally. The active inspector panel
-   is `position: absolute; inset: 0` so `height: 100%` here resolves
-   against the panels host, giving the inner flex chain a real height. */
-.sl-inspector-panel.is-active.sl-inspector-panel-synopsis,
-.sl-inspector-panel.is-active.sl-inspector-panel-notes {
+.sl-inspector-panel.is-active.sl-inspector-panel-synopsis {
     display: flex;
     flex-direction: column;
     height: 100%;
     width: 100%;
     box-sizing: border-box;
 }
-.sl-inspector-panel-synopsis .sl-info-panel,
-.sl-inspector-panel-notes .sl-info-panel,
-.sl-notes-view .sl-inspector-panel-notes.sl-info-panel,
-.sl-notes-view .sl-inspector-panel-notes {
+.sl-inspector-panel-synopsis .sl-info-panel {
     flex: 1 1 auto;
     min-height: 0;
     width: 100%;
@@ -15245,12 +14505,10 @@ body.sl-focus-active-global .titlebar {
     flex-direction: column;
     gap: 8px;
 }
-.sl-inspector-panel-synopsis .sl-info-title,
-.sl-inspector-panel-notes .sl-info-title {
+.sl-inspector-panel-synopsis .sl-info-title {
     flex: 0 0 auto;
 }
-.sl-inspector-panel-synopsis .sl-info-section,
-.sl-inspector-panel-notes .sl-info-section {
+.sl-inspector-panel-synopsis .sl-info-section {
     flex: 1 1 auto;
     min-height: 0;
     width: 100%;
@@ -15258,13 +14516,7 @@ body.sl-focus-active-global .titlebar {
     flex-direction: column;
     gap: 6px;
 }
-.sl-inspector-panel-synopsis .sl-info-synopsis-textarea,
-.sl-inspector-panel-notes .sl-info-notes-textarea,
-.sl-inspector-panel-notes .sl-info-notes-container,
-.sl-inspector-panel-notes .sl-info-notes-live,
-.sl-notes-view .sl-info-notes-textarea,
-.sl-notes-view .sl-info-notes-container,
-.sl-notes-view .sl-info-notes-live {
+.sl-inspector-panel-synopsis .sl-info-synopsis-textarea {
     flex: 1 1 auto;
     width: 100%;
     min-height: 0;
@@ -15274,8 +14526,7 @@ body.sl-focus-active-global .titlebar {
     box-sizing: border-box;
 }
 
-/* Standalone Notes sidebar view ??give the host a real height so the
-   inner flex chain on `.sl-inspector-panel-notes` has something to fill. */
+/* Standalone Notes sidebar view */
 .view-content.sl-notes-view-host {
     flex: 1 1 auto;
     min-height: 0;
@@ -15368,112 +14619,6 @@ body.sl-focus-active-global .titlebar {
 .sl-notes-embedded-split.sl-notes-embedded-split .cm-content,
 .sl-notes-embedded-split.sl-notes-embedded-split .markdown-preview-sizer {
     min-height: 100%;
-}
-
-/* Standalone Synopsis sidebar view ??same flex chain as Notes. */
-.view-content.sl-synopsis-view-host {
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-.sl-synopsis-view {
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    padding: 8px 10px 12px;
-    box-sizing: border-box;
-}
-
-/* Standalone Scene Details view ??hosts the full InspectorComponent. */
-.view-content.sl-details-view-host {
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-}
-.sl-details-view {
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-    width: 100%;
-    display: flex;
-    flex-direction: column;
-    padding: 8px 10px 12px;
-    box-sizing: border-box;
-    overflow-y: auto;
-}
-
-/* Tab bar layout updated: tabs are direct children of `.sl-inspector-tabbar`
-   with a generous gap. Pop-out is exposed via right-click context menu, not
-   a per-tab button, so no wrapper/popout styling is needed. */
-
-/* Status dropdown ??info panel variant */
-.sl-info-status-dropdown {
-    position: relative;
-    flex: 1;
-}
-.sl-info-status-button {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 8px;
-    background: var(--background-primary);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: var(--font-ui-small);
-    color: var(--text-normal);
-    width: 100%;
-    justify-content: space-between;
-}
-.sl-info-status-button:hover {
-    background: var(--background-modifier-hover);
-}
-.sl-info-status-icon {
-    display: inline-flex;
-    align-items: center;
-}
-.sl-info-status-label {
-    flex: 1;
-    text-align: left;
-}
-.sl-info-status-menu {
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    margin-top: 2px;
-    background: var(--background-primary);
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    box-shadow: var(--shadow-s);
-    z-index: 100;
-    overflow: hidden;
-}
-.sl-info-status-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 8px;
-    cursor: pointer;
-    font-size: var(--font-ui-small);
-}
-.sl-info-status-item:hover {
-    background: var(--background-modifier-hover);
-}
-.sl-info-status-item.active {
-    background: var(--background-secondary);
-    font-weight: 600;
 }
 
 /* ??? Delete project warning modal ??????????????????????????? */

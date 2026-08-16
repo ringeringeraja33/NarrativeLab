@@ -41,11 +41,9 @@
           </div>
           <div class="project-file-actions">
             <button class="small-button nc-advanced-only" data-action="open-project-file" type="button">Open</button>
-            <button class="small-button nc-advanced-only" data-action="reload-project-file" type="button">Reload</button>
             <button class="small-button nc-advanced-only" data-action="clear-browser-storage" data-web-only type="button">Clear storage</button>
-            <button class="small-button project-file-sample-button nc-advanced-only" data-action="open-sample-project" data-web-only type="button">Open sample file</button>
+            <button class="small-button project-file-sample-button nc-advanced-only" data-action="open-sample-project" type="button">Open sample file</button>
             <button class="small-button save-project-button" title="Save project state" data-action="save-project" type="button">Save</button>
-            <button class="small-button new-project-button nc-advanced-only" title="New project" data-action="new-project" type="button">New</button>
           </div>
         </section>
 
@@ -102,9 +100,8 @@
             <strong id="activeFileTab">Narrative.canvas</strong>
           </div>
           <div class="workspace-global-actions">
-            <button id="uiModeToggle" class="small-button ui-mode-toggle" data-action="toggle-ui-mode" type="button" aria-pressed="false" title="Show advanced tools">Basic</button>
             <span class="project-history" role="group" aria-label="History">
-              <button id="languageToggle" class="language-toggle-button" data-web-only data-action="toggle-language" type="button" title="Switch language" aria-label="Switch language">
+              <button id="languageToggle" class="language-toggle-button" data-action="toggle-language" data-web-only type="button" title="Switch language" aria-label="Switch language">
                 <span class="language-toggle-option" data-lang="en">EN</span>
                 <span class="language-toggle-divider" aria-hidden="true">/</span>
                 <span class="language-toggle-option" data-lang="zh">中</span>
@@ -113,7 +110,7 @@
               <button id="undoButton" class="icon-button history-button" data-action="undo" type="button" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
               <button id="redoButton" class="icon-button history-button" data-action="redo" type="button" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" aria-label="Redo" disabled>↷</button>
             </span>
-            <button id="themeToggle" class="icon-button theme-toggle-button" data-web-only title="Switch theme" data-action="toggle-theme" type="button" aria-pressed="true">Dark</button>
+            <button id="themeToggle" class="icon-button theme-toggle-button" title="Switch theme" data-action="toggle-theme" type="button" aria-pressed="true">Dark</button>
           </div>
         </header>
         <header id="workspaceToolbar" class="canvas-workspace-tabs">
@@ -259,7 +256,6 @@
       <aside class="sidebar sidebar-right" data-sidebar="right">
         <header class="pane-header compact">
           <div class="header-actions">
-            <button class="icon-button inspector-current-float-button" data-action="float-current-inspector" type="button" title="Open current inspector in center" aria-label="Open current inspector in center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 17 7 7M7 7v7M7 7h7"></path></svg></button>
             <button class="icon-button sidebar-toggle-button" title="Collapse right sidebar" aria-label="Collapse right sidebar" data-sidebar-toggle="right" type="button">
               <span class="sidebar-toggle-icon sidebar-toggle-icon-right" aria-hidden="true"></span>
             </button>
@@ -273,12 +269,15 @@
         <div class="inspector-tabs">
           <div class="inspector-tab-group">
             <button class="inspector-tab active" data-panel="project">Project</button>
+            <button class="inspector-float-button" data-action="float-inspector-panel" data-float-panel="project" type="button" title="Open Project in center" aria-label="Open Project in center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 17 7 7M7 7v7M7 7h7"></path></svg></button>
           </div>
           <div class="inspector-tab-group">
             <button class="inspector-tab" data-panel="node">Node</button>
+            <button class="inspector-float-button" data-action="float-inspector-panel" data-float-panel="node" type="button" title="Open Node in center" aria-label="Open Node in center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 17 7 7M7 7v7M7 7h7"></path></svg></button>
           </div>
           <div class="inspector-tab-group">
             <button class="inspector-tab" data-panel="story">Story</button>
+            <button class="inspector-float-button" data-action="float-inspector-panel" data-float-panel="story" type="button" title="Open Story in center" aria-label="Open Story in center"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 17 7 7M7 7v7M7 7h7"></path></svg></button>
           </div>
         </div>
 

@@ -11,6 +11,7 @@ import {
 } from '../models/Codex';
 import { collectMarkdownFiles, isExcalidrawFilePath, isLibraryEntityMarkdownFile, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
+import { coerceString } from '../utils/narrow';
 import { ensureVaultFolder } from '../utils/vaultFolders';
 
 /**
@@ -86,6 +87,12 @@ export class CodexManager {
     /** Lookup a single category definition. */
     getCategoryDef(id: string): CodexCategoryDef | undefined {
         return this.categoryDefs.get(id);
+    }
+
+    /** Keep a category visible without wiping already-loaded entries. */
+    registerCategoryDef(def: CodexCategoryDef): void {
+        if (!def?.id) return;
+        this.categoryDefs.set(def.id, withLinkingSection(def));
     }
 
     /**
@@ -232,11 +239,50 @@ export class CodexManager {
 
     /** Get a single entry by file path. */
     getEntry(filePath: string): CodexEntry | undefined {
+        const path = normalizePath(filePath || '');
+        if (!path) return undefined;
         for (const catMap of this.entriesByCategory.values()) {
-            const entry = catMap.get(filePath);
-            if (entry) return entry;
+            const direct = catMap.get(path) || catMap.get(filePath);
+            if (direct) return direct;
+            for (const [key, entry] of catMap) {
+                if (normalizePath(key) === path) return entry;
+            }
         }
         return undefined;
+    }
+
+    /** Find an entry by note title or file basename (Unicode-safe fallback). */
+    findByFileNameOrName(name: string): CodexEntry | undefined {
+        const key = String(name || '').replace(/\.md$/i, '').trim().toLowerCase();
+        if (!key) return undefined;
+        return this.getAllEntries().find(entry => {
+            const entryName = String(entry.name || '').trim().toLowerCase();
+            const base = normalizePath(entry.filePath).split('/').pop()?.replace(/\.md$/i, '').toLowerCase() || '';
+            return entryName === key || base === key;
+        });
+    }
+
+    /**
+     * Register a vault note that the last Library scan missed (path
+     * normalization, series vs project Library, just-created canvas files).
+     */
+    async ingestVaultFile(file: TFile, catDef: CodexCategoryDef): Promise<CodexEntry | null> {
+        const path = normalizePath(file.path);
+        const existing = this.getEntry(path);
+        if (existing) return existing;
+        const content = await this.app.vault.cachedRead(file);
+        const entry = this.parseEntry(content, path, catDef, true);
+        if (!entry) return null;
+        if (!this.categoryDefs.has(catDef.id)) {
+            this.categoryDefs.set(catDef.id, withLinkingSection(catDef));
+        }
+        let catMap = this.entriesByCategory.get(catDef.id);
+        if (!catMap) {
+            catMap = new Map();
+            this.entriesByCategory.set(catDef.id, catMap);
+        }
+        catMap.set(path, entry);
+        return entry;
     }
 
     /** Find entry by name within a category (case-insensitive). */
@@ -492,7 +538,7 @@ export class CodexManager {
             gallery: this.parseGallery(safeFm.gallery),
             created: safeFm.created,
             modified: safeFm.modified,
-            notes: body || undefined,
+            notes: body || coerceString(safeFm.notes) || undefined,
             custom: safeFm.custom && typeof safeFm.custom === 'object' ? safeFm.custom as Record<string, string> : undefined,
             universalFields: hydrateUniversalFieldsFromTopLevel(
                 safeFm,

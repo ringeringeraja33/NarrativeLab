@@ -5,15 +5,52 @@
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
 import type { Univer } from '@univerjs/core';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
+import { UniverSheetsConditionalFormattingPreset } from '@univerjs/preset-sheets-conditional-formatting';
+import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
+import { UniverSheetsDrawingPreset } from '@univerjs/preset-sheets-drawing';
 import { UniverSheetsFilterPreset } from '@univerjs/preset-sheets-filter';
+import { UniverSheetsFindReplacePreset } from '@univerjs/preset-sheets-find-replace';
+import { UniverSheetsHyperLinkPreset } from '@univerjs/preset-sheets-hyper-link';
+import { UniverSheetsNotePreset } from '@univerjs/preset-sheets-note';
+import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort';
+import { UniverSheetsTablePreset } from '@univerjs/preset-sheets-table';
+import { UniverSheetsThreadCommentPreset } from '@univerjs/preset-sheets-thread-comment';
 import { InsertFunctionOperation } from '@univerjs/sheets-formula-ui';
 import { IMenuManagerService, RibbonFormulasGroup, RibbonPosition } from '@univerjs/ui';
 import sheetsCoreEnUS from '@univerjs/preset-sheets-core/locales/en-US';
 import sheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
+import sheetsConditionalFormattingEnUS from '@univerjs/preset-sheets-conditional-formatting/locales/en-US';
+import sheetsConditionalFormattingZhCN from '@univerjs/preset-sheets-conditional-formatting/locales/zh-CN';
+import sheetsDataValidationEnUS from '@univerjs/preset-sheets-data-validation/locales/en-US';
+import sheetsDataValidationZhCN from '@univerjs/preset-sheets-data-validation/locales/zh-CN';
+import sheetsDrawingEnUS from '@univerjs/preset-sheets-drawing/locales/en-US';
+import sheetsDrawingZhCN from '@univerjs/preset-sheets-drawing/locales/zh-CN';
 import sheetsFilterEnUS from '@univerjs/preset-sheets-filter/locales/en-US';
 import sheetsFilterZhCN from '@univerjs/preset-sheets-filter/locales/zh-CN';
+import sheetsFindReplaceEnUS from '@univerjs/preset-sheets-find-replace/locales/en-US';
+import sheetsFindReplaceZhCN from '@univerjs/preset-sheets-find-replace/locales/zh-CN';
+import sheetsHyperLinkEnUS from '@univerjs/preset-sheets-hyper-link/locales/en-US';
+import sheetsHyperLinkZhCN from '@univerjs/preset-sheets-hyper-link/locales/zh-CN';
+import sheetsNoteEnUS from '@univerjs/preset-sheets-note/locales/en-US';
+import sheetsNoteZhCN from '@univerjs/preset-sheets-note/locales/zh-CN';
+import sheetsSortEnUS from '@univerjs/preset-sheets-sort/locales/en-US';
+import sheetsSortZhCN from '@univerjs/preset-sheets-sort/locales/zh-CN';
+import sheetsTableEnUS from '@univerjs/preset-sheets-table/locales/en-US';
+import sheetsTableZhCN from '@univerjs/preset-sheets-table/locales/zh-CN';
+import sheetsThreadCommentEnUS from '@univerjs/preset-sheets-thread-comment/locales/en-US';
+import sheetsThreadCommentZhCN from '@univerjs/preset-sheets-thread-comment/locales/zh-CN';
 
 import sheetsCoreCss from '@univerjs/preset-sheets-core/lib/index.css';
+import sheetsConditionalFormattingCss from '@univerjs/preset-sheets-conditional-formatting/lib/index.css';
+import sheetsDataValidationCss from '@univerjs/preset-sheets-data-validation/lib/index.css';
+import sheetsDrawingCss from '@univerjs/preset-sheets-drawing/lib/index.css';
+import sheetsFilterCss from '@univerjs/preset-sheets-filter/lib/index.css';
+import sheetsFindReplaceCss from '@univerjs/preset-sheets-find-replace/lib/index.css';
+import sheetsHyperLinkCss from '@univerjs/preset-sheets-hyper-link/lib/index.css';
+import sheetsNoteCss from '@univerjs/preset-sheets-note/lib/index.css';
+import sheetsSortCss from '@univerjs/preset-sheets-sort/lib/index.css';
+import sheetsTableCss from '@univerjs/preset-sheets-table/lib/index.css';
+import sheetsThreadCommentCss from '@univerjs/preset-sheets-thread-comment/lib/index.css';
 
 function withNarrativeLabZhTerminology(base: unknown): Record<string, unknown> {
     const locale = (base && typeof base === 'object' ? base : {}) as Record<string, unknown>;
@@ -52,12 +89,26 @@ function injectUniverCss(activeDocument: Document): void {
     // first mounted, avoiding global Univer CSS before the table is opened.
     const style = activeDocument.createElement('style');
     style.id = id;
-    style.textContent = typeof sheetsCoreCss === 'string' ? sheetsCoreCss : String(sheetsCoreCss);
+    const sheets = [
+        sheetsCoreCss,
+        sheetsFilterCss,
+        sheetsDrawingCss,
+        sheetsHyperLinkCss,
+        sheetsFindReplaceCss,
+        sheetsSortCss,
+        sheetsDataValidationCss,
+        sheetsConditionalFormattingCss,
+        sheetsNoteCss,
+        sheetsTableCss,
+        sheetsThreadCommentCss,
+    ];
+    style.textContent = sheets.map(item => (typeof item === 'string' ? item : String(item))).join('\n');
     activeDocument.head.appendChild(style);
 }
 
 import { installUniverContextMenuHoverAssist, retireUniverSubmenus } from '../utils/univerContextMenu';
 import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
+import { normalizeUniverStyleMap, normalizeUniverWorkbookResources } from '../models/PlotGridData';
 import { cellHasNoteLink, getPlotGridCellAtUniverCoords } from '../utils/plotGridCellEdit';
 import {
     conceptGridContentFingerprint,
@@ -237,7 +288,15 @@ function addUniverSubscriptionDisposer(
 
 const FINANCIAL_FORMULA_MENU_ORDER = 99;
 const TEXT_TO_NUMBER_TOOLBAR_MENU_ID = 'sheet.toolbar.text-to-number';
-const FILTER_TOOLBAR_GROUP_ORDER = -100;
+/** Classic ribbon: Start, Data, Insert, Formulas, View. */
+const RIBBON_TAB_ORDER = {
+    start: 0,
+    data: 1,
+    insert: 2,
+    formulas: 3,
+    view: 4,
+    others: 5,
+} as const;
 
 const UNIVER_CONTEXT_SUBMENU_SELECTOR = '[data-u-context-menu-submenu="true"]';
 const UNIVER_CONTEXT_MENU_HOST_ID = 'desktop-context-menu';
@@ -620,21 +679,22 @@ function moveFinancialFormulaMenuLast(univer: Univer): void {
     }
 }
 
-/** Keep the filter control ahead of lower-priority items in the simple ribbon. */
-function keepFilterInToolbar(univer: Univer): void {
+/** Put Data immediately after Start, matching Excel-style ribbon order. */
+function orderRibbonTabs(univer: Univer): void {
     try {
-        // The filter preset registers under ribbon.data. Univer's simple ribbon
-        // collapses later groups first, so making Data first keeps Filter visible.
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const menuManager = univer.__getInjector().get(IMenuManagerService);
         // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         menuManager.mergeMenu({
-            [RibbonPosition.DATA]: {
-                order: FILTER_TOOLBAR_GROUP_ORDER,
-            },
+            [RibbonPosition.START]: { order: RIBBON_TAB_ORDER.start },
+            [RibbonPosition.DATA]: { order: RIBBON_TAB_ORDER.data },
+            [RibbonPosition.INSERT]: { order: RIBBON_TAB_ORDER.insert },
+            [RibbonPosition.FORMULAS]: { order: RIBBON_TAB_ORDER.formulas },
+            [RibbonPosition.VIEW]: { order: RIBBON_TAB_ORDER.view },
+            [RibbonPosition.OTHERS]: { order: RIBBON_TAB_ORDER.others },
         });
     } catch (e) {
-        console.warn('[NarrativeLab] Failed to pin Univer filter in the toolbar:', e);
+        console.warn('[NarrativeLab] Failed to order Univer ribbon tabs:', e);
     }
 }
 
@@ -827,8 +887,36 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let contentFp = conceptGridContentFingerprint(liveDoc);
     const locale = opts.locale === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US;
     const locales = opts.locale === 'zh'
-        ? { [LocaleType.ZH_CN]: mergeLocales(withNarrativeLabZhTerminology(sheetsCoreZhCN), sheetsFilterZhCN) }
-        : { [LocaleType.EN_US]: mergeLocales(sheetsCoreEnUS, sheetsFilterEnUS) };
+        ? {
+            [LocaleType.ZH_CN]: mergeLocales(
+                withNarrativeLabZhTerminology(sheetsCoreZhCN),
+                sheetsFilterZhCN,
+                sheetsDrawingZhCN,
+                sheetsHyperLinkZhCN,
+                sheetsFindReplaceZhCN,
+                sheetsSortZhCN,
+                sheetsDataValidationZhCN,
+                sheetsConditionalFormattingZhCN,
+                sheetsNoteZhCN,
+                sheetsTableZhCN,
+                sheetsThreadCommentZhCN,
+            ),
+        }
+        : {
+            [LocaleType.EN_US]: mergeLocales(
+                sheetsCoreEnUS,
+                sheetsFilterEnUS,
+                sheetsDrawingEnUS,
+                sheetsHyperLinkEnUS,
+                sheetsFindReplaceEnUS,
+                sheetsSortEnUS,
+                sheetsDataValidationEnUS,
+                sheetsConditionalFormattingEnUS,
+                sheetsNoteEnUS,
+                sheetsTableEnUS,
+                sheetsThreadCommentEnUS,
+            ),
+        };
 
     injectUniverCss(opts.container.ownerDocument);
 
@@ -873,6 +961,15 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 },
             }),
             UniverSheetsFilterPreset(),
+            UniverSheetsDrawingPreset({ allowImageSize: 8 * 1024 * 1024 }),
+            UniverSheetsHyperLinkPreset(),
+            UniverSheetsFindReplacePreset(),
+            UniverSheetsSortPreset(),
+            UniverSheetsDataValidationPreset(),
+            UniverSheetsConditionalFormattingPreset(),
+            UniverSheetsNotePreset(),
+            UniverSheetsTablePreset(),
+            UniverSheetsThreadCommentPreset(),
         ],
     }) as unknown as { univer: Univer; univerAPI: UniverAPI });
 
@@ -906,7 +1003,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }
     };
     createNativeWorkbook(liveDoc);
-    keepFilterInToolbar(univerInstance);
+    orderRibbonTabs(univerInstance);
     moveFinancialFormulaMenuLast(univerInstance);
     tryActivateSheet(univerAPI, liveDoc.activePageId);
 
@@ -972,11 +1069,13 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             univerAPI.executeCommand?.('sheet.operation.set-cell-edit-visible', { visible: false });
         } catch { /* ignore */ }
         try {
-            // Blur any leftover contenteditable so IME/editor buffers flush.
+            // Blur leftover editors so IME/formula-bar buffers flush.
+            // The formula bar lives in Univer chrome and may be outside `container`.
             const active = opts.container.ownerDocument?.activeElement;
-            if (active instanceof HTMLElement && opts.container.contains(active)) {
-                active.blur();
-            }
+            if (!(active instanceof HTMLElement)) return;
+            const inHost = opts.container.contains(active);
+            const inFormula = Boolean(active.closest('.univer-formula-bar, [class*="formula-editor"]'));
+            if (inHost || inFormula) active.blur();
         } catch { /* ignore */ }
     };
 
@@ -1003,6 +1102,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             if (!wb) return;
             const saved = wb.save?.() as {
                 sheetOrder?: string[];
+                resources?: Array<{ name?: string; data?: string }>;
                 styles?: Record<string, {
                     bg?: { rgb?: string } | null;
                     cl?: { rgb?: string } | null;
@@ -1067,6 +1167,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     { clearMissing, mergeDimensions },
                 );
             }
+            next.univerResources = normalizeUniverWorkbookResources(saved.resources);
+            next.univerStyles = normalizeUniverStyleMap(saved.styles);
             const nextFp = conceptGridContentFingerprint(next);
             // Also detect meta drift (links) even when display text is unchanged.
             const metaChanged = JSON.stringify(pickMeta(next)) !== JSON.stringify(pickMeta(liveDoc));
@@ -1167,10 +1269,13 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             if (!isField) return false;
             // NarrativeLab's floating Markdown editor lives on <body> — never block saves for it.
             if (active.closest('.plot-grid-cell-editor-window, .modal, .prompt')) return false;
-            if (active.closest(
-                '.univer-cell-editor, .univer-editor-container, .univer-formula-bar, [class*="cell-editor"], [class*="formula-editor"], [class*="sheet-bar"], [class*="sheetbar"], [class*="SheetBar"]',
-            )) {
+            if (active.closest('.univer-cell-editor, .univer-editor-container, [class*="cell-editor"]')) {
                 return true;
+            }
+            // Formula bar is always an input. Only block while Univer reports an
+            // edit session — otherwise focus lingering there froze autosave.
+            if (active.closest('.univer-formula-bar, [class*="formula-editor"]')) {
+                return cellEditing || composing;
             }
             // In-host contenteditable only (the actual cell editor surface).
             if (opts.container.contains(active) && active.isContentEditable) return true;
@@ -1472,6 +1577,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 if (!sel) return;
                 lastSelection = sel;
                 opts.onSelectionChange?.(sel);
+                if (pendingAfterEdit && !cellEditing && !composing) onEditorSessionEnd();
             } catch { /* ignore */ }
         };
 
@@ -1610,6 +1716,16 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             // parent document yet (syncMeta is called from wikilink sync, zoom…).
             const next = structuredClone(doc);
             preserveConceptGridAxisSizes(next, liveDoc);
+            if (!next.univerResources?.length && liveDoc.univerResources?.length) {
+                next.univerResources = liveDoc.univerResources;
+            }
+            if (!next.univerStyles && liveDoc.univerStyles) {
+                next.univerStyles = liveDoc.univerStyles;
+            }
+            for (const page of next.pages) {
+                const livePage = liveDoc.pages.find(item => item.id === page.id);
+                if (livePage?.univerExtras && !page.univerExtras) page.univerExtras = livePage.univerExtras;
+            }
             liveDoc = next;
             contentFp = conceptGridContentFingerprint(liveDoc);
             refreshLinkMarkers();
@@ -1708,11 +1824,27 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             // mergeDimensions:true — capture finished resize gesture sizes.
             // pendingAfterEdit means Univer value mutations ran while the editor
             // was busy; those omitted cells are real clears once we flush.
-            const clearMissing = pendingClearMissing || pendingAfterEdit;
             pendingAfterEdit = false;
             pendingClearMissing = false;
             pendingMergeDimensions = false;
-            pullFromUniver(true, { clearMissing, mergeDimensions: true });
+            // Full workbook.save() after commit: omitted cells are real clears.
+            pullFromUniver(true, { clearMissing: true, mergeDimensions: true });
+            // Prefer the live active cell, including an empty value (Delete).
+            const active = lastSelection;
+            if (active) {
+                const text = readLiveCellPlainText(active.sheetId, active.row, active.col);
+                if (text != null) {
+                    const next = mergeUniverCellDataIntoDocument(liveDoc, active.sheetId, {
+                        [active.row]: { [active.col]: { v: text } },
+                    });
+                    const nextFp = conceptGridContentFingerprint(next);
+                    if (nextFp !== contentFp) {
+                        liveDoc = next;
+                        contentFp = nextFp;
+                        opts.onDocumentChange(liveDoc);
+                    }
+                }
+            }
         },
         focus: () => {
             opts.container.querySelector<HTMLElement>('[contenteditable], canvas, .univer-workbook')?.focus?.();
@@ -1748,6 +1880,7 @@ function pickMeta(doc: ConceptGridDocument): unknown {
                 bold: c?.bold,
                 italic: c?.italic,
                 align: c?.align,
+                univerStyle: c?.univerStyle,
             }]),
         ),
         rows: (p.rows || []).map(r => ({ id: r.id, height: r.height, sourceId: r.sourceId, sourceType: r.sourceType })),

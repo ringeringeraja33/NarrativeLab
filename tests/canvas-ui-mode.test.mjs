@@ -9,19 +9,25 @@ const [app, html, css, pluginBundle] = await Promise.all([
   readFile(new URL("../canvas-runtime/main.js", import.meta.url), "utf8")
 ]);
 
-test("basic canvas mode keeps the four common creation types", () => {
-  assert.match(app, /BASIC_NODE_TYPE_SET = new Set\(\["Content", "Dialog", "Choice", "Event"\]\)/);
-  assert.match(app, /function getAddableNodeTypeEntries\(\)/);
-  assert.match(app, /BASIC_NODE_TYPE_SET\.has\(type\) \|\| meta\.custom/);
+test("removed chrome is optional so canvas can still boot", () => {
+  assert.match(app, /optionalDomKeys = new Set\(\[[^\]]*?"uiModeToggle"/);
+  assert.doesNotMatch(html, /id="uiModeToggle"/);
 });
 
-test("advanced canvas surfaces are hidden without removing their controls", () => {
-  assert.match(css, /data-ui-mode="basic"\] \.nc-advanced-only/);
-  assert.match(html, /data-file-id="document"[^>]*nc-advanced-only|nc-advanced-only[^>]*data-file-id="document"/);
-  assert.match(html, /data-file-id="variables"[^>]*nc-advanced-only|nc-advanced-only[^>]*data-file-id="variables"/);
-  assert.doesNotMatch(html, /data-file-id="events"[^>]*nc-advanced-only|nc-advanced-only[^>]*data-file-id="events"/);
-  assert.match(html, /id="aiFloatingButton"[^>]*nc-advanced-only|nc-advanced-only[^>]*id="aiFloatingButton"/);
-  assert.match(html, /id="uiModeToggle"/);
+test("canvas always exposes the full node library", () => {
+  assert.match(app, /function isAdvancedUiMode\(\) \{\s*return true;/);
+  assert.match(app, /function getAddableNodeTypeEntries\(\) \{\s*return getNodeTypeEntries\(\);/);
+  assert.doesNotMatch(app, /BASIC_NODE_TYPE_SET/);
+});
+
+test("project file actions keep Open, sample, and Save without Reload or New", () => {
+  assert.match(html, /data-action="open-project-file"/);
+  assert.match(html, /data-action="open-sample-project"/);
+  assert.match(html, /data-action="save-project"/);
+  assert.doesNotMatch(html, /data-action="reload-project-file"/);
+  assert.doesNotMatch(html, /data-action="new-project"/);
+  assert.doesNotMatch(html, /id="uiModeToggle"/);
+  assert.doesNotMatch(css, /data-ui-mode="basic"\] \.nc-advanced-only/);
 });
 
 test("event table stays basic while edit document is advanced-only", () => {
@@ -30,16 +36,54 @@ test("event table stays basic while edit document is advanced-only", () => {
   assert.equal((app.match(/\["events", "variables"\]\.includes\(/g) || []).length, 0);
 });
 
-test("inspector uses one current-panel float control", () => {
-  assert.equal((html.match(/data-action="float-current-inspector"/g) || []).length, 1);
-  assert.equal((html.match(/data-action="float-inspector-panel"/g) || []).length, 0);
+test("inspector tabs can open a centered floating window", () => {
+  assert.equal((html.match(/data-action="float-inspector-panel"/g) || []).length, 3);
+  assert.match(html, /data-float-panel="project"/);
+  assert.match(html, /data-float-panel="node"/);
+  assert.match(html, /data-float-panel="story"/);
+  assert.match(css, /\.inspector-tab-group\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s*26px/);
 });
 
-test("Obsidian bundle contains the simplified canvas UI", () => {
-  assert.match(pluginBundle, /uiModeToggle/);
-  assert.match(pluginBundle, /float-current-inspector/);
+test("Obsidian bundle contains the full canvas chrome", () => {
+  assert.doesNotMatch(pluginBundle, /id="uiModeToggle"/);
+  assert.match(pluginBundle, /float-inspector-panel/);
   assert.match(pluginBundle, /More export and import options/);
-  assert.match(pluginBundle, /data-ui-mode/);
+  assert.match(pluginBundle, /function isAdvancedUiMode\(\) \{\s*return true;/);
+});
+
+test("only Entry stays locked in the node library", () => {
+  assert.match(app, /function isProtectedNodeType\(type\) \{\s*return type === "Entry";/);
+  assert.match(app, /function isRestorableDefaultNodeType\(type\)/);
+  assert.match(app, /system: isProtectedNodeType\(typeDef\.type\)/);
+  assert.match(app, /system: isProtectedNodeType\(type\)/);
+  assert.match(app, /isProtectedNodeType\(type\)\s*\?/);
+  assert.doesNotMatch(app, /if \(typeDef\.system\)/);
+});
+
+test("node library uses catalog badges and icon buttons instead of lock/x text", () => {
+  assert.match(app, /getNormalizedNodeTypeBadge\(typeDef\.type,\s*typeDef\.label,\s*typeDef\.badge/);
+  assert.match(app, /CATALOG_NODE_TYPE_BADGES/);
+  assert.match(app, /PALETTE_LOCK_ICON/);
+  assert.match(app, /PALETTE_DELETE_ICON/);
+  assert.doesNotMatch(app, /system-lock-button[^>]*>lock</);
+  assert.match(css, /\.palette-action-icon/);
+});
+
+test("canvas language follows NarrativeLab and hides the local toggle in Obsidian", () => {
+  assert.match(html, /id="languageToggle"[^>]*data-web-only/);
+  assert.doesNotMatch(html, /id="themeToggle"[^>]*data-web-only/);
+  assert.doesNotMatch(html, /data-action="open-sample-project"[^>]*data-web-only/);
+  assert.match(app, /createSampleInActiveProject/);
+});
+
+test("canvas defaults to the full NarrativeCanvas chrome and fills the Obsidian leaf", async () => {
+  const styles = await readFile(new URL("../styles.css", import.meta.url), "utf8");
+  assert.match(app, /uiMode:\s*"advanced"/);
+  assert.doesNotMatch(html, /id="uiModeToggle"/);
+  assert.match(css, /display:\s*block;[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;/);
+  assert.match(styles, /\.narrative-canvas-plugin-host\s*\{/);
+  assert.match(styles, /data-type="narrative-lab-canvas-view"/);
+  assert.match(styles, /padding:\s*0\s*!important/);
 });
 
 test("native Canvas sync stays in advanced project tools", () => {
@@ -60,11 +104,39 @@ test("library files and preview images share aligned controls", () => {
   assert.match(pluginBundle, /vision-board-expand-button/);
 });
 
-test("ncanvas library sync treats vault Library as source of truth", () => {
-  assert.match(app, /preserveUnsaved:\s*false/);
-  assert.match(app, /Disk is the source of truth/);
+test("canvas app exposes sample project creation at an exact path", () => {
+  assert.match(app, /async function createSampleProjectAtPath\(/);
+  assert.match(app, /createSampleProjectAtPath,/);
+  assert.match(app, /writeAndOpenProjectAtPath/);
+  assert.match(pluginBundle, /waitForCanvasAppMethod/);
+  assert.match(pluginBundle, /createSampleProjectAtPath\(normalized, language\)/);
+});
+
+test("canvas library detail mounts the project profile outside shadow DOM", () => {
+  assert.match(app, /mountLibraryProfile/);
+  assert.match(app, /function getNodeBacklinks\(/);
+  assert.match(app, /function focusLibraryNode\(/);
+  assert.match(app, /closeLibraryProfile:\s*closeCodexEntryDetail/);
+  assert.match(pluginBundle, /mountLibraryProfile/);
+  assert.match(pluginBundle, /unmountLibraryProfile/);
+});
+
+test("canvas paints the host theme before the first frame", () => {
+  assert.match(app, /function applyBootTheme\(\)/);
+  assert.match(app, /applyBootTheme\(\);\s*const restoredView = await loadSavedState\(false\)/);
+  assert.match(pluginBundle, /function mountCanvasShadow\(shadowRoot, bodyHtml, theme\)/);
+  assert.match(pluginBundle, /setAttribute\("data-theme", bootTheme\)/);
+  assert.match(pluginBundle, /mountCanvasShadow\(shadow, bodyHtml, bootTheme\)/);
+  assert.match(pluginBundle, /querySelector\("\.app-shell"\)\?\.setAttribute\("data-theme", resolvedTheme\)/);
+});
+
+test("ncanvas library sync keeps unwritten embeds and drops deleted files", () => {
+  assert.match(app, /Keep embeds that were never written/);
+  assert.match(app, /was deleted — those keep a codexFile path/);
   assert.doesNotMatch(app, /if \(!Array\.isArray\(loaded\) \|\| !loaded\.length\) return false;/);
   assert.match(pluginBundle, /resolveCodexCategoryFolder/);
   assert.match(pluginBundle, /Never recreate from \.ncanvas snapshot/);
   assert.match(pluginBundle, /Brand-new canvas entry with no vault file yet/);
+  assert.match(pluginBundle, /getCodexLibraryRootsForProject/);
+  assert.match(pluginBundle, /resolveLoadedLibraryNotes/);
 });

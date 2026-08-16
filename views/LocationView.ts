@@ -38,6 +38,7 @@ import {
 } from '../utils/libraryProfileLayout';
 
 import type SceneCardsPlugin from '../main';
+import type { LibraryProfileEmbedOptions } from './CanvasLibraryProfileHost';
 import { CharacterManager } from '../services/CharacterManager';
 import { RenameConfirmModal } from '../components/RenameConfirmModal';
 
@@ -117,6 +118,7 @@ export class LocationView extends ProjectBoundItemView {
         for (const el of this._portaledDropdowns) { try { el.remove(); } catch { /* noop */ } }
         this._portaledDropdowns = [];
     }
+    private embedOptions: LibraryProfileEmbedOptions | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -726,6 +728,10 @@ export class LocationView extends ProjectBoundItemView {
         const item = this.locationManager.getItem(this.selectedItem!);
         if (!item) {
             this.selectedItem = null;
+            if (this.embedOptions) {
+                this.embedOptions.onBack();
+                return;
+            }
             this.renderOverview(container);
             return;
         }
@@ -756,9 +762,14 @@ export class LocationView extends ProjectBoundItemView {
         const backBtn = header.createEl('span', { cls: 'codex-nav-back-link' });
         const backIcon = backBtn.createSpan();
         obsidian.setIcon(backIcon, 'circle-arrow-left');
-        backBtn.createSpan({ text: t(' All Locations') });
-        backBtn.addEventListener('click', () => {
+        backBtn.createSpan({ text: this.embedOptions ? t('Back to library') : t(' All Locations') });
+        backBtn.addEventListener('click', async () => {
+            await this.flushPendingSave();
             this.selectedItem = null;
+            if (this.embedOptions) {
+                this.embedOptions.onBack();
+                return;
+            }
             this.renderView(this.rootContainer!);
         });
 
@@ -780,7 +791,8 @@ export class LocationView extends ProjectBoundItemView {
             name: draft.name || item.name,
             image: libraryCoverPath(draft),
             onCreated: () => {
-                if (this.rootContainer) this.renderView(this.rootContainer);
+                if (this.embedOptions && this.rootContainer) this.renderDetail(this.rootContainer);
+                else if (this.rootContainer) this.renderView(this.rootContainer);
             },
         });
 
@@ -877,7 +889,9 @@ export class LocationView extends ProjectBoundItemView {
         }
 
         // Cross-entity references
-        this.renderReferencesPanel(sidePanel, item.name);
+        if (!this.embedOptions?.hideVaultReferences) {
+            this.renderReferencesPanel(sidePanel, item.name);
+        }
         this.renderNotesSection(sidePanel, draft);
     }
 
@@ -2094,7 +2108,11 @@ export class LocationView extends ProjectBoundItemView {
                     await this.locationManager.deleteItem(item.filePath);
                     this.selectedItem = null;
                     modal.close();
-                    this.renderView(this.rootContainer!);
+                    if (this.embedOptions) {
+                        (this.embedOptions.onDeleted || this.embedOptions.onBack)();
+                    } else {
+                        this.renderView(this.rootContainer!);
+                    }
                     new Notice(t('"{name}" deleted', { name: item.name }));
                 });
             })
@@ -2126,6 +2144,25 @@ export class LocationView extends ProjectBoundItemView {
     /**
      * Navigate directly to a location/world detail view by file path.
      */
+    async mountEmbeddedDetail(
+        container: HTMLElement,
+        filePath: string,
+        options: LibraryProfileEmbedOptions,
+    ): Promise<boolean> {
+        this.embedOptions = options;
+        this.rootContainer = container;
+        this.ensureProjectBinding(this.sceneManager.activeProject?.filePath);
+        await this.navigateToItem(filePath);
+        return Boolean(this.selectedItem);
+    }
+
+    async unmountEmbeddedDetail(): Promise<void> {
+        await this.flushPendingSave();
+        this.selectedItem = null;
+        this.clearPortaledDropdowns();
+        this.embedOptions = null;
+    }
+
     async navigateToItem(filePath: string): Promise<void> {
         let item = this.locationManager.getItem(filePath);
         if (!item) {
@@ -2137,6 +2174,10 @@ export class LocationView extends ProjectBoundItemView {
             return;
         }
         this.selectedItem = filePath;
+        if (this.embedOptions && this.rootContainer) {
+            this.renderDetail(this.rootContainer);
+            return;
+        }
         if (this.rootContainer) {
             this.renderView(this.rootContainer);
         }

@@ -52,6 +52,10 @@
   --radius-m: 6px;
   --shadow-soft: 0 16px 40px rgba(0, 0, 0, 0.32);
   color-scheme: dark;
+  /* Shadow-host fill: standalone uses html/body 100%; Obsidian only has :host. */
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 :root[data-theme="light"],
@@ -102,23 +106,6 @@
 
 * {
   box-sizing: border-box;
-}
-
-.app-shell[data-ui-mode="basic"] .nc-advanced-only {
-  display: none !important;
-}
-
-.app-shell[data-ui-mode="basic"] .project-file-section > h2,
-.app-shell[data-ui-mode="basic"] .project-file-card {
-  display: none;
-}
-
-.app-shell[data-ui-mode="basic"] .project-file-section {
-  padding-top: 8px;
-}
-
-.app-shell[data-ui-mode="basic"] .project-file-actions .save-project-button {
-  width: 100%;
 }
 
 *::-webkit-scrollbar {
@@ -960,7 +947,27 @@ button {
 .palette-hide-button,
 .palette-delete-button {
   width: 28px;
-  height: 30px;
+  height: 28px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.palette-action-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
+.palette-hide-button:focus-visible,
+.palette-delete-button:focus-visible {
+  outline: 1px solid var(--background-modifier-border);
+  outline-offset: 1px;
+}
+
+.system-lock-button:focus,
+.system-lock-button:focus-visible {
+  outline: none;
+  box-shadow: none;
 }
 
 .palette-badge {
@@ -4265,7 +4272,7 @@ select:focus {
 
 .inspector-tab-group {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 26px;
   min-width: 0;
   border: 1px solid transparent;
   border-radius: var(--radius-s);

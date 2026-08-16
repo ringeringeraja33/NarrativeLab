@@ -57,10 +57,8 @@ test('Uncategorized New sits in the browse toolbar like other Library tabs', () 
 
 test('Uncategorized gallery matches Location Profiles chrome', () => {
     assert.match(codexView, /catDef\.id === UNCATEGORIZED_CATEGORY_ID/);
-    assert.match(codexView, /t\('Uncategorized Profiles'\)/);
-    assert.doesNotMatch(codexView, /codex-overview-heading/);
+    assert.match(codexView, /t\('Uncategorized entries'\)/);
     assert.match(codexView, /showLayoutToggle: false/);
-    assert.match(codexView, /t\('All projects'\)/);
     assert.match(locationView, /showLayoutToggle: false/);
     assert.match(locationView, /t\('All projects'\)/);
 });

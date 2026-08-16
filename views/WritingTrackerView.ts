@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-floating-promises -- DOM handlers */
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { WRITING_TRACKER_VIEW_TYPE } from '../constants';

@@ -2,9 +2,10 @@
 import { App, WorkspaceLeaf, Menu, Modal, Setting, Notice, normalizePath } from 'obsidian';
 import * as obsidian from 'obsidian';
 import type SceneCardsPlugin from '../main';
+import type { LibraryProfileEmbedOptions } from './CanvasLibraryProfileHost';
 import { SceneManager } from '../services/SceneManager';
 import { CodexManager } from '../services/CodexManager';
-import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID, makeCustomCodexCategory, makeProfileCodexCategory, makeUncategorizedCodexCategory, CODEX_ICON_OPTIONS, withLinkingSection } from '../models/Codex';
+import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID, getBuiltinCodexCategory, makeCustomCodexCategory, makeProfileCodexCategory, makeUncategorizedCodexCategory, CODEX_ICON_OPTIONS, withLinkingSection } from '../models/Codex';
 import { CHARACTER_CATEGORIES } from '../models/Character';
 import { LOCATION_CATEGORIES, WORLD_CATEGORIES } from '../models/Location';
 import { CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE } from '../constants';
@@ -68,10 +69,12 @@ import { coerceString } from '../utils/narrow';
 import {
     applyCategoryFolderLabels,
     ensureSeededLibraryCategoryLabels,
+    findCategoryIdForFolderName,
     isSeedLibraryCategoryLabel,
     reconcileLibraryCategoriesForActiveProject,
     renameLibraryCategory,
     resolveLibraryCategoryLabel,
+    resolveLibraryFolderName,
     sanitizeLibraryFolderName,
 } from '../services/LibraryCategorySync';
 import { VirtualScroller } from '../components/VirtualScroller';
@@ -215,6 +218,7 @@ export class CodexView extends ProjectBoundItemView {
         for (const el of this._portaledDropdowns) { try { el.remove(); } catch { /* noop */ } }
         this._portaledDropdowns = [];
     }
+    private embedOptions: LibraryProfileEmbedOptions | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -306,25 +310,127 @@ export class CodexView extends ProjectBoundItemView {
     /**
      * Navigate directly to a codex entry's detail view by file path.
      */
+    private refreshEmbeddedOrView(): void {
+        if (this.embedOptions && this.rootContainer && this.selectedEntry) {
+            this.renderDetail(this.rootContainer);
+            return;
+        }
+        if (this.rootContainer) this.renderView(this.rootContainer);
+    }
+
+    async mountEmbeddedDetail(
+        container: HTMLElement,
+        filePath: string,
+        options: LibraryProfileEmbedOptions,
+    ): Promise<boolean> {
+        this.embedOptions = options;
+        this.rootContainer = container;
+        this.ensureProjectBinding(this.sceneManager.activeProject?.filePath);
+        await this.navigateToEntry(filePath);
+        return Boolean(this.selectedEntry);
+    }
+
+    async unmountEmbeddedDetail(): Promise<void> {
+        await this.flushPendingSave();
+        this.selectedEntry = null;
+        this.clearPortaledDropdowns();
+        this.embedOptions = null;
+    }
+
     async navigateToEntry(filePath: string): Promise<void> {
-        this.codexManager.initCategories(
-            this.plugin.settings.codexEnabledCategories,
-            this.resolveCustomDefs(),
-        );
-        let entry = this.codexManager.getEntry(filePath);
+        const path = normalizePath(filePath || '');
+        if (!path) return;
+        applyCategoryFolderLabels(this.plugin);
+        let entry = this.resolveCodexEntry(path);
         if (!entry) {
             await this.plugin.reloadEntities();
-            entry = this.codexManager.getEntry(filePath);
+            applyCategoryFolderLabels(this.plugin);
+            entry = this.resolveCodexEntry(path);
+        }
+        if (!entry) {
+            entry = await this.ingestCodexFileFromVault(path);
         }
         if (!entry) {
             new Notice(t('Library entry not found in the active project.'));
             return;
         }
+        this.ensureCategoryDef(entry.type);
         this.activeCategory = entry.type;
-        this.selectedEntry = filePath;
+        this.selectedEntry = entry.filePath;
+        if (this.embedOptions && this.rootContainer) {
+            this.renderDetail(this.rootContainer);
+            return;
+        }
         if (this.rootContainer) {
             this.renderView(this.rootContainer);
         }
+    }
+
+    private resolveCodexEntry(filePath: string): CodexEntry | undefined {
+        const path = normalizePath(filePath || '');
+        const base = path.split('/').pop()?.replace(/\.md$/i, '') || '';
+        return this.codexManager.getEntry(path)
+            || (base ? this.codexManager.findByFileNameOrName(base) : undefined);
+    }
+
+    private findVaultMarkdownFile(filePath: string): InstanceType<typeof obsidian.TFile> | null {
+        const path = normalizePath(filePath || '');
+        const direct = this.app.vault.getAbstractFileByPath(path);
+        if (direct instanceof obsidian.TFile) return direct;
+        const base = path.split('/').pop()?.toLowerCase() || '';
+        if (!base) return null;
+        const parentPath = path.split('/').slice(0, -1).join('/');
+        const parent = this.app.vault.getAbstractFileByPath(parentPath);
+        if (parent instanceof obsidian.TFolder) {
+            for (const child of parent.children) {
+                if (child instanceof obsidian.TFile && child.name.toLowerCase() === base) return child;
+            }
+        }
+        const matches = this.app.vault.getMarkdownFiles().filter(file => file.name.toLowerCase() === base);
+        if (matches.length === 1) return matches[0];
+        const libraryHits = matches.filter(file => /\/Library\//i.test(file.path));
+        return libraryHits.length === 1 ? libraryHits[0] : null;
+    }
+
+    private categoryDefForId(categoryId: string): CodexCategoryDef | undefined {
+        const existing = this.codexManager.getCategoryDef(categoryId);
+        if (existing) return existing;
+        const custom = this.plugin.settings.codexCustomCategories?.find(item => item.id === categoryId);
+        const builtin = getBuiltinCodexCategory(categoryId);
+        if (builtin) {
+            return withLinkingSection({
+                ...builtin,
+                label: custom?.label || builtin.label,
+                folder: resolveLibraryFolderName(this.plugin, categoryId) || builtin.folder,
+                icon: custom?.icon || builtin.icon,
+            });
+        }
+        if (custom) return makeProfileCodexCategory(custom.id, custom.label, custom.icon);
+        if (categoryId === UNCATEGORIZED_CATEGORY_ID) return makeUncategorizedCodexCategory();
+        return undefined;
+    }
+
+    private ensureCategoryDef(categoryId: string): CodexCategoryDef | undefined {
+        const existing = this.codexManager.getCategoryDef(categoryId);
+        if (existing) return existing;
+        const def = this.categoryDefForId(categoryId);
+        if (def) this.codexManager.registerCategoryDef(def);
+        return this.codexManager.getCategoryDef(categoryId) || def;
+    }
+
+    private async ingestCodexFileFromVault(filePath: string): Promise<CodexEntry | undefined> {
+        const file = this.findVaultMarkdownFile(filePath);
+        if (!file) return undefined;
+        const folderName = file.parent?.name || file.path.split('/').slice(-2, -1)[0] || '';
+        const project = this.sceneManager.activeProject;
+        const categoryId = (project && folderName
+            ? findCategoryIdForFolderName(this.plugin, project, folderName)
+            : null)
+            || UNCATEGORIZED_CATEGORY_ID;
+        const catDef = this.ensureCategoryDef(categoryId);
+        if (!catDef) return undefined;
+        const entry = await this.codexManager.ingestVaultFile(file, catDef);
+        return entry || undefined;
     }
 
     /** Called by refreshOpenViews after entities are already reloaded. */
@@ -1128,13 +1234,21 @@ export class CodexView extends ProjectBoundItemView {
         const entry = this.codexManager.getEntry(this.selectedEntry!);
         if (!entry) {
             this.selectedEntry = null;
+            if (this.embedOptions) {
+                this.embedOptions.onBack();
+                return;
+            }
             this.renderOverview(container);
             return;
         }
 
-        const catDef = this.codexManager.getCategoryDef(entry.type);
+        const catDef = this.ensureCategoryDef(entry.type);
         if (!catDef) {
             this.selectedEntry = null;
+            if (this.embedOptions) {
+                this.embedOptions.onBack();
+                return;
+            }
             this.renderOverview(container);
             return;
         }
@@ -1162,10 +1276,14 @@ export class CodexView extends ProjectBoundItemView {
         const backBtn = header.createEl('span', { cls: 'codex-back-link' });
         const backIcon = backBtn.createSpan();
         obsidian.setIcon(backIcon, 'circle-arrow-left');
-        backBtn.createSpan({ text: t('All {kind}', { kind: t(catDef.label) }) });
+        backBtn.createSpan({ text: this.embedOptions ? t('Back to library') : t('All {kind}', { kind: t(catDef.label) }) });
         backBtn.addEventListener('click', async () => {
             await this.flushPendingSave();
             this.selectedEntry = null;
+            if (this.embedOptions) {
+                this.embedOptions.onBack();
+                return;
+            }
             if (this.rootContainer) this.renderView(this.rootContainer);
         });
 
@@ -1176,9 +1294,7 @@ export class CodexView extends ProjectBoundItemView {
             categoryKey: catDef.id,
             save: () => this.plugin.saveSettings(),
             beforeChange: () => this.flushPendingSave(),
-            onChanged: () => {
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            },
+            onChanged: () => this.refreshEmbeddedOrView(),
         });
 
         mountLibraryEntityBoardAction(headerRight, {
@@ -1186,9 +1302,7 @@ export class CodexView extends ProjectBoundItemView {
             notePath: entry.filePath,
             name: draft.name || entry.name,
             image: libraryCoverPath(draft),
-            onCreated: () => {
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            },
+            onCreated: () => this.refreshEmbeddedOrView(),
         });
 
         // Open in editor
@@ -1300,9 +1414,7 @@ export class CodexView extends ProjectBoundItemView {
             categoryKey: catDef.id,
             sections: catDef.categories.map(c => ({ title: c.title, fields: c.fields })),
             save: () => this.plugin.saveSettings(),
-            onChanged: () => {
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            },
+            onChanged: () => this.refreshEmbeddedOrView(),
         });
 
         // Books (series-ready)
@@ -1311,7 +1423,9 @@ export class CodexView extends ProjectBoundItemView {
         // Side panel — gallery + notes + references
         this.renderGallerySection(sidePanel, draft);
         this.renderNotesSection(sidePanel, draft);
-        this.renderReferencesPanel(sidePanel, entry.name);
+        if (!this.embedOptions?.hideVaultReferences) {
+            this.renderReferencesPanel(sidePanel, entry.name);
+        }
 
         // Show stale-entry warning if codex content changed since last review
         void this.renderStaleWarning(sidePanel, entry);
@@ -2433,7 +2547,11 @@ export class CodexView extends ProjectBoundItemView {
                     try {
                         await this.codexManager.deleteEntry(entry.filePath);
                         this.selectedEntry = null;
-                        if (this.rootContainer) this.renderView(this.rootContainer);
+                        if (this.embedOptions) {
+                            (this.embedOptions.onDeleted || this.embedOptions.onBack)();
+                        } else if (this.rootContainer) {
+                            this.renderView(this.rootContainer);
+                        }
                     } catch (err) {
                         new Notice(t('Delete failed: {err}', { err: String(err) }));
                     }

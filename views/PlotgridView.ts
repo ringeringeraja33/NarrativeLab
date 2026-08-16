@@ -8,7 +8,7 @@ import {
     ConceptGridPage,
     createEmptyConceptGridDocument,
     getActiveConceptGridPage,
-    isConceptGridDocumentEmpty,
+    isDefaultEmptyConceptGrid,
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
 import { getActiveUiLanguage, t } from '../utils/i18n';
@@ -226,15 +226,14 @@ export class PlotgridView extends ProjectBoundItemView {
         if (!this.hasHydratedDocument) return;
         const projectFile = this.loadedProjectFile;
         this.closeAllCellEditors();
-        this.flushUniverIntoDocument();
+        this.flushUniverIntoDocument({ acceptCleared: true });
         this.cancelPendingSave();
         if (!projectFile || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
-        // Default empty model must never be persisted over a real workbook.
-        // savePlotGridSafely is the last line of defense; skip here too so
-        // project-switch / tab-close cannot even enqueue an empty write.
-        if (isConceptGridDocumentEmpty(this.document)) return;
         try {
-            await this.plugin.savePlotGrid(this.document, { projectFilePath: projectFile });
+            await this.plugin.savePlotGrid(this.document, {
+                projectFilePath: projectFile,
+                fromLiveEditor: true,
+            });
         } catch (error) {
             console.error('[NarrativeLab] Plot Grid persist failed:', error);
         }
@@ -244,17 +243,19 @@ export class PlotgridView extends ProjectBoundItemView {
         // Floating Markdown drafts must enter the model before Univer's final pull.
         const projectFile = this.loadedProjectFile;
         this.closeAllCellEditors();
-        this.flushUniverIntoDocument();
+        this.flushUniverIntoDocument({ acceptCleared: true });
         this.cancelPendingSave();
         if (
             this.hasHydratedDocument
             && projectFile
             && this.plugin
             && typeof this.plugin.savePlotGrid === 'function'
-            && !isConceptGridDocumentEmpty(this.document)
         ) {
             try {
-                await this.plugin.savePlotGrid(this.document, { projectFilePath: projectFile });
+                await this.plugin.savePlotGrid(this.document, {
+                    projectFilePath: projectFile,
+                    fromLiveEditor: true,
+                });
             } catch (error) {
                 console.error('[NarrativeLab] Final Plot Grid save failed:', error);
             }
@@ -284,18 +285,43 @@ export class PlotgridView extends ProjectBoundItemView {
         win.style.zIndex = String(base + (this.cellEditorZSeq % 10));
     }
 
+    private columnIndexToLetters(index1: number): string {
+        let n = Math.max(1, Math.floor(index1));
+        let letters = '';
+        while (n > 0) {
+            const rem = (n - 1) % 26;
+            letters = String.fromCharCode(65 + rem) + letters;
+            n = Math.floor((n - 1) / 26);
+        }
+        return letters;
+    }
+
+    private formatCellEditorCoords(row: number, col: number): string {
+        return `${this.columnIndexToLetters(col + 1)}${row + 1}`;
+    }
+
     private resolveCellEditorHeading(cell: CellData): string {
+        const coords = this.findCellUniverCoords(cell);
+        const address = coords ? this.formatCellEditorCoords(coords.row, coords.col) : '';
         const key = cell.id;
+        let rowLabel = '';
+        let colLabel = '';
         for (const page of this.document.pages) {
             for (const row of page.rows || []) {
                 for (const col of page.columns || []) {
                     if (`${row.id}-${col.id}` !== key) continue;
-                    const rowLabel = (row.label || '').trim() || '—';
-                    const colLabel = (col.label || '').trim() || '—';
-                    return `${rowLabel} · ${colLabel}`;
+                    rowLabel = (row.label || '').trim();
+                    colLabel = (col.label || '').trim();
+                    break;
                 }
+                if (rowLabel || colLabel) break;
             }
+            if (rowLabel || colLabel) break;
         }
+        const labels = [rowLabel, colLabel].filter(Boolean).join(' · ');
+        if (address && labels) return `${address} · ${labels}`;
+        if (address) return address;
+        if (labels) return labels;
         return t('Cell editor');
     }
 
@@ -314,15 +340,19 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     /** Commit the active native sheet into the authoritative NL document. */
-    private flushUniverIntoDocument(): void {
+    private flushUniverIntoDocument(options: { acceptCleared?: boolean } = {}): void {
         const host = this.univerHost;
         if (!host) return;
         try {
             host.flush();
             const next = normalizeConceptGridDocument(host.getDocument());
-            // Univer remount / dispose can yield the default empty workbook.
-            // Never replace a real in-memory grid with that placeholder.
-            if (isConceptGridDocumentEmpty(next) && !isConceptGridDocumentEmpty(this.document)) {
+            // A dispose/remount can yield the default placeholder. Persist,
+            // autosave, and tab-close pass acceptCleared so user deletes win.
+            if (
+                !options.acceptCleared
+                && isDefaultEmptyConceptGrid(next)
+                && !isDefaultEmptyConceptGrid(this.document)
+            ) {
                 return;
             }
             this.document = next;
@@ -546,10 +576,13 @@ export class PlotgridView extends ProjectBoundItemView {
                 // global active project changed, path-scoped save keeps edits in
                 // the bound book instead of aborting or bleeding into another project.
                 if (this.univerHost && this.cellEditorWindows.size === 0) {
-                    this.flushUniverIntoDocument();
+                    this.flushUniverIntoDocument({ acceptCleared: true });
                 }
                 if (typeof plugin.savePlotGrid === 'function') {
-                    await plugin.savePlotGrid(this.document, { projectFilePath: projectAtSchedule });
+                    await plugin.savePlotGrid(this.document, {
+                        projectFilePath: projectAtSchedule,
+                        fromLiveEditor: true,
+                    });
                 }
             } catch (error) {
                 // The plugin-level writer already retries transient file locks.
@@ -609,7 +642,7 @@ export class PlotgridView extends ProjectBoundItemView {
 
     private switchPage(pageId: string): void {
         if (!this.document.pages.some(p => p.id === pageId)) return;
-        this.flushUniverIntoDocument();
+        this.flushUniverIntoDocument({ acceptCleared: true });
         if (!this.document.pages.some(p => p.id === pageId)) return;
         this.document.activePageId = pageId;
         this.bindActivePage();
@@ -1021,7 +1054,7 @@ export class PlotgridView extends ProjectBoundItemView {
                         };
                         // Pull Univer first so Clear contents / Clear all are in cell.content
                         // before the Markdown editor reads it.
-                        this.flushUniverIntoDocument();
+                        this.flushUniverIntoDocument({ acceptCleared: true });
                         const cell = this.getActiveDataCellFromUniver();
                         if (cell) this.openCellMarkdownEditor(cell);
                     },
@@ -1432,7 +1465,7 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     private openCellEditorForActiveCell(): void {
-        this.flushUniverIntoDocument();
+        this.flushUniverIntoDocument({ acceptCleared: true });
         const cell = this.getActivePlotGridCell();
         if (!cell) {
             new Notice(t('Select a cell first'));
@@ -1463,7 +1496,7 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     private openCellMarkdownEditor(cell: CellData, options: { insertWikilink?: boolean } = {}): void {
-        this.flushUniverIntoDocument();
+        this.flushUniverIntoDocument({ acceptCleared: true });
         cell = this.findLivePlotGridCell(cell.id) || cell;
         const coords = this.findCellUniverCoords(cell);
         if (coords && this.univerHost) {
@@ -2031,7 +2064,7 @@ export class PlotgridView extends ProjectBoundItemView {
                     // Never flush/reload while typing — flush blurs the editor and
                     // load+render remounts the workbook (viewport jump).
                     if (this.univerHost.isEditorBusy()) return;
-                    this.flushUniverIntoDocument();
+                    this.flushUniverIntoDocument({ acceptCleared: true });
                 }
                 // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
                 if (this.saveDebounce) return;

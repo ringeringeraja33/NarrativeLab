@@ -1,5 +1,13 @@
 # NarrativeLab — Changelog
 
+## 1.2.3
+
+- Concept Grid loads the open-source Univer sheet tools (filter, sort, find/replace, validation, conditional formatting, notes, tables, comments, drawing, hyperlinks). Freeze, merges, and extra sheet styles survive save and remount.
+- Concept Grid ribbon order is Home → Data → Insert → Formula. The cell editor title shows A1 coordinates, then row/column labels when present.
+- Narrative Canvas can open a Library profile overlay and keeps canvas entries in sync with Library files. Only the Entry node type stays locked in the node library.
+- Canvas no longer flashes the wrong theme on first paint. Concept Grid row/column add and delete persist.
+- Removed unused CSS and dead helpers.
+
 ## 1.2.2
 
 - Navigator series titles that do not contain the open project are muted like inactive books.

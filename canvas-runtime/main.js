@@ -1,5 +1,23 @@
 const { AbstractInputSuggest, ItemView, MarkdownRenderer, Notice, Plugin, PluginSettingTab, Setting, SuggestModal, TFile, TFolder, normalizePath, parseYaml, requestUrl } = require("obsidian");
 const { applyObsidianCanvasLayout, getNarrativeCanvasProjectionPath, projectToObsidianCanvas, validateNarrativeCanvasProjection } = require("./native-canvas");
+const {
+  isPathUnderLibraryRoots,
+  isSkippedLibraryDirName,
+  kindToLibraryCategoryId,
+  entryMatchesLibraryCategory,
+  resolveLibraryCategoryDisplayLabel,
+  libraryCategoryIdToCanvasKind,
+  normalizeCanvasLibraryKind,
+  kindToLibraryFrontmatterType,
+  isCharacterLibraryKind,
+  isLocationLibraryKind,
+  resolveLibraryProfileSurface,
+  orderCodexLibraryRoots,
+  resolveCodexCategoryFolderName,
+  resolveLoadedLibraryNotes,
+  resolveSyncedLibraryMarkdownBody,
+  shouldRenameLibraryFileForEntryName,
+} = require("./ncanvas-library-sync");
 
 const VIEW_TYPE = "narrative-lab-canvas-view";
 const PLUGIN_ID = "narrative-lab";
@@ -131,14 +149,7 @@ const LEGACY_PROJECT_FILE = "NarrativeCanvas/project.json";
 const STATE_FILE = "data.json";
 
 function normalizeCodexMarkdownKind(value) {
-  const raw = String(value || "").trim();
-  const normalized = raw.toLowerCase();
-  if (normalized === "character") return "Character";
-  if (normalized === "location") return "Location";
-  if (normalized === "item") return "Item";
-  if (normalized === "lore") return "Lore";
-  // Custom categories round-trip by name; only an empty value falls back.
-  return raw || "Character";
+  return normalizeCanvasLibraryKind(value);
 }
 
 function normalizeCodexMarkdownTags(value) {
@@ -262,6 +273,33 @@ function fileTitleFromVaultPath(path) {
   return String(path || "").split("/").pop()?.replace(/\.md$/i, "").trim() || "";
 }
 
+function patchSavedStateCodexFiles(savedStateJson, written) {
+  let payload;
+  try {
+    payload = typeof savedStateJson === "string" ? JSON.parse(savedStateJson) : savedStateJson;
+  } catch (_error) {
+    return savedStateJson;
+  }
+  const characters = Array.isArray(payload?.project?.characters) ? payload.project.characters : [];
+  if (!characters.length || !Array.isArray(written) || !written.length) return savedStateJson;
+  const byId = new Map(written
+    .map((entry) => [String(entry?.id || "").trim(), normalizeVaultPath(entry?.codexFile)])
+    .filter(([id, path]) => id && path));
+  if (!byId.size) return savedStateJson;
+  let changed = false;
+  const nextCharacters = characters.map((character) => {
+    const nextPath = byId.get(String(character?.id || "").trim());
+    if (!nextPath || normalizeVaultPath(character?.codexFile) === nextPath) return character;
+    changed = true;
+    return { ...character, codexFile: nextPath };
+  });
+  if (!changed) return savedStateJson;
+  return JSON.stringify({
+    ...payload,
+    project: { ...payload.project, characters: nextCharacters }
+  }, null, 2);
+}
+
 /** Prefer frontmatter name/title; treat Untitled placeholders as missing → file title. */
 function resolveCodexDisplayName(rawName, rawTitle, path) {
   const placeholders = new Set(["untitled", "未命名", "unnamed", "untitled note", "未命名笔记"]);
@@ -311,10 +349,10 @@ function buildCodexMarkdown(entry) {
   const rows = [
     "---",
     "narrative_canvas_codex: true",
-    `type: ${JSON.stringify(String(entry.kind || "Library").toLowerCase())}`,
+    `type: ${JSON.stringify(kindToLibraryFrontmatterType(entry.kind))}`,
     `id: ${JSON.stringify(entry.id)}`,
     `name: ${JSON.stringify(entry.name)}`,
-    `category: ${JSON.stringify(entry.kind)}`,
+    `category: ${JSON.stringify(kindToLibraryCategoryId(entry.kind) || entry.kind)}`,
     `role: ${JSON.stringify(entry.role)}`,
     `voice: ${JSON.stringify(entry.voice)}`,
     `tags: ${JSON.stringify(tags)}`,
@@ -351,6 +389,12 @@ function parseCodexMarkdownFile(path, text) {
   if (!data.narrative_canvas_codex && (!frontmatterType || ["scene", "storyline", "narrative-lab"].includes(frontmatterType.toLowerCase()))) return null;
   const body = source.slice(match[0].length).replace(/^\n/, "").replace(/\n$/, "");
   const hasFrontmatterNotes = Object.prototype.hasOwnProperty.call(data, "notes");
+  const loadedNotes = resolveLoadedLibraryNotes({
+    hasFrontmatterNotes,
+    fmNotes: data.notes,
+    description: data.description,
+    body
+  });
   // Any frontmatter key that is not one of the managed fields becomes a custom field.
   const extraFields = Object.entries(data)
     .filter(([key]) => !CODEX_RESERVED_FRONTMATTER_KEYS.has(String(key).trim().toLowerCase()))
@@ -362,12 +406,12 @@ function parseCodexMarkdownFile(path, text) {
     role: data.role,
     voice: data.voice,
     tags: data.tags,
-    notes: hasFrontmatterNotes ? data.notes : (data.description || body),
+    notes: loadedNotes.notes,
     extraFields,
     vaultFiles: data.files,
     canvasFile: data.canvas,
     icon: data.icon,
-    markdownBody: hasFrontmatterNotes ? body : "",
+    markdownBody: loadedNotes.markdownBody,
     hidden: data.hidden,
     codexFile: path,
     images: data.images || data.gallery,
@@ -753,8 +797,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
 
   async openSampleProject() {
     await this.activateView(true);
-    await wait(600);
-    const app = window.NarrativeCanvasApp;
+    const app = await waitForCanvasAppMethod("createSampleProjectFile");
     if (!app?.createSampleProjectFile) {
       throw new Error("Canvas app did not expose sample project creation.");
     }
@@ -1072,7 +1115,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     this.projectWriteSuppressUntil = Date.now() + 1500;
     await writeVaultText(this.app, path, savedStateJson);
     this.rememberProjectRevision(path, savedStateJson);
-    await this.syncCodexFiles(savedStateJson, path);
+    await this.syncCodexFilesAndRememberPaths(savedStateJson, path);
     await this.setCurrentProjectPath(path);
     return path;
   }
@@ -1250,11 +1293,11 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
           this.projectWriteSuppressUntil = Date.now() + 1500;
           await writeVaultText(this.app, preferredPath, savedStateJson);
           this.rememberProjectRevision(preferredPath, savedStateJson);
-          await this.syncCodexFiles(savedStateJson, preferredPath);
+          await this.syncCodexFilesAndRememberPaths(savedStateJson, preferredPath);
           await this.setCurrentProjectPath(preferredPath);
           return preferredPath;
         }
-        await this.syncCodexFiles(savedStateJson, preferredPath);
+        await this.syncCodexFilesAndRememberPaths(savedStateJson, preferredPath);
         await this.setCurrentProjectPath(preferredPath);
         return "";
       }
@@ -1267,7 +1310,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     this.projectWriteSuppressUntil = Date.now() + 1500;
     await writeVaultText(this.app, path, savedStateJson);
     this.rememberProjectRevision(path, savedStateJson);
-    await this.syncCodexFiles(savedStateJson, path);
+    await this.syncCodexFilesAndRememberPaths(savedStateJson, path);
     await this.setCurrentProjectPath(path);
     return path;
   }
@@ -1277,7 +1320,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     this.projectWriteSuppressUntil = Date.now() + 1500;
     await writeVaultText(this.app, path, savedStateJson);
     this.rememberProjectRevision(path, savedStateJson);
-    await this.syncCodexFiles(savedStateJson, path);
+    await this.syncCodexFilesAndRememberPaths(savedStateJson, path);
     await this.setCurrentProjectPath(path);
     return path;
   }
@@ -1419,35 +1462,24 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
    * Resolves category folder from the entry's vault path when possible.
    */
   getLibraryAttachmentFolderForEntry(projectPath, entry = null) {
-    const libraryRoot = this.getCodexFolderForProject(projectPath);
+    const libraryRoots = this.getCodexLibraryRootsForProject(projectPath);
+    const libraryRoot = libraryRoots.find((root) => isPathUnderLibraryRoots(normalizeVaultPath(entry?.codexFile || ""), [root]))
+      || libraryRoots[0]
+      || "";
     if (!libraryRoot) return "";
     const codexFile = normalizeVaultPath(entry?.codexFile || "");
     let categoryFolder = "";
-    if (codexFile.startsWith(`${libraryRoot}/`)) {
+    if (isPathUnderLibraryRoots(codexFile, [libraryRoot])) {
       const rel = codexFile.slice(libraryRoot.length + 1);
       categoryFolder = String(rel.split("/")[0] || "").trim();
     }
     if (!categoryFolder) {
-      const raw = String(entry?.category || entry?.kind || "").trim();
-      const defaults = {
-        character: "Characters",
-        characters: "Characters",
-        location: "Locations",
-        locations: "Locations",
-        creature: "Creatures",
-        creatures: "Creatures",
-        item: "Items",
-        items: "Items",
-        lore: "Lore",
-        organization: "Organizations",
-        organizations: "Organizations",
-        culture: "Culture",
-        system: "Systems",
-        systems: "Systems",
-      };
-      categoryFolder = defaults[raw.toLowerCase()] || raw || "Characters";
+      const resolved = this.resolveCodexCategoryFolder(libraryRoot, entry);
+      categoryFolder = resolved && resolved !== libraryRoot
+        ? String(resolved.slice(libraryRoot.length + 1).split("/")[0] || "").trim()
+        : "";
     }
-    if (!categoryFolder || categoryFolder === DEFAULT_ATTACHMENT_FOLDER_NAME) return "";
+    if (!categoryFolder || isSkippedLibraryDirName(categoryFolder)) return "";
     return joinVaultPath(joinVaultPath(libraryRoot, categoryFolder), DEFAULT_ATTACHMENT_FOLDER_NAME);
   }
 
@@ -1486,30 +1518,52 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     return targetPath;
   }
 
-  getCodexFolderForProject(projectPath = this.getCurrentProjectPath()) {
-    const projectRoot = getProjectRootFolder(projectPath);
-    if (!projectRoot) return "";
-    const libraryFolder = joinVaultPath(projectRoot, DEFAULT_LIBRARY_FOLDER_NAME);
-    const legacyFolder = joinVaultPath(projectRoot, LEGACY_CODEX_FOLDER_NAME);
+  resolveLibraryFolderAtRoot(root) {
+    const libraryFolder = joinVaultPath(root, DEFAULT_LIBRARY_FOLDER_NAME);
+    const legacyFolder = joinVaultPath(root, LEGACY_CODEX_FOLDER_NAME);
     if (getVaultFolder(this.app, libraryFolder)) return libraryFolder;
     if (getVaultFolder(this.app, legacyFolder)) return legacyFolder;
     return libraryFolder;
   }
 
+  getCodexLibraryRootsForProject(projectPath = this.getCurrentProjectPath()) {
+    const projectRoot = getProjectRootFolder(projectPath);
+    if (!projectRoot) return [];
+    const projectLibrary = this.resolveLibraryFolderAtRoot(projectRoot);
+    const parent = getVaultParentPath(projectRoot);
+    const seriesLibrary = parent && vaultFileExists(this.app, joinVaultPath(parent, "series.json"))
+      ? this.resolveLibraryFolderAtRoot(parent)
+      : "";
+    const ordered = orderCodexLibraryRoots({
+      seriesRoot: seriesLibrary,
+      projectRoot: projectLibrary
+    });
+    const existing = ordered.filter((root) => getVaultFolder(this.app, root));
+    return existing.length ? existing : (ordered[0] ? [ordered[0]] : []);
+  }
+
+  getCodexFolderForProject(projectPath = this.getCurrentProjectPath()) {
+    return this.getCodexLibraryRootsForProject(projectPath)[0] || "";
+  }
+
   async loadCodexEntries(projectPath = this.getCurrentProjectPath()) {
-    const folderPath = this.getCodexFolderForProject(projectPath);
-    const folder = getVaultFolder(this.app, folderPath);
-    if (!folder) return [];
+    const libraryRoots = this.getCodexLibraryRootsForProject(projectPath);
+    if (!libraryRoots.length) return [];
     const entries = [];
     const activePaths = new Set();
     const markdownFiles = [];
     const collectMarkdownFiles = (currentFolder) => {
       for (const child of currentFolder?.children || []) {
-        if (child instanceof TFolder) collectMarkdownFiles(child);
-        else if (child instanceof TFile && String(child.extension || "").toLowerCase() === "md") markdownFiles.push(child);
+        if (child instanceof TFolder) {
+          if (isSkippedLibraryDirName(child.name)) continue;
+          collectMarkdownFiles(child);
+        } else if (child instanceof TFile && String(child.extension || "").toLowerCase() === "md") markdownFiles.push(child);
       }
     };
-    collectMarkdownFiles(folder);
+    for (const folderPath of libraryRoots) {
+      const folder = getVaultFolder(this.app, folderPath);
+      if (folder) collectMarkdownFiles(folder);
+    }
     for (const file of markdownFiles) {
       try {
         const path = normalizeVaultPath(file.path);
@@ -1541,7 +1595,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       }
     }
     [...this.codexFileCache.keys()].forEach((path) => {
-      if (path.startsWith(`${folderPath}/`) && !activePaths.has(path)) this.codexFileCache.delete(path);
+      if (isPathUnderLibraryRoots(path, libraryRoots) && !activePaths.has(path)) this.codexFileCache.delete(path);
     });
     return entries.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -1661,42 +1715,16 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     const kind = String(entry?.kind || entry?.category || "").trim();
     if (!kind) return root;
     const libraryFolder = getVaultFolder(this.app, root);
-    const kindLower = kind.toLowerCase();
-    const existing = (libraryFolder?.children || []).find((child) => (
-      child instanceof TFolder && String(child.name || "").trim().toLowerCase() === kindLower
-    ));
-    if (existing) return joinVaultPath(root, existing.name);
-    const defaults = {
-      character: "Characters",
-      characters: "Characters",
-      location: "Locations",
-      locations: "Locations",
-      creature: "Creatures",
-      creatures: "Creatures",
-      item: "Items",
-      items: "Items",
-      lore: "Lore",
-      organization: "Organizations",
-      organizations: "Organizations",
-      culture: "Culture",
-      system: "Systems",
-      systems: "Systems",
-      skill: "Skills",
-      skills: "Skills",
-    };
-    const folderName = defaults[kindLower] || sanitizeFileName(kind) || "";
-    if (!folderName || folderName.toLowerCase() === "attachments") return root;
-    // Only place into a category folder that already exists — do not invent
-    // deleted categories (e.g. Skills) just because an embedded snapshot mentions them.
-    const candidate = joinVaultPath(root, folderName);
-    if (getVaultFolder(this.app, candidate)) return candidate;
-    const localizedMatch = (libraryFolder?.children || []).find((child) => {
-      if (!(child instanceof TFolder)) return false;
-      const name = String(child.name || "").trim().toLowerCase();
-      return name.includes(kindLower) || kindLower.includes(name);
-    });
-    if (localizedMatch) return joinVaultPath(root, localizedMatch.name);
-    return root;
+    const existingNames = (libraryFolder?.children || [])
+      .filter((child) => child instanceof TFolder)
+      .map((child) => String(child.name || "").trim())
+      .filter(Boolean);
+    const folderMap = this.getNarrativeLabLibraryFolderMap?.(this.getCurrentProjectPath()) || {};
+    const categoryId = kindToLibraryCategoryId(kind) || kind;
+    const mapped = String(folderMap[categoryId] || folderMap[kind] || "").trim();
+    const folderName = resolveCodexCategoryFolderName(kind, existingNames, mapped);
+    if (!folderName || isSkippedLibraryDirName(folderName)) return root;
+    return joinVaultPath(root, folderName);
   }
 
   async syncCodexFiles(savedStateJson, projectPath = this.getCurrentProjectPath()) {
@@ -1707,7 +1735,8 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       return [];
     }
     const characters = Array.isArray(payload?.project?.characters) ? payload.project.characters : [];
-    const folderPath = this.getCodexFolderForProject(projectPath);
+    const libraryRoots = this.getCodexLibraryRootsForProject(projectPath);
+    const folderPath = libraryRoots[0] || "";
     if (!folderPath) return [];
     let folder = getVaultFolder(this.app, folderPath);
     // Keep blank projects clean: Library is created only when the canvas has
@@ -1717,12 +1746,15 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       await ensureVaultFolder(this.app, folderPath);
       folder = getVaultFolder(this.app, folderPath);
     }
-    const hasManagedMarkdown = Boolean(folder?.children?.some((file) => file instanceof TFile && String(file.extension || "").toLowerCase() === "md"));
-    const hasCachedEntries = [...this.codexFileCache.keys()].some((path) => path.startsWith(`${folderPath}/`));
+    const hasManagedMarkdown = libraryRoots.some((root) => {
+      const rootFolder = getVaultFolder(this.app, root);
+      return Boolean(rootFolder?.children?.some((file) => file instanceof TFile && String(file.extension || "").toLowerCase() === "md"));
+    });
+    const hasCachedEntries = [...this.codexFileCache.keys()].some((path) => isPathUnderLibraryRoots(path, libraryRoots));
     if (hasManagedMarkdown && !hasCachedEntries) await this.loadCodexEntries(projectPath);
     const existingEntries = [...this.codexFileCache.values()]
       .map((cached) => cached.entry)
-      .filter((entry) => normalizeVaultPath(entry?.codexFile).startsWith(`${folderPath}/`));
+      .filter((entry) => isPathUnderLibraryRoots(normalizeVaultPath(entry?.codexFile), libraryRoots));
     const existingById = new Map(existingEntries.map((entry) => [String(entry.id || ""), entry]));
     const written = [];
     let needsExternalReload = false;
@@ -1731,14 +1763,37 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     for (let index = 0; index < characters.length; index += 1) {
       const entry = normalizeCodexEntryForMarkdown(characters[index], index);
       const existing = existingById.get(entry.id);
-      const previousPath = normalizeVaultPath(entry.codexFile || existing?.codexFile);
+      let previousPath = normalizeVaultPath(entry.codexFile || existing?.codexFile);
       let targetPath = "";
-      if (previousPath && previousPath.startsWith(`${folderPath}/`)) {
+      if (previousPath && isPathUnderLibraryRoots(previousPath, libraryRoots)) {
         if (!vaultFileExists(this.app, previousPath)) {
-          // Local file was deleted — disk wins. Never recreate from .ncanvas snapshot.
-          continue;
+          const fallback = normalizeVaultPath(existing?.codexFile);
+          if (fallback && fallback !== previousPath && vaultFileExists(this.app, fallback)
+            && isPathUnderLibraryRoots(fallback, libraryRoots)) {
+            previousPath = fallback;
+          } else {
+            // Local file was deleted — disk wins. Never recreate from .ncanvas snapshot.
+            continue;
+          }
         }
         targetPath = previousPath;
+        const currentFileName = previousPath.split("/").pop() || "";
+        if (shouldRenameLibraryFileForEntryName({
+          currentFileName,
+          nextName: entry.name,
+        })) {
+          const parent = previousPath.includes("/")
+            ? previousPath.slice(0, previousPath.lastIndexOf("/"))
+            : "";
+          const desiredName = `${sanitizeFileName(entry.name) || `Library Entry ${index + 1}`}.md`;
+          const desiredPath = await this.uniqueProjectPath(joinVaultPath(parent, desiredName), previousPath);
+          const file = getVaultFile(this.app, previousPath);
+          if (file instanceof TFile && desiredPath !== previousPath) {
+            await this.app.fileManager.renameFile(file, desiredPath);
+            this.codexFileCache.delete(previousPath);
+            targetPath = desiredPath;
+          }
+        }
       } else if (!previousPath) {
         // Brand-new canvas entry with no vault file yet → create under category folder.
         const categoryFolder = this.resolveCodexCategoryFolder(folderPath, entry);
@@ -1796,13 +1851,18 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
         await writeVaultText(this.app, conflictPath, diskText);
         conflictCount += 1;
       }
+      const markdownBody = resolveSyncedLibraryMarkdownBody({
+        modelNotes: entry.notes,
+        diskNotes: diskEntry?.notes || "",
+        diskBody: diskEntry?.markdownBody || baseline?.markdownBody || ""
+      });
       const markdown = buildCodexMarkdown({
         ...entry,
-        markdownBody: diskEntry?.markdownBody || baseline?.markdownBody || ""
+        markdownBody
       });
       if (diskText !== markdown) await writeVaultText(this.app, targetPath, markdown);
       const fileAfter = getVaultFile(this.app, targetPath);
-      const syncedEntry = { ...entry, codexFile: targetPath, markdownBody: diskEntry?.markdownBody || baseline?.markdownBody || "" };
+      const syncedEntry = { ...entry, codexFile: targetPath, markdownBody };
       this.codexFileCache.set(targetPath, {
         stamp: fileAfter instanceof TFile
           ? `${Number(fileAfter.stat?.mtime || 0)}:${Number(fileAfter.stat?.size || markdown.length)}`
@@ -1827,6 +1887,20 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     return written;
   }
 
+  async syncCodexFilesAndRememberPaths(savedStateJson, projectPath) {
+    const written = await this.syncCodexFiles(savedStateJson, projectPath);
+    const patched = patchSavedStateCodexFiles(savedStateJson, written);
+    if (patched !== savedStateJson) {
+      this.projectWriteSuppressUntil = Date.now() + 1500;
+      await writeVaultText(this.app, projectPath, patched);
+      this.rememberProjectRevision(projectPath, patched);
+    }
+    window.NarrativeCanvasApp?.applyCodexFilePaths?.(
+      written.map((entry) => ({ id: entry.id, codexFile: entry.codexFile }))
+    );
+    return written;
+  }
+
   scheduleCodexReloadForFile(file, oldPath = "") {
     // Board previews re-render when their .canvas file changes on disk.
     if (file instanceof TFile && String(file.extension || "").toLowerCase() === "canvas") {
@@ -1838,10 +1912,10 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       return;
     }
     if (Date.now() < Number(this.codexSyncSuppressUntil || 0)) return;
-    const folderPath = this.getCodexFolderForProject();
-    if (!folderPath) return;
+    const libraryRoots = this.getCodexLibraryRootsForProject();
+    if (!libraryRoots.length) return;
     const paths = [file?.path, oldPath].map(normalizeVaultPath).filter(Boolean);
-    if (!paths.some((path) => path === folderPath || path.startsWith(`${folderPath}/`))) return;
+    if (!paths.some((path) => isPathUnderLibraryRoots(path, libraryRoots))) return;
     if (file instanceof TFile && String(file.extension || "").toLowerCase() !== "md"
       && !String(oldPath || "").toLowerCase().endsWith(".md")) return;
     if (this.codexReloadTimer) window.clearTimeout(this.codexReloadTimer);
@@ -2126,6 +2200,8 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
     this.projectWriteSuppressUntil = Date.now() + 1500;
     await writeVaultText(this.app, normalized, text);
     this.rememberProjectRevision(normalized, text);
+    await this.setCurrentProjectPath(normalized);
+    await this.syncCodexFilesAndRememberPaths(text, normalized);
     await this.openProjectFile(normalized);
     return normalized;
   }
@@ -2144,8 +2220,7 @@ module.exports = class NarrativeCanvasPlugin extends Plugin {
       return normalized;
     }
     await this.activateView(true, this.getProjectLeafForPath(normalized));
-    await wait(600);
-    const app = window.NarrativeCanvasApp;
+    const app = await waitForCanvasAppMethod("createSampleProjectAtPath");
     if (!app?.createSampleProjectAtPath) {
       throw new Error("Canvas app did not expose sample project creation at path.");
     }
@@ -2275,6 +2350,8 @@ class NarrativeCanvasView extends ItemView {
     if (this.duplicateOf || this.tryDedupNow()) return;
 
     this.contentEl.addClass("narrative-canvas-plugin-host");
+    const bootTheme = this.plugin.getEffectiveTheme();
+    this.contentEl.setAttribute("data-theme", bootTheme);
     this.plugin.applyContentFontSettings(this.contentEl);
     const shadow = this.contentEl.shadowRoot || this.contentEl.attachShadow({ mode: "open" });
     const loading = document.createElement("div");
@@ -2284,7 +2361,7 @@ class NarrativeCanvasView extends ItemView {
 
     try {
       const { bodyHtml } = await this.plugin.loadCanvasAssets();
-      mountCanvasShadow(shadow, bodyHtml);
+      mountCanvasShadow(shadow, bodyHtml, bootTheme);
       window.NarrativeCanvasHost = {
         pluginId: PLUGIN_ID,
         root: shadow,
@@ -2292,6 +2369,64 @@ class NarrativeCanvasView extends ItemView {
         saveState: (savedState) => this.plugin.saveSavedState(savedState),
         loadProject: () => this.plugin.loadProjectFile(),
         saveProject: (savedStateJson) => this.plugin.saveProjectFile(savedStateJson),
+        getCurrentProjectPath: () => this.plugin.getCurrentProjectPath(),
+        syncLibraryFromCanvas: (savedStateJson) => this.plugin.syncCodexFilesAndRememberPaths(
+          savedStateJson,
+          this.plugin.getCurrentProjectPath()
+        ),
+        mountLibraryProfile: (payload) => {
+          if (typeof this.plugin.mountCanvasLibraryProfile === "function") {
+            return this.plugin.mountCanvasLibraryProfile(this, payload);
+          }
+          return false;
+        },
+        unmountLibraryProfile: () => {
+          if (typeof this.plugin.unmountCanvasLibraryProfile === "function") {
+            return this.plugin.unmountCanvasLibraryProfile(this);
+          }
+        },
+        isLibraryProfileMounted: () => {
+          if (typeof this.plugin.isCanvasLibraryProfileMounted === "function") {
+            return this.plugin.isCanvasLibraryProfileMounted(this);
+          }
+          return false;
+        },
+        getLibraryCategories: () => {
+          if (typeof this.plugin.getNarrativeLabLibraryCategories === "function") {
+            try {
+              return this.plugin.getNarrativeLabLibraryCategories() || [];
+            } catch (error) {
+              console.warn("[NarrativeLab] Could not read library categories for canvas:", error);
+            }
+          }
+          return [];
+        },
+        resolveLibraryCategoryLabel: (kind) => {
+          if (typeof this.plugin.resolveNarrativeLabLibraryCategoryLabel === "function") {
+            try {
+              return this.plugin.resolveNarrativeLabLibraryCategoryLabel(kind);
+            } catch (error) {
+              console.warn("[NarrativeLab] Could not resolve library category label:", error);
+            }
+          }
+          return resolveLibraryCategoryDisplayLabel(kind, []);
+        },
+        openLibraryCategoryManager: (onDone) => {
+          if (typeof this.plugin.openNarrativeLabLibraryCategoryManager === "function") {
+            this.plugin.openNarrativeLabLibraryCategoryManager(onDone);
+            return true;
+          }
+          return false;
+        },
+        entryMatchesLibraryCategory,
+        resolveLibraryCategoryDisplayLabel,
+        libraryCategoryIdToCanvasKind,
+        normalizeCanvasLibraryKind,
+        kindToLibraryFrontmatterType,
+        kindToLibraryCategoryId,
+        isCharacterLibraryKind,
+        isLocationLibraryKind,
+        resolveLibraryProfileSurface,
         getAutoSaveIntervalMs: () => this.plugin.getAutoSaveIntervalMs(),
         getLanguage: () => this.plugin.getEffectiveLanguage(),
         getTheme: () => this.plugin.getEffectiveTheme(),
@@ -2299,6 +2434,17 @@ class NarrativeCanvasView extends ItemView {
           if (typeof this.plugin.onNarrativeLabUiThemeChanged === "function") {
             this.plugin.onNarrativeLabUiThemeChanged(theme);
           }
+        },
+        onNarrativeLabLanguageChanged: (language) => {
+          if (typeof this.plugin.onNarrativeLabLanguageChanged === "function") {
+            this.plugin.onNarrativeLabLanguageChanged(language);
+          }
+        },
+        createSampleInActiveProject: (language) => {
+          if (typeof this.plugin.createSampleInActiveProject === "function") {
+            return this.plugin.createSampleInActiveProject(language);
+          }
+          return Promise.resolve("");
         },
         getRichTextFormat: () => normalizeRichTextFormatSetting(this.plugin.settings?.richTextFormat),
         setRichTextFormat: (format) => this.plugin.updateRichTextFormatSetting(format, { applyToCanvas: false }),
@@ -2339,6 +2485,7 @@ class NarrativeCanvasView extends ItemView {
       // Re-assert host language + theme after init (NL project settings are source of truth).
       canvasApp.setLanguage?.(this.plugin.getEffectiveLanguage(), { force: true });
       canvasApp.setTheme?.(this.plugin.getEffectiveTheme(), { force: true, fromHost: true });
+      canvasApp.refreshLibraryCategories?.();
     } catch (error) {
       console.error(error);
       const failure = document.createElement("div");
@@ -2350,6 +2497,9 @@ class NarrativeCanvasView extends ItemView {
   }
 
   async onClose() {
+    if (typeof this.plugin.unmountCanvasLibraryProfile === "function") {
+      await this.plugin.unmountCanvasLibraryProfile(this);
+    }
     this.plugin.captureSessionStateFromApp();
     try {
       await this.plugin.savePluginData();
@@ -3164,9 +3314,14 @@ function extractBodyHtml(html) {
 
 // The app mounts inside a shadow root so community themes cannot restyle it; its
 // stylesheet ships inside the shadow tree instead of the document.
-function mountCanvasShadow(shadowRoot, bodyHtml) {
+function mountCanvasShadow(shadowRoot, bodyHtml, theme) {
   const parser = new DOMParser();
   const parsed = parser.parseFromString(`<!doctype html><html><body>${bodyHtml}</body></html>`, "text/html");
+  const resolvedTheme = theme === "light" ? "light" : "dark";
+  // Paint the first frame in the host theme. Default CSS tokens are dark;
+  // without this the board flashes dark until init() finishes loading state.
+  shadowRoot.host?.setAttribute?.("data-theme", resolvedTheme);
+  parsed.body.querySelector(".app-shell")?.setAttribute("data-theme", resolvedTheme);
   const fragment = document.createDocumentFragment();
   const style = document.createElement("style");
   style.textContent = CANVAS_STYLE_CSS;
@@ -3234,6 +3389,10 @@ const CANVAS_STYLE_CSS = [
   "  --radius-m: 6px;",
   "  --shadow-soft: 0 16px 40px rgba(0, 0, 0, 0.32);",
   "  color-scheme: dark;",
+  "  /* Shadow-host fill: standalone uses html/body 100%; Obsidian only has :host. */",
+  "  display: block;",
+  "  width: 100%;",
+  "  height: 100%;",
   "}",
   "",
   ":host([data-theme=\"light\"]),",
@@ -3284,23 +3443,6 @@ const CANVAS_STYLE_CSS = [
   "",
   "* {",
   "  box-sizing: border-box;",
-  "}",
-  "",
-  ".app-shell[data-ui-mode=\"basic\"] .nc-advanced-only {",
-  "  display: none !important;",
-  "}",
-  "",
-  ".app-shell[data-ui-mode=\"basic\"] .project-file-section > h2,",
-  ".app-shell[data-ui-mode=\"basic\"] .project-file-card {",
-  "  display: none;",
-  "}",
-  "",
-  ".app-shell[data-ui-mode=\"basic\"] .project-file-section {",
-  "  padding-top: 8px;",
-  "}",
-  "",
-  ".app-shell[data-ui-mode=\"basic\"] .project-file-actions .save-project-button {",
-  "  width: 100%;",
   "}",
   "",
   "*::-webkit-scrollbar {",
@@ -4142,7 +4284,27 @@ const CANVAS_STYLE_CSS = [
   ".palette-hide-button,",
   ".palette-delete-button {",
   "  width: 28px;",
-  "  height: 30px;",
+  "  height: 28px;",
+  "  padding: 0;",
+  "  overflow: hidden;",
+  "}",
+  "",
+  ".palette-action-icon {",
+  "  display: block;",
+  "  width: 12px;",
+  "  height: 12px;",
+  "}",
+  "",
+  ".palette-hide-button:focus-visible,",
+  ".palette-delete-button:focus-visible {",
+  "  outline: 1px solid var(--background-modifier-border);",
+  "  outline-offset: 1px;",
+  "}",
+  "",
+  ".system-lock-button:focus,",
+  ".system-lock-button:focus-visible {",
+  "  outline: none;",
+  "  box-shadow: none;",
   "}",
   "",
   ".palette-badge {",
@@ -7447,7 +7609,7 @@ const CANVAS_STYLE_CSS = [
   "",
   ".inspector-tab-group {",
   "  display: grid;",
-  "  grid-template-columns: minmax(0, 1fr);",
+  "  grid-template-columns: minmax(0, 1fr) 26px;",
   "  min-width: 0;",
   "  border: 1px solid transparent;",
   "  border-radius: var(--radius-s);",
@@ -13732,6 +13894,16 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForCanvasAppMethod(name, timeoutMs = 4000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const app = window.NarrativeCanvasApp;
+    if (typeof app?.[name] === "function") return app;
+    await wait(100);
+  }
+  return window.NarrativeCanvasApp || null;
+}
+
 // Bundled from index.html for the official Obsidian release assets.
 const CANVAS_INDEX_HTML = [
   "\u003c!doctype html\u003e",
@@ -13777,11 +13949,9 @@ const CANVAS_INDEX_HTML = [
   "          \u003c/div\u003e",
   "          \u003cdiv class=\"project-file-actions\"\u003e",
   "            \u003cbutton class=\"small-button nc-advanced-only\" data-action=\"open-project-file\" type=\"button\"\u003eOpen\u003c/button\u003e",
-  "            \u003cbutton class=\"small-button nc-advanced-only\" data-action=\"reload-project-file\" type=\"button\"\u003eReload\u003c/button\u003e",
   "            \u003cbutton class=\"small-button nc-advanced-only\" data-action=\"clear-browser-storage\" data-web-only type=\"button\"\u003eClear storage\u003c/button\u003e",
-  "            \u003cbutton class=\"small-button project-file-sample-button nc-advanced-only\" data-action=\"open-sample-project\" data-web-only type=\"button\"\u003eOpen sample file\u003c/button\u003e",
+  "            \u003cbutton class=\"small-button project-file-sample-button nc-advanced-only\" data-action=\"open-sample-project\" type=\"button\"\u003eOpen sample file\u003c/button\u003e",
   "            \u003cbutton class=\"small-button save-project-button\" title=\"Save project state\" data-action=\"save-project\" type=\"button\"\u003eSave\u003c/button\u003e",
-  "            \u003cbutton class=\"small-button new-project-button nc-advanced-only\" title=\"New project\" data-action=\"new-project\" type=\"button\"\u003eNew\u003c/button\u003e",
   "          \u003c/div\u003e",
   "        \u003c/section\u003e",
   "",
@@ -13838,9 +14008,8 @@ const CANVAS_INDEX_HTML = [
   "            \u003cstrong id=\"activeFileTab\"\u003eNarrative.canvas\u003c/strong\u003e",
   "          \u003c/div\u003e",
   "          \u003cdiv class=\"workspace-global-actions\"\u003e",
-  "            \u003cbutton id=\"uiModeToggle\" class=\"small-button ui-mode-toggle\" data-action=\"toggle-ui-mode\" type=\"button\" aria-pressed=\"false\" title=\"Show advanced tools\"\u003eBasic\u003c/button\u003e",
   "            \u003cspan class=\"project-history\" role=\"group\" aria-label=\"History\"\u003e",
-  "              \u003cbutton id=\"languageToggle\" class=\"language-toggle-button\" data-web-only data-action=\"toggle-language\" type=\"button\" title=\"Switch language\" aria-label=\"Switch language\"\u003e",
+  "              \u003cbutton id=\"languageToggle\" class=\"language-toggle-button\" data-action=\"toggle-language\" data-web-only type=\"button\" title=\"Switch language\" aria-label=\"Switch language\"\u003e",
   "                \u003cspan class=\"language-toggle-option\" data-lang=\"en\"\u003eEN\u003c/span\u003e",
   "                \u003cspan class=\"language-toggle-divider\" aria-hidden=\"true\"\u003e/\u003c/span\u003e",
   "                \u003cspan class=\"language-toggle-option\" data-lang=\"zh\"\u003e中\u003c/span\u003e",
@@ -13849,7 +14018,7 @@ const CANVAS_INDEX_HTML = [
   "              \u003cbutton id=\"undoButton\" class=\"icon-button history-button\" data-action=\"undo\" type=\"button\" title=\"Undo (Ctrl+Z)\" aria-label=\"Undo\" disabled\u003e↶\u003c/button\u003e",
   "              \u003cbutton id=\"redoButton\" class=\"icon-button history-button\" data-action=\"redo\" type=\"button\" title=\"Redo (Ctrl+Shift+Z or Ctrl+Y)\" aria-label=\"Redo\" disabled\u003e↷\u003c/button\u003e",
   "            \u003c/span\u003e",
-  "            \u003cbutton id=\"themeToggle\" class=\"icon-button theme-toggle-button\" data-web-only title=\"Switch theme\" data-action=\"toggle-theme\" type=\"button\" aria-pressed=\"true\"\u003eDark\u003c/button\u003e",
+  "            \u003cbutton id=\"themeToggle\" class=\"icon-button theme-toggle-button\" title=\"Switch theme\" data-action=\"toggle-theme\" type=\"button\" aria-pressed=\"true\"\u003eDark\u003c/button\u003e",
   "          \u003c/div\u003e",
   "        \u003c/header\u003e",
   "        \u003cheader id=\"workspaceToolbar\" class=\"canvas-workspace-tabs\"\u003e",
@@ -13995,7 +14164,6 @@ const CANVAS_INDEX_HTML = [
   "      \u003caside class=\"sidebar sidebar-right\" data-sidebar=\"right\"\u003e",
   "        \u003cheader class=\"pane-header compact\"\u003e",
   "          \u003cdiv class=\"header-actions\"\u003e",
-  "            \u003cbutton class=\"icon-button inspector-current-float-button\" data-action=\"float-current-inspector\" type=\"button\" title=\"Open current inspector in center\" aria-label=\"Open current inspector in center\"\u003e\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M17 17 7 7M7 7v7M7 7h7\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "            \u003cbutton class=\"icon-button sidebar-toggle-button\" title=\"Collapse right sidebar\" aria-label=\"Collapse right sidebar\" data-sidebar-toggle=\"right\" type=\"button\"\u003e",
   "              \u003cspan class=\"sidebar-toggle-icon sidebar-toggle-icon-right\" aria-hidden=\"true\"\u003e\u003c/span\u003e",
   "            \u003c/button\u003e",
@@ -14009,12 +14177,15 @@ const CANVAS_INDEX_HTML = [
   "        \u003cdiv class=\"inspector-tabs\"\u003e",
   "          \u003cdiv class=\"inspector-tab-group\"\u003e",
   "            \u003cbutton class=\"inspector-tab active\" data-panel=\"project\"\u003eProject\u003c/button\u003e",
+  "            \u003cbutton class=\"inspector-float-button\" data-action=\"float-inspector-panel\" data-float-panel=\"project\" type=\"button\" title=\"Open Project in center\" aria-label=\"Open Project in center\"\u003e\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M17 17 7 7M7 7v7M7 7h7\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "          \u003c/div\u003e",
   "          \u003cdiv class=\"inspector-tab-group\"\u003e",
   "            \u003cbutton class=\"inspector-tab\" data-panel=\"node\"\u003eNode\u003c/button\u003e",
+  "            \u003cbutton class=\"inspector-float-button\" data-action=\"float-inspector-panel\" data-float-panel=\"node\" type=\"button\" title=\"Open Node in center\" aria-label=\"Open Node in center\"\u003e\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M17 17 7 7M7 7v7M7 7h7\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "          \u003c/div\u003e",
   "          \u003cdiv class=\"inspector-tab-group\"\u003e",
   "            \u003cbutton class=\"inspector-tab\" data-panel=\"story\"\u003eStory\u003c/button\u003e",
+  "            \u003cbutton class=\"inspector-float-button\" data-action=\"float-inspector-panel\" data-float-panel=\"story\" type=\"button\" title=\"Open Story in center\" aria-label=\"Open Story in center\"\u003e\u003csvg viewBox=\"0 0 24 24\" aria-hidden=\"true\"\u003e\u003cpath d=\"M17 17 7 7M7 7v7M7 7h7\"\u003e\u003c/path\u003e\u003c/svg\u003e\u003c/button\u003e",
   "          \u003c/div\u003e",
   "        \u003c/div\u003e",
   "",
@@ -14587,7 +14758,6 @@ function installNarrativeCanvasApp() {
     Marker: { badge: "M", color: "#7fdbca", width: 170 },
     Event: { badge: "E", color: DEFAULT_EVENT_FRAME_COLOR, width: 420 }
   };
-  const BASIC_NODE_TYPE_SET = new Set(["Content", "Dialog", "Choice", "Event"]);
 
   const SPECIAL_EDITOR_NODE_TYPES = ["Choice", "Dialog"];
   const NODE_TYPE_TEMPLATES = new Set(["node", "dialog", "choice", "frame"]);
@@ -14712,6 +14882,23 @@ function installNarrativeCanvasApp() {
       eventSheetHidden: true
     }
   ];
+
+  const CATALOG_NODE_TYPE_BADGES = Object.fromEntries([
+    ...Object.entries(nodeTypes).map(([type, meta]) => [type, meta.badge]),
+    ...defaultAdvancedNodeTypes.map((item) => [item.type, item.badge]),
+  ]);
+
+  /** Only Entry is required to keep a playable project. Other catalog types can be deleted and restored. */
+  function isProtectedNodeType(type) {
+    return type === "Entry";
+  }
+
+  function isRestorableDefaultNodeType(type) {
+    return Boolean(nodeTypes[type]) || defaultAdvancedNodeTypes.some((item) => item.type === type);
+  }
+
+  const PALETTE_LOCK_ICON = `<svg class="palette-action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M5.25 6.25V4.5a2.75 2.75 0 0 1 5.5 0v1.75h.75A1.5 1.5 0 0 1 13 7.75v4.5A1.5 1.5 0 0 1 11.5 13.75h-7A1.5 1.5 0 0 1 3 12.25v-4.5a1.5 1.5 0 0 1 1.5-1.5h.75Zm1.5 0h2.5V4.5a1.25 1.25 0 0 0-2.5 0v1.75Z"/></svg>`;
+  const PALETTE_DELETE_ICON = `<svg class="palette-action-icon" viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="m4.22 3.81-.41.41L7.59 8l-3.78 3.78.41.41L8 8.41l3.78 3.78.41-.41L8.41 8l3.78-3.78-.41-.41L8 7.59 4.22 3.81Z"/></svg>`;
 
   const eventSheetColumns = [
     { key: "act", label: "ACT", width: "110px" },
@@ -16771,7 +16958,7 @@ function installNarrativeCanvasApp() {
     inlineEditLinkInitialValue: "",
     panel: "project",
     activeFileId: "adventure",
-    uiMode: "basic",
+    uiMode: "advanced",
     language: "en",
     theme: "dark",
     exportImageScale: 1,
@@ -16946,7 +17133,7 @@ function installNarrativeCanvasApp() {
   const state = createInitialRuntimeState();
 
   const dom = {};
-  const optionalDomKeys = new Set(["activeFileTab", "mentionPopover", "playRuleTargetInput"]);
+  const optionalDomKeys = new Set(["activeFileTab", "mentionPopover", "playRuleTargetInput", "uiModeToggle"]);
   let initialized = false;
 
   window.NarrativeCanvasApp = {
@@ -16962,10 +17149,12 @@ function installNarrativeCanvasApp() {
     setTheme,
     getTheme: () => state.theme,
     createSampleProjectFile,
+    createSampleProjectAtPath,
     ensureVaultFile: ensureVaultProjectFile,
     loadVaultProject: loadCurrentVaultProject,
     handleExternalProjectChange,
     reloadCodexFiles,
+    applyCodexFilePaths,
     refreshCodexCanvasPreviews,
     refreshAiLauncher,
     applySpellCheckSetting,
@@ -16973,7 +17162,13 @@ function installNarrativeCanvasApp() {
     getRichTextFormat: getCurrentRichTextFormat,
     importStoryMarkdownText,
     importStoryLayoutText,
-    importStateSchemaText
+    importStateSchemaText,
+    getNodeBacklinks,
+    focusLibraryNode,
+    closeLibraryProfile: closeCodexEntryDetail,
+    refreshLibraryCategories: () => {
+      if (state.activeFileId === "characters") renderCharactersPage();
+    }
   };
 
   function canExecuteCanvasCommand(commandId) {
@@ -17077,6 +17272,7 @@ function installNarrativeCanvasApp() {
       state.language = getInitialLanguage();
       const hostTheme = getHostTheme();
       if (hostTheme) state.theme = hostTheme;
+      applyBootTheme();
       const restoredView = await loadSavedState(false);
       if (!isAdvancedUiMode() && ["document", "variables"].includes(state.activeFileId)) {
         state.activeFileId = "adventure";
@@ -17530,6 +17726,7 @@ function installNarrativeCanvasApp() {
   }
 
   function destroyNarrativeCanvas() {
+    void window.NarrativeCanvasHost?.unmountLibraryProfile?.();
     eventController?.abort();
     eventController = null;
     closeVisionBoardLayerMenu();
@@ -17592,6 +17789,13 @@ function installNarrativeCanvasApp() {
 
   function normalizeUiTheme(theme) {
     return theme === "light" ? "light" : "dark";
+  }
+
+  /** Stamp data-theme before any await so the first painted frame matches the host. */
+  function applyBootTheme() {
+    const theme = normalizeUiTheme(state.theme);
+    dom.root?.setAttribute("data-theme", theme);
+    dom.themeHost?.setAttribute("data-theme", theme);
   }
 
   /** Host / settings entry point — keep NarrativeLab project theme in lockstep. */
@@ -18725,7 +18929,7 @@ function installNarrativeCanvasApp() {
   }
 
   function isAdvancedUiMode() {
-    return state.uiMode === "advanced";
+    return true;
   }
 
   function toggleUiMode() {
@@ -20356,6 +20560,12 @@ function installNarrativeCanvasApp() {
       : null;
     if (state.codexSelectedEntryId && !selectedEntry) state.codexSelectedEntryId = "";
     if (selectedEntry) {
+      if (window.NarrativeCanvasHost?.isLibraryProfileMounted?.()) {
+        if (dom.charactersPanel && !dom.charactersPanel.querySelector(".codex-detail-host-placeholder")) {
+          dom.charactersPanel.innerHTML = `<div class="document-shell codex-detail-host-placeholder"></div>`;
+        }
+        return;
+      }
       renderCodexEntryDetail(selectedEntry, model.context);
       return;
     }
@@ -20404,7 +20614,7 @@ function installNarrativeCanvasApp() {
             <button class="codex-detail-back" type="button" data-action="close-codex-entry-detail">
               <span aria-hidden="true">←</span><span>${t("Back to all entries")}</span>
             </button>
-            <span class="pane-kicker">${escapeHtml(t(character.kind))}</span>
+            <span class="pane-kicker">${escapeHtml(getCodexKindLabel(character.kind))}</span>
             <h2>${escapeHtml(character.name || t("Unnamed Character"))}</h2>
           </div>
         </header>
@@ -20432,7 +20642,7 @@ function installNarrativeCanvasApp() {
     const tagFilter = normalizeOptionalString(state.codexTagFilter).trim();
     const categoryEntries = kindFilter === CODEX_ALL_FILTER
       ? visibleCharacters
-      : visibleCharacters.filter((entry) => entry.kind === kindFilter);
+      : visibleCharacters.filter((entry) => entryMatchesKindFilter(entry, kindFilter));
     const tagCounts = collectCodexTagCounts(categoryEntries);
     const taggedEntries = tagFilter
       ? categoryEntries.filter((entry) => parseCodexTags(entry.tags).some((tag) => tag.toLowerCase() === tagFilter.toLowerCase()))
@@ -20440,7 +20650,7 @@ function installNarrativeCanvasApp() {
     const visible = query
       ? taggedEntries.filter((character) => characterMatchesSearch(character, query, context))
       : taggedEntries;
-    const kindCounts = Object.fromEntries(getCodexKindsList().map((kind) => [kind, visibleCharacters.filter((entry) => entry.kind === kind).length]));
+    const kindCounts = Object.fromEntries(getCodexKindsList().map((kind) => [kind, visibleCharacters.filter((entry) => entryMatchesKindFilter(entry, kind)).length]));
     return {
       context,
       characters,
@@ -20472,9 +20682,13 @@ function installNarrativeCanvasApp() {
   function renderCodexCategoryTabs(model) {
     const entries = [
       { value: CODEX_ALL_FILTER, label: t("All entries"), count: model.visibleCharacters.length },
-      ...getCodexKindsList().map((kind) => ({ value: kind, label: t(kind), count: model.kindCounts[kind] || 0 }))
+      ...getCodexKindsList().map((kind) => ({ value: kind, label: getCodexKindLabel(kind), count: model.kindCounts[kind] || 0 }))
     ];
-    const customKinds = new Set(normalizeCustomCodexKinds(state.project.customCodexKinds).map((kind) => kind.toLowerCase()));
+    const hostCategories = getHostLibraryCategories();
+    const customKinds = new Set((hostCategories.length
+      ? hostCategories.filter((category) => !["characters", "locations"].includes(category.id)).map((category) => category.id)
+      : normalizeCustomCodexKinds(state.project.customCodexKinds)
+    ).map((kind) => String(kind).toLowerCase()));
     return `${entries.map((entry) => {
       const isCustom = customKinds.has(String(entry.value).toLowerCase());
       // Custom categories always show the × control; it's disabled (with a reason)
@@ -20619,7 +20833,7 @@ function installNarrativeCanvasApp() {
     const imageReference = normalizeNodeVaultFileReference(character.imageFile);
     const imageUrl = imageReference && host?.getVaultResourceUrl ? host.getVaultResourceUrl(imageReference) : "";
     const summary = normalizeOptionalString(character.role || character.voice || character.notes).trim();
-    const kindLabel = t(character.kind);
+    const kindLabel = getCodexKindLabel(character.kind);
     const isFocused = state.characterFocusId === character.id;
     return `
       <button class="codex-overview-card${isFocused ? " focused" : ""}" type="button" data-action="open-codex-entry-detail" data-character-id="${escapeAttr(character.id)}" data-character-card-id="${escapeAttr(character.id)}" data-codex-kind="${escapeAttr(character.kind)}" aria-label="${escapeAttr(t("Open entry: {name}", { name: character.name || t("Unnamed Character") }))}">
@@ -21396,17 +21610,18 @@ function installNarrativeCanvasApp() {
   }
 
   function renderCodexKindOptions(selected) {
-    const value = normalizeCodexKind(selected);
+    const value = normalizeCodexKindFilter(selected);
     return getCodexKindsList()
-      .map((kind) => `<option value="${escapeAttr(kind)}" ${kind === value ? "selected" : ""}>${escapeHtml(t(kind))}</option>`)
+      .map((kind) => `<option value="${escapeAttr(kind)}" ${kind === value || entryMatchesKindFilter({ kind: selected }, kind) ? "selected" : ""}>${escapeHtml(getCodexKindLabel(kind))}</option>`)
       .join("");
   }
 
   function getCodexKindFieldLabels(kind) {
-    if (kind === "Character") return { primary: t("Role"), secondary: t("Voice") };
-    if (kind === "Location") return { primary: t("Type"), secondary: t("Atmosphere") };
-    if (kind === "Item") return { primary: t("Type"), secondary: t("Owner") };
-    if (kind === "Lore") return { primary: t("Type"), secondary: t("Reference source") };
+    const normalized = normalizeCodexKind(kind);
+    if (normalized === "Character") return { primary: t("Role"), secondary: t("Voice") };
+    if (normalized === "Location") return { primary: t("Type"), secondary: t("Atmosphere") };
+    if (normalized === "Item") return { primary: t("Type"), secondary: t("Owner") };
+    if (normalized === "Lore") return { primary: t("Type"), secondary: t("Reference source") };
     // Custom categories get generic, purpose-neutral labels instead of inheriting
     // the Character defaults; add per-field templates for anything more specific.
     return { primary: t("Type"), secondary: t("Summary") };
@@ -24464,9 +24679,10 @@ function installNarrativeCanvasApp() {
     const entries = getAddableNodeTypeEntries();
     const visibleRows = entries.length ? entries
       .map(([type, meta]) => {
-        const deleteControl = meta.system
-          ? `<button class="icon-button palette-delete-button system-lock-button" type="button" title="${escapeAttr(t("Delete node type"))}" aria-label="${escapeAttr(t("Delete node type"))}" data-action="delete-custom-node-type" data-custom-node-type="${escapeAttr(type)}">lock</button>`
-          : `<button class="icon-button danger-button palette-delete-button" aria-label="${escapeAttr(t("Delete node type"))}" title="${escapeAttr(t("Delete node type"))}" data-action="delete-custom-node-type" data-custom-node-type="${escapeAttr(type)}">x</button>`;
+        const typeLabel = getNodeTypeLabel(type);
+        const deleteControl = isProtectedNodeType(type)
+          ? `<button class="icon-button palette-delete-button system-lock-button" type="button" title="${escapeAttr(t("Cannot delete {label}", { label: typeLabel }))}" aria-label="${escapeAttr(t("Cannot delete {label}", { label: typeLabel }))}" data-action="delete-custom-node-type" data-custom-node-type="${escapeAttr(type)}">${PALETTE_LOCK_ICON}</button>`
+          : `<button class="icon-button danger-button palette-delete-button" aria-label="${escapeAttr(t("Delete node type"))}" title="${escapeAttr(t("Delete node type"))}" data-action="delete-custom-node-type" data-custom-node-type="${escapeAttr(type)}">${PALETTE_DELETE_ICON}</button>`;
         return `
           <div class="palette-row">
             <button class="palette-badge" type="button" data-action="edit-node-type-badge" data-node-type="${escapeAttr(type)}" data-icon-size="${getNodeIconSize(meta.badge)}" style="--node-color:${escapeAttr(meta.color)}" title="${escapeAttr(t("Edit node type"))}" aria-label="${escapeAttr(t("Edit node type"))}">${escapeHtml(meta.badge)}</button>
@@ -25228,7 +25444,7 @@ function installNarrativeCanvasApp() {
     const advanced = defaultAdvancedNodeTypes.map((typeDef) => ({
       type: typeDef.type,
       label: typeDef.label,
-      badge: getNormalizedNodeTypeBadge(typeDef.badge),
+      badge: getNormalizedNodeTypeBadge(typeDef.type, typeDef.label, typeDef.badge, typeDef.badgeCustom),
       color: normalizeNodeTypeColor(typeDef.type, typeDef.kind, typeDef.color),
       width: clamp(Number(typeDef.width) || (isFrameKind(typeDef.kind) ? 540 : 240), 160, isFrameKind(typeDef.kind) ? 860 : 420),
       custom: false,
@@ -25239,7 +25455,7 @@ function installNarrativeCanvasApp() {
       hidden: Boolean(typeDef.hidden),
       eventSheetHidden: isFrameKind(typeDef.kind) ? Boolean(typeDef.eventSheetHidden) : false,
       cardOpacity: 20,
-      system: true,
+      system: isProtectedNodeType(typeDef.type),
     }));
     const builtInTypes = new Map([...builtIns, ...advanced].map((typeDef) => [typeDef.type, typeDef]));
     SPECIAL_EDITOR_NODE_TYPES.forEach((type) => {
@@ -25294,9 +25510,7 @@ function installNarrativeCanvasApp() {
   }
 
   function getAddableNodeTypeEntries() {
-    const entries = getNodeTypeEntries();
-    if (isAdvancedUiMode()) return entries;
-    return entries.filter(([type, meta]) => BASIC_NODE_TYPE_SET.has(type) || meta.custom);
+    return getNodeTypeEntries();
   }
 
   function getHiddenNodeTypeEntries() {
@@ -27150,14 +27364,14 @@ function installNarrativeCanvasApp() {
     // instead of filtering down to one entry.
     const query = selected && raw === (selected.name || t("Unnamed Character")) ? "" : raw.toLowerCase();
     const groups = getCodexKindsList().map((kind) => {
-      const entries = getCharacters().filter((entry) => entry.kind === kind
+      const entries = getCharacters().filter((entry) => entryMatchesKindFilter(entry, kind)
         && (!query || String(entry.name || "").toLowerCase().includes(query)));
       if (!entries.length) return "";
       return `
-        <div class="cast-entry-suggestion-group" role="presentation">${escapeHtml(t(kind))}</div>
+        <div class="cast-entry-suggestion-group" role="presentation">${escapeHtml(getCodexKindLabel(kind))}</div>
         ${entries.map((entry) => `
           <button type="button" class="cast-entry-suggestion${entry.id === selectedId ? " is-selected" : ""}" role="option" aria-selected="${entry.id === selectedId ? "true" : "false"}" data-action="select-cast-entry-suggestion" data-cast-entry-id="${escapeAttr(entry.id)}" data-codex-kind="${escapeAttr(entry.kind)}">
-            <span>${escapeHtml(entry.name || t("Unnamed Character"))}</span><small>${escapeHtml(t(entry.kind))}</small>
+            <span>${escapeHtml(entry.name || t("Unnamed Character"))}</span><small>${escapeHtml(getCodexKindLabel(entry.kind))}</small>
           </button>
         `).join("")}
       `;
@@ -27311,7 +27525,7 @@ function installNarrativeCanvasApp() {
     const kind = normalizeCodexKind(character?.kind || "Character");
     const host = window.NarrativeCanvasHost;
     const iconUrl = character?.icon && host?.getVaultResourceUrl ? host.getVaultResourceUrl(character.icon) : "";
-    return `<button class="node-cast-chip node-cast-chip-button" type="button" data-action="open-character-search" data-character-id="${escapeAttr(link.characterId)}" data-codex-kind="${escapeAttr(kind)}" data-no-drag="true" aria-label="${escapeAttr(searchLabel)}">${iconUrl ? `<img class="node-cast-chip-avatar" src="${escapeAttr(iconUrl)}" alt="" loading="lazy" draggable="false">` : ""}<span class="node-cast-chip-text"><span>${escapeHtml(characterName)}</span><small>${escapeHtml(t(kind))} · ${escapeHtml(role)}</small></span></button>`;
+    return `<button class="node-cast-chip node-cast-chip-button" type="button" data-action="open-character-search" data-character-id="${escapeAttr(link.characterId)}" data-codex-kind="${escapeAttr(kind)}" data-no-drag="true" aria-label="${escapeAttr(searchLabel)}">${iconUrl ? `<img class="node-cast-chip-avatar" src="${escapeAttr(iconUrl)}" alt="" loading="lazy" draggable="false">` : ""}<span class="node-cast-chip-text"><span>${escapeHtml(characterName)}</span><small>${escapeHtml(getCodexKindLabel(kind))} · ${escapeHtml(role)}</small></span></button>`;
   }
 
   // Frame node properties render inline at the same level as every other property,
@@ -28412,7 +28626,7 @@ function installNarrativeCanvasApp() {
     if (action === "set-codex-tag-filter") { setCodexTagFilter(target.dataset.codexTag); return; }
     if (action === "clear-codex-tag-filter") { clearCodexTagFilter(); return; }
     if (action === "select-codex-tag-suggestion") { selectCodexTagSuggestion(target); return; }
-    if (action === "open-codex-entry-detail") { openCodexEntryDetail(target.dataset.characterId); return; }
+    if (action === "open-codex-entry-detail") { void openCodexEntryDetail(target.dataset.characterId); return; }
     if (action === "close-codex-entry-detail") { closeCodexEntryDetail(); return; }
     const historyBefore = shouldRecordAction(action) ? getHistorySnapshot() : null;
     if (action === "add-node") addNode(target.dataset.type, readNodeSpawnPoint(target));
@@ -28595,7 +28809,20 @@ function installNarrativeCanvasApp() {
   }
 
   function openSampleProjectFromUi() {
-    if (window.NarrativeCanvasHost) return;
+    const host = window.NarrativeCanvasHost;
+    if (host?.createSampleInActiveProject) {
+      if (!confirmDiscardUnsavedProject("Open the sample file and discard unsaved changes?", () => void host.createSampleInActiveProject(state.language))) return;
+      void Promise.resolve(host.createSampleInActiveProject(state.language))
+        .then((path) => {
+          if (path) setStatus(`Sample project created at ${path}.`);
+        })
+        .catch((error) => {
+          console.error(error);
+          setStatus("Sample project creation failed.");
+        });
+      return;
+    }
+    if (host) return;
     if (!confirmDiscardUnsavedProject("Open the sample file and discard unsaved changes?", () => void createSampleProjectFile())) return;
     void createSampleProjectFile();
   }
@@ -30199,7 +30426,7 @@ function installNarrativeCanvasApp() {
         const aPrefix = needle && aName.startsWith(needle) ? 0 : 1;
         const bPrefix = needle && bName.startsWith(needle) ? 0 : 1;
         return aPrefix - bPrefix
-          || CODEX_KINDS.indexOf(a.kind) - CODEX_KINDS.indexOf(b.kind)
+          || getCodexKindSortIndex(a.kind) - getCodexKindSortIndex(b.kind)
           || aName.localeCompare(bName);
       })
       .slice(0, 60);
@@ -30224,7 +30451,7 @@ function installNarrativeCanvasApp() {
     dom.mentionPopover.innerHTML = entries.map((entry, index) => `
       <button type="button" class="mention-option ${index === activeIndex ? "active" : ""}" data-mention-index="${index}" role="option">
         <span class="mention-option-main"><strong>${escapeHtml(entry.name || "Unnamed")}</strong>${entry.role ? `<small>${escapeHtml(entry.role)}</small>` : ""}</span>
-        <span class="mention-option-kind" data-codex-kind="${escapeAttr(entry.kind)}">${escapeHtml(t(entry.kind))}</span>
+        <span class="mention-option-kind" data-codex-kind="${escapeAttr(entry.kind)}">${escapeHtml(getCodexKindLabel(entry.kind))}</span>
       </button>
     `).join("");
     dom.mentionPopover.hidden = false;
@@ -31943,7 +32170,7 @@ function installNarrativeCanvasApp() {
       showNodeTypeInUseDialog(typeDef, nodesInUse);
       return;
     }
-    if (typeDef.system) {
+    if (isProtectedNodeType(type)) {
       showGenericConfirm({
         kicker: "Node Library",
         title: t("Cannot delete {label}", { label }),
@@ -31955,7 +32182,7 @@ function installNarrativeCanvasApp() {
       });
       return;
     }
-    const isDefault = Boolean(nodeTypes[type]);
+    const isDefault = isRestorableDefaultNodeType(type);
     const message = t("Delete \"{label}\" from the Node Library schema? {recovery}", {
       label,
       recovery: t(isDefault ? "Restore default types can bring this template back." : "Custom deleted types can only come back by importing or recreating them.")
@@ -31994,7 +32221,7 @@ function installNarrativeCanvasApp() {
       showNodeTypeInUseDialog(typeDef, nodesInUse);
       return;
     }
-    if (typeDef.system) {
+    if (isProtectedNodeType(type)) {
       setStatus(`${typeDef.label || type} is a system type and cannot be deleted.`);
       return;
     }
@@ -32086,7 +32313,7 @@ function installNarrativeCanvasApp() {
     const characters = getCharacters();
     const wasEmpty = characters.length === 0;
     const normalizedKind = normalizeCodexKind(kind);
-    const nextNumber = characters.filter((entry) => entry.kind === normalizedKind).length + 1;
+    const nextNumber = characters.filter((entry) => entryMatchesKindFilter(entry, normalizedKind)).length + 1;
     const character = {
       id: nextId("c", characters),
       name: uniqueCharacterName(`${normalizedKind} ${nextNumber}`),
@@ -32115,17 +32342,18 @@ function installNarrativeCanvasApp() {
     setProjectDirty(true);
     if (shouldSwitchToCharacters) renderDocumentFileSwitch();
     else renderCharacterListSurfaces();
-    revealCharacterCard(character.id);
+    void openCodexEntryDetail(character.id);
     setStatus(codexMode ? t("Library entry added.") : t("Character added."));
   }
 
   function addCodexEntry() {
-    const kind = normalizeCodexKindFilter(state.codexKindFilter) === CODEX_ALL_FILTER
+    const filter = normalizeCodexKindFilter(state.codexKindFilter);
+    const kind = filter === CODEX_ALL_FILTER
       ? "Character"
-      : normalizeCodexKind(state.codexKindFilter);
+      : resolveCanvasKindForCategory(filter);
     state.characterSearch = "";
     state.codexTagFilter = "";
-    state.codexKindFilter = kind;
+    state.codexKindFilter = filter === CODEX_ALL_FILTER ? kind : filter;
     if (dom.characterSearchInput) dom.characterSearchInput.value = "";
     addCharacter(kind, true);
   }
@@ -32254,7 +32482,7 @@ function installNarrativeCanvasApp() {
       }
       character.name = nextName;
       state.project.nodes.forEach((node) => {
-        if (character.kind === "Character" && isDialogNode(node) && node.title === previousName) {
+        if (isCharacterLibraryKind(character.kind) && isDialogNode(node) && node.title === previousName) {
           node.title = nextName;
         }
       });
@@ -32268,7 +32496,7 @@ function installNarrativeCanvasApp() {
       }
     } else {
       if (field === "kind") {
-        const nextKind = normalizeCodexKind(value);
+        const nextKind = resolveCanvasKindForCategory(value);
         character.kind = nextKind;
         applyCodexTemplateToCharacter(character);
         state.project.nodes.forEach((node) => {
@@ -32350,6 +32578,7 @@ function installNarrativeCanvasApp() {
   }
 
   function addCodexKind() {
+    if (openHostLibraryCategoryManager()) return;
     showGenericTextInput({
       kicker: "Library",
       title: t("Add category"),
@@ -32373,9 +32602,10 @@ function installNarrativeCanvasApp() {
   }
 
   function removeCodexKind(kindValue) {
+    if (openHostLibraryCategoryManager()) return;
     const name = String(kindValue || "").trim();
     if (!name) return;
-    const count = getCharacters().filter((entry) => entry.kind.toLowerCase() === name.toLowerCase()).length;
+    const count = getCharacters().filter((entry) => entryMatchesKindFilter(entry, name)).length;
     if (count) {
       setStatus(t("Category {name} still has {count} entries. Move or remove them first.", { name, count }));
       return;
@@ -32403,15 +32633,16 @@ function installNarrativeCanvasApp() {
       return;
     }
     const templates = normalizeCodexFieldTemplates(state.project.codexFieldTemplates);
-    if (templates[kind].some((existing) => existing.toLowerCase() === key.toLowerCase())) {
+    const templateKey = normalizeCodexKind(kind);
+    if ((templates[templateKey] || []).some((existing) => existing.toLowerCase() === key.toLowerCase())) {
       setStatus(t("Field {key} already in the template.", { key }));
       return;
     }
-    templates[kind] = [...templates[kind], key];
+    templates[templateKey] = [...(templates[templateKey] || []), key];
     state.project.codexFieldTemplates = templates;
     let updated = 0;
     getCharacters().forEach((character) => {
-      if (character.kind !== kind) return;
+      if (!entryMatchesKindFilter(character, kind)) return;
       if (applyCodexTemplateToCharacter(character)) updated += 1;
     });
     invalidateCharacterRenderContext();
@@ -32426,9 +32657,11 @@ function installNarrativeCanvasApp() {
     if (kind === CODEX_ALL_FILTER) return;
     const key = String(keyValue || "").trim();
     const templates = normalizeCodexFieldTemplates(state.project.codexFieldTemplates);
-    const next = templates[kind].filter((existing) => existing.toLowerCase() !== key.toLowerCase());
-    if (next.length === templates[kind].length) return;
-    templates[kind] = next;
+    const templateKey = normalizeCodexKind(kind);
+    const current = templates[templateKey] || [];
+    const next = current.filter((existing) => existing.toLowerCase() !== key.toLowerCase());
+    if (next.length === current.length) return;
+    templates[templateKey] = next;
     state.project.codexFieldTemplates = templates;
     setProjectDirty(true);
     renderCharactersPage();
@@ -32497,7 +32730,7 @@ function installNarrativeCanvasApp() {
     renderCharactersPage();
     setStatus(state.codexKindFilter === CODEX_ALL_FILTER
       ? t("Library category filter cleared.")
-      : `${t("Category")}: ${t(state.codexKindFilter)}`);
+      : `${t("Category")}: ${getCodexKindLabel(state.codexKindFilter)}`);
   }
 
   function setCodexTagFilter(value) {
@@ -32517,11 +32750,31 @@ function installNarrativeCanvasApp() {
     setStatus(t("Library tag filter cleared."));
   }
 
-  function openCodexEntryDetail(id) {
+  async function openCodexEntryDetail(id) {
     const character = getCharacters().find((entry) => entry.id === id);
     if (!character) return;
     state.codexSelectedEntryId = id;
     state.codexImagePickerCharacterId = "";
+    const host = window.NarrativeCanvasHost;
+    if (typeof host?.mountLibraryProfile === "function") {
+      if (!String(character.codexFile || "").trim()) {
+        await seedMissingLibraryFiles();
+      }
+      const updated = getCharacterById(id) || getCharacters().find((entry) => entry.id === id) || character;
+      const mounted = await host.mountLibraryProfile({
+        entryId: id,
+        name: updated.name,
+        kind: updated.kind,
+        codexFile: updated.codexFile || ""
+      });
+      if (mounted) {
+        if (dom.charactersPanel) {
+          dom.charactersPanel.innerHTML = `<div class="document-shell codex-detail-host-placeholder"></div>`;
+        }
+        setStatus(t("Open entry: {name}", { name: updated.name }));
+        return;
+      }
+    }
     renderCharactersPage();
     runAfterRender(() => dom.charactersPanel?.scrollTo?.({ top: 0, behavior: "smooth" }));
     setStatus(t("Open entry: {name}", { name: character.name }));
@@ -32530,8 +32783,32 @@ function installNarrativeCanvasApp() {
   function closeCodexEntryDetail() {
     state.codexSelectedEntryId = "";
     state.codexImagePickerCharacterId = "";
+    window.NarrativeCanvasHost?.unmountLibraryProfile?.();
     renderCharactersPage();
     setStatus(t("All entries"));
+  }
+
+  function getNodeBacklinks(entryId) {
+    const character = getCharacterById(entryId);
+    if (!character) return [];
+    return getCharacterBacklinkGroups(character)
+      .filter((group) => group.items.length)
+      .map((group) => ({
+        id: group.id,
+        label: t(group.label),
+        items: group.items.map((item) => ({
+          nodeId: item.node.id,
+          title: item.node.title || getNodeTypeLabel(item.node.type),
+          type: getNodeTypeLabel(item.node.type)
+        }))
+      }));
+  }
+
+  function focusLibraryNode(id) {
+    state.codexSelectedEntryId = "";
+    state.codexImagePickerCharacterId = "";
+    window.NarrativeCanvasHost?.unmountLibraryProfile?.();
+    focusCharacterNode(id);
   }
 
   function toggleCharacterBacklinkGroup(characterId, groupId) {
@@ -36703,7 +36980,13 @@ function installNarrativeCanvasApp() {
   }
 
   function toggleLanguage() {
-    setLanguage(state.language === "zh" ? "en" : "zh");
+    const nextLanguage = state.language === "zh" ? "en" : "zh";
+    setLanguage(nextLanguage);
+    try {
+      window.NarrativeCanvasHost?.onNarrativeLabLanguageChanged?.(nextLanguage);
+    } catch (error) {
+      console.error("[NarrativeCanvas] onNarrativeLabLanguageChanged failed:", error);
+    }
   }
 
   function normalizeExportImageScale(value) {
@@ -36937,8 +37220,8 @@ function installNarrativeCanvasApp() {
     }
   }
 
-  async function createSampleProjectFile() {
-    const project = getSampleProject(state.language);
+  function applySampleProjectToState(language = "en") {
+    const project = getSampleProject(language);
     state.project = cloneProject(project);
     markProjectStructureChanged({ nodeTypes: true });
     state.selectedNodeId = state.project.nodes[0]?.id || null;
@@ -36949,6 +37232,29 @@ function installNarrativeCanvasApp() {
     resetHistory();
     setProjectDirty(true);
     renderAll();
+    return project;
+  }
+
+  async function createSampleProjectAtPath(path, language = "en") {
+    const targetPath = String(path || "").trim();
+    if (!targetPath) throw new Error("Sample project path is required.");
+    applySampleProjectToState(language);
+    const host = window.NarrativeCanvasHost;
+    if (!host?.writeAndOpenProjectAtPath) {
+      throw new Error("Canvas host did not expose writeAndOpenProjectAtPath.");
+    }
+    const target = await host.writeAndOpenProjectAtPath(
+      targetPath,
+      JSON.stringify(buildSavedState(), null, 2)
+    );
+    setProjectDirty(false);
+    renderProjectFileStatus();
+    setStatus(target ? `Sample project created at ${target}.` : "Sample project opened.");
+    return target || targetPath;
+  }
+
+  async function createSampleProjectFile() {
+    const project = applySampleProjectToState(state.language);
 
     const host = window.NarrativeCanvasHost;
     if (!host?.createProjectFile) {
@@ -36986,14 +37292,27 @@ function installNarrativeCanvasApp() {
     return true;
   }
 
+  function applyCodexFilePaths(updates) {
+    if (!Array.isArray(updates) || !updates.length) return false;
+    const byId = new Map(updates
+      .map((item) => [String(item?.id || "").trim(), String(item?.codexFile || "").trim()])
+      .filter(([id, path]) => id && path));
+    if (!byId.size) return false;
+    let changed = false;
+    getCharacters().forEach((character) => {
+      const nextPath = byId.get(String(character.id || "").trim());
+      if (!nextPath || character.codexFile === nextPath) return;
+      character.codexFile = nextPath;
+      changed = true;
+    });
+    return changed;
+  }
+
   async function reloadCodexFiles(options = {}) {
     const host = window.NarrativeCanvasHost;
     if (!host?.loadCodexEntries) return false;
     try {
       const loaded = await host.loadCodexEntries();
-      // Disk is the source of truth — including an empty Library. Returning early
-      // on [] used to keep stale characters embedded in .ncanvas and the next
-      // save recreated deleted notes under Library/.
       if (!Array.isArray(loaded)) return false;
       const diskEntries = [];
       const diskIds = new Set();
@@ -37003,18 +37322,14 @@ function installNarrativeCanvasApp() {
         diskEntries.push(external);
         diskIds.add(external.id);
       });
-      let next = diskEntries;
-      // Mid-session vault refreshes may keep brand-new entries that have not been
-      // written yet. Project load must not — otherwise deleted Skills embedded in
-      // .ncanvas (empty codexFile) would survive and be recreated on save.
-      if (options.preserveUnsaved !== false) {
-        const pendingNew = getCharacters().filter((entry) => {
-          const path = String(entry?.codexFile || "").trim();
-          return !path && entry?.id && !diskIds.has(entry.id);
-        });
-        next = [...diskEntries, ...pendingNew];
-      }
-      next = normalizeCharacters(next);
+      const pendingNew = getCharacters().filter((entry) => {
+        const id = String(entry?.id || "").trim();
+        if (!id || diskIds.has(id)) return false;
+        // Keep embeds that were never written. Drop entries whose managed file
+        // was deleted — those keep a codexFile path pointing at a missing note.
+        return !String(entry?.codexFile || "").trim();
+      });
+      const next = normalizeCharacters([...diskEntries, ...pendingNew]);
       const before = JSON.stringify(getCharacters());
       const after = JSON.stringify(next);
       if (before === after) return false;
@@ -37233,8 +37548,49 @@ function installNarrativeCanvasApp() {
     return null;
   }
 
+  function getHostProjectPath() {
+    return String(window.NarrativeCanvasHost?.getCurrentProjectPath?.() || "").trim();
+  }
+
+  function isOfficialSampleNcanvasPath(path) {
+    const name = String(path || "").replace(/\\/g, "/").split("/").pop() || "";
+    return Object.values(SAMPLE_PROJECT_FILENAMES).includes(name);
+  }
+
+  function ensureOfficialSampleLibraryEntries() {
+    const path = getHostProjectPath();
+    if (!isOfficialSampleNcanvasPath(path)) return false;
+    const language = path.includes("叙事") || state.language === "zh" ? "zh" : "en";
+    const sampleCharacters = getSampleProject(language).characters || [];
+    const characters = getCharacters();
+    const have = new Set(characters.map((entry) => String(entry.id || "").trim()));
+    let added = false;
+    sampleCharacters.forEach((source, index) => {
+      const next = normalizeCharacter(source, characters.length + index);
+      if (!next || have.has(next.id)) return;
+      characters.push(next);
+      have.add(next.id);
+      added = true;
+    });
+    if (!added) return false;
+    state.project.characters = normalizeCharacters(characters);
+    invalidateCharacterRenderContext();
+    return true;
+  }
+
+  async function seedMissingLibraryFiles() {
+    const host = window.NarrativeCanvasHost;
+    if (!host?.syncLibraryFromCanvas) return false;
+    if (!getCharacters().some((entry) => !String(entry.codexFile || "").trim())) return false;
+    await host.syncLibraryFromCanvas(JSON.stringify(buildSavedState(), null, 2));
+    await reloadCodexFiles({ render: false, silent: true, markDirty: false });
+    return true;
+  }
+
   async function loadFromVault(announce = true) {
     if (!window.NarrativeCanvasHost?.loadProject) return null;
+    state.codexSelectedEntryId = "";
+    await window.NarrativeCanvasHost?.unmountLibraryProfile?.();
     try {
       const saved = await window.NarrativeCanvasHost.loadProject();
       if (!saved) return null;
@@ -37244,9 +37600,9 @@ function installNarrativeCanvasApp() {
       if (!state.selectedNodeId) state.selectedNodeId = state.project.nodes[0]?.id || null;
       state.externalProjectChangePending = false;
       setProjectDirty(false);
-      // Replace embedded library snapshots with vault Library notes. Do not keep
-      // unsaved embeds — those are exactly the deleted Skills that used to revive.
-      await reloadCodexFiles({ render: false, silent: true, preserveUnsaved: false });
+      ensureOfficialSampleLibraryEntries();
+      await reloadCodexFiles({ render: false, silent: true, markDirty: false });
+      await seedMissingLibraryFiles();
       if (announce) setStatus(`Loaded ${getHostProjectFileLabel()}.`);
       return restoredView;
     } catch (error) {
@@ -39629,7 +39985,7 @@ function installNarrativeCanvasApp() {
     const lines = [`# Narrative Library`, ""];
     characters.forEach((character) => {
       lines.push(`## ${character.name || "Unnamed Character"}`);
-      lines.push(`- Category: ${character.kind || "Character"}`);
+      lines.push(`- Category: ${getCodexKindLabel(character.kind) || "Character"}`);
       if (character.tags) lines.push(`- Tags: ${parseCodexTags(character.tags).join(", ")}`);
       if (character.role) lines.push(`- Role: ${character.role}`);
       if (character.voice) lines.push(`- Voice: ${character.voice}`);
@@ -41609,7 +41965,7 @@ function installNarrativeCanvasApp() {
 
   function syncDialogCastFromTurns(node, characters = getCastCharacters()) {
     if (!node || !Array.isArray(node.turns) || !Array.isArray(characters) || !characters.length) return;
-    characters = characters.filter((character) => normalizeCodexKind(character?.kind) === "Character");
+    characters = characters.filter((character) => isCharacterLibraryKind(character?.kind));
     const cast = Array.isArray(node.cast) ? node.cast : [];
     const existingSpeakerCharIds = new Set(cast.filter((c) => c.role === "Speaker").map((c) => c.characterId));
     const speakerNames = new Set(node.turns.map((t) => String(t.speaker || "").trim()).filter(Boolean));
@@ -41912,10 +42268,15 @@ function installNarrativeCanvasApp() {
     const template = normalizeNodeTypeTemplate(typeDef?.template, type, typeDef?.kind);
     const kind = template === "frame" ? "frame" : "node";
     const builtIn = nodeTypes[type];
+    const catalogBadge = CATALOG_NODE_TYPE_BADGES[type];
+    let badgeSource = typeDef?.badge;
+    if (catalogBadge && !typeDef?.custom && String(badgeSource || "").trim() === "N") {
+      badgeSource = catalogBadge;
+    }
     return {
       type,
       label,
-      badge: normalizeNodeTypeBadge(getNormalizedNodeTypeBadge(type, label, typeDef?.badge, typeDef?.badgeCustom)) || getDefaultNodeTypeBadge(label),
+      badge: normalizeNodeTypeBadge(getNormalizedNodeTypeBadge(type, label, badgeSource, typeDef?.badgeCustom)) || getDefaultNodeTypeBadge(label),
       color: normalizeNodeTypeColor(type, kind, typeDef?.color),
       width: clamp(Number(typeDef?.width) || (isFrameKind(kind) ? 420 : 200), 160, isFrameKind(kind) ? 860 : 420),
       custom: Boolean(typeDef?.custom),
@@ -41928,7 +42289,7 @@ function installNarrativeCanvasApp() {
       hidden: Boolean(typeDef?.hidden),
       eventSheetHidden: isFrameKind(kind) ? Boolean(typeDef?.eventSheetHidden) : false,
       cardOpacity: normalizeNodeTypeOpacity(typeDef?.cardOpacity),
-      system: Boolean(typeDef?.system) || Boolean(builtIn?.system)
+      system: isProtectedNodeType(type)
     };
   }
 
@@ -44504,7 +44865,7 @@ function installNarrativeCanvasApp() {
   }
 
   function getCastCharacters() {
-    return getCharacters().filter((entry) => entry.kind === "Character");
+    return getCharacters().filter((entry) => isCharacterLibraryKind(entry.kind));
   }
 
   function normalizeCharacters(characters) {
@@ -44545,7 +44906,7 @@ function installNarrativeCanvasApp() {
 
   // Frontmatter keys managed by the built-in fields; custom fields may not shadow them.
   const CODEX_RESERVED_FRONTMATTER_KEYS = new Set([
-    "narrative_canvas_codex", "id", "name", "category", "kind", "role", "voice",
+    "narrative_canvas_codex", "id", "name", "category", "kind", "type", "role", "voice",
     "tags", "notes", "images", "image", "image_preview", "hidden", "files", "canvas", "icon"
   ]);
   const CODEX_EXTRA_FIELD_TYPES = new Set(["string", "number", "boolean", "array", "object", "null"]);
@@ -44669,7 +45030,10 @@ function installNarrativeCanvasApp() {
   function getCodexFieldTemplate(kind) {
     const templates = normalizeCodexFieldTemplates(state.project.codexFieldTemplates);
     state.project.codexFieldTemplates = templates;
-    return templates[normalizeCodexKind(kind)] || [];
+    const key = normalizeCodexKind(kind);
+    if (templates[key]?.length) return templates[key];
+    const alias = Object.keys(templates).find((existing) => existing !== key && entryMatchesKindFilter({ kind: existing }, key));
+    return templates[alias] || templates[key] || [];
   }
 
   function applyCodexTemplateToCharacter(character) {
@@ -44732,13 +45096,29 @@ function installNarrativeCanvasApp() {
 
   function normalizeCodexKind(value) {
     const raw = String(value || "").trim();
+    if (!raw) return "Character";
+    if (typeof window.NarrativeCanvasHost?.normalizeCanvasLibraryKind === "function") {
+      return window.NarrativeCanvasHost.normalizeCanvasLibraryKind(raw);
+    }
     const normalized = raw.toLowerCase();
-    if (normalized === "character") return "Character";
-    if (normalized === "location") return "Location";
-    if (normalized === "item") return "Item";
+    if (normalized === "character" || normalized === "characters") return "Character";
+    if (normalized === "location" || normalized === "locations") return "Location";
+    if (normalized === "item" || normalized === "items") return "Item";
     if (normalized === "lore") return "Lore";
-    // Custom categories keep their name; only an empty value falls back.
-    return raw || "Character";
+    return raw;
+  }
+
+  function isCharacterLibraryKind(kind) {
+    if (typeof window.NarrativeCanvasHost?.isCharacterLibraryKind === "function") {
+      return window.NarrativeCanvasHost.isCharacterLibraryKind(kind);
+    }
+    return normalizeCodexKind(kind) === "Character";
+  }
+
+  function getCodexKindSortIndex(kind) {
+    const kinds = getCodexKindsList();
+    const index = kinds.findIndex((item) => entryMatchesKindFilter({ kind }, item));
+    return index < 0 ? kinds.length : index;
   }
 
   function normalizeCustomCodexKinds(value) {
@@ -44747,19 +45127,109 @@ function installNarrativeCanvasApp() {
       .map((kind) => String(kind || "").trim())
       .filter((kind) => {
         const lower = kind.toLowerCase();
-        if (!kind || lower === "all" || seen.has(lower)) return false;
+        const canvasKind = normalizeCodexKind(kind).toLowerCase();
+        if (!kind || lower === "all" || seen.has(lower) || seen.has(canvasKind)) return false;
         seen.add(lower);
+        seen.add(canvasKind);
         return true;
       });
+  }
+
+  function hasHostLibraryCategoryBridge() {
+    return typeof window.NarrativeCanvasHost?.getLibraryCategories === "function";
+  }
+
+  function getHostLibraryCategories() {
+    if (!hasHostLibraryCategoryBridge()) return [];
+    let list = [];
+    try {
+      list = window.NarrativeCanvasHost.getLibraryCategories();
+    } catch (_error) {
+      return [];
+    }
+    if (!Array.isArray(list)) return [];
+    return list
+      .map((category) => ({
+        id: String(category?.id || "").trim(),
+        label: String(category?.label || category?.id || "").trim(),
+        folder: String(category?.folder || "").trim()
+      }))
+      .filter((category) => category.id);
+  }
+
+  function openHostLibraryCategoryManager() {
+    const host = window.NarrativeCanvasHost;
+    if (typeof host?.openLibraryCategoryManager !== "function") return false;
+    host.openLibraryCategoryManager(() => {
+      renderCharactersPage();
+    });
+    return true;
+  }
+
+  function resolveCanvasKindForCategory(categoryId) {
+    const host = window.NarrativeCanvasHost;
+    if (typeof host?.libraryCategoryIdToCanvasKind === "function") {
+      return host.libraryCategoryIdToCanvasKind(categoryId);
+    }
+    return normalizeCodexKind(categoryId);
+  }
+
+  function getCodexKindLabel(kind) {
+    const raw = String(kind || "").trim();
+    if (typeof window.NarrativeCanvasHost?.resolveLibraryCategoryLabel === "function") {
+      const hostLabel = String(window.NarrativeCanvasHost.resolveLibraryCategoryLabel(raw) || "").trim();
+      if (hostLabel && hostLabel !== raw && !/^custom-/i.test(hostLabel)) return hostLabel;
+      if (hostLabel && !/^custom-/i.test(hostLabel)) return hostLabel;
+    }
+    const categories = getHostLibraryCategories();
+    if (categories.length && typeof window.NarrativeCanvasHost?.resolveLibraryCategoryDisplayLabel === "function") {
+      const label = window.NarrativeCanvasHost.resolveLibraryCategoryDisplayLabel(kind, categories);
+      if (label && label !== raw && !/^custom-/i.test(label)) return label;
+    }
+    const match = categories.find((category) => entryMatchesKindFilter({ kind }, category.id));
+    if (match?.label && !/^custom-/i.test(match.label)) return match.label;
+    if (/^custom-/i.test(raw)) {
+      const folder = String(getCharacters().find((entry) => entryMatchesKindFilter(entry, raw))?.codexFile || "")
+        .replace(/\\/g, "/")
+        .split("/")
+        .slice(-2, -1)[0] || "";
+      if (folder && !/^custom-/i.test(folder)) return folder;
+    }
+    return t(kind);
+  }
+
+  function entryMatchesKindFilter(entry, kindFilter) {
+    const filter = String(kindFilter || "").trim();
+    if (!filter || filter.toLowerCase() === CODEX_ALL_FILTER.toLowerCase()) return true;
+    const categories = getHostLibraryCategories();
+    const category = categories.find((item) => item.id.toLowerCase() === filter.toLowerCase())
+      || { id: filter, label: filter };
+    if (typeof window.NarrativeCanvasHost?.entryMatchesLibraryCategory === "function") {
+      return window.NarrativeCanvasHost.entryMatchesLibraryCategory(entry, category);
+    }
+    return normalizeCodexKind(entry?.kind) === normalizeCodexKind(filter)
+      || String(entry?.kind || "").toLowerCase() === filter.toLowerCase();
   }
 
   // Built-in categories plus user-defined ones plus any category already used by an
   // entry (e.g. typed straight into a markdown frontmatter `category`).
   function getCodexKindsList() {
+    const hostCategories = getHostLibraryCategories();
+    if (hasHostLibraryCategoryBridge()) {
+      const kinds = hostCategories.map((category) => category.id);
+      getCharacters().forEach((entry) => {
+        const name = String(entry.kind || "").trim();
+        if (!name) return;
+        if (hostCategories.some((category) => entryMatchesKindFilter(entry, category.id))) return;
+        if (kinds.some((existing) => existing.toLowerCase() === name.toLowerCase())) return;
+        kinds.push(name);
+      });
+      return kinds;
+    }
     const kinds = [...CODEX_KINDS];
     const push = (kind) => {
-      const name = String(kind || "").trim();
-      if (name && !kinds.some((existing) => existing.toLowerCase() === name.toLowerCase())) kinds.push(name);
+      const name = normalizeCodexKind(kind);
+      if (name && !kinds.some((existing) => existing.toLowerCase() === name.toLowerCase() || entryMatchesKindFilter({ kind: name }, existing))) kinds.push(name);
     };
     (Array.isArray(state.project?.customCodexKinds) ? state.project.customCodexKinds : []).forEach(push);
     getCharacters().forEach((entry) => push(entry.kind));
@@ -44769,8 +45239,13 @@ function installNarrativeCanvasApp() {
   function normalizeCodexKindFilter(value) {
     const normalized = String(value || "").trim();
     if (!normalized || normalized.toLowerCase() === CODEX_ALL_FILTER.toLowerCase()) return CODEX_ALL_FILTER;
+    const kinds = getCodexKindsList();
+    const exact = kinds.find((existing) => existing.toLowerCase() === normalized.toLowerCase());
+    if (exact) return exact;
+    const matched = kinds.find((existing) => entryMatchesKindFilter({ kind: normalized }, existing));
+    if (matched) return matched;
     const kind = normalizeCodexKind(normalized);
-    return getCodexKindsList().some((existing) => existing.toLowerCase() === kind.toLowerCase()) ? kind : CODEX_ALL_FILTER;
+    return kinds.some((existing) => existing.toLowerCase() === kind.toLowerCase()) ? kind : CODEX_ALL_FILTER;
   }
 
   function inferCharacters(project) {

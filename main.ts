@@ -87,6 +87,11 @@ import { StatsView } from './views/StatsView';
 import { LocationView } from './views/LocationView';
 import { NavigatorView } from './views/NavigatorView';
 import { CodexView } from './views/CodexView';
+import {
+    isCanvasLibraryProfileMounted,
+    mountCanvasLibraryProfile,
+    unmountCanvasLibraryProfile,
+} from './views/CanvasLibraryProfileHost';
 import { SceneInspectorView } from './views/SceneInspectorView';
 import { NotesView } from './views/NotesView';
 import { SynopsisView } from './views/SynopsisView';
@@ -121,6 +126,8 @@ import {
     handleLibraryFolderVaultRename,
     LIBRARY_CATEGORIES_FILENAME,
     libraryCategorySettingsFromUnknown,
+    listVisibleLibraryCategories,
+    resolveLibraryCategoryLabelForKind,
     parentOfPath,
     readLibraryCategorySettings,
     reconcileLibraryCategoriesForActiveProject,
@@ -171,16 +178,34 @@ type EmbeddedCanvasModule = Plugin & {
     createSampleProjectAtPath?: (path: string, language?: string) => Promise<string>;
     /** Overridden by NarrativeLab to share Library ↔ Canvas/<Name>.canvas creation. */
     createCodexCanvas?: (entry: CreateLibraryEntityBoardEntry) => Promise<string>;
+    mountCanvasLibraryProfile?: (
+        canvasView: { contentEl: HTMLElement },
+        payload: { entryId: string; name: string; kind: string; codexFile: string },
+    ) => Promise<boolean>;
+    unmountCanvasLibraryProfile?: (canvasView: { contentEl: HTMLElement }) => Promise<void>;
+    isCanvasLibraryProfileMounted?: (canvasView: { contentEl: HTMLElement }) => boolean;
+    getNarrativeLabLibraryCategories?: () => Array<{ id: string; label: string; folder: string }>;
+    resolveNarrativeLabLibraryCategoryLabel?: (kind: string) => string;
+    openNarrativeLabLibraryCategoryManager?: (onDone?: () => void) => void;
     loadData: () => Promise<Record<string, unknown>>;
     saveData: (data: Record<string, unknown>) => Promise<void>;
     addSettingTab: (...args: unknown[]) => void;
     /** NarrativeLab injects the configured project attachment folder name. */
     getProjectAttachmentFolderName?: () => string;
+    /** Active project's Library folder map (characters → 角色, …) for canvas writes. */
+    getNarrativeLabLibraryFolderMap?: (projectPath?: string) => Record<string, string>;
     /** NarrativeLab owns the interface language when Canvas is embedded. */
     getNarrativeLabInterfaceLanguage?: () => UiLanguage;
     /** NarrativeLab owns light/dark UI theme when Canvas is embedded. */
     getNarrativeLabUiTheme?: () => 'light' | 'dark';
     onNarrativeLabUiThemeChanged?: (theme: 'light' | 'dark') => void;
+    onNarrativeLabLanguageChanged?: (language: UiLanguage) => void;
+    createSampleInActiveProject?: (language?: string) => Promise<string | null>;
+    createCurrentProjectBackup?: () => Promise<string>;
+    chooseProjectBackupToRestore?: () => Promise<string>;
+    notifyCanvasSettingsChanged?: () => void;
+    savePluginData?: () => Promise<void>;
+    settings?: Record<string, unknown>;
 };
 
 type ProjectFolderChoice = {
@@ -296,7 +321,7 @@ export default class SceneCardsPlugin extends Plugin {
     researchManager!: ResearchManager;
     /** Shared Library note ↔ Canvas/<Name>.canvas boards (CharacterView + Narrative Canvas). */
     libraryEntityBoard!: LibraryEntityBoardService;
-    private canvasModule: EmbeddedCanvasModule | null = null;
+    canvasModule: EmbeddedCanvasModule | null = null;
     private _canvasModuleLoading: Promise<void> | null = null;
     /** Paths whose vault writes should not trigger open-view refresh (corkboard.canvas, etc.). */
     private _suppressVaultRefreshPaths = new Set<string>();
@@ -3247,7 +3272,11 @@ export default class SceneCardsPlugin extends Plugin {
      */
     async savePlotGrid(
         data: ConceptGridDocument | PlotGridData,
-        options: { allowEmptyOverwrite?: boolean; projectFilePath?: string } = {},
+        options: {
+            allowEmptyOverwrite?: boolean;
+            fromLiveEditor?: boolean;
+            projectFilePath?: string;
+        } = {},
     ): Promise<void> {
         const projectFilePath = normalizePath(
             options.projectFilePath || this.sceneManager.activeProject?.filePath || '',
@@ -3257,7 +3286,10 @@ export default class SceneCardsPlugin extends Plugin {
         const libraryFolder = normalizePath(`${baseFolder}/Library`);
         const systemFolder = normalizePath(`${baseFolder}/System`);
         const filePath = normalizePath(plotGridXlsxPath(baseFolder));
-        const writeOptions = { allowEmptyOverwrite: options.allowEmptyOverwrite };
+        const writeOptions = {
+            allowEmptyOverwrite: options.allowEmptyOverwrite,
+            fromLiveEditor: options.fromLiveEditor,
+        };
         const previous = this._systemJsonWriteQueues.get(filePath) ?? Promise.resolve();
         const pending = previous
             .catch(() => undefined)
@@ -3277,7 +3309,7 @@ export default class SceneCardsPlugin extends Plugin {
 
     private async savePlotGridSafely(
         data: ConceptGridDocument | PlotGridData,
-        options: { allowEmptyOverwrite?: boolean },
+        options: { allowEmptyOverwrite?: boolean; fromLiveEditor?: boolean },
         baseFolder: string,
         libraryFolder: string,
         systemFolder: string,
@@ -3300,6 +3332,7 @@ export default class SceneCardsPlugin extends Plugin {
             : 0;
         if (shouldRefuseEmptyPlotGridWrite(document, {
             allowEmptyOverwrite: options.allowEmptyOverwrite,
+            fromLiveEditor: options.fromLiveEditor,
             existed,
             existingFilledCells: existingFilled,
         })) {
@@ -3525,6 +3558,8 @@ export default class SceneCardsPlugin extends Plugin {
             const systemFolder = normalizePath(`${baseFolder}/System`);
             const adapter = this.app.vault.adapter;
             const xlsxPath = normalizePath(plotGridXlsxPath(baseFolder));
+            const pendingWrite = this._systemJsonWriteQueues.get(xlsxPath);
+            if (pendingWrite) await pendingWrite.catch(() => undefined);
             const cached = this._plotGridDocCache;
             if (
                 cached
@@ -4430,11 +4465,41 @@ export default class SceneCardsPlugin extends Plugin {
             };
             canvas.getProjectAttachmentFolderName = () =>
                 (this.settings.projectAttachmentFolder || 'Attachments').trim() || 'Attachments';
+            canvas.getNarrativeLabLibraryFolderMap = (projectPath = '') => {
+                const project = this.sceneManager.activeProject;
+                if (!project?.libraryFolders) return {};
+                const canvasPath = normalizePath(String(projectPath || ''));
+                if (!canvasPath) return project.libraryFolders;
+                const base = normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
+                if (canvasPath === base || canvasPath.startsWith(`${base}/`)) return project.libraryFolders;
+                return {};
+            };
             canvas.getNarrativeLabInterfaceLanguage = () => this.getEffectiveInterfaceLanguage();
             canvas.getNarrativeLabUiTheme = () => this.getEffectiveUiTheme();
             canvas.onNarrativeLabUiThemeChanged = (theme: 'light' | 'dark') => {
                 void this.setUiTheme(theme, { skipCanvas: true });
             };
+            canvas.onNarrativeLabLanguageChanged = (language: UiLanguage) => {
+                void this.setInterfaceLanguage(language);
+            };
+            canvas.createSampleInActiveProject = (language?: string) =>
+                this.createSampleNcanvasInActiveProject(language === 'zh' ? 'zh' : 'en');
+            canvas.getNarrativeLabLibraryCategories = () => listVisibleLibraryCategories(this);
+            canvas.resolveNarrativeLabLibraryCategoryLabel = (kind: string) =>
+                resolveLibraryCategoryLabelForKind(this, kind);
+            canvas.openNarrativeLabLibraryCategoryManager = (onDone) => {
+                void import('./views/CodexView').then(({ openManageLibraryCategoriesModal }) => {
+                    openManageLibraryCategoriesModal(this, onDone);
+                });
+            };
+            canvas.createCodexCanvas = (entry: CreateLibraryEntityBoardEntry) =>
+                this.createLibraryEntityBoard(entry);
+            canvas.mountCanvasLibraryProfile = (canvasView, payload) =>
+                mountCanvasLibraryProfile(this, canvasView, payload);
+            canvas.unmountCanvasLibraryProfile = (canvasView) =>
+                unmountCanvasLibraryProfile(canvasView);
+            canvas.isCanvasLibraryProfileMounted = (canvasView) =>
+                isCanvasLibraryProfileMounted(canvasView);
             // NarrativeLab owns the single settings page; Canvas remains an internal feature.
             canvas.addSettingTab = () => undefined;
 
@@ -4460,10 +4525,9 @@ export default class SceneCardsPlugin extends Plugin {
                 throw error;
             }
             this.canvasModule = canvas;
-            // Fuse Narrative Canvas "Create board" with NarrativeLab's shared service
-            // so both entry points write Canvas/<Name>.canvas + canvas FM + embed.
-            canvas.createCodexCanvas = (entry: CreateLibraryEntityBoardEntry) =>
-                this.createLibraryEntityBoard(entry);
+            (window as unknown as {
+                NarrativeCanvasApp?: { refreshLibraryCategories?: () => unknown };
+            }).NarrativeCanvasApp?.refreshLibraryCategories?.();
         })();
         try {
             await this._canvasModuleLoading;
@@ -4639,7 +4703,7 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
-    private async ensureCanvasModuleReady(): Promise<EmbeddedCanvasModule | null> {
+    async ensureCanvasModuleReady(): Promise<EmbeddedCanvasModule | null> {
         if (!this.canvasModule) {
             try {
                 await this.loadEmbeddedCanvas();

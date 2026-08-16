@@ -26,6 +26,7 @@ import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
 
 import type SceneCardsPlugin from '../main';
+import type { LibraryProfileEmbedOptions } from './CanvasLibraryProfileHost';
 
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
@@ -126,6 +127,8 @@ export class CharacterView extends ProjectBoundItemView {
         for (const el of this._portaledDropdowns) { try { el.remove(); } catch { /* noop */ } }
         this._portaledDropdowns = [];
     }
+    private embedOptions: LibraryProfileEmbedOptions | null = null;
+    private embedHostEl: HTMLElement | null = null;
 
     /** Invalidate in-flight overview batch renders when the grid re-renders. */
     private _overviewGen = 0;
@@ -166,6 +169,10 @@ export class CharacterView extends ProjectBoundItemView {
 
     /** Prefer live contentEl — avoids stale detached roots after leaf remounts. */
     private getViewRoot(): HTMLElement {
+        if (this.embedHostEl) {
+            this.rootContainer = this.embedHostEl;
+            return this.embedHostEl;
+        }
         const el = (this.contentEl ?? this.containerEl.children[1]) as HTMLElement;
         this.rootContainer = el;
         return el;
@@ -226,6 +233,7 @@ export class CharacterView extends ProjectBoundItemView {
 
     /** Content pane under toolbar/tabs — prefer this for open/back navigation. */
     private getContentHost(): HTMLElement | null {
+        if (this.embedHostEl) return this.embedHostEl;
         const root = this.getViewRoot();
         return root.querySelector('.story-line-character-content') as HTMLElement | null;
     }
@@ -1009,6 +1017,10 @@ export class CharacterView extends ProjectBoundItemView {
         if (!char) {
             this.selectedCharacter = null;
             new Notice(t('Character not found in the active project.'));
+            if (this.embedOptions) {
+                this.embedOptions.onBack();
+                return;
+            }
             this.renderContentOnly();
             return;
         }
@@ -1182,6 +1194,10 @@ export class CharacterView extends ProjectBoundItemView {
             || (basename ? this.characterManager.findByName(basename) : undefined);
         if (!character) {
             this.selectedCharacter = null;
+            if (this.embedOptions) {
+                this.embedOptions.onBack();
+                return;
+            }
             this.renderCharacterOverview(container);
             return;
         }
@@ -1217,11 +1233,15 @@ export class CharacterView extends ProjectBoundItemView {
         const backBtn = header.createEl('span', { cls: 'codex-nav-back-link' });
         const backIcon = backBtn.createSpan();
         obsidian.setIcon(backIcon, 'circle-arrow-left');
-        backBtn.createSpan({ text: t(' All Characters') });
+        backBtn.createSpan({ text: this.embedOptions ? t('Back to library') : t(' All Characters') });
         backBtn.addEventListener('click', async () => {
             await this.flushPendingSave();
             this.editingDraft = null;
             this.selectedCharacter = null;
+            if (this.embedOptions) {
+                this.embedOptions.onBack();
+                return;
+            }
             this.renderContentOnly();
         });
 
@@ -1404,7 +1424,9 @@ export class CharacterView extends ProjectBoundItemView {
                 if (sideGen !== this._detailSideGen) return;
                 if (this.selectedCharacter !== selectedPathForSide) return;
                 this.renderLinkedAliasesPanel(deferredHost, characterName);
-                this.renderReferencesPanel(deferredHost, characterName);
+                if (!this.embedOptions?.hideVaultReferences) {
+                    this.renderReferencesPanel(deferredHost, characterName);
+                }
                 this.renderNotesSection(deferredHost, draft);
             }, 0);
         }, 0);
@@ -3395,7 +3417,11 @@ export class CharacterView extends ProjectBoundItemView {
                         await this.characterManager.deleteCharacter(character.filePath);
                         this.selectedCharacter = null;
                         modal.close();
-                        this.renderContentOnly();
+                        if (this.embedOptions) {
+                            (this.embedOptions.onDeleted || this.embedOptions.onBack)();
+                        } else {
+                            this.renderContentOnly();
+                        }
                         new Notice(t('"{name}" deleted', { name: character.name }));
                     });
             })
@@ -3613,6 +3639,28 @@ export class CharacterView extends ProjectBoundItemView {
      */
     async navigateToCharacter(filePath: string): Promise<void> {
         await this.openCharacterDetail(filePath);
+    }
+
+    async mountEmbeddedDetail(
+        container: HTMLElement,
+        filePath: string,
+        options: LibraryProfileEmbedOptions,
+    ): Promise<boolean> {
+        this.embedOptions = options;
+        this.embedHostEl = container;
+        this.rootContainer = container;
+        this.ensureProjectBinding(this.sceneManager.activeProject?.filePath);
+        await this.openCharacterDetail(filePath);
+        return Boolean(this.selectedCharacter);
+    }
+
+    async unmountEmbeddedDetail(): Promise<void> {
+        await this.flushPendingSave();
+        this.editingDraft = null;
+        this.selectedCharacter = null;
+        this.clearPortaledDropdowns();
+        this.embedOptions = null;
+        this.embedHostEl = null;
     }
 
     /**

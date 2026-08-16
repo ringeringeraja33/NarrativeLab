@@ -57,7 +57,6 @@ export interface LocaleProfile {
 
 // ── Unicode script ranges ───────────────────────────────
 
-const CJK_RANGE = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/;
 const CJK_RANGE_G = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/g;
 const THAI_RANGE = /[\u0E00-\u0E7F]/;
 const ARABIC_RANGE = /[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/;
@@ -333,11 +332,6 @@ export function isScriptioContinuaLocale(locale: StoryLineLocale): boolean {
     return SCRIPTIO_CONTINUA_SCRIPTS.has(getLocaleProfile(locale).script);
 }
 
-/** Back-compat alias matching PR #90's nomenclature. */
-export function isCjkStoryLineLocale(locale: StoryLineLocale): boolean {
-    return getLocaleProfile(locale).script === 'cjk';
-}
-
 export function countReadingCharacters(text: string): number {
     return (text.match(CJK_RANGE_G) || []).length;
 }
@@ -437,19 +431,6 @@ export function splitSentences(text: string, locale: StoryLineLocale = DEFAULT_S
     if (!text) return [];
     const re = getLocaleProfile(locale).sentenceTerminators;
     return text.split(re).map(s => s.trim()).filter(s => s.length > 0);
-}
-
-/**
- * Token list for PDF line wrapping. Breaks CJK on individual codepoints so
- * lines wrap inside a paragraph of Chinese/Japanese rather than overflowing
- * the page width.
- */
-export function splitWrapTokens(text: string): string[] {
-    return text.match(/[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]|\s+|[^\s\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]+/g) || [];
-}
-
-export function isCjkWrapToken(text: string): boolean {
-    return CJK_RANGE.test(text);
 }
 
 // ── Dialogue ────────────────────────────────────────────

@@ -14,26 +14,6 @@ export function asRecord(v: unknown): Record<string, unknown> {
     return isRecord(v) ? v : {};
 }
 
-/** Read a string field from an unknown record, or return fallback. */
-export function asString(v: unknown, fallback = ''): string {
-    return typeof v === 'string' ? v : fallback;
-}
-
-/** Read a number field from an unknown record, or return fallback. */
-export function asNumber(v: unknown, fallback = 0): number {
-    return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
-}
-
-/** Read a boolean field, or return fallback. */
-export function asBool(v: unknown, fallback = false): boolean {
-    return typeof v === 'boolean' ? v : fallback;
-}
-
-/** Cast `unknown` to typed value with default fallback (no runtime check beyond presence). */
-export function asTyped<T>(v: unknown, fallback: T): T {
-    return v === undefined || v === null ? fallback : (v as T);
-}
-
 /**
  * Safely coerce an unknown value to a string. Strings pass through; numbers
  * and booleans are stringified. Anything else (objects, arrays, null, undefined)
