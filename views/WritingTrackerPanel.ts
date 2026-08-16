@@ -205,7 +205,10 @@ export class WritingTrackerPanel extends ItemView {
         startBtn.addEventListener('click', () => {
             this.sprintEndChimePlayed = false;
             const totalNow = this.currentTotalWords();
-            tracker.startSprint(totalNow);
+            if (!tracker.startSprint(totalNow)) {
+                new Notice(t('Cannot start a sprint until the project word count is ready.'));
+                return;
+            }
             this.clearSprintTimer();
             this.sprintTimerId = window.setInterval(updateTimerDisplay, 1000);
             updateTimerDisplay(totalNow);

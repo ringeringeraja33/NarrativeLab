@@ -2,6 +2,7 @@
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceString } from '../utils/narrow';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 import {
     StoryWorld, StoryLocation, WorldOrLocation,
     WORLD_FIELD_KEYS, LOCATION_FIELD_KEYS,
@@ -468,8 +469,7 @@ export class LocationManager {
     }
 
     private async ensureFolder(folderPath: string): Promise<void> {
-        if (this.app.vault.getAbstractFileByPath(folderPath)) return;
-        await this.app.vault.createFolder(folderPath);
+        await ensureVaultFolder(this.app, folderPath);
     }
 }
 /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

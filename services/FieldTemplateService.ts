@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, normalizePath } from 'obsidian';
+import { ensureVaultFolder, isTombstonedProjectPath } from '../utils/vaultFolders';
 
 // ═══════════════════════════════════════════════════════
 //  Universal Field Template Service
@@ -121,6 +122,8 @@ export class FieldTemplateService {
     /** Resolver set by the plugin so we don't depend on main.ts directly */
     private getSystemFolder: () => string;
     private onChange?: (change: FieldTemplateChange) => void | Promise<void>;
+    /** True when field-templates.json existed but could not be parsed — refuse save overwrite. */
+    private _invalidFile = false;
 
     constructor(app: App, getSystemFolder: () => string) {
         this.app = app;
@@ -383,6 +386,7 @@ export class FieldTemplateService {
             const adapter = this.app.vault.adapter;
             const filePath = normalizePath(`${this.getSystemFolder()}/field-templates.json`);
             if (!await adapter.exists(filePath)) {
+                this._invalidFile = false;
                 this.templates = [];
                 this.sectionOrders = {};
                 return;
@@ -440,19 +444,21 @@ export class FieldTemplateService {
                 mergedOrders[normalized] = prev;
             }
             this.sectionOrders = mergedOrders;
+            this._invalidFile = false;
         } catch {
-            this.templates = [];
-            this.sectionOrders = {};
+            this._invalidFile = true;
         }
     }
 
     /** Save templates to System/field-templates.json */
     async save(): Promise<void> {
+        if (this._invalidFile) return;
         try {
             const adapter = this.app.vault.adapter;
             const systemFolder = normalizePath(this.getSystemFolder());
+            if (isTombstonedProjectPath(systemFolder)) return;
             if (!await adapter.exists(systemFolder)) {
-                await this.app.vault.createFolder(systemFolder);
+                await ensureVaultFolder(this.app, systemFolder);
             }
             const data: FieldTemplateFile = {
                 version: 1,

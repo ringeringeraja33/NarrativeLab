@@ -548,6 +548,42 @@ test('plotgrid xlsx codec chunks oversized _nl_meta under Excel cell limit', asy
     }
 });
 
+test('empty in-memory grid cannot overwrite an existing workbook', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nl-plotgrid-empty-guard-'));
+    const outfile = join(dir, 'model.cjs');
+    try {
+        await esbuild.build({
+            absWorkingDir: projectRoot,
+            entryPoints: [join(projectRoot, 'models/PlotGridData.ts')],
+            bundle: true,
+            platform: 'node',
+            format: 'cjs',
+            outfile,
+            logLevel: 'silent',
+            external: ['obsidian'],
+        });
+        const model = require(outfile);
+        const empty = model.createEmptyConceptGridDocument();
+        const rich = {
+            ...empty,
+            pages: [{
+                ...empty.pages[0],
+                rows: [{ id: 'r1', label: 'A', height: 40, bgColor: '' }],
+                columns: [{ id: 'c1', label: 'B', width: 120, bgColor: '' }],
+                cells: { 'r1-c1': { id: 'r1-c1', content: 'hello', bgColor: '', textColor: '', bold: false, italic: false, align: 'left' } },
+            }],
+        };
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, existingFilledCells: 12 }), true);
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: false }), false);
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, allowEmptyOverwrite: true }), false);
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(rich, { existed: true, existingFilledCells: 12 }), false);
+        assert.equal(model.isConceptGridDocumentEmpty(empty), true);
+        assert.equal(model.isConceptGridDocumentEmpty(rich), false);
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
+});
+
 test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', async () => {
     const mainTs = await readFile(new URL('../main.ts', import.meta.url), 'utf8');
     assert.match(mainTs, /plotGridXlsxPath/);
@@ -569,8 +605,11 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /\.bak`|jsonPath.*bak|rename\(jsonPath/);
     assert.match(mainTs, /writeVaultBinaryResilient/);
     assert.match(mainTs, /backupCorruptPlotGridXlsx|_invalidPlotGridXlsxPaths/);
-    assert.match(mainTs, /healthy, loaded workbook may legitimately become empty/);
-    assert.match(mainTs, /isConceptGridDocumentEmpty\(document\)[\s\S]*?_invalidPlotGridXlsxPaths\.has\(path\)/);
+    assert.match(mainTs, /Never clobber an existing workbook with an empty in-memory model/);
+    assert.match(mainTs, /shouldRefuseEmptyPlotGridWrite/);
+    assert.match(mainTs, /existingPlotGridFilledCount/);
+    assert.match(mainTs, /plotGridXlsxExists/);
+    assert.match(mainTs, /Empty spreadsheet save blocked/);
     assert.match(mainTs, /options: \{ allowEmptyOverwrite\?: boolean; projectFilePath\?: string \}/);
     assert.match(mainTs, /deriveProjectFoldersFromFilePath\(projectFilePath\)\.baseFolder/);
     assert.match(mainTs, /loadPlotGrid\(projectFilePath\?: string\)/);
@@ -584,6 +623,13 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
         readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8'),
         readFile(new URL('../styles.css', import.meta.url), 'utf8'),
     ]);
+    assert.match(view, /hasHydratedDocument/);
+    assert.match(view, /if \(!plugin \|\| !this\.hasHydratedDocument\) return/);
+    assert.match(view, /if \(!this\.hasHydratedDocument\) return/);
+    assert.match(view, /isConceptGridDocumentEmpty\(next\) && !isConceptGridDocumentEmpty\(this\.document\)/);
+    assert.match(view, /existed !== true/);
+    assert.match(view, /plotGridXlsxExists/);
+    assert.match(view, /isConceptGridDocumentEmpty\(this\.document\)/);
     assert.match(view, /loadPlotGridUniverModule/);
     assert.match(view, /this\.buildLayout\(container\);[\s\S]*?this\.loadData\(\)/);
     assert.match(view, /peekPlotGridDoc/);
@@ -833,7 +879,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /desktop-context-menu/);
     assert.match(host, /installUniverContextMenuHoverAssist/);
     assert.match(host, /retireOlderVisibleUniverSubmenus/);
-    assert.match(host, /style\.visibility !== 'hidden'/);
+    assert.match(host, /retireUniverSubmenus\(doc, \{ keepLatest: true \}\)/);
     assert.match(host, /kickUniverSubmenuPosition/);
     assert.match(host, /dispatchEvent\(new Event\('scroll'\)\)/);
     assert.match(host, /MutationObserver/);
@@ -842,7 +888,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /pendingClearMissing \|\| pendingAfterEdit/);
     assert.doesNotMatch(host, /narrativelab-univer-submenu-stale/);
     assert.doesNotMatch(host, /pruneStackedUniverSubmenus/);
-    assert.match(host, /narrativelab-univer-submenu-retired/);
+    assert.match(host, /retireUniverSubmenus/);
     assert.match(styles, /narrativelab-univer-submenu-retired/);
     assert.doesNotMatch(styles, /narrativelab-univer-submenu-stale/);
     assert.match(host, /readLiveCellPlainText/);
@@ -863,7 +909,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(view, /Never autosave while Univer/);
     assert.doesNotMatch(view, /saveBusyRetries/);
     assert.match(view, /must never force-close a user who is still typing/);
-    assert.match(view, /univerHost\.flush\(\)/);
+    assert.match(view, /host\.flush\(\)/);
     assert.match(view, /flushUniverIntoDocument\(\)/);
     assert.match(view, /syncOpenCellEditorsFromDocument/);
     assert.match(view, /cellEditorWindows\.values\(\)/);

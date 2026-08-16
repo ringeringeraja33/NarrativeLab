@@ -59,8 +59,14 @@ test('plot-grid host starts the flyout hover assist only while the menu is open'
     assert.match(host, /endHoverAssist/);
     assert.match(host, /installUniverContextMenuHoverAssist/);
     assert.match(host, /registerConnectedNotesHoverSubmenu/);
+    assert.match(host, /retireUniverSubmenus\(doc, \{ keepLatest: true \}\)/);
     assert.match(css, /narrativelab-univer-submenu-retired/);
     assert.match(css, /narrativelab-univer-submenu-live/);
+    assert.match(css, /transition:\s*none/);
     assert.doesNotMatch(css, /z-index:\s*2147483000/);
     assert.match(menu, /isUniverContextMenuTarget/);
+    const assist = await fs.readFile(path.join(root, 'utils/univerContextMenu.ts'), 'utf8');
+    assert.match(assist, /hideLoneVisible: true/);
+    assert.match(assist, /export function retireUniverSubmenus/);
+    assert.match(assist, /Univer waits 500ms/);
 });

@@ -10,6 +10,7 @@ import { App, Notice, TFile, TFolder, normalizePath, parseYaml, stringifyYaml } 
 import { BeatSheetApplyOptions, BeatSheetApplyPreview, BeatSheetTemplate, FilterPreset, Scene, SceneStatus, SceneTemplate, getStatusOrder } from '../models/Scene';
 import { localizeForLanguage, t } from '../utils/i18n';
 import { coerceString } from '../utils/narrow';
+import { ensureVaultFolder, registerDeletedProjectPathGuard, vaultRelativeFolderPath } from '../utils/vaultFolders';
 
 /**
  * Normalize a frontmatter `acts` / `chapters` value into a clean sorted
@@ -118,6 +119,8 @@ export class SceneManager implements ISceneStore {
     private adoptingNotes = new Set<string>();
     /** Paths currently being converted by NarrativeLab — skip watcher re-adoption. */
     private binderConvertInFlight = new Set<string>();
+    /** True when System/board.json existed but could not be parsed — refuse autosave overwrite. */
+    private _invalidBoardJson = false;
     public undoManager: UndoManager;
     /** Read-only query service for filtering, sorting, aggregation */
     public readonly queryService: SceneQueryService;
@@ -172,6 +175,7 @@ export class SceneManager implements ISceneStore {
         this.plugin = plugin;
         this.undoManager = new UndoManager(app);
         this.queryService = new SceneQueryService(this);
+        registerDeletedProjectPathGuard((path) => this.isDeletedProjectPath(path));
     }
 
     // ── ISceneStore implementation ─────────────────────────
@@ -510,6 +514,36 @@ export class SceneManager implements ISceneStore {
      * vault adapter for files the metadata cache has not typed yet (fresh
      * syncs, cold start, Dropbox/OneDrive before indexing).
      */
+    /**
+     * Read one project manifest from cache or disk and put it in the map.
+     * Used after folder moves, when vault.scan still lists the old path.
+     */
+    async loadProjectFromPath(filePath: string): Promise<StoryLineProject | null> {
+        const normalized = normalizePath(filePath);
+        const cached = this.projects.get(normalized);
+        if (cached) return cached;
+        const file = this.app.vault.getAbstractFileByPath(normalized);
+        if (file instanceof TFile) {
+            const fromCache = this.projectFromMetadataCache(file);
+            if (fromCache) {
+                this.applyLegacyFolders(fromCache);
+                this.projects.set(normalized, fromCache);
+                return fromCache;
+            }
+        }
+        try {
+            if (!await this.app.vault.adapter.exists(normalized)) return null;
+            const content = await this.app.vault.adapter.read(normalized);
+            const parsed = this.parseProjectContent(content, normalized);
+            if (!parsed) return null;
+            this.applyLegacyFolders(parsed);
+            this.projects.set(normalized, parsed);
+            return parsed;
+        } catch {
+            return null;
+        }
+    }
+
     async scanProjects(): Promise<StoryLineProject[]> {
         if (this._scanProjectsPromise) return this._scanProjectsPromise;
         this._scanProjectsPromise = this.scanProjectsInner().finally(() => {
@@ -673,7 +707,7 @@ export class SceneManager implements ISceneStore {
      * Create a new NarrativeLab project
      */
     async createProject(title: string, description = '', customBasePath?: string): Promise<StoryLineProject> {
-        const rootPath = normalizePath(customBasePath ?? this.plugin.settings.storyLineRoot ?? '');
+        const rootPath = vaultRelativeFolderPath(customBasePath ?? this.plugin.settings.storyLineRoot);
         if (rootPath) await this.ensureFolder(rootPath);
 
         const safeName = title.replace(/[\\/:*?"<>|]/g, '-');
@@ -748,25 +782,14 @@ export class SceneManager implements ISceneStore {
                 console.warn('[NarrativeLab] default corkboard.canvas create skipped:', err);
             }
 
-            // Create default data files inside System/
+            // Seed empty System files only when missing. Never wipe leftovers
+            // from a failed convert, a restored folder, or an unindexed copy.
             const viewFiles = ['plotgrid.json', 'timeline.json', 'board.json', 'plotlines.json', 'stats.json', 'characters.json'];
-            const createdFiles: string[] = [];
-            const updatedFiles: string[] = [];
             for (const vf of viewFiles) {
                 const vfPath = normalizePath(`${systemFolder}/${vf}`);
-                const contents = JSON.stringify({}, null, 2);
-                const existing = this.app.vault.getAbstractFileByPath(vfPath) as TFile | null;
-                if (!existing) {
-                    await this.app.vault.create(vfPath, contents);
-                    createdFiles.push(vfPath);
-                } else {
-                    try {
-                        await this.app.vault.modify(existing, contents);
-                        updatedFiles.push(vfPath);
-                    } catch {
-                        // If modify fails (rare), ignore and continue
-                    }
-                }
+                if (await this.app.vault.adapter.exists(vfPath)) continue;
+                if (this.app.vault.getAbstractFileByPath(vfPath)) continue;
+                await this.app.vault.create(vfPath, JSON.stringify({}, null, 2));
             }
 
             const project: StoryLineProject = {
@@ -1020,6 +1043,8 @@ export class SceneManager implements ISceneStore {
 
         const folders = deriveProjectFoldersFromFilePath(filePath);
         const baseFolder = normalizePath(folders.baseFolder);
+        // Block late autosaves before any await — same rule as external delete / folder move.
+        this.deletedProjectRoots.add(baseFolder);
 
         let seriesMetadataRollback: { folder: string; meta: SeriesMetadata } | null = null;
         // Update series metadata first, but keep an exact snapshot so a failed
@@ -1054,6 +1079,7 @@ export class SceneManager implements ISceneStore {
                 if (mdEntry) await this.app.fileManager.trashFile(mdEntry);
             }
         } catch (error) {
+            this.deletedProjectRoots.delete(baseFolder);
             if (seriesMetadataRollback) {
                 await this.plugin.seriesManager.saveSeriesMetadata(
                     seriesMetadataRollback.folder,
@@ -2524,6 +2550,17 @@ export class SceneManager implements ISceneStore {
             return false;
         }
 
+        // Tombstone the vacated tree before any await. In-flight autosaves and
+        // Library/Base ensureFolder calls otherwise recreate empty folders at
+        // the old path (Finder / file-explorer moves).
+        this.deletedProjectRoots.add(from);
+        for (const [, project] of movedProjects) {
+            this.deletedProjectRoots.add(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
+        }
+        if (this._activeProject && isMoved(this._activeProject.filePath)) {
+            this.deletedProjectRoots.add(deriveProjectFoldersFromFilePath(this._activeProject.filePath).baseFolder);
+        }
+
         const rebaseProject = (project: StoryLineProject): void => {
             project.filePath = rebase(project.filePath);
             project.sceneFolder = rebase(project.sceneFolder);
@@ -2567,6 +2604,11 @@ export class SceneManager implements ISceneStore {
         }
         if (rootMoved) {
             this.plugin.settings.storyLineRoot = rebase(this.plugin.settings.storyLineRoot);
+        }
+
+        this.deletedProjectRoots.delete(to);
+        for (const project of rebased) {
+            this.deletedProjectRoots.delete(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
         }
 
         // Re-key the currently loaded scene/note index immediately. This closes
@@ -3516,6 +3558,7 @@ export class SceneManager implements ISceneStore {
             const sysFolder = this.plugin.getProjectSystemFolder();
             const path = `${sysFolder}/board.json`;
             if (!await adapter.exists(path)) {
+                this._invalidBoardJson = false;
                 this._activeProject.corkboardPositions = {};
                 return;
             }
@@ -3536,15 +3579,16 @@ export class SceneManager implements ISceneStore {
                     positions[key] = entry;
                 }
             }
+            this._invalidBoardJson = false;
             this._activeProject.corkboardPositions = positions;
         } catch {
-            if (this._activeProject) this._activeProject.corkboardPositions = {};
+            this._invalidBoardJson = true;
         }
     }
 
     /** Persist corkboard positions to System/board.json */
     async setCorkboardPositions(positions: Record<string, { x: number; y: number; z?: number; w?: number; h?: number }>): Promise<void> {
-        if (!this._activeProject) return;
+        if (!this._activeProject || this._invalidBoardJson) return;
 
         const cleaned: Record<string, { x: number; y: number; z?: number; w?: number; h?: number }> = {};
         for (const [path, pos] of Object.entries(positions)) {
@@ -3569,8 +3613,9 @@ export class SceneManager implements ISceneStore {
         try {
             const adapter = this.plugin.app.vault.adapter;
             const sysFolder = this.plugin.getProjectSystemFolder();
+            if (this.isDeletedProjectPath(sysFolder)) return;
             if (!await adapter.exists(sysFolder)) {
-                await this.plugin.app.vault.createFolder(sysFolder);
+                await this.ensureFolder(sysFolder);
             }
             await adapter.write(`${sysFolder}/board.json`, JSON.stringify({ corkboardPositions: cleaned }));
         } catch (e) {
@@ -4243,17 +4288,7 @@ export class SceneManager implements ISceneStore {
     }
 
     private async ensureFolder(folderPath: string): Promise<void> {
-        const normalized = normalizePath(folderPath);
-        const adapter = this.app.vault.adapter;
-        if (await adapter.exists(normalized)) return;
-        const parts = normalized.split('/').filter(Boolean);
-        let cur = '';
-        for (const part of parts) {
-            cur = cur ? `${cur}/${part}` : part;
-            if (!await adapter.exists(cur)) {
-                await this.app.vault.createFolder(cur);
-            }
-        }
+        await ensureVaultFolder(this.app, folderPath);
     }
 
     /**

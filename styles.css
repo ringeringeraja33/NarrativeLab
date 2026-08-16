@@ -7607,10 +7607,16 @@ button.library-profile-orientation-btn.is-active:hover,
 }
 
 /* Univer keeps previous context flyouts for 500ms. Hide retired siblings so
-   they cannot stack; do not target flyouts still measuring (visibility:hidden). */
+   they cannot stack. No transition — open/close must be instant. */
+[data-u-context-menu-submenu="true"] {
+    transition: none !important;
+    animation: none !important;
+}
+
 [data-u-context-menu-submenu="true"].narrativelab-univer-submenu-retired {
     visibility: hidden !important;
     pointer-events: none !important;
+    opacity: 0 !important;
 }
 
 [data-u-context-menu-submenu="true"].narrativelab-univer-submenu-live {

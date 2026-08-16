@@ -87,6 +87,41 @@ function innermostItemAt(items: Element[], x: number, y: number): Element | null
     return match;
 }
 
+function listUniverSubmenus(doc: Document): HTMLElement[] {
+    return Array.from(doc.querySelectorAll(UNIVER_SUBMENU_SELECTOR)).filter(isHtmlElement);
+}
+
+/**
+ * Univer waits 500ms after mouseleave before unmounting a flyout, so a new
+ * parent row's submenu stacks on the previous one. Hide leftovers immediately.
+ * `keepLatest` leaves the newest DOM node. `hideLoneVisible` also hides that
+ * node when it is already on screen and is the only flyout — that is the
+ * previous row's leftover, not a measuring frame for the row just entered.
+ */
+export function retireUniverSubmenus(
+    doc: Document,
+    options: { keepLatest?: boolean; hideLoneVisible?: boolean } = {},
+): void {
+    const keepLatest = options.keepLatest !== false;
+    const hideLoneVisible = options.hideLoneVisible === true;
+    const menus = listUniverSubmenus(doc);
+    const keep = keepLatest ? menus[menus.length - 1] : undefined;
+    for (const node of menus) {
+        const measuring = node.style.visibility === 'hidden'
+            && !node.classList.contains(LIVE_SUBMENU_CLASS);
+        const loneVisibleLeftover = hideLoneVisible
+            && node === keep
+            && menus.length === 1
+            && !measuring;
+        if (node === keep && !loneVisibleLeftover) {
+            node.classList.remove(RETIRED_SUBMENU_CLASS);
+            continue;
+        }
+        node.classList.add(RETIRED_SUBMENU_CLASS);
+        node.classList.remove(LIVE_SUBMENU_CLASS);
+    }
+}
+
 /**
  * While a Univer context menu is open, hold flyouts from pointer geometry so
  * the sheet canvas cannot steal the hover path. No-ops when no popup exists.
@@ -111,16 +146,21 @@ export function installUniverContextMenuHoverAssist(doc: Document): () => void {
         );
 
         if (overItem && overItem !== activeItem) {
+            // Close the previous row's flyout now — do not wait for Univer's 500ms.
+            // Keep the newest node in case this row already mounted its flyout.
+            retireUniverSubmenus(doc, { keepLatest: true, hideLoneVisible: true });
             // Native hover already reached this row — do not re-fire mouseenter
             // (Univer resets pointer-events:none on every parent enter).
             if (!target || !overItem.contains(target)) dispatchEnter(overItem);
             activeItem = overItem;
-        } else if (overItem) {
+            return;
+        }
+        if (overItem) {
             activeItem = overItem;
         }
 
-        for (const node of Array.from(doc.querySelectorAll(UNIVER_SUBMENU_SELECTOR))) {
-            if (!isHtmlElement(node) || node.classList.contains(RETIRED_SUBMENU_CLASS)) continue;
+        for (const node of listUniverSubmenus(doc)) {
+            if (node.classList.contains(RETIRED_SUBMENU_CLASS)) continue;
             revealUniverSubmenu(node);
             const submenuRect = node.getBoundingClientRect();
             const parentRect = activeItem?.getBoundingClientRect();

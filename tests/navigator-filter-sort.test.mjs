@@ -22,3 +22,13 @@ test('navigator filter and sort apply to the project/series tree', () => {
     assert.match(i18nViews, /'Filter projects & scenes…':\s*'筛选项目与场景…'/);
     assert.match(i18nViews, /'No projects or scenes match the current filter\.'/);
 });
+
+test('series-nested project folders indent one step past the project row', () => {
+    assert.match(navigatorView, /this\.renderActiveProjectContents\(node\.body, depth \+ 1\)/);
+    assert.match(navigatorView, /private renderActiveProjectContents\(parent: HTMLElement, folderDepth: number\)/);
+    assert.match(navigatorView, /this\.renderNotesFolder\(parent, folderDepth\)/);
+    assert.match(navigatorView, /this\.renderScenesFolder\(parent, folderDepth\)/);
+    assert.match(navigatorView, /this\.renderResearchFolder\(parent, folderDepth\)/);
+    assert.match(navigatorView, /this\.renderPlotlinesFolder\(scenesNode\.body, draftScenes, folderDepth \+ 1\)/);
+    assert.doesNotMatch(navigatorView, /depth: 1,\s*cls: 'sl-nav-primary-folder'/);
+});

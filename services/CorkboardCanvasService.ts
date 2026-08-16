@@ -1,5 +1,6 @@
 
 import { App, TFile, normalizePath } from 'obsidian';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 import {
     deriveProjectFoldersFromFilePath,
 } from '../models/StoryLineProject';
@@ -207,32 +208,46 @@ export class CorkboardCanvasService {
     async ensureFolderFor(path: string): Promise<void> {
         const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
         if (!dir) return;
-        const adapter = this.app.vault.adapter;
-        if (!(await adapter.exists(dir))) {
-            await this.app.vault.createFolder(dir).catch(() => undefined);
+        await ensureVaultFolder(this.app, dir);
+    }
+
+    private canvasWeight(data: CorkboardCanvasData | null | undefined): number {
+        return (data?.nodes?.length ?? 0) + (data?.edges?.length ?? 0);
+    }
+
+    private parseCanvasText(rawText: string): CorkboardCanvasData {
+        const raw: unknown = JSON.parse(rawText);
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            throw new Error('Canvas root must be a JSON object.');
         }
+        const record = raw as Record<string, unknown>;
+        if (!Array.isArray(record.nodes) || !Array.isArray(record.edges)) {
+            throw new Error('Canvas must contain nodes and edges arrays.');
+        }
+        if (!record.nodes.every(isCanvasNode) || !record.edges.every(isCanvasEdge)) {
+            throw new Error('Canvas contains malformed nodes or edges.');
+        }
+        return { nodes: record.nodes, edges: record.edges };
     }
 
     async readCanvas(path: string): Promise<CorkboardCanvasData> {
         const file = this.app.vault.getAbstractFileByPath(path);
-        if (!(file instanceof TFile)) {
-            return { nodes: [], edges: [] };
+        let rawText: string | null = null;
+        try {
+            if (file instanceof TFile) {
+                rawText = await this.app.vault.read(file);
+            } else if (await this.app.vault.adapter.exists(path)) {
+                rawText = await this.app.vault.adapter.read(path);
+            } else {
+                return { nodes: [], edges: [] };
+            }
+        } catch (error) {
+            const wrapped = new Error(`Could not read corkboard Canvas "${path}". The original file was not changed.`);
+            (wrapped as Error & { cause?: unknown }).cause = error;
+            throw wrapped;
         }
         try {
-            const raw: unknown = JSON.parse(await this.app.vault.read(file));
-            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-                throw new Error('Canvas root must be a JSON object.');
-            }
-            const record = raw as Record<string, unknown>;
-            if (!Array.isArray(record.nodes) || !Array.isArray(record.edges)) {
-                throw new Error('Canvas must contain nodes and edges arrays.');
-            }
-            if (!record.nodes.every(isCanvasNode) || !record.edges.every(isCanvasEdge)) {
-                throw new Error('Canvas contains malformed nodes or edges.');
-            }
-            const nodes = record.nodes;
-            const edges = record.edges;
-            return { nodes, edges };
+            return this.parseCanvasText(rawText);
         } catch (error) {
             const wrapped = new Error(`Could not read corkboard Canvas "${path}". The original file was not changed.`);
             (wrapped as Error & { cause?: unknown }).cause = error;
@@ -240,35 +255,53 @@ export class CorkboardCanvasService {
         }
     }
 
-    async writeCanvas(path: string, data: CorkboardCanvasData): Promise<TFile> {
+    async writeCanvas(path: string, data: CorkboardCanvasData): Promise<TFile | null> {
         return this.enqueueWrite(path, async () => {
             await this.ensureFolderFor(path);
             const payload = canonicalizeCanvasPayload(data);
             const existing = this.app.vault.getAbstractFileByPath(path);
-            if (existing instanceof TFile) {
+            const existsOnDisk = existing instanceof TFile || await this.app.vault.adapter.exists(path);
+            const indexedOrNull = (): TFile | null => {
+                const file = this.app.vault.getAbstractFileByPath(path);
+                return file instanceof TFile ? file : null;
+            };
+
+            if (existsOnDisk) {
                 try {
-                    const current = await this.app.vault.read(existing);
-                    if (current === payload) return existing;
-                    const parsed = JSON.parse(current) as CorkboardCanvasData;
-                    if (canonicalizeCanvasPayload({
-                        nodes: Array.isArray(parsed?.nodes) ? parsed.nodes : [],
-                        edges: Array.isArray(parsed?.edges) ? parsed.edges : [],
-                    }) === payload) {
-                        return existing;
+                    const currentText = existing instanceof TFile
+                        ? await this.app.vault.read(existing)
+                        : await this.app.vault.adapter.read(path);
+                    if (currentText === payload) return existing instanceof TFile ? existing : indexedOrNull();
+                    const parsed = this.parseCanvasText(currentText);
+                    if (canonicalizeCanvasPayload(parsed) === payload) {
+                        return existing instanceof TFile ? existing : indexedOrNull();
+                    }
+                    if (this.canvasWeight(parsed) > 0 && this.canvasWeight(data) === 0) {
+                        return existing instanceof TFile ? existing : indexedOrNull();
                     }
                 } catch (error) {
                     const wrapped = new Error(`Could not verify corkboard Canvas "${path}". The original file was not changed.`);
                     (wrapped as Error & { cause?: unknown }).cause = error;
                     throw wrapped;
                 }
+                if (existing instanceof TFile) {
+                    const suppress = this.plugin.beginSuppressVaultRefresh?.(path, 2000);
+                    try {
+                        await this.modifyWithRetry(existing, payload);
+                    } finally {
+                        suppress?.();
+                    }
+                    return existing;
+                }
                 const suppress = this.plugin.beginSuppressVaultRefresh?.(path, 2000);
                 try {
-                    await this.modifyWithRetry(existing, payload);
+                    await this.app.vault.adapter.write(path, payload);
                 } finally {
                     suppress?.();
                 }
-                return existing;
+                return indexedOrNull();
             }
+
             const suppress = this.plugin.beginSuppressVaultRefresh?.(path, 2000);
             try {
                 return await this.app.vault.create(path, payload);
@@ -335,7 +368,7 @@ export class CorkboardCanvasService {
         positions: Record<string, CorkboardPos>,
         base?: CorkboardCanvasData | null,
         projectFilePath?: string | null,
-    ): Promise<TFile> {
+    ): Promise<TFile | null> {
         const existing = base ?? await this.readCanvas(canvasPath);
         const visibleSet = new Set(visiblePaths.map(p => normalizePath(p)));
         const projectFile = projectFilePath ?? null;

@@ -56,7 +56,7 @@ function injectUniverCss(activeDocument: Document): void {
     activeDocument.head.appendChild(style);
 }
 
-import { installUniverContextMenuHoverAssist } from '../utils/univerContextMenu';
+import { installUniverContextMenuHoverAssist, retireUniverSubmenus } from '../utils/univerContextMenu';
 import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
 import { cellHasNoteLink, getPlotGridCellAtUniverCoords } from '../utils/plotGridCellEdit';
 import {
@@ -266,15 +266,11 @@ function isUniverContextMenuOpen(univer: Univer, doc: Document): boolean {
         || !!doc.querySelector(UNIVER_CONTEXT_SUBMENU_SELECTOR);
 }
 
-/** Hide leftover flyouts that Univer keeps for 500ms. Never touch a still-hidden
- * positioning frame — that is the menu the user just hovered and must appear. */
+/** Hide leftover flyouts immediately. Univer keeps the previous one for 500ms
+ * even after a new parent row opens its own flyout (including a still-hidden
+ * measuring frame). Keep only the newest DOM node. */
 function retireOlderVisibleUniverSubmenus(doc: Document): void {
-    const menus = Array.from(doc.querySelectorAll(UNIVER_CONTEXT_SUBMENU_SELECTOR))
-        .filter((node): node is HTMLElement => node.instanceOf(HTMLElement));
-    const visible = menus.filter(node => node.style.visibility !== 'hidden');
-    for (const node of visible.slice(0, -1)) {
-        node.classList.add('narrativelab-univer-submenu-retired');
-    }
+    retireUniverSubmenus(doc, { keepLatest: true });
 }
 
 /** Univer measures submenu position on one rAF and only retries on scroll/resize.

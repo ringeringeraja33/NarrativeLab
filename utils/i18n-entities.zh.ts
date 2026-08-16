@@ -703,6 +703,7 @@ export const ENTITIES_ZH: Record<string, string> = {
     '{count} day': '{count} 天',
     '{count} days': '{count} 天',
     'Sprint complete: {words} words in {mins} min ({wpm} wpm)': '冲刺完成：{mins} 分钟写了 {words} 字（{wpm} 字/分钟）',
+    'Cannot start a sprint until the project word count is ready.': '项目字数尚未就绪，无法开始冲刺。',
     'Today: {current} / {goal} words ({pct}%)': '今日：{current} / {goal} 字（{pct}%）',
     '{date}: {words} words': '{date}：{words} 字',
     '{date}: {words} words revised': '{date}：修订 {words} 字',

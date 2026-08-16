@@ -35,7 +35,8 @@ test('first project load restores all original Storyline presets once', async ()
     assert.match(source, /enabled\.add\(preset\.id\)/);
     assert.match(source, /hasProfilePage: true/);
     assert.match(main, /seedStorylinePresetCategories\(this\)/);
-    assert.match(main, /presetsSeeded \? \{ createMissingRegistered: true \} : \{\}/);
+    assert.match(main, /\(presetsSeeded \|\| migratingLibraryCategories\) \? \{ createMissingRegistered: true \} : \{\}/);
+    assert.match(main, /\(presetsSeeded \|\| !stored\) \? \{ createMissingRegistered: true \} : \{\}/);
 });
 
 test('hiding a Library category does not let folder adopt resurrect the tab', async () => {
@@ -89,6 +90,27 @@ test('profile layout maps horizontal to columns and vertical to stacked sections
     assert.match(location, /horizontalProfile \? ' character-detail-board-track' : ' character-detail-vertical-track'/);
     assert.match(codex, /text: t\(cat\.title\)/);
     assert.match(location, /text: t\(category\.title\)/);
+});
+
+test('slash and blank new-project locations resolve to the vault root', async () => {
+    const vaultRelativeFolderPath = (path) =>
+        String(path ?? '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').trim();
+    assert.equal(vaultRelativeFolderPath('/'), '');
+    assert.equal(vaultRelativeFolderPath(''), '');
+    assert.equal(vaultRelativeFolderPath(null), '');
+    assert.equal(vaultRelativeFolderPath('Projects/Books'), 'Projects/Books');
+
+    const [main, sceneManager, vaultFolders] = await Promise.all([
+        readFile('main.ts', 'utf8'),
+        readFile('services/SceneManager.ts', 'utf8'),
+        readFile('utils/vaultFolders.ts', 'utf8'),
+    ]);
+    assert.match(vaultFolders, /export function vaultRelativeFolderPath/);
+    assert.match(main, /normalizedQuery === '\/'/);
+    assert.match(main, /choice\.value === null \|\| choice\.value === ''/);
+    assert.match(main, /locationSuggest\?\.close\(\)/);
+    assert.match(main, /typed === '\/' \? '' : typed/);
+    assert.match(sceneManager, /vaultRelativeFolderPath\(customBasePath \?\? this\.plugin\.settings\.storyLineRoot\)/);
 });
 
 test('new project paths use Library rather than Codex', () => {

@@ -77,6 +77,75 @@ test('unreadable corkboard Canvas files abort without being rewritten', () => {
     assert.doesNotMatch(corkboard, /Fall through and rewrite if current content is unreadable/);
     assert.doesNotMatch(corkboard, /If exactly one \.canvas remains/);
     assert.match(corkboard, /Never adopt an arbitrary lone \.canvas/);
+    assert.match(corkboard, /adapter\.exists\(path\)/);
+    assert.match(corkboard, /adapter\.read\(path\)/);
+    assert.match(corkboard, /canvasWeight\(parsed\) > 0 && this\.canvasWeight\(data\) === 0/);
+    assert.match(corkboard, /ensureVaultFolder\(this\.app, dir\)/);
+});
+
+test('unreadable board.json is not cleared then autosaved empty', () => {
+    const load = sceneManager.slice(
+        sceneManager.indexOf('async loadCorkboardPositions()'),
+        sceneManager.indexOf('async setCorkboardPositions('),
+    );
+    const save = sceneManager.slice(
+        sceneManager.indexOf('async setCorkboardPositions('),
+        sceneManager.indexOf('async saveProjectFrontmatter('),
+    );
+    assert.match(load, /this\._invalidBoardJson = true/);
+    assert.doesNotMatch(load, /catch \{\s*(?:if \(this\._activeProject\) )?this\._activeProject\.corkboardPositions = \{\}/);
+    assert.match(save, /this\._invalidBoardJson/);
+    assert.match(save, /isDeletedProjectPath\(sysFolder\)/);
+});
+
+test('unreadable field-templates.json cannot be overwritten by a later save', async () => {
+    const fieldTemplates = await readFile(new URL('../services/FieldTemplateService.ts', import.meta.url), 'utf8');
+    const load = fieldTemplates.slice(
+        fieldTemplates.indexOf('async load()'),
+        fieldTemplates.indexOf('async save()'),
+    );
+    const save = fieldTemplates.slice(fieldTemplates.indexOf('async save()'));
+    assert.match(load, /this\._invalidFile = true/);
+    assert.doesNotMatch(load, /this\.templates = \[\];\s*this\.sectionOrders = \{\};\s*\}/);
+    assert.match(save, /if \(this\._invalidFile\) return/);
+    assert.match(save, /isTombstonedProjectPath\(systemFolder\)/);
+});
+
+test('Library reconcile cannot trash custom category folders after a local move', () => {
+    assert.match(libraryCategorySync, /Folders are the source of truth/);
+    assert.match(libraryCategorySync, /isLeftoverSeedLibraryFolder/);
+    assert.match(libraryCategorySync, /isLibraryCategoryFolderEmpty\(child\)/);
+    assert.doesNotMatch(libraryCategorySync, /Orphan folder — keep notes as Uncategorized/);
+    assert.match(libraryCategorySync, /snapshot\.names\.size === 0/);
+    assert.match(mainTs, /presetsSeeded \|\| migratingLibraryCategories/);
+    assert.match(mainTs, /presetsSeeded \|\| !stored/);
+    assert.match(mainTs, /_invalidSystemJsonPaths\.has\(catPath\)/);
+});
+
+test('creating a project cannot wipe leftover System JSON with empty objects', () => {
+    const create = sceneManager.slice(
+        sceneManager.indexOf('async createProject('),
+        sceneManager.indexOf('new Notice(t(\'Project "{title}" created\''),
+    );
+    assert.match(create, /if \(await this\.app\.vault\.adapter\.exists\(vfPath\)\) continue/);
+    assert.doesNotMatch(create, /vault\.modify\(existing, contents\)/);
+});
+
+test('legacy plotgrid migration will not overwrite an unreadable System file', () => {
+    const migrate = mainTs.slice(
+        mainTs.indexOf('Phase 3: migrate per-project data'),
+        mainTs.indexOf('Migration: plotlines write failed'),
+    );
+    assert.match(migrate, /isDeletedProjectPath\(sysFolder\)/);
+    assert.match(migrate, /catch \{ existingHasData = true; \}/);
+    assert.doesNotMatch(migrate, /unreadable — allow overwrite/);
+});
+
+test('System JSON saves refuse an empty stats ledger over a real history', () => {
+    assert.match(mainTs, /shouldRefuseSparseSystemJsonWrite/);
+    assert.match(mainTs, /statsPayloadHistorySize/);
+    assert.match(mainTs, /Refusing to overwrite \$\{filename\} with an empty payload/);
+    assert.match(mainTs, /await this\.ensureVaultFolder\(systemFolder\)/);
 });
 
 test('corkboard parking cannot reuse an old selection', () => {
@@ -113,13 +182,27 @@ test('corkboard membership changes force remount instead of stale live Canvas', 
     assert.doesNotMatch(boardView, /Obsidian reloads file nodes/);
 });
 
+test('corkboard scene toggle applies live membership without remount', () => {
+    assert.match(boardView, /applyCorkboardSceneVisibility/);
+    assert.match(boardView, /applyLiveCorkboardMembership/);
+    assert.match(boardView, /addLiveCorkboardMissing/);
+    assert.match(boardView, /createFileNode/);
+    const toggleAt = boardView.indexOf("text: t('Scenes')");
+    assert.ok(toggleAt >= 0);
+    const toggleBlock = boardView.slice(toggleAt, toggleAt + 800);
+    assert.match(toggleBlock, /applyCorkboardSceneVisibility\(\)/);
+    assert.doesNotMatch(toggleBlock, /await this\.plugin\.saveSettings/);
+    assert.doesNotMatch(toggleBlock, /corkboardCanvasFilePath = null/);
+    assert.doesNotMatch(toggleBlock, /refreshBoard\(\)/);
+});
+
 test('corkboard canvas writes are queued and retried on Windows locks', () => {
     assert.match(corkboard, /enqueueWrite/);
     assert.match(corkboard, /modifyWithRetry/);
     assert.match(corkboard, /attempt < 8/);
 });
 
-test('series migrations journal transfers and roll back every move path', () => {
+test('series migrations journal transfers and roll back every move path', async () => {
     assert.match(seriesManager, /interface LibraryTransferJournal/);
     assert.match(seriesManager, /rollbackMovedLibraryFiles/);
     assert.match(seriesManager, /rollbackCopiedLibraryFiles/);
@@ -130,6 +213,34 @@ test('series migrations journal transfers and roll back every move path', () => 
     assert.doesNotMatch(seriesManager, /skip unreadable/);
     assert.doesNotMatch(seriesManager, /moveFolderRecursive/);
     assert.match(seriesManager, /rolling back series dissolve/);
+    assert.match(seriesManager, /loadProjectFromPath/);
+    assert.match(seriesManager, /resolveMovedProject/);
+    assert.match(seriesManager, /readAlwaysUpdateLinks/);
+    assert.match(seriesManager, /alwaysUpdate === false/);
+    assert.match(seriesManager, /adapter\.rename\(src, dest\)/);
+    const vaultFolders = await readFile(new URL('../utils/vaultFolders.ts', import.meta.url), 'utf8');
+    assert.match(vaultFolders, /export function isUntrackedLibraryNoise/);
+    assert.match(vaultFolders, /export function isProjectScopedLibraryArtifact/);
+    assert.match(seriesManager, /isProjectScopedLibraryArtifact\(fileName\)/);
+    assert.match(seriesManager, /isUntrackedLibraryNoise\(fileName\)/);
+    assert.match(seriesManager, /isUntrackedLibraryNoise\(name\)/);
+    assert.match(seriesManager, /name\.startsWith\('\.'\)/);
+    assert.match(seriesManager, /adapter\.rmdir\(folder, false\)/);
+    assert.doesNotMatch(seriesManager, /if \(!\(file instanceof TFile\)\) \{\s*throw new Error\(t\('Could not find the indexed Library file/);
+    assert.match(sceneManager, /async loadProjectFromPath/);
+});
+
+test('adding a book to a series can create a new project in place', () => {
+    const addFn = mainTs.slice(
+        mainTs.indexOf('private async addBookToSeries'),
+        mainTs.indexOf('/* eslint-enable'),
+    );
+    assert.match(addFn, /NEW_PROJECT_VALUE/);
+    assert.match(addFn, /t\('New project'\)/);
+    assert.match(addFn, /createProjectInSeries\(folder, newTitle\.trim\(\)\)/);
+    assert.doesNotMatch(addFn, /No standalone projects found to add/);
+    assert.match(seriesManager, /async createProjectInSeries\(/);
+    assert.match(seriesManager, /createProject\(projectTitle, description, seriesFolder\)/);
 });
 
 test('series convert and dissolve open stacked child modals after the click settles', () => {
@@ -143,6 +254,9 @@ test('series convert and dissolve open stacked child modals after the click sett
     );
     assert.match(convertFn, /openStackedModal\(modal\)/);
     assert.doesNotMatch(convertFn, /modal\.open\(\)/);
+    assert.match(convertFn, /createSeriesFromProject\(seriesName\.trim\(\), project\)/);
+    assert.doesNotMatch(convertFn, /setActiveProject\(project\)/);
+    assert.match(convertFn, /setValue\(seriesName\)/);
     const dissolveFn = mainTs.slice(
         mainTs.indexOf('private async dissolveSeries'),
         mainTs.indexOf('private async renameSeries'),
@@ -309,6 +423,9 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(save, /ensureVaultFolder/);
     assert.match(save, /projectFilePath\?:/);
     assert.match(save, /_reportedInvalidPlotGridXlsxPaths\.has\(path\)/);
+    assert.match(save, /shouldRefuseEmptyPlotGridWrite/);
+    assert.match(mainTs, /existingPlotGridFilledCount/);
+    assert.match(mainTs, /plotGridXlsxExists/);
     assert.equal((save.match(/new Notice\(/g) || []).length, 1, 'corrupt workbook warning is deduplicated');
     assert.match(mainTs, /getBasePath\?\./);
 });

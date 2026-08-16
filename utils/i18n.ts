@@ -960,6 +960,8 @@ What disrupts the status quo?`]: `## 钩子
     'Cannot determine the series folder.': '无法确定系列文件夹。',
     'Invalid series metadata.': '系列元数据无效。',
     'Series migration requires “Automatically update internal links”. Enable it under Settings → Files & Links, then try again.': '迁移到系列前，需在“设置 → 文件与链接”中启用“自动更新内部链接”，然后重试。',
+    'Before moving a project into a series, enable “Automatically update internal links” under Settings → Files & Links.': '将项目移入系列前，建议在“设置 → 文件与链接”中启用“自动更新内部链接”。',
+    '{title} Series': '{title} 系列',
     'Cannot move "{source}" into its own subfolder "{destination}". Choose a different destination name.': '不能将“{source}”移入其自身的子文件夹“{destination}”。请选择其他目标名称。',
     'File not found': '未找到文件',
     'No saved content is available to restore this file.': '没有可用于恢复此文件的已保存内容。',

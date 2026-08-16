@@ -1,5 +1,18 @@
 # NarrativeLab — Changelog
 
+## 1.2.1
+
+- Moving or deleting a project folder no longer recreates empty `Library` / `System` / `Scenes` trees at the vacated path. Folder creates go through a shared helper that honors that tombstone.
+- Custom Library category folders are no longer treated as orphans and trashed after a local project move.
+- Adding a book to a series no longer fails because `datasheet.xlsx` or `library.base` already exist — those stay with the book.
+- The add-to-series dialog can create a new project in place instead of only picking an existing standalone book.
+- Creating a project at `/` (vault root / default location) no longer lands inside another project or series folder.
+- Series convert/dissolve ignore Finder junk such as `.DS_Store`.
+- Unreadable `board.json`, `field-templates.json`, and `plotgrid.json` are no longer overwritten by empty autosaves or legacy migration.
+- Writing sprints will not start until the project word count is ready.
+- Concept Grid right-click submenus no longer stack after leaving a row.
+- Navigator indents series → project → Notes/Scenes/Research correctly.
+
 ## 1.2.0
 
 - Switching projects isolates session state that used to leak between books: link-scanner lookups, Concept Grid mention cache, undo, setup/payoff stems, story-graph filters, navigator search/selection, manuscript cursor restore, floating sticky notes, and scene inspector / notes / synopsis sidebars.

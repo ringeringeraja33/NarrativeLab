@@ -10,6 +10,7 @@
 import { App, Modal, TFile, Notice, FuzzySuggestModal, normalizePath } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { t } from '../utils/i18n';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 
 function normalizeImagePath(imagePath: string): string {
     let normalized = imagePath.trim();
@@ -173,12 +174,8 @@ export function resolveImagePath(app: App, imagePath: string): string {
 }
 
 async function ensureParentFolder(app: App, filePath: string): Promise<void> {
-    const parts = normalizePath(filePath).split('/').slice(0, -1);
-    let current = '';
-    for (const part of parts) {
-        current = current ? `${current}/${part}` : part;
-        if (!await app.vault.adapter.exists(current)) await app.vault.createFolder(current);
-    }
+    const parent = normalizePath(filePath).split('/').slice(0, -1).join('/');
+    if (parent) await ensureVaultFolder(app, parent);
 }
 
 async function uniquePathInFolder(app: App, folder: string, fileName: string): Promise<string> {

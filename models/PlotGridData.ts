@@ -275,6 +275,20 @@ export function isConceptGridDocumentEmpty(doc: ConceptGridDocument): boolean {
     return countConceptGridFilledCells(doc) === 0;
 }
 
+/**
+ * Refuse writing a default/empty in-memory grid over an existing workbook.
+ * Reset Grid is the only caller that may pass allowEmptyOverwrite.
+ */
+export function shouldRefuseEmptyPlotGridWrite(
+    incoming: ConceptGridDocument,
+    options: { allowEmptyOverwrite?: boolean; existed: boolean; existingFilledCells?: number },
+): boolean {
+    if (options.allowEmptyOverwrite || !options.existed) return false;
+    if (isConceptGridDocumentEmpty(incoming)) return true;
+    const existingFilled = options.existingFilledCells ?? 0;
+    return countConceptGridFilledCells(incoming) === 0 && existingFilled > 0;
+}
+
 export function cloneConceptGridPage(page: ConceptGridPage, title?: string): ConceptGridPage {
     const cells: Record<string, CellData> = {};
     for (const [key, cell] of Object.entries(page.cells || {})) {

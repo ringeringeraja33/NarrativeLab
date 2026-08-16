@@ -235,10 +235,12 @@ async function trashBasePath(plugin: SceneCardsPlugin, path: string | null): Pro
 }
 
 async function ensureVaultFolder(plugin: SceneCardsPlugin, folderPath: string): Promise<void> {
+    if (plugin.sceneManager.isDeletedProjectPath(folderPath)) return;
     const parts = normalizePath(folderPath).split('/').filter(Boolean);
     let current = '';
     for (const part of parts) {
         current = current ? `${current}/${part}` : part;
+        if (plugin.sceneManager.isDeletedProjectPath(current)) return;
         if (!plugin.app.vault.getAbstractFileByPath(current)) {
             await plugin.app.vault.createFolder(current);
         }

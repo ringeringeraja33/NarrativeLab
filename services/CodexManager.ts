@@ -11,6 +11,7 @@ import {
 } from '../models/Codex';
 import { collectMarkdownFiles, isExcalidrawFilePath, isLibraryEntityMarkdownFile, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 
 /**
  * Manages generic Codex entries — loading, saving, creating, and deleting
@@ -578,9 +579,7 @@ export class CodexManager {
     }
 
     private async ensureFolder(folderPath: string): Promise<void> {
-        const normalized = normalizePath(folderPath);
-        if (this.app.vault.getAbstractFileByPath(normalized)) return;
-        await this.app.vault.createFolder(normalized);
+        await ensureVaultFolder(this.app, folderPath);
     }
 }
 /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

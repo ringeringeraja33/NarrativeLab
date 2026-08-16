@@ -15,6 +15,7 @@
 import { App, TFile, TFolder, normalizePath, Notice, type DataAdapter } from 'obsidian';
 import { tokenizeWords, DEFAULT_STORYLINE_LOCALE, type StoryLineLocale } from '../utils/locale';
 import { t } from '../utils/i18n';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 
 export interface SceneSnapshot {
     /** Vault-relative path of the snapshot file */
@@ -210,9 +211,7 @@ export class SnapshotManager {
     }
 
     private async ensureFolder(path: string): Promise<void> {
-        if (!this.app.vault.getAbstractFileByPath(path)) {
-            await this.app.vault.createFolder(path);
-        }
+        await ensureVaultFolder(this.app, path);
     }
 
     /**

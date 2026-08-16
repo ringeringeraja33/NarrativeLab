@@ -4,6 +4,7 @@ import { ResearchPost, ResearchType } from '../models/Research';
 import type SceneCardsPlugin from '../main';
 import { tokenizeWords, DEFAULT_STORYLINE_LOCALE } from '../utils/locale';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 
 /**
  * ResearchManager — CRUD, indexing, and search for research posts.
@@ -546,9 +547,7 @@ export class ResearchManager {
     // ────────────────────────────────────
 
     private async ensureFolder(path: string): Promise<void> {
-        if (!this.app.vault.getAbstractFileByPath(path)) {
-            await this.app.vault.createFolder(path);
-        }
+        await ensureVaultFolder(this.app, path);
     }
 }
 /* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument -- end of file-wide suppression block opened at line 1 */

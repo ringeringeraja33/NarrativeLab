@@ -3,6 +3,7 @@
  * Used by CharacterView and Narrative Canvas (createCodexCanvas host override).
  */
 import { App, TFile, normalizePath } from 'obsidian';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 import {
     DEFAULT_CANVAS_FOLDER,
     LEGACY_NCANVAS_FOLDER,
@@ -70,17 +71,10 @@ export function getProjectRootFromLibraryNote(notePath: string): string {
     return '';
 }
 
-async function ensureVaultFolder(app: App, folder: string): Promise<void> {
+async function ensureProjectCanvasFolder(app: App, folder: string): Promise<void> {
     const normalized = normalizeVaultPath(folder);
     if (!normalized) return;
-    const parts = normalized.split('/').filter(Boolean);
-    let cursor = '';
-    for (const part of parts) {
-        cursor = cursor ? `${cursor}/${part}` : part;
-        if (!app.vault.getAbstractFileByPath(cursor)) {
-            await app.vault.createFolder(cursor);
-        }
-    }
+    await ensureVaultFolder(app, normalized);
 }
 
 async function uniquePath(app: App, path: string): Promise<string> {
@@ -156,7 +150,7 @@ export class LibraryEntityBoardService {
         if (!folder) {
             throw new Error('Could not resolve the project Canvas folder for this entry.');
         }
-        await ensureVaultFolder(this.app, folder);
+        await ensureProjectCanvasFolder(this.app, folder);
         const canvasPath = await uniquePath(
             this.app,
             joinVaultPath(folder, `${sanitizeFileName(name) || 'Board'}.canvas`),

@@ -58,17 +58,22 @@ test('vertical heatmap is weeks-as-rows Monday through Sunday', () => {
     const weeks = buildVerticalHeatmapWeeks({ '2026-08-16': 120 }, 4, 1000, today);
     assert.equal(weeks.length, 4);
     assert.equal(weeks[0].days.length, 7);
-    assert.equal(weeks[3].days[6].date, '2026-08-16');
-    assert.equal(weeks[3].days[6].words, 120);
-    assert.equal(weeks[3].days[6].level, 1);
-    assert.equal(weeks[3].days[6].inRange, true);
+    assert.equal(weeks[0].start, '2026-08-10');
+    assert.equal(weeks[0].days[6].date, '2026-08-16');
+    assert.equal(weeks[0].days[6].words, 120);
+    assert.equal(weeks[0].days[6].level, 1);
+    assert.equal(weeks[0].days[6].inRange, true);
+    assert.equal(weeks[3].start, '2026-07-20');
 });
 
 test('year heatmap stays inside the requested calendar year', () => {
     const weeks = buildYearHeatmapWeeks({ '2026-01-01': 50 }, 2026, 100, new Date(2026, 0, 2));
     assert.ok(weeks.length >= 52);
-    const firstInYear = weeks[0].days.find(d => d.inRange);
-    assert.equal(firstInYear.date, '2026-01-01');
+    const jan1 = weeks.flatMap(week => week.days).find(day => day.date === '2026-01-01');
+    assert.equal(jan1?.words, 50);
+    assert.equal(jan1?.inRange, true);
+    assert.ok(weeks[weeks.length - 1].days.some(day => day.date === '2026-01-01'));
+    assert.ok(weeks[0].start >= '2026-12-21');
 });
 
 test('parseWritingTrackerFile keeps dated totals only', () => {
@@ -144,4 +149,23 @@ test('importing another project ledger replaces history and clears the session',
     tracker.startSession(2000);
     assert.equal(tracker.flushSession(2100).words, 100);
     assert.equal(tracker.getTodayWords(), 140);
+});
+
+test('sprints refuse a zero or missing word-count baseline', () => {
+    const tracker = new WritingTracker();
+    assert.equal(tracker.startSprint(0), false);
+    assert.equal(tracker.startSprint(-3), false);
+    assert.equal(tracker.startSprint(13408), true);
+    assert.match(panel, /if \(!tracker\.startSprint\(totalNow\)\)/);
+    assert.match(panel, /Cannot start a sprint until the project word count is ready/);
+});
+
+test('revisions ignore empty-index recounts and only measure positive totals', () => {
+    const tracker = new WritingTracker();
+    tracker.startSession(13408);
+    assert.equal(tracker.flushSession(0).revisions, 0);
+    assert.equal(tracker.getTodayRevisions(), 0);
+    assert.equal(tracker.flushSession(13408).revisions, 0);
+    assert.equal(tracker.flushSession(13420).revisions, 12);
+    assert.equal(tracker.getTodayRevisions(), 12);
 });

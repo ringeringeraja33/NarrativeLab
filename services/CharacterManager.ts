@@ -4,6 +4,7 @@ import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } f
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceString } from '../utils/narrow';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 
 /**
@@ -545,8 +546,7 @@ export class CharacterManager {
     }
 
     private async ensureFolder(folderPath: string): Promise<void> {
-        if (this.app.vault.getAbstractFileByPath(folderPath)) return;
-        await this.app.vault.createFolder(folderPath);
+        await ensureVaultFolder(this.app, folderPath);
     }
 
     private parseGallery(value: unknown): Array<{ path: string; caption: string }> | undefined {

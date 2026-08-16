@@ -12,6 +12,7 @@ import {
 } from '../models/StoryLineProject';
 import { invalidateImagePathCache } from '../components/ImagePicker';
 import { isExcalidrawFilePath } from './EntityFileCache';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 
 const MARKER_NAME = 'library-attachments-v1.json';
 const DEDUPE_MARKER_NAME = 'library-attachments-dedupe-v1.json';
@@ -146,7 +147,7 @@ function categoryFolderFromLibraryPath(filePath: string, libraryRoot: string): s
 
 async function uniqueDestPath(plugin: SceneCardsPlugin, folder: string, fileName: string): Promise<string> {
     const adapter = plugin.app.vault.adapter;
-    await plugin.app.vault.createFolder(folder).catch(() => undefined);
+    await ensureVaultFolder(plugin.app, folder);
     let candidate = normalizePath(`${folder}/${fileName}`);
     if (!await adapter.exists(candidate)) return candidate;
     const dot = fileName.lastIndexOf('.');
@@ -275,6 +276,7 @@ async function dedupeProjectAttachments(
 ): Promise<boolean> {
     const folders = deriveProjectFoldersFromFilePath(project.filePath);
     const baseFolder = normalizePath(folders.baseFolder);
+    if (plugin.sceneManager.isDeletedProjectPath(baseFolder)) return false;
     const libraryRoot = normalizePath(project.codexFolder || folders.codexFolder);
     const systemFolder = normalizePath(`${baseFolder}/System`);
     const markerPath = normalizePath(`${systemFolder}/${DEDUPE_MARKER_NAME}`);
@@ -303,7 +305,7 @@ async function dedupeProjectAttachments(
     }
 
     if (candidates.length < 2) {
-        await plugin.app.vault.createFolder(systemFolder).catch(() => undefined);
+        await ensureVaultFolder(plugin.app, systemFolder);
         await adapter.write(markerPath, JSON.stringify({ deduped: true, removed: 0 }, null, 2));
         return false;
     }
@@ -403,7 +405,7 @@ async function dedupeProjectAttachments(
     }
 
     if (remap.size === 0) {
-        await plugin.app.vault.createFolder(systemFolder).catch(() => undefined);
+        await ensureVaultFolder(plugin.app, systemFolder);
         await adapter.write(markerPath, JSON.stringify({ deduped: true, removed: 0 }, null, 2));
         return false;
     }
@@ -430,7 +432,7 @@ async function dedupeProjectAttachments(
         }
     }
 
-    await plugin.app.vault.createFolder(systemFolder).catch(() => undefined);
+    await ensureVaultFolder(plugin.app, systemFolder);
     await adapter.write(markerPath, JSON.stringify({
         deduped: true,
         removed,
@@ -446,6 +448,7 @@ async function migrateProjectLibraryAttachments(
 ): Promise<boolean> {
     const folders = deriveProjectFoldersFromFilePath(project.filePath);
     const baseFolder = normalizePath(folders.baseFolder);
+    if (plugin.sceneManager.isDeletedProjectPath(baseFolder)) return false;
     const libraryRoot = normalizePath(project.codexFolder || folders.codexFolder);
     const systemFolder = normalizePath(`${baseFolder}/System`);
     const markerPath = normalizePath(`${systemFolder}/${MARKER_NAME}`);
@@ -460,7 +463,7 @@ async function migrateProjectLibraryAttachments(
 
     const libraryFolder = plugin.app.vault.getAbstractFileByPath(libraryRoot);
     if (!(libraryFolder instanceof TFolder)) {
-        await plugin.app.vault.createFolder(systemFolder).catch(() => undefined);
+        await ensureVaultFolder(plugin.app, systemFolder);
         await adapter.write(markerPath, JSON.stringify({ migrated: true, skipped: 'no-library' }, null, 2)).catch(() => undefined);
         return false;
     }
@@ -499,7 +502,7 @@ async function migrateProjectLibraryAttachments(
     }
 
     if (ownership.size === 0) {
-        await plugin.app.vault.createFolder(systemFolder).catch(() => undefined);
+        await ensureVaultFolder(plugin.app, systemFolder);
         await adapter.write(markerPath, JSON.stringify({ migrated: true, moved: 0 }, null, 2));
         return false;
     }
@@ -570,7 +573,7 @@ async function migrateProjectLibraryAttachments(
         if (next !== text) await plugin.app.vault.modify(file, next);
     }
 
-    await plugin.app.vault.createFolder(systemFolder).catch(() => undefined);
+    await ensureVaultFolder(plugin.app, systemFolder);
     await adapter.write(markerPath, JSON.stringify({
         migrated: true,
         moved,

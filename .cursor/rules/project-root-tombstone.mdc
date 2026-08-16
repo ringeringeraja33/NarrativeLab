@@ -1,0 +1,26 @@
+---
+description: Tombstone vacated project roots before any await; never recreate folders there
+alwaysApply: true
+---
+
+# Project root tombstone
+
+When a project folder is moved or deleted in the file explorer, mark the old root in `deletedProjectRoots` **before any `await`**. In-flight autosaves and `ensureFolder` must not recreate empty `Library` / `System` / `Scenes` at the vacated path.
+
+## Required
+
+- On move: `deletedProjectRoots.add(oldRoot)` first, rebase in-memory paths, then `deletedProjectRoots.delete(newRoot)`.
+- On delete: tombstone the whole project root, not just the manifest file.
+- Create project-tree folders only through `ensureVaultFolder` in `utils/vaultFolders.ts` (or a wrapper that calls it). That helper refuses tombstoned paths.
+- Do not call `vault.createFolder` on `Library`, `System`, `Scenes`, `Notes`, `Research`, or `Canvas` with a stale project path.
+
+```typescript
+// BAD — recreate empty folders at the old location
+await this.app.vault.createFolder(`${oldProject}/Library`);
+
+// GOOD — tombstone first, then only create under the live root
+this.deletedProjectRoots.add(from);
+await ensureVaultFolder(this.app, `${to}/Library`);
+```
+
+New folder-create helpers must honor `isDeletedProjectPath` / `isTombstonedProjectPath`. Do not remove the tombstone-before-await order in `handleProjectTreeFolderRename`.

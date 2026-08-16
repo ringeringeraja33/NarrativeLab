@@ -17,11 +17,12 @@ import { BOARD_VIEW_TYPE } from '../constants';
 import { cleanStickyNoteColor, resolveStickyNoteColors, resolveStickyNoteFontColor } from '../settings';
 import { attachTooltip } from '../components/Tooltip';
 import { resolveImagePath } from '../components/ImagePicker';
-import { CorkboardCanvasService, type CorkboardCanvasData, type CorkboardPos } from '../services/CorkboardCanvasService';
+import { CorkboardCanvasService, corkboardNodeIdForPath, type CorkboardCanvasData, type CorkboardPos } from '../services/CorkboardCanvasService';
 import type SceneCardsPlugin from '../main';
 import { compareActChapter, parseActChapterInput, getActDisplayLabel } from '../utils/actChapter';
 import { deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 import { t } from '../utils/i18n';
+import { ensureVaultFolder } from '../utils/vaultFolders';
 import { showMenuSafely } from '../utils/obsidianMenu';
 import {
     NARRATIVE_LAB_PROJECT_FILE_STATE_KEY,
@@ -29,6 +30,23 @@ import {
 } from '../utils/narrativeLabLeafState';
 
 type BoardMode = 'kanban' | 'corkboard';
+
+type LiveCorkboardCanvas = {
+    nodes?: Map<string, unknown> | Record<string, unknown>;
+    removeNode?: (node: unknown) => void;
+    createFileNode?: (opts: {
+        pos?: { x: number; y: number };
+        size?: { width: number; height: number };
+        file?: TFile;
+        save?: boolean;
+        focus?: boolean;
+    }) => unknown;
+    getData?: () => { nodes?: unknown[]; edges?: unknown[] };
+    setData?: (data: unknown) => void;
+    importData?: (data: unknown) => void;
+    requestFrame?: () => void;
+    requestSave?: (() => void) & { cancel?: () => void };
+};
 
 /**
  * Board View - Kanban-style scene card board
@@ -105,6 +123,10 @@ export class BoardView extends ItemView {
     private corkboardHostSyncChain: Promise<void> = Promise.resolve();
     /** Invalidates native Canvas mounts after a board mode/render change. */
     private corkboardMountGeneration = 0;
+    /** Coalesce rapid Scenes-toggle clicks onto the last checkbox state. */
+    private corkboardVisibilityRaf: number | null = null;
+    /** Debounced Canvas autosave after live membership add/remove. */
+    private corkboardMembershipSaveTimer: number | null = null;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -213,6 +235,14 @@ export class BoardView extends ItemView {
         if (this.corkboardPersistTimer) {
             window.clearTimeout(this.corkboardPersistTimer);
             this.corkboardPersistTimer = null;
+        }
+        if (this.corkboardVisibilityRaf != null) {
+            window.cancelAnimationFrame(this.corkboardVisibilityRaf);
+            this.corkboardVisibilityRaf = null;
+        }
+        if (this.corkboardMembershipSaveTimer != null) {
+            window.clearTimeout(this.corkboardMembershipSaveTimer);
+            this.corkboardMembershipSaveTimer = null;
         }
         if (this.corkboardCanvasSyncTimer) {
             window.clearInterval(this.corkboardCanvasSyncTimer);
@@ -392,13 +422,10 @@ export class BoardView extends ItemView {
             const cb = toggleWrap.createEl('input', { type: 'checkbox' });
             cb.checked = this.plugin.settings.showScenesInCorkboard;
             toggleWrap.createSpan({ cls: 'sl-toggle-track' });
-            cb.addEventListener('change', async () => {
+            cb.addEventListener('change', () => {
                 this.plugin.settings.showScenesInCorkboard = cb.checked;
-                await this.plugin.saveSettings();
-                // Membership changed — force corkboard.canvas rewrite + remount.
-                this.corkboardVisibilityKey = '';
-                this.corkboardCanvasFilePath = null;
-                this.refreshBoard();
+                void this.plugin.saveSettings();
+                this.applyCorkboardSceneVisibility();
             });
         }
 
@@ -701,6 +728,10 @@ export class BoardView extends ItemView {
         if (this.corkboardCanvasSyncTimer) {
             window.clearInterval(this.corkboardCanvasSyncTimer);
             this.corkboardCanvasSyncTimer = null;
+        }
+        if (this.corkboardMembershipSaveTimer != null) {
+            window.clearTimeout(this.corkboardMembershipSaveTimer);
+            this.corkboardMembershipSaveTimer = null;
         }
         if (this.corkboardCanvasResizeObserver) {
             try { this.corkboardCanvasResizeObserver.disconnect(); } catch { /* ignore */ }
@@ -1068,32 +1099,9 @@ export class BoardView extends ItemView {
 
         const visible = this.getVisibleCorkboardPaths()
             .filter(path => this.isBoundNlManagedPath(path));
-        // Auto-layout missing positions so new notes land on-canvas
-        visible.forEach((path, index) => {
-            if (this.corkboardPositions.has(path)) return;
-            const col = index % 4;
-            const row = Math.floor(index / 4);
-            this.corkboardPositions.set(path, {
-                x: col * 320 + (this.quickNoteChainIndex % 5) * 24,
-                y: row * 230 + (this.quickNoteChainIndex % 5) * 24,
-                z: this.corkboardPositions.size + 1,
-                w: 280,
-                h: 200,
-            });
-        });
-        // Include display toggles in the fingerprint so Scenes on/off always remounts
-        // even when the visible path set happens to look identical.
-        const visibilityKey = [
-            projectFile,
-            this.plugin.settings.showScenesInCorkboard ? 'scenes:1' : 'scenes:0',
-            this.currentFilter.activeState ?? 'active',
-            ...visible.slice().sort(),
-        ].join('\0');
+        this.ensureCorkboardPositionsFor(visible);
+        const visibilityKey = this.getCorkboardVisibilityKey(visible);
         const visibilityChanged = visibilityKey !== this.corkboardVisibilityKey;
-        if (visibilityChanged) {
-            this.corkboardVisibilityKey = visibilityKey;
-            this.corkboardCanvasFilePath = null; // remount after toggle/filter
-        }
 
         const existing = this.app.vault.getAbstractFileByPath(canvasPath);
         // Fast path: membership unchanged — never rewrite corkboard.canvas.
@@ -1104,6 +1112,21 @@ export class BoardView extends ItemView {
                 this.pruneLiveCorkboardToVisible(visible);
             }
             return { file: existing, membershipChanged: false, visible };
+        }
+
+        // Hide/show file cards on the live Canvas instead of remounting.
+        if (!opts?.force && visibilityChanged && existing instanceof TFile
+            && this.corkboardCanvasLeaf && this.corkboardCanvasFilePath === existing.path
+            && this.applyLiveCorkboardMembership(visible)) {
+            this.corkboardVisibilityKey = visibilityKey;
+            this.scheduleLiveCorkboardSave();
+            if (this._corkboardProjectLoaded) this.schedulePersistCorkboardLayout();
+            return { file: existing, membershipChanged: false, visible };
+        }
+
+        if (visibilityChanged) {
+            this.corkboardVisibilityKey = visibilityKey;
+            this.corkboardCanvasFilePath = null; // remount when live apply is impossible
         }
 
         // Defer membership rewrite/remount while Canvas is busy — tearing down
@@ -1223,6 +1246,180 @@ export class BoardView extends ItemView {
         if (removed) {
             try { canvas.requestFrame?.(); } catch { /* best effort */ }
         }
+    }
+
+    private getLiveCorkboardCanvas(): LiveCorkboardCanvas | null {
+        const view = this.corkboardCanvasLeaf?.view as { canvas?: LiveCorkboardCanvas } | null;
+        return view?.canvas ?? null;
+    }
+
+    private getCorkboardVisibilityKey(visible: string[]): string {
+        return [
+            this.resolveCorkboardProjectFile() ?? '',
+            this.plugin.settings.showScenesInCorkboard ? 'scenes:1' : 'scenes:0',
+            this.currentFilter.activeState ?? 'active',
+            ...visible.slice().sort(),
+        ].join('\0');
+    }
+
+    private ensureCorkboardPositionsFor(visible: string[]): void {
+        visible.forEach((path, index) => {
+            if (this.corkboardPositions.has(path)) return;
+            const col = index % 4;
+            const row = Math.floor(index / 4);
+            this.corkboardPositions.set(path, {
+                x: col * 320 + (this.quickNoteChainIndex % 5) * 24,
+                y: row * 230 + (this.quickNoteChainIndex % 5) * 24,
+                z: this.corkboardPositions.size + 1,
+                w: 280,
+                h: 200,
+            });
+        });
+    }
+
+    /** Scenes toggle: apply the latest checkbox state without remounting Canvas. */
+    private applyCorkboardSceneVisibility(): void {
+        if (this.corkboardVisibilityRaf != null) return;
+        this.corkboardVisibilityRaf = window.requestAnimationFrame(() => {
+            this.corkboardVisibilityRaf = null;
+            this.applyCorkboardSceneVisibilityNow();
+        });
+    }
+
+    private applyCorkboardSceneVisibilityNow(): void {
+        if (this.boardMode !== 'corkboard') return;
+        this.ensureCorkboardLayoutLoaded();
+        const visible = this.getVisibleCorkboardPaths()
+            .filter(path => this.isBoundNlManagedPath(path));
+        this.ensureCorkboardPositionsFor(visible);
+        this.corkboardVisibilityKey = this.getCorkboardVisibilityKey(visible);
+
+        if (this.corkboardNativeFailed) {
+            this.refreshBoard();
+            return;
+        }
+        if (this.applyLiveCorkboardMembership(visible)) {
+            this.scheduleLiveCorkboardSave();
+            return;
+        }
+        this.corkboardCanvasFilePath = null;
+        this.refreshBoard();
+    }
+
+    /**
+     * Add/remove NL file cards on the already-mounted Canvas. Returns false when
+     * there is no live instance — caller should remount instead.
+     */
+    private applyLiveCorkboardMembership(visible: string[]): boolean {
+        const canvas = this.getLiveCorkboardCanvas();
+        if (!canvas?.nodes) return false;
+        this.captureLiveCorkboardPositions();
+        this.pruneLiveCorkboardToVisible(visible);
+        if (!this.addLiveCorkboardMissing(visible)) return false;
+        try { canvas.requestFrame?.(); } catch { /* best effort */ }
+        return true;
+    }
+
+    private addLiveCorkboardMissing(visible: string[]): boolean {
+        const canvas = this.getLiveCorkboardCanvas();
+        if (!canvas?.nodes) return false;
+
+        const present = new Set<string>();
+        const nodes = canvas.nodes instanceof Map
+            ? [...canvas.nodes.values()]
+            : Object.values(canvas.nodes);
+        for (const node of nodes) {
+            const path = this.getCanvasNodeFilePath(node);
+            if (path) present.add(normalizePath(path));
+        }
+
+        const missing = visible.filter(path => !present.has(normalizePath(path)));
+        if (missing.length === 0) return true;
+
+        const stillMissing: string[] = [];
+        for (const path of missing) {
+            const file = this.app.vault.getAbstractFileByPath(path);
+            if (!(file instanceof TFile)) continue;
+            const pos = this.corkboardPositions.get(path);
+            const index = visible.indexOf(path);
+            const x = pos?.x ?? (index % 4) * 320;
+            const y = pos?.y ?? Math.floor(index / 4) * 230;
+            const w = pos?.w && pos.w > 0 ? pos.w : 280;
+            const h = pos?.h && pos.h > 0 ? pos.h : 200;
+            if (typeof canvas.createFileNode === 'function') {
+                try {
+                    canvas.createFileNode({
+                        pos: { x, y },
+                        size: { width: w, height: h },
+                        file,
+                        save: false,
+                        focus: false,
+                    });
+                    continue;
+                } catch { /* fall through to setData */ }
+            }
+            stillMissing.push(path);
+        }
+        if (stillMissing.length === 0) return this.liveCorkboardHasVisible(visible);
+
+        const data = canvas.getData?.();
+        if (!data || !Array.isArray(data.nodes)) return false;
+        const have = new Set<string>();
+        for (const node of data.nodes) {
+            const path = this.getCanvasNodeFilePath(node);
+            if (path) have.add(normalizePath(path));
+        }
+        for (const path of stillMissing) {
+            if (have.has(normalizePath(path))) continue;
+            const pos = this.corkboardPositions.get(path);
+            const index = visible.indexOf(path);
+            data.nodes.push({
+                id: corkboardNodeIdForPath(path),
+                type: 'file',
+                file: path,
+                x: pos?.x ?? (index % 4) * 320,
+                y: pos?.y ?? Math.floor(index / 4) * 230,
+                width: pos?.w && pos.w > 0 ? pos.w : 280,
+                height: pos?.h && pos.h > 0 ? pos.h : 200,
+            });
+        }
+        try {
+            if (typeof canvas.setData === 'function') canvas.setData(data);
+            else if (typeof canvas.importData === 'function') canvas.importData(data);
+            else return false;
+        } catch {
+            return false;
+        }
+        return this.liveCorkboardHasVisible(visible);
+    }
+
+    private liveCorkboardHasVisible(visible: string[]): boolean {
+        const canvas = this.getLiveCorkboardCanvas();
+        if (!canvas?.nodes) return false;
+        const nodes = canvas.nodes instanceof Map
+            ? [...canvas.nodes.values()]
+            : Object.values(canvas.nodes);
+        const after = new Set<string>();
+        for (const node of nodes) {
+            const path = this.getCanvasNodeFilePath(node);
+            if (path) after.add(normalizePath(path));
+        }
+        return visible.every(path => {
+            const normalized = normalizePath(path);
+            if (after.has(normalized)) return true;
+            return !(this.app.vault.getAbstractFileByPath(normalized) instanceof TFile);
+        });
+    }
+
+    private scheduleLiveCorkboardSave(): void {
+        if (this.corkboardMembershipSaveTimer != null) {
+            window.clearTimeout(this.corkboardMembershipSaveTimer);
+        }
+        this.corkboardMembershipSaveTimer = window.setTimeout(() => {
+            this.corkboardMembershipSaveTimer = null;
+            const canvas = this.getLiveCorkboardCanvas();
+            try { canvas?.requestSave?.(); } catch { /* best effort */ }
+        }, 400);
     }
 
     private async ensureNativeCorkboardHost(
@@ -5103,12 +5300,8 @@ export class BoardView extends ItemView {
         const attachmentSourcePath = this.sceneManager.getAttachmentSourcePath() ?? '';
         const buffer = await file.arrayBuffer();
         const targetPath = normalizePath(await this.app.fileManager.getAvailablePathForAttachment(file.name, attachmentSourcePath));
-        const parentParts = targetPath.split('/').slice(0, -1);
-        let parent = '';
-        for (const part of parentParts) {
-            parent = parent ? `${parent}/${part}` : part;
-            if (!await this.app.vault.adapter.exists(parent)) await this.app.vault.createFolder(parent);
-        }
+        const parent = targetPath.split('/').slice(0, -1).join('/');
+        if (parent) await ensureVaultFolder(this.app, parent);
 
         await this.app.vault.createBinary(targetPath, buffer);
         new Notice(t('Image imported: {name}', { name: targetPath.split('/').pop() ?? '' }));

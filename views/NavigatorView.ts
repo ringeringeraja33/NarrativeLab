@@ -438,7 +438,10 @@ export class NavigatorView extends ItemView {
             setIcon(iconSlot, opts.icon);
         }
         // Reserve seq column when this folder sits beside scene/note rows (depth ≥ 2).
-        if (depth >= 2) this.appendNavSeqSlot(header);
+        // Primary sections keep their own gutter even when nested under a series.
+        if (depth >= 2 && !/\bsl-nav-primary-folder\b/.test(opts.cls || '')) {
+            this.appendNavSeqSlot(header);
+        }
         header.createSpan({ text: opts.label, cls: 'sl-nav-folder-label' });
         if (opts.count !== undefined) {
             header.createSpan({ text: String(opts.count), cls: 'sl-nav-folder-count' });
@@ -624,7 +627,7 @@ export class NavigatorView extends ItemView {
         });
 
         if (isActive && node.expanded && node.body) {
-            this.renderActiveProjectContents(node.body);
+            this.renderActiveProjectContents(node.body, depth + 1);
         }
     }
 
@@ -677,7 +680,7 @@ export class NavigatorView extends ItemView {
         }
     }
 
-    private renderPlotlinesFolder(parent: HTMLElement, draftScenes: Scene[]): void {
+    private renderPlotlinesFolder(parent: HTMLElement, draftScenes: Scene[], folderDepth = 2): void {
         const tags = this.sceneManager.getPlotlines();
 
         // Counts must use the active draft only — getAllScenes() also includes
@@ -700,7 +703,7 @@ export class NavigatorView extends ItemView {
             label,
             icon: 'waypoints',
             count: countForPlotline(this.plotlineFilter),
-            depth: 2,
+            depth: folderDepth,
             cls: this.plotlineFilter ? 'sl-nav-plotlines-folder has-filter' : 'sl-nav-plotlines-folder',
             trailing: (el) => {
                 const add = el.createSpan('sl-nav-folder-action is-always');
@@ -720,7 +723,7 @@ export class NavigatorView extends ItemView {
         const list = plotNode.body.createDiv('sl-nav-plotline-list');
 
         const paintPlotlineRow = (row: HTMLElement, color: string) => {
-            this.setNavDepth(row, 3);
+            this.setNavDepth(row, folderDepth + 1);
             this.appendNavToggle(row, ' ');
             const icon = this.appendNavIconSlot(row);
             const dot = icon.createSpan('sl-nav-plotline-dot');
@@ -837,14 +840,14 @@ export class NavigatorView extends ItemView {
         colorInput.click();
     }
 
-    private renderActiveProjectContents(parent: HTMLElement): void {
+    private renderActiveProjectContents(parent: HTMLElement, folderDepth: number): void {
         // Primary binder: Notes → Scenes → Research
-        this.renderNotesFolder(parent);
-        this.renderScenesFolder(parent);
-        this.renderResearchFolder(parent);
+        this.renderNotesFolder(parent, folderDepth);
+        this.renderScenesFolder(parent, folderDepth);
+        this.renderResearchFolder(parent, folderDepth);
     }
 
-    private renderScenesFolder(parent: HTMLElement): void {
+    private renderScenesFolder(parent: HTMLElement, folderDepth = 1): void {
         const drafts = this.sceneManager.getDrafts();
         const activeDraft = this.sceneManager.getActiveDraft();
 
@@ -890,7 +893,7 @@ export class NavigatorView extends ItemView {
             label: t('Scenes'),
             icon: 'file-text',
             count: scenes.length,
-            depth: 1,
+            depth: folderDepth,
             cls: 'sl-nav-primary-folder',
             onContextMenu: (e) => this.showScenesFolderMenu(e),
             trailing: (el) => {
@@ -933,7 +936,7 @@ export class NavigatorView extends ItemView {
         if (!scenesNode.expanded || !scenesNode.body) return;
 
         // Plotline filter stays nested under Scenes (secondary)
-        this.renderPlotlinesFolder(scenesNode.body, draftScenes);
+        this.renderPlotlinesFolder(scenesNode.body, draftScenes, folderDepth + 1);
 
         if (scenes.length === 0) {
             const empty = scenesNode.body.createDiv('sl-nav-empty');
@@ -953,12 +956,12 @@ export class NavigatorView extends ItemView {
         }
 
         if (this.sortMode === 'reading') {
-            this.renderGroupedByAct(scenes, scenesNode.body, 2);
+            this.renderGroupedByAct(scenes, scenesNode.body, folderDepth + 1);
         } else if (this.sortMode === 'chapter') {
-            this.renderGroupedByChapter(scenes, scenesNode.body, 2);
+            this.renderGroupedByChapter(scenes, scenesNode.body, folderDepth + 1);
         } else {
             for (const scene of scenes) {
-                this.renderSceneRow(scenesNode.body, scene, 2);
+                this.renderSceneRow(scenesNode.body, scene, folderDepth + 1);
             }
         }
     }
@@ -1001,7 +1004,7 @@ export class NavigatorView extends ItemView {
         });
     }
 
-    private renderNotesFolder(parent: HTMLElement): void {
+    private renderNotesFolder(parent: HTMLElement, folderDepth = 1): void {
         let notes = this.sceneManager.getAllScenes().filter(s => s.corkboardNote && !s.inactive);
         if (this.filterText) {
             notes = notes.filter(s =>
@@ -1019,7 +1022,7 @@ export class NavigatorView extends ItemView {
             label: t('Notes'),
             icon: 'sticky-note',
             count: notes.length,
-            depth: 1,
+            depth: folderDepth,
             cls: 'sl-nav-primary-folder',
             trailing: (el) => {
                 const add = el.createSpan('sl-nav-folder-action is-always');
@@ -1042,7 +1045,7 @@ export class NavigatorView extends ItemView {
         }
 
         for (const note of notes) {
-            this.renderNoteRow(notesNode.body, note, 2);
+            this.renderNoteRow(notesNode.body, note, folderDepth + 1);
         }
     }
 
@@ -1113,7 +1116,7 @@ export class NavigatorView extends ItemView {
         });
     }
 
-    private renderResearchFolder(parent: HTMLElement): void {
+    private renderResearchFolder(parent: HTMLElement, folderDepth = 1): void {
         const mgr = this.plugin.researchManager;
         if (!mgr) return;
 
@@ -1135,7 +1138,7 @@ export class NavigatorView extends ItemView {
             label: t('Research'),
             icon: 'library-big',
             count: posts.length,
-            depth: 1,
+            depth: folderDepth,
             cls: 'sl-nav-primary-folder',
             trailing: (el) => {
                 const add = el.createSpan('sl-nav-folder-action is-always');
@@ -1160,7 +1163,7 @@ export class NavigatorView extends ItemView {
         }
 
         for (const post of posts) {
-            this.renderResearchRow(researchNode.body, post, 2);
+            this.renderResearchRow(researchNode.body, post, folderDepth + 1);
         }
     }
 

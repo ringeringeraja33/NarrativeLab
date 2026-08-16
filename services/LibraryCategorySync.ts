@@ -5,7 +5,8 @@
  * Strict rules (every project):
  * 1. Source of truth for folders = direct subfolders of Library/ (plus fixed
  *    Characters / Locations / Uncategorized). Tab visibility is the user's
- *    enabled/hidden list — hiding a category keeps its folder.
+ *    enabled/hidden list — hiding a category keeps its folder. Automatic
+ *    reconcile must adopt unknown folders, never trash ones that still have notes.
  * 2. Uncategorized = notes at Library root only — never notes inside a
  *    category subfolder (Creatures, Skills, …).
  * 3. Deleting a category removes its Library folder(s) and Library Base view,
@@ -31,6 +32,7 @@ import {
     type VaultPathKind,
 } from '../utils/libraryCategoryTransactions';
 import { coerceString } from '../utils/narrow';
+import { ensureVaultFolder, isUntrackedLibraryNoise } from '../utils/vaultFolders';
 import { collectMarkdownFiles, isLibraryEntityMarkdownFile } from './EntityFileCache';
 import {
     migrateNativeLibraryBasesForActiveProject,
@@ -351,14 +353,51 @@ async function readLibraryFolderNames(
                 const name = basenameOfPath(folderPath);
                 if (!name) continue;
                 names.add(name);
-                const notes = await collectMarkdownFiles(plugin.app, folderPath);
-                if (notes.some(file => isLibraryEntityMarkdownFile(file))) occupied.add(name);
+                try {
+                    const notes = await collectMarkdownFiles(plugin.app, folderPath);
+                    if (notes.some(file => isLibraryEntityMarkdownFile(file))) occupied.add(name);
+                } catch {
+                    // After a Finder move the folder can exist on disk before
+                    // Obsidian indexes its notes. Treat as occupied so we do
+                    // not trash a live category.
+                    occupied.add(name);
+                }
             }
         } catch (error) {
             console.warn('[NarrativeLab] Failed to scan Library folders:', root, error);
         }
     }
     return { names, occupied, scannedRoots };
+}
+
+function isLibraryCategoryFolderEmpty(folder: TFolder): boolean {
+    for (const child of folder.children) {
+        if (child instanceof TFolder) {
+            if (!isLibraryCategoryFolderEmpty(child)) return false;
+            continue;
+        }
+        if (!(child instanceof TFile)) continue;
+        if (child.name.toLowerCase().endsWith('.base')) continue;
+        if (isUntrackedLibraryNoise(child.name) || child.name.startsWith('.')) continue;
+        return false;
+    }
+    return true;
+}
+
+/** Empty English seed left behind after the category folder was renamed. */
+function isLeftoverSeedLibraryFolder(
+    plugin: SceneCardsPlugin,
+    project: StoryLineProject,
+    folderName: string,
+): boolean {
+    for (const [id, english] of Object.entries(DEFAULT_LIBRARY_FOLDER_NAMES)) {
+        if (!libraryFolderNamesMatch(english, folderName) && !isSingularPluralFolderAlias(folderName, english)) {
+            continue;
+        }
+        const current = resolveLibraryFolderName(plugin, id, project);
+        if (current && !libraryFolderNamesMatch(current, folderName)) return true;
+    }
+    return false;
 }
 
 async function trashEmptyLibraryFolder(
@@ -369,6 +408,8 @@ async function trashEmptyLibraryFolder(
     const name = folderName.trim();
     if (!name) return;
     for (const root of libraryRootsForProject(plugin, project)) {
+        const folder = plugin.app.vault.getAbstractFileByPath(normalizePath(`${root}/${name}`));
+        if (!(folder instanceof TFolder) || !isLibraryCategoryFolderEmpty(folder)) continue;
         await disposeLibrarySubfolder(plugin, root, name, 'trash');
     }
 }
@@ -462,7 +503,7 @@ async function pruneLibraryCategoriesMissingFolders(plugin: SceneCardsPlugin): P
     const project = plugin.sceneManager.activeProject;
     if (!project) return false;
     const snapshot = await readLibraryFolderNames(plugin, project);
-    if (snapshot.scannedRoots === 0) return false;
+    if (snapshot.scannedRoots === 0 || snapshot.names.size === 0) return false;
 
     const candidateIds = new Set<string>([
         ...(plugin.settings.codexEnabledCategories || []),
@@ -572,8 +613,9 @@ export async function ensureLibraryCategoryFolders(plugin: SceneCardsPlugin): Pr
     const adapter = plugin.app.vault.adapter;
     const roots = libraryRootsForProject(plugin, project);
     for (const lib of roots) {
+        if (plugin.sceneManager.isDeletedProjectPath(lib)) continue;
         if (!await adapter.exists(lib)) {
-            await plugin.app.vault.createFolder(lib).catch(() => undefined);
+            await ensureVaultFolder(plugin.app, lib);
         }
     }
 
@@ -587,8 +629,9 @@ export async function ensureLibraryCategoryFolders(plugin: SceneCardsPlugin): Pr
     for (const id of ids) {
         const name = resolveLibraryFolderName(plugin, id, project);
         const path = normalizePath(`${primaryLib}/${name}`);
+        if (plugin.sceneManager.isDeletedProjectPath(path)) continue;
         if (!await adapter.exists(path)) {
-            await plugin.app.vault.createFolder(path).catch(() => undefined);
+            await ensureVaultFolder(plugin.app, path);
         }
     }
 }
@@ -646,9 +689,14 @@ export async function syncLibraryFoldersWithCategories(
                     }
                     continue;
                 }
-                // Orphan folder — keep notes as Uncategorized, drop the shell.
-                await disposeLibrarySubfolder(plugin, libraryRoot, child.name, 'move-to-root');
-                changed = true;
+                // Folders are the source of truth. After a local move the
+                // in-memory category list can briefly fall back to defaults;
+                // never dump a live custom folder into Uncategorized.
+                if (isLeftoverSeedLibraryFolder(plugin, project, child.name)
+                    && isLibraryCategoryFolderEmpty(child)) {
+                    await disposeLibrarySubfolder(plugin, libraryRoot, child.name, 'trash');
+                    changed = true;
+                }
             }
         }
 
@@ -747,7 +795,7 @@ export async function renameLibraryCategory(
         }
         for (const operation of plan.operations) {
             if (operation.action === 'create') {
-                await plugin.app.vault.createFolder(operation.newPath);
+                await ensureVaultFolder(plugin.app, operation.newPath);
                 createdFolders.push(operation.newPath);
                 continue;
             }
@@ -866,13 +914,16 @@ export async function deleteLibraryCategory(
             if (targets.size > 0) {
                 const systemFolder = normalizePath(plugin.getProjectSystemFolder());
                 if (!plugin.app.vault.getAbstractFileByPath(systemFolder)) {
-                    await plugin.app.vault.createFolder(systemFolder);
+                    await ensureVaultFolder(plugin.app, systemFolder);
                 }
                 const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
                 // Dot-prefixed folders are deliberately omitted from Obsidian's
                 // Vault index. Keep this temporary folder indexed so trash and
                 // rollback can use FileManager instead of unsafe adapter removal.
                 stagingRoot = normalizePath(`${systemFolder}/_NarrativeLab-delete-${stamp}`);
+                if (plugin.sceneManager.isDeletedProjectPath(stagingRoot)) {
+                    throw new Error(t('Library folder not found: {path}', { path: systemFolder }));
+                }
                 stagingFolder = await plugin.app.vault.createFolder(stagingRoot);
                 let index = 0;
                 for (const [originalPath, folder] of targets) {

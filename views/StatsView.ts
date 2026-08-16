@@ -347,7 +347,10 @@ export class StatsView extends ProjectBoundItemView {
             const totalNow = this.sceneManager.queryService
                 .getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
                 .totalWords;
-            tracker.startSprint(totalNow);
+            if (!tracker.startSprint(totalNow)) {
+                new obsidian.Notice(t('Cannot start a sprint until the project word count is ready.'));
+                return;
+            }
             if (this.sprintTimerId) window.clearInterval(this.sprintTimerId);
             this.sprintTimerId = window.setInterval(updateTimerDisplay, 1000);
             updateTimerDisplay(totalNow);

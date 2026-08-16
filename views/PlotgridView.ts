@@ -8,6 +8,7 @@ import {
     ConceptGridPage,
     createEmptyConceptGridDocument,
     getActiveConceptGridPage,
+    isConceptGridDocumentEmpty,
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
 import { getActiveUiLanguage, t } from '../utils/i18n';
@@ -67,6 +68,8 @@ export class PlotgridView extends ProjectBoundItemView {
     /** Full multi-page document persisted to Library/datasheet.xlsx */
     // eslint-disable-next-line obsidianmd/prefer-active-doc -- Concept Grid data model, not the browser Document.
     document: ConceptGridDocument = createEmptyConceptGridDocument();
+    /** False until loadData finishes — persist must not write the default empty grid. */
+    private hasHydratedDocument = false;
     /** Active page working set (same object reference as the page in `document`). */
     data: PlotGridData = getActiveConceptGridPage(this.document);
     saveDebounce: number | null = null;
@@ -139,6 +142,7 @@ export class PlotgridView extends ProjectBoundItemView {
         if (peeked) {
             this.document = normalizeConceptGridDocument(peeked);
             this.bindActivePage();
+            this.hasHydratedDocument = true;
         }
         this.showSpreadsheetLoading();
         const peekedFp = peeked ? conceptGridContentFingerprint(this.document) : '';
@@ -219,11 +223,16 @@ export class PlotgridView extends ProjectBoundItemView {
 
     /** Flush Univer into memory and write datasheet.xlsx for the bound System folder. */
     private async persistBoundPlotGrid(): Promise<void> {
+        if (!this.hasHydratedDocument) return;
         const projectFile = this.loadedProjectFile;
         this.closeAllCellEditors();
         this.flushUniverIntoDocument();
         this.cancelPendingSave();
         if (!projectFile || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
+        // Default empty model must never be persisted over a real workbook.
+        // savePlotGridSafely is the last line of defense; skip here too so
+        // project-switch / tab-close cannot even enqueue an empty write.
+        if (isConceptGridDocumentEmpty(this.document)) return;
         try {
             await this.plugin.savePlotGrid(this.document, { projectFilePath: projectFile });
         } catch (error) {
@@ -237,7 +246,13 @@ export class PlotgridView extends ProjectBoundItemView {
         this.closeAllCellEditors();
         this.flushUniverIntoDocument();
         this.cancelPendingSave();
-        if (projectFile && this.plugin && typeof this.plugin.savePlotGrid === 'function') {
+        if (
+            this.hasHydratedDocument
+            && projectFile
+            && this.plugin
+            && typeof this.plugin.savePlotGrid === 'function'
+            && !isConceptGridDocumentEmpty(this.document)
+        ) {
             try {
                 await this.plugin.savePlotGrid(this.document, { projectFilePath: projectFile });
             } catch (error) {
@@ -304,7 +319,13 @@ export class PlotgridView extends ProjectBoundItemView {
         if (!host) return;
         try {
             host.flush();
-            this.document = normalizeConceptGridDocument(host.getDocument());
+            const next = normalizeConceptGridDocument(host.getDocument());
+            // Univer remount / dispose can yield the default empty workbook.
+            // Never replace a real in-memory grid with that placeholder.
+            if (isConceptGridDocumentEmpty(next) && !isConceptGridDocumentEmpty(this.document)) {
+                return;
+            }
+            this.document = next;
             this.bindActivePage();
         } catch (error) {
             console.warn('[NarrativeLab] Could not flush spreadsheet state:', error);
@@ -361,6 +382,7 @@ export class PlotgridView extends ProjectBoundItemView {
                 // Persist the outgoing workbook first — dispose alone used to cancel the
                 // debounce and drop in-Univer edits that had not pulled yet.
                 await this.persistBoundPlotGrid();
+                this.hasHydratedDocument = false;
                 this.univerLoadFailed = false;
                 this.univerLoadError = null;
                 this.disposeUniverHost({ persist: false });
@@ -372,9 +394,19 @@ export class PlotgridView extends ProjectBoundItemView {
             } else {
                 loaded = null;
             }
-            this.document = loaded
-                ? normalizeConceptGridDocument(loaded)
-                : createEmptyConceptGridDocument();
+            if (loaded) {
+                this.document = normalizeConceptGridDocument(loaded);
+                this.hasHydratedDocument = true;
+            } else {
+                this.document = createEmptyConceptGridDocument();
+                // Existing datasheet.xlsx (including unreadable) must not be
+                // treated as a hydrated empty model — persist/autosave/close
+                // would write the default grid over it.
+                const existed = projectFile
+                    ? await this.plugin?.plotGridXlsxExists?.(projectFile)
+                    : false;
+                this.hasHydratedDocument = existed !== true;
+            }
             this.bindActivePage();
             this.loadedProjectFile = projectFile || this.loadedProjectFile;
             this.loadedSystemFolder = folder || this.loadedSystemFolder;
@@ -390,6 +422,7 @@ export class PlotgridView extends ProjectBoundItemView {
             new Notice(t('Spreadsheet failed to load'));
             this.document = createEmptyConceptGridDocument();
             this.bindActivePage();
+            this.hasHydratedDocument = false;
         }
     }
 
@@ -482,7 +515,7 @@ export class PlotgridView extends ProjectBoundItemView {
 
     private scheduleSave() {
         const plugin = this.plugin;
-        if (!plugin) return;
+        if (!plugin || !this.hasHydratedDocument) return;
         // Never autosave while Univer's in-cell editor / IME is live — writing the
         // vault triggers refreshPlotGridViews and remounts the workbook mid-keystroke.
         // Closing/switching the view performs an explicit final flush, so autosave
@@ -499,6 +532,7 @@ export class PlotgridView extends ProjectBoundItemView {
         // debounce and call plugin-level save API if available
         const timerId = window.setTimeout(async () => {
             try {
+                if (!this.hasHydratedDocument) return;
                 if (this.univerHost?.isEditorBusy()) {
                     this.scheduleSave();
                     return;
@@ -512,11 +546,7 @@ export class PlotgridView extends ProjectBoundItemView {
                 // global active project changed, path-scoped save keeps edits in
                 // the bound book instead of aborting or bleeding into another project.
                 if (this.univerHost && this.cellEditorWindows.size === 0) {
-                    try {
-                        this.univerHost.flush();
-                        this.document = normalizeConceptGridDocument(this.univerHost.getDocument());
-                        this.bindActivePage();
-                    } catch { /* ignore */ }
+                    this.flushUniverIntoDocument();
                 }
                 if (typeof plugin.savePlotGrid === 'function') {
                     await plugin.savePlotGrid(this.document, { projectFilePath: projectAtSchedule });
@@ -2001,7 +2031,7 @@ export class PlotgridView extends ProjectBoundItemView {
                     // Never flush/reload while typing — flush blurs the editor and
                     // load+render remounts the workbook (viewport jump).
                     if (this.univerHost.isEditorBusy()) return;
-                    try { this.univerHost.flush(); } catch { /* ignore */ }
+                    this.flushUniverIntoDocument();
                 }
                 // If a save is pending, skip reloading from disk (would overwrite in-memory changes)
                 if (this.saveDebounce) return;

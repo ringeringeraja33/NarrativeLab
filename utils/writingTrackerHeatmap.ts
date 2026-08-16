@@ -71,7 +71,7 @@ function cellFor(
 }
 
 /**
- * Weeks as rows (oldest at the top), Monday–Sunday across.
+ * Weeks as rows (newest at the top), Monday–Sunday across.
  * Suited to a narrow right sidebar.
  */
 export function buildVerticalHeatmapWeeks(
@@ -82,10 +82,9 @@ export function buildVerticalHeatmapWeeks(
 ): HeatmapWeek[] {
     const weeks = Math.max(1, Math.min(52, Math.round(weekCount) || 16));
     const thisMonday = startOfWeekMonday(today);
-    const firstMonday = addCalendarDays(thisMonday, -7 * (weeks - 1));
     const out: HeatmapWeek[] = [];
     for (let w = 0; w < weeks; w++) {
-        const monday = addCalendarDays(firstMonday, 7 * w);
+        const monday = addCalendarDays(thisMonday, -7 * w);
         const days: HeatmapCell[] = [];
         for (let d = 0; d < 7; d++) {
             const day = addCalendarDays(monday, d);
@@ -98,7 +97,7 @@ export function buildVerticalHeatmapWeeks(
 }
 
 /**
- * GitHub-style calendar: weeks as columns, Monday–Sunday as rows.
+ * Weeks as columns (newest on the left), Monday–Sunday as rows.
  */
 export function buildYearHeatmapWeeks(
     history: Record<string, number>,
@@ -111,7 +110,7 @@ export function buildYearHeatmapWeeks(
     const firstMonday = startOfWeekMonday(start);
     const lastMonday = startOfWeekMonday(end);
     const out: HeatmapWeek[] = [];
-    for (let monday = firstMonday; monday.getTime() <= lastMonday.getTime(); monday = addCalendarDays(monday, 7)) {
+    for (let monday = lastMonday; monday.getTime() >= firstMonday.getTime(); monday = addCalendarDays(monday, -7)) {
         const days: HeatmapCell[] = [];
         for (let d = 0; d < 7; d++) {
             const day = addCalendarDays(monday, d);

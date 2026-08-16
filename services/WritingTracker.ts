@@ -125,15 +125,20 @@ export class WritingTracker {
             this._flushedSessionWords = totalSessionWords;
         }
 
+        // Revisions are edit churn between two known positive totals.
+        // A 0 total means the scene index is empty or not ready — do not
+        // treat "the whole book appeared/disappeared" as a revision.
         let revisions = 0;
-        if (this.lastKnownTotal !== null) {
+        if (this.lastKnownTotal !== null && this.lastKnownTotal > 0 && currentTotalWords > 0) {
             const delta = Math.abs(currentTotalWords - this.lastKnownTotal);
             if (delta > 0) {
                 this.recordRevisionToday(delta);
                 revisions = delta;
             }
+            this.lastKnownTotal = currentTotalWords;
+        } else if (currentTotalWords > 0) {
+            this.lastKnownTotal = currentTotalWords;
         }
-        this.lastKnownTotal = currentTotalWords;
         return { words: Math.max(0, increment), revisions };
     }
 
@@ -274,11 +279,13 @@ export class WritingTracker {
 
     // ── Sprint controls ────────────────────────────────
 
-    /** Start a timed writing sprint */
-    startSprint(currentTotalWords: number): void {
+    /** Start a timed writing sprint. Returns false when the project word count is not ready. */
+    startSprint(currentTotalWords: number): boolean {
+        if (currentTotalWords <= 0) return false;
         this._sprintRunning = true;
         this._sprintStart = Date.now();
         this._sprintBaseline = currentTotalWords;
+        return true;
     }
 
     /** Stop the current sprint and record it */

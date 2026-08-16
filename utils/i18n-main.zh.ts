@@ -215,6 +215,8 @@ export const MAIN_ZH: Record<string, string> = {
     "Section title": "分区标题",
     "Select a NarrativeLab project file": "选择 NarrativeLab 项目文件",
     "Select a standalone project to add to this series.": "选择要添加到此系列的独立项目。",
+    "Create a new project in this series. It will use the shared series Library.": "在此系列中新建项目，将使用系列共享资料库。",
+    "Please enter a project title.": "请输入项目标题。",
     "Select at least 2 scenes to merge.": "请至少选择 2 个要合并的场景。",
     "Select Scrivener Project (.scriv)": "选择 Scrivener 项目（.scriv）",
     "Sequence": "顺序",

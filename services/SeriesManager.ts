@@ -3,6 +3,7 @@ import { App, Notice, TFile, TFolder, normalizePath } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SeriesMetadata, StoryLineProject, deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 import { t } from '../utils/i18n';
+import { isProjectScopedLibraryArtifact, isUntrackedLibraryNoise, vaultRelativeFolderPath } from '../utils/vaultFolders';
 
 interface LibraryTransferJournal {
     movedFiles: Array<{ from: string; to: string }>;
@@ -99,8 +100,8 @@ export class SeriesManager {
         customParentPath?: string,
     ): Promise<StoryLineProject> {
         const safeSeriesName = seriesName.replace(/[\\/:*?"<>|]/g, '-');
-        const parentPath = normalizePath(
-            customParentPath ?? this.plugin.settings.storyLineRoot ?? '',
+        const parentPath = vaultRelativeFolderPath(
+            customParentPath ?? this.plugin.settings.storyLineRoot,
         );
         const seriesFolder = normalizePath(
             [parentPath, safeSeriesName].filter(Boolean).join('/'),
@@ -169,11 +170,11 @@ export class SeriesManager {
      * 4. Write series.json
      * 5. Update the project's seriesId
      */
-    async createSeriesFromProject(seriesName: string): Promise<string> {
+    async createSeriesFromProject(seriesName: string, sourceProject?: StoryLineProject): Promise<string> {
         // Pre-flight: check Obsidian link settings
         this.checkLinkSettings();
 
-        const project = this.plugin.sceneManager.activeProject;
+        const project = sourceProject ?? this.plugin.sceneManager.activeProject;
         if (!project) throw new Error(t('No active project'));
 
         // Determine current book base folder
@@ -238,11 +239,11 @@ export class SeriesManager {
             };
             await this.saveSeriesMetadata(seriesFolder, meta);
 
-            const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
-            await this.plugin.sceneManager.scanProjects();
-            const updatedProject = this.plugin.sceneManager.getProjects()
-                .find(p => normalizePath(p.filePath) === newProjectFile);
-            if (!updatedProject) throw new Error(t('Could not find the moved project after creating the series.'));
+            const newProjectFile = this.manifestPathInFolder(targetBookFolder, originalProjectFile);
+            const updatedProject = await this.resolveMovedProject(
+                newProjectFile,
+                t('Could not find the moved project after creating the series.'),
+            );
             updatedProject.seriesId = safeName;
             await this.plugin.sceneManager.setActiveProject(updatedProject);
             await this.plugin.sceneManager.saveProjectFrontmatter(updatedProject);
@@ -274,6 +275,70 @@ export class SeriesManager {
                 delete restored.seriesId;
                 await this.plugin.sceneManager.saveProjectFrontmatter(restored).catch(() => undefined);
                 await this.plugin.sceneManager.setActiveProject(restored).catch(() => undefined);
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Create a blank project directly inside an existing series folder.
+     * The new book uses the shared series Library.
+     */
+    async createProjectInSeries(seriesFolder: string, projectTitle: string, description = ''): Promise<StoryLineProject> {
+        this.checkLinkSettings();
+
+        const meta = await this.loadSeriesMetadata(seriesFolder);
+        if (!meta) throw new Error(t('Invalid series folder: series.json was not found.'));
+
+        const safeTitle = projectTitle.replace(/[\\/:*?"<>|]/g, '-');
+        const seriesFolderName = seriesFolder.split('/').pop() ?? '';
+        if (seriesFolderName.toLowerCase() === safeTitle.toLowerCase()) {
+            throw new Error(
+                t('Series folder "{name}" has the same name as the project folder. Rename the project or series before adding it.', { name: seriesFolderName }),
+            );
+        }
+
+        const adapter = this.app.vault.adapter;
+        const targetBookFolder = normalizePath(`${seriesFolder}/${safeTitle}`);
+        if (await adapter.exists(targetBookFolder)) {
+            throw new Error(t('A folder named "{name}" already exists at the selected location.', {
+                name: safeTitle,
+            }));
+        }
+
+        const metadataSnapshot: SeriesMetadata = { ...meta, bookOrder: [...meta.bookOrder] };
+        let project: StoryLineProject | null = null;
+        try {
+            project = await this.plugin.sceneManager.createProject(projectTitle, description, seriesFolder);
+
+            const seriesCodexFolder = this.resolveExistingLibraryFolder(seriesFolder);
+            await this.ensureFolder(seriesCodexFolder);
+            await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Characters`));
+            await this.ensureFolder(normalizePath(`${seriesCodexFolder}/Locations`));
+
+            if (!meta.bookOrder.includes(safeTitle)) meta.bookOrder.push(safeTitle);
+            await this.saveSeriesMetadata(seriesFolder, meta);
+
+            project.seriesId = seriesFolderName;
+            await this.plugin.sceneManager.saveProjectFrontmatter(project);
+            await this.plugin.sceneManager.setActiveProject(project);
+
+            const projectFolders = deriveProjectFoldersFromFilePath(project.filePath);
+            const localLibrary = this.resolveExistingLibraryFolder(projectFolders.baseFolder);
+            if (await adapter.exists(localLibrary)) {
+                await this.migrateCodexFolder(localLibrary, seriesCodexFolder);
+            }
+
+            new Notice(t('Project added to series "{name}"', { name: meta.name }));
+            return project;
+        } catch (error) {
+            await this.saveSeriesMetadata(seriesFolder, metadataSnapshot).catch(rollbackError => {
+                console.error('[NarrativeLab] Failed to restore series metadata after new project failed:', rollbackError);
+            });
+            if (project) {
+                await this.plugin.sceneManager.deleteProject(project).catch(rollbackError => {
+                    console.error('[NarrativeLab] Failed to remove the unfinished series project:', rollbackError);
+                });
             }
             throw error;
         }
@@ -338,11 +403,11 @@ export class SeriesManager {
             if (!meta.bookOrder.includes(bookBaseName)) meta.bookOrder.push(bookBaseName);
             await this.saveSeriesMetadata(seriesFolder, meta);
 
-            const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
-            await this.plugin.sceneManager.scanProjects();
-            const updatedProject = this.plugin.sceneManager.getProjects()
-                .find(p => normalizePath(p.filePath) === newProjectFile);
-            if (!updatedProject) throw new Error(t('Could not find the moved project after adding it to the series.'));
+            const newProjectFile = this.manifestPathInFolder(targetBookFolder, originalProjectFile);
+            const updatedProject = await this.resolveMovedProject(
+                newProjectFile,
+                t('Could not find the moved project after adding it to the series.'),
+            );
             updatedProject.seriesId = safeName;
             await this.plugin.sceneManager.setActiveProject(updatedProject);
             await this.plugin.sceneManager.saveProjectFrontmatter(updatedProject);
@@ -416,11 +481,11 @@ export class SeriesManager {
             meta.bookOrder = meta.bookOrder.filter(b => b !== bookBaseName);
             await this.saveSeriesMetadata(seriesFolder, meta);
 
-            const newProjectFile = normalizePath(`${targetBookFolder}/${bookBaseName}.md`);
-            await this.plugin.sceneManager.scanProjects();
-            const updatedProject = this.plugin.sceneManager.getProjects()
-                .find(p => normalizePath(p.filePath) === newProjectFile);
-            if (!updatedProject) throw new Error(t('Could not find the moved project after removing it from the series.'));
+            const newProjectFile = this.manifestPathInFolder(targetBookFolder, originalProjectFile);
+            const updatedProject = await this.resolveMovedProject(
+                newProjectFile,
+                t('Could not find the moved project after removing it from the series.'),
+            );
             delete updatedProject.seriesId;
             await this.plugin.sceneManager.setActiveProject(updatedProject);
             await this.plugin.sceneManager.saveProjectFrontmatter(updatedProject);
@@ -515,8 +580,16 @@ export class SeriesManager {
             normalizePath(`${folder}/Codex`),
         ]);
         const unexpected = [
-            ...listing.files.filter(path => normalizePath(path) !== normalizePath(`${folder}/series.json`)),
-            ...listing.folders.filter(path => !managedFolders.has(normalizePath(path))),
+            ...listing.files.filter(path => {
+                const name = path.split('/').pop() ?? '';
+                if (isUntrackedLibraryNoise(name)) return false;
+                return normalizePath(path) !== normalizePath(`${folder}/series.json`);
+            }),
+            ...listing.folders.filter(path => {
+                const name = path.split('/').pop() ?? '';
+                if (isUntrackedLibraryNoise(name) || name.startsWith('.')) return false;
+                return !managedFolders.has(normalizePath(path));
+            }),
         ];
         if (unexpected.length > 0) {
             throw new Error(t('The series folder contains unmanaged files or folders: {items}. Move them elsewhere before dissolving the series.', {
@@ -524,9 +597,12 @@ export class SeriesManager {
             }));
         }
 
-        const seriesEntry = this.app.vault.getAbstractFileByPath(folder);
+        let seriesEntry = this.app.vault.getAbstractFileByPath(folder);
         if (!(seriesEntry instanceof TFolder)) {
-            throw new Error(t('Could not find the indexed series folder. Wait for Obsidian to finish indexing and try again.'));
+            if (!await adapter.exists(folder)) {
+                throw new Error(t('Could not find the indexed series folder. Wait for Obsidian to finish indexing and try again.'));
+            }
+            seriesEntry = null;
         }
 
         const previousActivePath = normalizePath(this.plugin.sceneManager.activeProject?.filePath ?? '');
@@ -549,7 +625,19 @@ export class SeriesManager {
 
             // Trash is the commit point. Before this succeeds every move and
             // every copied Library file can still be reversed in place.
-            await this.app.fileManager.trashFile(seriesEntry);
+            const indexed = seriesEntry ?? this.app.vault.getAbstractFileByPath(folder);
+            if (indexed instanceof TFolder) {
+                await this.app.fileManager.trashFile(indexed);
+            } else {
+                const leftover = await adapter.list(folder).catch(() => ({ files: [] as string[], folders: [] as string[] }));
+                for (const file of leftover.files) {
+                    const name = file.split('/').pop() ?? '';
+                    if (isUntrackedLibraryNoise(name) || name === 'series.json') {
+                        await adapter.remove(file).catch(() => undefined);
+                    }
+                }
+                await adapter.rmdir(folder, false);
+            }
         } catch (error) {
             for (const move of [...movedProjects].reverse()) {
                 if (await adapter.exists(move.target) && !await adapter.exists(move.source)) {
@@ -631,27 +719,56 @@ export class SeriesManager {
      * Shows a notice if link format is not "shortest path".
      */
     checkLinkSettings(): void {
-        const vaultConfig = ((this.app.vault as unknown as { config?: Record<string, unknown> }).config) ?? {};
-
-        // Obsidian stores the "Automatically update internal links" toggle
-        // under the internal key `alwaysUpdateLinks`. When it is `true`,
-        // auto-update is enabled (links are silently updated when files move).
-        // Default (undefined / false) = auto-update is OFF — Obsidian prompts
-        // or leaves stale links.
-        // Note: older Obsidian versions used `promptDelete` for a different
-        // setting ("Confirm before deleting"), so we check both keys for
-        // maximum compatibility, but `alwaysUpdateLinks` is the correct one.
-        const alwaysUpdate = vaultConfig.alwaysUpdateLinks === true;
-        if (!alwaysUpdate) {
+        const alwaysUpdate = this.readAlwaysUpdateLinks();
+        // Missing config is not "off" — vault.config is often empty even when
+        // Settings → Files & Links has the toggle enabled. Only abort when
+        // Obsidian explicitly reports false.
+        if (alwaysUpdate === false) {
             throw new Error(
                 t('Series migration requires “Automatically update internal links”. Enable it under Settings → Files & Links, then try again.')
             );
         }
+        if (alwaysUpdate === null) {
+            new Notice(t('Before moving a project into a series, enable “Automatically update internal links” under Settings → Files & Links.'), 8000);
+        }
 
-        const newLinkFormat = vaultConfig.newLinkFormat;
+        const vault = this.app.vault as unknown as {
+            config?: Record<string, unknown>;
+            getConfig?: (key: string) => unknown;
+        };
+        const newLinkFormat = vault.getConfig?.('newLinkFormat') ?? vault.config?.newLinkFormat;
         if (newLinkFormat && newLinkFormat !== 'shortest') {
             new Notice(t('Before moving a project into a series, set "New link format" to "Shortest path when possible".'), 8000);
         }
+    }
+
+    /** true / false when Obsidian reports the setting; null if unknown. */
+    private readAlwaysUpdateLinks(): boolean | null {
+        const vault = this.app.vault as unknown as {
+            config?: Record<string, unknown>;
+            getConfig?: (key: string) => unknown;
+        };
+        const fromGetConfig = vault.getConfig?.('alwaysUpdateLinks');
+        if (fromGetConfig === true || fromGetConfig === false) return fromGetConfig;
+        if (vault.config && Object.prototype.hasOwnProperty.call(vault.config, 'alwaysUpdateLinks')) {
+            return vault.config.alwaysUpdateLinks === true;
+        }
+        return null;
+    }
+
+    private manifestPathInFolder(bookFolder: string, originalProjectFile: string): string {
+        const name = originalProjectFile.split('/').pop()
+            || `${bookFolder.split('/').pop() ?? 'project'}.md`;
+        return normalizePath(`${bookFolder}/${name}`);
+    }
+
+    private async resolveMovedProject(expectedPath: string, missingMessage: string): Promise<StoryLineProject> {
+        for (let attempt = 0; attempt < 8; attempt++) {
+            const found = await this.plugin.sceneManager.loadProjectFromPath(expectedPath);
+            if (found) return found;
+            await new Promise<void>(resolve => window.setTimeout(resolve, 80 * (attempt + 1)));
+        }
+        throw new Error(missingMessage);
     }
 
     // ── File operations ────────────────────────────────
@@ -679,6 +796,14 @@ export class SeriesManager {
             return;
         }
 
+        // Folder is on disk but not in the vault index yet (OneDrive / cold start).
+        if (await this.app.vault.adapter.exists(src)) {
+            const parent = dest.includes('/') ? dest.slice(0, dest.lastIndexOf('/')) : '';
+            if (parent) await this.ensureFolder(parent);
+            await this.app.vault.adapter.rename(src, dest);
+            return;
+        }
+
         throw new Error(t('Could not find the indexed project folder: {path}. Wait for Obsidian to finish indexing and try again.', {
             path: src,
         }));
@@ -694,9 +819,10 @@ export class SeriesManager {
     }
 
     /**
-     * Migrate all files from a book's Library folder to the series Library folder.
+     * Migrate shared Library material from a book's Library into the series Library.
+     * Per-project artifacts (datasheet.xlsx, library.base) stay with the book.
      * Identical duplicates are recorded for post-commit cleanup. A same-name
-     * file with different bytes aborts before either version can be lost.
+     * entity file with different bytes aborts before either version can be lost.
      * Removes the source Library folder when done (if empty).
      */
     private async migrateCodexFolder(
@@ -712,6 +838,11 @@ export class SeriesManager {
         // Migrate files at this level
         for (const filePath of listing.files) {
             const fileName = filePath.split('/').pop() ?? '';
+            if (isUntrackedLibraryNoise(fileName)) {
+                await adapter.remove(filePath).catch(() => undefined);
+                continue;
+            }
+            if (isProjectScopedLibraryArtifact(fileName)) continue;
             const destFile = normalizePath(`${destCodex}/${fileName}`);
             if (await adapter.exists(destFile)) {
                 if (!await this.filesHaveSameBytes(filePath, destFile)) {
@@ -724,18 +855,24 @@ export class SeriesManager {
             }
             // Use fileManager.renameFile for safe link updates
             const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (!(file instanceof TFile)) {
-                throw new Error(t('Could not find the indexed Library file: {path}. Wait for Obsidian to finish indexing and try again.', {
-                    path: filePath,
-                }));
+            if (file instanceof TFile) {
+                await this.app.fileManager.renameFile(file, destFile);
+                journal.movedFiles.push({ from: normalizePath(filePath), to: destFile });
+                continue;
             }
-            await this.app.fileManager.renameFile(file, destFile);
-            journal.movedFiles.push({ from: normalizePath(filePath), to: destFile });
+            // On disk but not yet in the vault index (Finder junk already skipped; sync lag / binaries)
+            if (await adapter.exists(filePath)) {
+                const destParent = destFile.includes('/') ? destFile.slice(0, destFile.lastIndexOf('/')) : destFile;
+                await this.ensureFolder(destParent);
+                await adapter.rename(filePath, destFile);
+                journal.movedFiles.push({ from: normalizePath(filePath), to: destFile });
+            }
         }
 
         // Recursively migrate subfolders
         for (const subFolder of listing.folders) {
             const subName = subFolder.split('/').pop() ?? '';
+            if (isUntrackedLibraryNoise(subName) || subName.startsWith('.')) continue;
             const destSub = normalizePath(`${destCodex}/${subName}`);
             await this.ensureFolder(destSub);
             await this.migrateCodexFolder(subFolder, destSub, journal);
@@ -767,6 +904,7 @@ export class SeriesManager {
 
         for (const filePath of listing.files) {
             const fileName = filePath.split('/').pop() ?? '';
+            if (isUntrackedLibraryNoise(fileName) || isProjectScopedLibraryArtifact(fileName)) continue;
             const destFile = normalizePath(`${dest}/${fileName}`);
             if (await adapter.exists(destFile)) {
                 if (await this.filesHaveSameBytes(filePath, destFile)) continue;
@@ -783,6 +921,7 @@ export class SeriesManager {
 
         for (const subFolder of listing.folders) {
             const subName = subFolder.split('/').pop() ?? '';
+            if (isUntrackedLibraryNoise(subName) || subName.startsWith('.')) continue;
             await this.copyFolderRecursive(subFolder, normalizePath(`${dest}/${subName}`), journal);
         }
         return journal;
@@ -839,7 +978,8 @@ export class SeriesManager {
     private async ensureFolder(folderPath: string): Promise<void> {
         const adapter = this.app.vault.adapter;
         const folder = normalizePath(folderPath);
-        if (!folder || await adapter.exists(folder)) return;
+        if (!folder || this.plugin.sceneManager.isDeletedProjectPath(folder)) return;
+        if (await adapter.exists(folder)) return;
         const slash = folder.lastIndexOf('/');
         if (slash > 0) await this.ensureFolder(folder.slice(0, slash));
         if (!await adapter.exists(folder)) await adapter.mkdir(folder);
