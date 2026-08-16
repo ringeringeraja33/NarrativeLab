@@ -633,6 +633,9 @@ function resolveUniverStyle(
 /** Prefer Univer rich-text `p` (live edits) over plain `v`. Null when neither is present. */
 function univerCellPlainText(raw: UniverCellSnapshot | null): string | null {
     if (!raw || (!('v' in raw) && !('p' in raw))) return null;
+    // An explicit empty `v` is a committed clear (Delete / Backspace / unlink).
+    // Univer often leaves a stale `p` document behind; that must not resurrect text.
+    if ('v' in raw && cellValueText(raw.v) === '') return '';
     const richText = univerDocumentPlainText(raw.p);
     return richText || cellValueText(raw.v);
 }
@@ -1569,13 +1572,19 @@ export function mergeUniverCellDataIntoDocument(
     rows.forEach((row, ri) => {
         cols.forEach((col, ci) => {
             const key = cellKey(row.id, col.id);
-            const raw = cellData[ri + 1]?.[ci + 1];
+            const rowBucket = cellData[ri + 1] as Record<number, UniverCellSnapshot | null> | undefined;
+            const raw = rowBucket?.[ci + 1];
             const existing = page.cells[key] || defaultCell({ id: key });
             // Mid-edit workbook.save() often omits the active cell. Treating that as a
             // clear wipes content and, after remount, interrupts IME (pinyin flies away).
-            if (!raw || (!('v' in raw) && !('p' in raw))) {
-                if (!clearMissing) return;
-                const rowBucket = cellData[ri + 1];
+            // Univer "Clear all" writes an explicit null into the matrix; "Clear contents"
+            // writes `{ v: null, p: null, custom: null }`. Those are committed clears even
+            // when the surrounding snapshot is still sparse.
+            if (raw == null || (!('v' in raw) && !('p' in raw))) {
+                const explicitNull = rowBucket != null
+                    && (ci + 1) in rowBucket
+                    && !raw;
+                if (!clearMissing && !explicitNull) return;
                 const headerPresent = cellData[0] != null;
                 if ((existing.content || existing.formula) && (rowBucket != null || headerPresent)) {
                     page.cells[key] = {
@@ -1596,10 +1605,13 @@ export function mergeUniverCellDataIntoDocument(
             // Preserve Markdown/HTML while Univer's native rich text still
             // represents it. A direct in-cell edit intentionally becomes plain
             // text; syntax-rich edits belong in the focused cell editor.
-            const nextContent = storedSource
-                && plotGridSourceToUniverRichText(storedSource).displayText === displayText
-                ? storedSource
-                : displayText;
+            // Empty display never keeps a leftover Markdown/wikilink source.
+            const nextContent = !displayText
+                ? ''
+                : (storedSource
+                    && plotGridSourceToUniverRichText(storedSource).displayText === displayText
+                    ? storedSource
+                    : displayText);
             const style = resolveUniverStyle(raw, styles);
             const nextFormula = typeof raw.f === 'string' && raw.f.trim()
                 ? (raw.f.startsWith('=') ? raw.f : `=${raw.f}`)

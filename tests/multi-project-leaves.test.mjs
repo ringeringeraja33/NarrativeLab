@@ -150,6 +150,15 @@ test('in-view titles follow the leaf-bound project, not the focused tab', () => 
     }
 });
 
+test('Library Archive/Browse and category chrome stay per project', () => {
+    assert.match(codexView, /getLibraryContentMode\(this\.plugin, this\.getBoundProjectFile\(\)\)/);
+    assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile', this\.getBoundProjectFile\(\)\)/);
+    assert.match(codexTabs, /getLeafNarrativeLabProjectFile\(leaf\)/);
+    assert.match(codexTabs, /rememberLibraryCategory\(plugin, categoryId, projectFile\)/);
+    assert.match(viewSwitcher, /resolveLibraryViewType\(plugin, projectFile\)/);
+    assert.doesNotMatch(codexView, /getLibraryContentMode\(this\.plugin\) ===/);
+});
+
 test('Global refresh skips leaves bound to another project', () => {
     const refresh = mainTs.slice(
         mainTs.indexOf('private async doRefreshOpenViews('),

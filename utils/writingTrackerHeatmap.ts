@@ -1,0 +1,152 @@
+/** ISO date (YYYY-MM-DD) in local time. */
+export function writingTrackerDateKey(date: Date): string {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
+export function parseWritingTrackerDate(key: string): Date | null {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+    if (!match) return null;
+    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
+export function addCalendarDays(date: Date, days: number): Date {
+    const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    next.setDate(next.getDate() + days);
+    return next;
+}
+
+/** Monday as the first day of the week. */
+export function startOfWeekMonday(date: Date): Date {
+    const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const dow = next.getDay();
+    const daysSinceMonday = dow === 0 ? 6 : dow - 1;
+    next.setDate(next.getDate() - daysSinceMonday);
+    return next;
+}
+
+export type HeatmapLevel = 0 | 1 | 2 | 3 | 4;
+
+/** 0 empty, 1–3 partial, 4 at/over the daily goal. */
+export function heatmapLevel(words: number, dailyGoal: number): HeatmapLevel {
+    const count = Math.max(0, words);
+    if (count <= 0) return 0;
+    const goal = dailyGoal > 0 ? dailyGoal : 1000;
+    const ratio = count / goal;
+    if (ratio >= 1) return 4;
+    if (ratio >= 0.5) return 3;
+    if (ratio >= 0.25) return 2;
+    return 1;
+}
+
+export interface HeatmapCell {
+    date: string;
+    words: number;
+    level: HeatmapLevel;
+    inRange: boolean;
+}
+
+export interface HeatmapWeek {
+    start: string;
+    days: HeatmapCell[];
+}
+
+function cellFor(
+    date: Date,
+    history: Record<string, number>,
+    dailyGoal: number,
+    inRange: boolean,
+): HeatmapCell {
+    const key = writingTrackerDateKey(date);
+    const words = inRange ? (history[key] || 0) : 0;
+    return {
+        date: key,
+        words,
+        level: inRange ? heatmapLevel(words, dailyGoal) : 0,
+        inRange,
+    };
+}
+
+/**
+ * Weeks as rows (oldest at the top), Monday–Sunday across.
+ * Suited to a narrow right sidebar.
+ */
+export function buildVerticalHeatmapWeeks(
+    history: Record<string, number>,
+    weekCount: number,
+    dailyGoal: number,
+    today = new Date(),
+): HeatmapWeek[] {
+    const weeks = Math.max(1, Math.min(52, Math.round(weekCount) || 16));
+    const thisMonday = startOfWeekMonday(today);
+    const firstMonday = addCalendarDays(thisMonday, -7 * (weeks - 1));
+    const out: HeatmapWeek[] = [];
+    for (let w = 0; w < weeks; w++) {
+        const monday = addCalendarDays(firstMonday, 7 * w);
+        const days: HeatmapCell[] = [];
+        for (let d = 0; d < 7; d++) {
+            const day = addCalendarDays(monday, d);
+            const inRange = day.getTime() <= today.getTime();
+            days.push(cellFor(day, history, dailyGoal, inRange));
+        }
+        out.push({ start: writingTrackerDateKey(monday), days });
+    }
+    return out;
+}
+
+/**
+ * GitHub-style calendar: weeks as columns, Monday–Sunday as rows.
+ */
+export function buildYearHeatmapWeeks(
+    history: Record<string, number>,
+    year: number,
+    dailyGoal: number,
+    today = new Date(),
+): HeatmapWeek[] {
+    const start = new Date(year, 0, 1);
+    const end = new Date(year, 11, 31);
+    const firstMonday = startOfWeekMonday(start);
+    const lastMonday = startOfWeekMonday(end);
+    const out: HeatmapWeek[] = [];
+    for (let monday = firstMonday; monday.getTime() <= lastMonday.getTime(); monday = addCalendarDays(monday, 7)) {
+        const days: HeatmapCell[] = [];
+        for (let d = 0; d < 7; d++) {
+            const day = addCalendarDays(monday, d);
+            const inYear = day.getFullYear() === year;
+            const inRange = inYear && day.getTime() <= today.getTime();
+            days.push(cellFor(day, history, dailyGoal, inRange));
+        }
+        out.push({ start: writingTrackerDateKey(monday), days });
+    }
+    return out;
+}
+
+export const WRITING_TRACKER_FILENAME = 'writing-tracker.json';
+
+export function parseWritingTrackerFile(raw: unknown): {
+    history: Record<string, number>;
+    revisionHistory: Record<string, number>;
+} {
+    const history: Record<string, number> = {};
+    const revisionHistory: Record<string, number> = {};
+    if (!raw || typeof raw !== 'object') return { history, revisionHistory };
+    const obj = raw as Record<string, unknown>;
+    if (obj.history && typeof obj.history === 'object') {
+        for (const [key, value] of Object.entries(obj.history as Record<string, unknown>)) {
+            if (!parseWritingTrackerDate(key)) continue;
+            const words = Number(value);
+            if (Number.isFinite(words) && words !== 0) history[key] = words;
+        }
+    }
+    if (obj.revisionHistory && typeof obj.revisionHistory === 'object') {
+        for (const [key, value] of Object.entries(obj.revisionHistory as Record<string, unknown>)) {
+            if (!parseWritingTrackerDate(key)) continue;
+            const words = Number(value);
+            if (Number.isFinite(words) && words !== 0) revisionHistory[key] = words;
+        }
+    }
+    return { history, revisionHistory };
+}

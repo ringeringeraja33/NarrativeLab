@@ -612,6 +612,14 @@ export interface SceneCardsSettings {
     /** Remembered Library category tab (characters, locations, or a codex id) */
     lastLibraryCategoryId: string;
     /**
+     * Per-project Library chrome (Archive/Browse + category). Global
+     * lastLibrary* keys are a fallback for the focused project only.
+     */
+    libraryUiByProject: Record<string, {
+        contentMode?: 'profile' | 'browse' | 'story-graph';
+        categoryId?: string;
+    }>;
+    /**
      * Remembered Structure sub-tab:
      * timeline / tracks (Timeline view) or plot-list / subway (Storyline view).
      */
@@ -644,6 +652,14 @@ export interface SceneCardsSettings {
     plotGridMarkdownEditMode: boolean;
     showNotesInKanban: boolean;
     showScenesInCorkboard: boolean;
+    /** Restore workspace floating sticky notes after Obsidian starts. */
+    showFloatingStickyNotes: boolean;
+    /** Debounced save of floating sticky note text while typing. */
+    floatingStickyNoteAutoSave: boolean;
+    /** Resting opacity for floating sticky notes (0.4–1). */
+    floatingStickyNoteOpacity: number;
+    /** Next corkboard colour index used when creating a floating sticky note. */
+    nextFloatingStickyNoteColorIndex: number;
     colorCoding: ColorCodingMode;
     showWordCounts: boolean;
     /** Exclude Arc Point scenes from aggregate word counts and stats */
@@ -659,6 +675,12 @@ export interface SceneCardsSettings {
     weeklyWordGoal: number;
     monthlyWordGoal: number;
     projectWordGoal: number;
+    /** Default timed sprint length. */
+    sprintDurationMinutes: number;
+    /** Open the writing-tracker panel in the right sidebar on layout ready. */
+    autoOpenWritingTrackerPanel: boolean;
+    /** Weeks shown in the sidebar vertical heatmap (4–52). */
+    writingTrackerHeatmapWeeks: number;
 
     // Custom location types (user-defined)
     customLocationTypes?: string[];
@@ -1001,6 +1023,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     lastBoardGroupBy: 'act',
     lastLibraryContentMode: 'profile',
     lastLibraryCategoryId: 'characters',
+    libraryUiByProject: {},
     lastStructureMode: 'timeline',
     lastStorylineViewMode: 'subway',
     lastStorylineSortMode: 'reading-order',
@@ -1015,6 +1038,10 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     plotGridMarkdownEditMode: false,
     showNotesInKanban: false,
     showScenesInCorkboard: true,
+    showFloatingStickyNotes: true,
+    floatingStickyNoteAutoSave: true,
+    floatingStickyNoteOpacity: 0.92,
+    nextFloatingStickyNoteColorIndex: 0,
     colorCoding: 'status',
     showWordCounts: true,
     excludeArcAnchorFromWordcount: true,
@@ -1027,6 +1054,9 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     weeklyWordGoal: 7000,
     monthlyWordGoal: 30000,
     projectWordGoal: 80000,
+    sprintDurationMinutes: 25,
+    autoOpenWritingTrackerPanel: false,
+    writingTrackerHeatmapWeeks: 16,
     customLocationTypes: [],
 
     enablePlotHoleDetection: true,
@@ -1118,7 +1148,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
 };
 
 /** Settings page horizontal tab ids */
-type NarrativeLabSettingsTabId = 'general' | 'scenes' | 'templates' | 'display' | 'colors' | 'writing' | 'export';
+type NarrativeLabSettingsTabId = 'general' | 'scenes' | 'templates' | 'display' | 'colors' | 'writing' | 'tracker' | 'export';
 
 /**
  * Settings tab for the NarrativeLab plugin
@@ -1152,6 +1182,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             { id: 'display', label: 'Display' },
             { id: 'colors', label: 'Colors' },
             { id: 'writing', label: 'Writing' },
+            { id: 'tracker', label: 'Tracker' },
             { id: 'export', label: 'Converter / Export & Import' },
         ];
         const tabBar = containerEl.createDiv('nl-settings-tabs');
@@ -1184,6 +1215,9 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                 break;
             case 'writing':
                 this.renderWritingSettingsTab(panel);
+                break;
+            case 'tracker':
+                this.renderTrackerSettingsTab(panel);
                 break;
             case 'export':
                 this.renderExportAdvancedSettingsTab(panel);
@@ -1684,6 +1718,40 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     this.plugin.settings.showScenesInCorkboard = value;
                     await this.plugin.saveSettings();
                     this.plugin.refreshOpenViews();
+                }));
+
+        new Setting(panel).setName(t('Floating sticky notes')).setHeading();
+        new Setting(panel)
+            .setName(t('Show floating sticky notes'))
+            .setDesc(t('Keep saved sticky notes on the workspace after Obsidian starts.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.showFloatingStickyNotes !== false)
+                .onChange(async (value) => {
+                    this.plugin.settings.showFloatingStickyNotes = value;
+                    this.plugin.floatingStickyNotes.applyHiddenClass();
+                    if (value) this.plugin.floatingStickyNotes.restoreFloatingNotes();
+                    await this.plugin.saveSettings();
+                }));
+        new Setting(panel)
+            .setName(t('Auto-save sticky notes'))
+            .setDesc(t('Save note text while you type. Closing a note still asks before writing a Markdown file.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.floatingStickyNoteAutoSave !== false)
+                .onChange(async (value) => {
+                    this.plugin.settings.floatingStickyNoteAutoSave = value;
+                    await this.plugin.saveSettings();
+                }));
+        new Setting(panel)
+            .setName(t('Sticky note opacity'))
+            .setDesc(t('How see-through notes are until you hover them.'))
+            .addSlider(slider => slider
+                .setLimits(40, 100, 5)
+                .setValue(Math.round((this.plugin.settings.floatingStickyNoteOpacity ?? 0.92) * 100))
+                .setDynamicTooltip()
+                .onChange(async (value) => {
+                    this.plugin.settings.floatingStickyNoteOpacity = value / 100;
+                    this.plugin.floatingStickyNotes.applyVisuals();
+                    await this.plugin.saveSettings();
                 }));
 
         new Setting(panel)
@@ -2236,6 +2304,101 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         noteColorBody.setCssStyles({ padding: '8px 0' });
         this.renderStickyNoteSettings(noteColorBody);
 
+    }
+
+    private renderTrackerSettingsTab(panel: HTMLElement): void {
+        new Setting(panel).setName(t('Writing tracker')).setHeading();
+
+        new Setting(panel)
+            .setName(t('Open tracker panel on startup'))
+            .setDesc(t('Open the writing tracker in the right sidebar when Obsidian loads.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.autoOpenWritingTrackerPanel === true)
+                .onChange(async (value) => {
+                    this.plugin.settings.autoOpenWritingTrackerPanel = value;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Heatmap weeks'))
+            .setDesc(t('How many weeks the sidebar vertical heatmap shows (4–52).'))
+            .addText(text => text
+                .setPlaceholder('16')
+                .setValue(String(this.plugin.settings.writingTrackerHeatmapWeeks || 16))
+                .onChange(async (value) => {
+                    const n = Math.max(4, Math.min(52, Number(value) || 16));
+                    this.plugin.settings.writingTrackerHeatmapWeeks = n;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Default sprint length'))
+            .setDesc(t('Minutes used when a sprint is not already running.'))
+            .addText(text => text
+                .setPlaceholder('25')
+                .setValue(String(this.plugin.settings.sprintDurationMinutes || 25))
+                .onChange(async (value) => {
+                    const mins = Math.max(1, Math.min(120, Number(value) || 25));
+                    this.plugin.settings.sprintDurationMinutes = mins;
+                    this.plugin.writingTracker.setSprintDuration(mins * 60_000);
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel).setName(t('Writing Goals')).setHeading();
+
+        new Setting(panel)
+            .setName(t('Daily word goal'))
+            .setDesc(t('Target number of words per day (sidebar, Tracker page, and Stats).'))
+            .addText(text => text
+                .setPlaceholder('1000')
+                .setValue(String(this.plugin.settings.dailyWordGoal))
+                .onChange(async (value) => {
+                    this.plugin.settings.dailyWordGoal = Number(value) || 1000;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Weekly word goal'))
+            .setDesc(t('Target number of words per week (Monday → today).'))
+            .addText(text => text
+                .setPlaceholder('7000')
+                .setValue(String(this.plugin.settings.weeklyWordGoal))
+                .onChange(async (value) => {
+                    this.plugin.settings.weeklyWordGoal = Number(value) || 7000;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Monthly word goal'))
+            .setDesc(t('Target number of words for the current calendar month.'))
+            .addText(text => text
+                .setPlaceholder('30000')
+                .setValue(String(this.plugin.settings.monthlyWordGoal))
+                .onChange(async (value) => {
+                    this.plugin.settings.monthlyWordGoal = Number(value) || 30000;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Project word goal'))
+            .setDesc(t('Target total words for the active project (shown in Stats).'))
+            .addText(text => text
+                .setPlaceholder('80000')
+                .setValue(String(this.plugin.settings.projectWordGoal))
+                .onChange(async (value) => {
+                    this.plugin.settings.projectWordGoal = Number(value) || 80000;
+                    await this.plugin.saveSettings();
+                }));
+
+        new Setting(panel)
+            .setName(t('Sprint end sound'))
+            .setDesc(t('Play a chime when the writing sprint timer reaches zero'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.sprintEndSound)
+                .onChange(async (value) => {
+                    this.plugin.settings.sprintEndSound = value;
+                    await this.plugin.saveSettings();
+                }));
     }
 
     private renderWritingSettingsTab(panel: HTMLElement): void {

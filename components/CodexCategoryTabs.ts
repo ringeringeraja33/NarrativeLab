@@ -14,7 +14,10 @@ import {
     rememberLibraryCategory,
     setLibraryContentMode,
 } from './LibraryModeBar';
-import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
+import {
+    getLeafNarrativeLabProjectFile,
+    preservedNarrativeLabLeafState,
+} from '../utils/narrativeLabLeafState';
 import {
     deleteLibraryCategory,
     renameLibraryCategory,
@@ -71,10 +74,11 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     const overrideFor = (id: string) => categoryOverrides.find(category => category.id === id);
     const charName = resolveLibraryCategoryLabel(plugin, 'characters', 'Characters');
     const locName = resolveLibraryCategoryLabel(plugin, 'locations', 'Locations');
+    const projectFile = getLeafNarrativeLabProjectFile(leaf);
     const activateCategory = (categoryId: string): void => {
-        rememberLibraryCategory(plugin, categoryId);
-        if (getLibraryContentMode(plugin) === 'story-graph') {
-            setLibraryContentMode(plugin, 'profile');
+        rememberLibraryCategory(plugin, categoryId, projectFile);
+        if (getLibraryContentMode(plugin, projectFile) === 'story-graph') {
+            setLibraryContentMode(plugin, 'profile', projectFile);
         }
         onCategoryActivate?.(categoryId);
     };
@@ -485,7 +489,7 @@ function switchTo(
     viewType: string,
     categoryId?: string,
 ): void {
-    if (categoryId) rememberLibraryCategory(plugin, categoryId);
+    if (categoryId) rememberLibraryCategory(plugin, categoryId, getLeafNarrativeLabProjectFile(leaf));
     try {
         leaf.setViewState({
             type: viewType,

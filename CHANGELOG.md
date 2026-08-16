@@ -1,5 +1,15 @@
 # NarrativeLab — Changelog
 
+## 1.0.1
+
+- Concept Grid unlink (chip × and 「取消链接」) now keeps the visible note name as plain text instead of wiping the cell.
+- Archive/Browse and the remembered Library category are stored per project, so focusing another project no longer leaks the previous book's Library chrome.
+- Plotlines no longer leak across projects: the in-memory registry is swapped (or cleared) as soon as the active project changes, and `System/plotlines.json` saves refuse to write another book's threads.
+- Writing tracker: a right-sidebar panel (vault / project), a vertical net-word heatmap, a ribbon-opened Tracker page, and a dedicated Tracker settings tab.
+- Desktop floating sticky notes: drag, resize, pin, palette, Markdown preview, and save to a vault folder (dropdown plus path). Hovering the colour control no longer flashes white.
+- Univer right-click **Clear contents** / **Clear all** now clears the Markdown cell source as well as the grid, so reopening the cell editor is empty.
+- Connected-notes chips no longer sit inside Obsidian's default button padding, and the Chinese convert action is labeled 「转为研究」.
+
 ## 1.0.0 — Community release
 
 - Prepared NarrativeLab for the Obsidian Community directory with complete user, contributor, security, privacy, release, and submission documentation.

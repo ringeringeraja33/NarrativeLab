@@ -26,13 +26,25 @@ export class PlotlineManager {
     }
 
     /** Load definitions from parsed plotlines.json payload. */
-    applyLoaded(raw: unknown): void {
+    applyLoaded(raw: unknown, projectFile?: string): void {
         this.plugin.plotlineDefinitions = normalizePlotlineDefinitions(raw);
         this.seeded = this.plugin.plotlineDefinitions.length > 0;
+        this.plugin.claimPlotlineRegistry(projectFile || this.sceneManager.activeProject?.filePath || '');
+    }
+
+    markLoaded(seeded: boolean): void {
+        this.seeded = seeded;
     }
 
     /** Seed definitions from existing tags when plotlines.json has none yet. */
     async ensureSeeded(): Promise<void> {
+        const activeFile = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : '';
+        const owner = this.plugin.plotlineRegistryOwner
+            ? normalizePath(this.plugin.plotlineRegistryOwner)
+            : '';
+        if (owner && activeFile && owner !== activeFile) return;
         if (this.seeded || this.plugin.plotlineDefinitions.length > 0) {
             this.seeded = true;
             return;
@@ -58,6 +70,7 @@ export class PlotlineManager {
 
         this.plugin.plotlineDefinitions = definitions;
         this.seeded = true;
+        this.plugin.claimPlotlineRegistry(this.sceneManager.activeProject?.filePath || '');
         await this.plugin.saveProjectSystemData();
     }
 
@@ -97,6 +110,7 @@ export class PlotlineManager {
             label: normalized,
             scenePaths: [],
         });
+        this.plugin.claimPlotlineRegistry(this.sceneManager.activeProject?.filePath || '');
 
         const project = this.sceneManager.activeProject;
         if (project) {
@@ -188,6 +202,14 @@ export class PlotlineManager {
 
     /** Keep scenePaths in sync when scene tags change outside assign/unassign. */
     syncSceneTags(scenePath: string, oldTags: string[], newTags: string[]): Promise<void> {
+        const activeFile = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : '';
+        const owner = this.plugin.plotlineRegistryOwner
+            ? normalizePath(this.plugin.plotlineRegistryOwner)
+            : '';
+        if (owner && activeFile && owner !== activeFile) return Promise.resolve();
+
         const oldSet = new Set(oldTags);
         const newSet = new Set(newTags);
         let dirty = false;

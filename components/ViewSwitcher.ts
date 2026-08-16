@@ -22,8 +22,9 @@ import { resolveLibraryCategoryLabel } from '../services/LibraryCategorySync';
 import { t } from '../utils/i18n';
 import {
     preservedNarrativeLabLeafState,
+    getLeafNarrativeLabProjectFile,
 } from '../utils/narrativeLabLeafState';
-import { resolveLibraryViewType } from './LibraryModeBar';
+import { getRememberedLibraryCategory, resolveLibraryViewType } from './LibraryModeBar';
 import { resolveStructureViewType } from './StructureModeSwitcher';
 
 export interface ViewSwitcherEntry {
@@ -104,7 +105,8 @@ export function renderViewSwitcher(
                     showCodexDropdown(tab, plugin, leaf, activeViewType);
                     return;
                 }
-                const targetType = resolveLibraryViewType(plugin);
+                const projectFile = getLeafNarrativeLabProjectFile(leaf);
+                const targetType = resolveLibraryViewType(plugin, projectFile);
                 void leaf.setViewState({
                     type: targetType,
                     active: true,
@@ -113,7 +115,7 @@ export function renderViewSwitcher(
                     plugin.app.workspace.revealLeaf(leaf);
                     if (targetType === CODEX_VIEW_TYPE) {
                         window.setTimeout(() => {
-                            const remembered = plugin.settings.lastLibraryCategoryId || '';
+                            const remembered = getRememberedLibraryCategory(plugin, projectFile);
                             if (!remembered || remembered === 'characters' || remembered === 'locations') return;
                             const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
                             view.setActiveCategory?.(remembered);

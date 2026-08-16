@@ -57,7 +57,7 @@ function injectUniverCss(activeDocument: Document): void {
 }
 
 import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
-import { cellHasNoteLink } from '../utils/plotGridCellEdit';
+import { cellHasNoteLink, getPlotGridCellAtUniverCoords } from '../utils/plotGridCellEdit';
 import {
     conceptGridContentFingerprint,
     documentToUniverWorkbookData,
@@ -127,6 +127,8 @@ export interface PlotGridUniverHost {
     getActiveCell: () => { sheetId: string; row: number; col: number } | null;
     /** Write one cell's Markdown source without remounting the workbook. */
     applyCellSource: (sheetId: string, row: number, col: number, source: string) => void;
+    /** Display text currently painted by Univer, or null if the cell cannot be read. */
+    readLiveCellPlainText: (sheetId: string, row: number, col: number) => string | null;
     /** True while the in-cell / formula editor or IME composition is active. */
     isEditorBusy: () => boolean;
     /** True when a debounced Univer→document pull is waiting (or editor still open). */
@@ -168,7 +170,7 @@ type UniverAPI = {
             refreshCanvas?: () => unknown;
             getRange: (r: number, c: number) => {
                 getValue: () => unknown;
-                getCellData: () => { v?: unknown } | null;
+                getCellData: () => { v?: unknown; p?: unknown; f?: unknown; custom?: Record<string, unknown> } | null;
                 setValue?: (value: unknown) => unknown;
                 activate?: () => unknown;
             };
@@ -232,6 +234,9 @@ const FINANCIAL_FORMULA_MENU_ORDER = 99;
 const TEXT_TO_NUMBER_TOOLBAR_MENU_ID = 'sheet.toolbar.text-to-number';
 const FILTER_TOOLBAR_GROUP_ORDER = -100;
 
+const UNIVER_CONTEXT_SUBMENU_SELECTOR = '[data-u-context-menu-submenu="true"]';
+const UNIVER_CONTEXT_MENU_HOST_ID = 'desktop-context-menu';
+
 function hideUniverContextMenu(univer: Univer): void {
     try {
         // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
@@ -241,6 +246,93 @@ function hideUniverContextMenu(univer: Univer): void {
     } catch {
         // Optional — older builds may not expose the service.
     }
+}
+
+function isUniverContextMenuOpen(univer: Univer, doc: Document): boolean {
+    try {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        const menuService = univer.__getInjector().get('ui.contextmenu.service');
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        if (menuService?.visible) return true;
+    } catch {
+        // Optional — older builds may not expose the service.
+    }
+    return !!doc.getElementById(UNIVER_CONTEXT_MENU_HOST_ID)
+        || !!doc.querySelector(UNIVER_CONTEXT_SUBMENU_SELECTOR);
+}
+
+/** Hide leftover flyouts that Univer keeps for 500ms. Never touch a still-hidden
+ * positioning frame — that is the menu the user just hovered and must appear. */
+function retireOlderVisibleUniverSubmenus(doc: Document): void {
+    const menus = Array.from(doc.querySelectorAll(UNIVER_CONTEXT_SUBMENU_SELECTOR))
+        .filter((node): node is HTMLElement => node.instanceOf(HTMLElement));
+    const visible = menus.filter(node => node.style.visibility !== 'hidden');
+    for (const node of visible.slice(0, -1)) {
+        node.classList.add('narrativelab-univer-submenu-retired');
+    }
+}
+
+/** Univer measures submenu position on one rAF and only retries on scroll/resize.
+ * A missed first frame leaves the flyout `visibility: hidden` forever. */
+function kickUniverSubmenuPosition(doc: Document): void {
+    const pending = Array.from(doc.querySelectorAll(UNIVER_CONTEXT_SUBMENU_SELECTOR))
+        .some(node => node.instanceOf(HTMLElement) && node.style.visibility === 'hidden');
+    if (!pending) return;
+    const view = doc.defaultView;
+    if (!view) return;
+    view.requestAnimationFrame(() => {
+        view.requestAnimationFrame(() => {
+            view.dispatchEvent(new Event('scroll'));
+        });
+    });
+}
+
+function installUniverContextMenuGuard(
+    univer: Univer,
+    doc: Document,
+    container: HTMLElement,
+    onMenuOpened: () => void,
+    onMenuClosed: () => void,
+): () => void {
+    let wasOpen = false;
+    let frame = 0;
+    const sync = () => {
+        const open = isUniverContextMenuOpen(univer, doc);
+        if (open) {
+            retireOlderVisibleUniverSubmenus(doc);
+            kickUniverSubmenuPosition(doc);
+            if (!wasOpen) onMenuOpened();
+        } else if (wasOpen) {
+            onMenuClosed();
+        }
+        wasOpen = open;
+    };
+    const onChange = () => {
+        if (frame) return;
+        frame = doc.defaultView?.requestAnimationFrame(() => {
+            frame = 0;
+            sync();
+        }) ?? 0;
+        if (!frame) sync();
+    };
+    const onContextMenu = () => {
+        onMenuOpened();
+    };
+    const observer = new MutationObserver(onChange);
+    observer.observe(doc.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'class'],
+    });
+    container.addEventListener('contextmenu', onContextMenu, true);
+    doc.addEventListener('pointerdown', onChange, true);
+    return () => {
+        observer.disconnect();
+        container.removeEventListener('contextmenu', onContextMenu, true);
+        doc.removeEventListener('pointerdown', onChange, true);
+        if (frame) doc.defaultView?.cancelAnimationFrame(frame);
+    };
 }
 
 function registerNarrativeLabContextMenu(
@@ -292,7 +384,7 @@ function registerNarrativeLabContextMenu(
         append('narrativelab.plot-grid.unlink', zh ? '取消链接' : 'Unlink Note', 'unlink-note', 1001);
         append('narrativelab.plot-grid.to-notes', zh ? '转为笔记' : 'Convert to Notes', 'convert-to-notes', 1010);
         append('narrativelab.plot-grid.to-scene', zh ? '转为场景' : 'Convert to Scene', 'convert-to-scene', 1011);
-        append('narrativelab.plot-grid.to-research', zh ? '转为调研' : 'Convert to Research', 'convert-to-research', 1012);
+        append('narrativelab.plot-grid.to-research', zh ? '转为研究' : 'Convert to Research', 'convert-to-research', 1012);
         append('narrativelab.plot-grid.reset', zh ? '重置表格' : 'Reset spreadsheet', 'reset-grid', 1020);
     } else if (opts.onRequest) {
         univerAPI.createMenu({
@@ -310,12 +402,8 @@ function registerNarrativeLabContextMenu(
 }
 
 function linkedCellAt(doc: ConceptGridDocument, sheetId: string, row: number, col: number): CellData | null {
-    if (row < 1 || col < 1) return null;
     const page = doc.pages.find(item => item.id === sheetId);
-    const rowMeta = page?.rows[row - 1];
-    const colMeta = page?.columns[col - 1];
-    if (!page || !rowMeta || !colMeta) return null;
-    return page.cells[`${rowMeta.id}-${colMeta.id}`] || null;
+    return getPlotGridCellAtUniverCoords(page, row, col);
 }
 
 function roundedRect(
@@ -871,6 +959,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let dimNotifyTimer = 0;
     let dimPullTimer = 0;
     let pendingAfterEdit = false;
+    let pendingAfterMenu = false;
+    let menuHoldUntil = 0;
     let pendingSetDoc: ConceptGridDocument | null = null;
     let pendingClearMissing = false;
     let pendingMergeDimensions = false;
@@ -878,36 +968,61 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     const applyCellSource = (sheetId: string, row: number, col: number, source: string): void => {
         const page = liveDoc.pages.find(item => item.id === sheetId);
-        if (page) {
-            const rowMeta = page.rows[row - 1];
-            const colMeta = page.columns[col - 1];
-            if (rowMeta && colMeta) {
-                const key = `${rowMeta.id}-${colMeta.id}`;
-                const cell = page.cells[key];
-                if (cell) {
-                    cell.content = source;
-                    cell.manualContent = true;
-                }
-            }
+        const cell = page ? getPlotGridCellAtUniverCoords(page, row, col) : null;
+        if (cell) {
+            cell.content = source;
+            cell.manualContent = true;
         }
         contentFp = conceptGridContentFingerprint(liveDoc);
         suppressUntil = Date.now() + 400;
         try {
             const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
             const rich = source ? plotGridSourceToUniverRichText(source, nativeLinkColor) : null;
-            sheet?.getRange?.(row, col)?.setValue?.({
-                v: rich?.displayText ?? source,
-                p: nativeRichTextEnabled && rich ? rich.cellDocument : undefined,
-                custom: source ? { [PLOTGRID_SOURCE_FIELD]: source } : undefined,
-            });
+            const hasLinkMarkup = /\[\[[^\]]+/.test(source)
+                || /\[[^\]]+\]\([^)]*\)/.test(source)
+                || /<a\b/i.test(source);
+            const payload: Record<string, unknown> = {
+                v: source ? (rich?.displayText ?? source) : '',
+                p: source && nativeRichTextEnabled && rich ? rich.cellDocument : null,
+                custom: source ? { [PLOTGRID_SOURCE_FIELD]: source } : { [PLOTGRID_SOURCE_FIELD]: '' },
+            };
+            // Drop leftover link color when the source is now plain text.
+            if (!hasLinkMarkup && !(cell?.textColor || '').trim()) {
+                payload.s = { cl: null };
+            }
+            sheet?.getRange?.(row, col)?.setValue?.(payload);
         } catch (error) {
             console.warn('[NarrativeLab] Univer applyCellSource failed:', error);
         }
         refreshLinkMarkers();
     };
 
+    const readLiveCellPlainText = (sheetId: string, row: number, col: number): string | null => {
+        try {
+            const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
+            const range = sheet?.getRange?.(row, col);
+            if (!range) return null;
+            const data = range.getCellData?.();
+            const value = range.getValue?.();
+            const asText = (raw: unknown): string => {
+                if (raw == null) return '';
+                if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
+                return '';
+            };
+            if (data && ('v' in data || 'p' in data)) {
+                const fromV = asText(data.v);
+                if ('v' in data && fromV === '') return '';
+                if (fromV) return fromV;
+            }
+            return asText(value);
+        } catch {
+            return null;
+        }
+    };
+
     const isEditorBusy = () => {
-        if (opts.isExternalEditorBusy?.()) return true;
+        // Floating Markdown editors must not freeze Univer pulls — they persist
+        // themselves. Remounts are gated separately via isExternalEditorBusy.
         if (cellEditing || composing) return true;
         // Univer does not always emit set-cell-edit-visible for every edit path,
         // and the formula/cell editor may portal outside the host container.
@@ -936,14 +1051,14 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     };
 
     const applyPendingSetDoc = () => {
-        if (disposed || !pendingSetDoc || isEditorBusy()) return;
+        if (disposed || !pendingSetDoc || isEditorBusy() || opts.isExternalEditorBusy?.()) return;
         const next = pendingSetDoc;
         pendingSetDoc = null;
         liveDoc = next;
         contentFp = conceptGridContentFingerprint(liveDoc);
         // Let Univer finish compositionend / editor teardown before remounting.
         window.setTimeout(() => {
-            if (disposed || isEditorBusy()) {
+            if (disposed || isEditorBusy() || opts.isExternalEditorBusy?.()) {
                 pendingSetDoc = next;
                 return;
             }
@@ -981,6 +1096,16 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         if (disposed) return;
         pendingClearMissing ||= pullOpts.clearMissing === true;
         pendingMergeDimensions ||= pullOpts.mergeDimensions === true;
+        // Keep this short: a long debounce left edits only in Univer while vault
+        // refresh / tab close could reload or save a stale NarrativeLab document.
+        // Never save while the context menu is open: workbook.save() steals the
+        // rAF Univer uses to un-hide the flyout, so "Clear / Insert" never appear
+        // and leftover flyouts stack for 500ms. Hold a short window after
+        // right-click because Univer shows the menu on the next animation frame.
+        if (Date.now() < menuHoldUntil || isUniverContextMenuOpen(univerInstance, opts.container.ownerDocument)) {
+            pendingAfterMenu = true;
+            return;
+        }
         if (isEditorBusy()) {
             pendingAfterEdit = true;
             return;
@@ -995,6 +1120,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         // refresh / tab close could reload or save a stale NarrativeLab document.
         timer = window.setTimeout(() => {
             timer = 0;
+            if (Date.now() < menuHoldUntil || isUniverContextMenuOpen(univerInstance, opts.container.ownerDocument)) {
+                pendingAfterMenu = true;
+                return;
+            }
             if (isEditorBusy()) {
                 pendingAfterEdit = true;
                 return;
@@ -1006,6 +1135,25 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             pullFromUniver(false, { clearMissing, mergeDimensions });
         }, 80);
     };
+
+    disposers.push(installUniverContextMenuGuard(
+        univerInstance,
+        opts.container.ownerDocument,
+        opts.container,
+        () => {
+            pendingAfterMenu = true;
+            menuHoldUntil = Date.now() + 500;
+            if (timer) {
+                window.clearTimeout(timer);
+                timer = 0;
+            }
+        },
+        () => {
+            if (disposed || !pendingAfterMenu) return;
+            pendingAfterMenu = false;
+            schedulePull();
+        },
+    ));
 
     const flushPendingDimensionNotify = () => {
         if (!dimNotifyTimer) return;
@@ -1135,9 +1283,19 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 // Value edits while the cell editor is open are deferred via isEditorBusy.
                 // Also skip noisy formula/doc mutations until the editor session ends —
                 // polling mid-keystroke causes autosave → vault refresh → workbook remount jumps.
+                if (id.startsWith('doc.mutation.') || id.startsWith('doc.command.')) {
+                    if (isEditorBusy()) {
+                        pendingAfterEdit = true;
+                        return;
+                    }
+                }
+                // Delete / Clear contents / Clear all / paste commit as range values
+                // without opening the in-cell editor. Sparse workbook.save() omits
+                // those cells (or stores null), so omissions must be treated as clears
+                // or the Markdown source comes back in the cell editor.
                 if (
-                    id.startsWith('doc.mutation.')
-                    || id.startsWith('doc.command.')
+                    id === 'sheet.command.clear-selection-all'
+                    || id === 'sheet.command.clear-selection-content'
                     || id === 'sheet.mutation.set-range-values'
                     || id === 'sheet.mutation.set-range-formatted-value'
                     || id === 'sheet.command.set-range-values'
@@ -1146,6 +1304,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                         pendingAfterEdit = true;
                         return;
                     }
+                    schedulePull({ clearMissing: true });
+                    return;
                 }
 
                 schedulePull();
@@ -1293,7 +1453,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         getDocument: () => liveDoc,
         setDocument: (doc: ConceptGridDocument) => {
             const next = structuredClone(doc);
-            if (isEditorBusy()) {
+            if (isEditorBusy() || opts.isExternalEditorBusy?.()) {
                 // Remounting mid-edit / mid-IME clears the cell and aborts composition.
                 pendingSetDoc = next;
                 return;
@@ -1350,6 +1510,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             }
         },
         applyCellSource,
+        readLiveCellPlainText,
         setActiveCell: (sheetId: string, row: number, col: number) => {
             const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
             sheet?.getRange?.(row, col)?.activate?.();
@@ -1376,6 +1537,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             if (disposed) return false;
             return isEditorBusy()
                 || pendingAfterEdit
+                || pendingAfterMenu
                 || timer !== 0
                 || pendingAfterSuppress
                 || dimNotifyTimer !== 0
@@ -1386,7 +1548,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             tryCommitCellEditor();
             cellEditing = false;
             composing = false;
-            pendingAfterEdit = false;
+            pendingAfterMenu = false;
             pendingAfterSuppress = false;
             pendingSetDoc = null;
             if (timer) {
@@ -1402,7 +1564,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             // completed axis splice explicitly upgrades this to clearMissing:true
             // so newly inserted blank rows/columns cannot inherit old content.
             // mergeDimensions:true — capture finished resize gesture sizes.
-            const clearMissing = pendingClearMissing;
+            // pendingAfterEdit means Univer value mutations ran while the editor
+            // was busy; those omitted cells are real clears once we flush.
+            const clearMissing = pendingClearMissing || pendingAfterEdit;
+            pendingAfterEdit = false;
             pendingClearMissing = false;
             pendingMergeDimensions = false;
             pullFromUniver(true, { clearMissing, mergeDimensions: true });

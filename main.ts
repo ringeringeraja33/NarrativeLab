@@ -40,6 +40,8 @@ import {
     SYNOPSIS_VIEW_TYPE,
     DETAILS_VIEW_TYPE,
     NARRATIVE_CANVAS_VIEW_TYPE,
+    WRITING_TRACKER_PANEL_TYPE,
+    WRITING_TRACKER_VIEW_TYPE,
 } from './constants';
 import { PlotgridView } from './views/PlotgridView';
 import {
@@ -90,7 +92,10 @@ import { SynopsisView } from './views/SynopsisView';
 import { DetailsView } from './views/DetailsView';
 import { ManuscriptView } from './views/ManuscriptView';
 import { ResearchView } from './views/ResearchView';
+import { WritingTrackerPanel } from './views/WritingTrackerPanel';
+import { WritingTrackerView } from './views/WritingTrackerView';
 import { ResearchManager } from './services/ResearchManager';
+import { FloatingStickyNoteManager } from './services/FloatingStickyNoteManager';
 import { LocationManager } from './services/LocationManager';
 import { CharacterManager } from './services/CharacterManager';
 import { CodexManager } from './services/CodexManager';
@@ -137,9 +142,10 @@ import {
     type SampleNcanvasLanguage,
 } from './components/NCanvasManagerModal';
 import { WritingTracker } from './services/WritingTracker';
+import { GlobalWritingTracker } from './services/GlobalWritingTracker';
 import { SnapshotManager } from './services/SnapshotManager';
 import { PlotlineManager } from './services/PlotlineManager';
-import type { PlotlineDefinition } from './models/Plotline';
+import { clonePlotlineDefinitions, type PlotlineDefinition } from './models/Plotline';
 import { LinkScanner } from './services/LinkScanner';
 import { CascadeRenameService } from './services/CascadeRenameService';
 import { FieldTemplateService } from './services/FieldTemplateService';
@@ -262,10 +268,16 @@ export default class SceneCardsPlugin extends Plugin {
     characterManager!: CharacterManager;
     codexManager!: CodexManager;
     writingTracker: WritingTracker = new WritingTracker();
+    globalWritingTracker!: GlobalWritingTracker;
+    floatingStickyNotes!: FloatingStickyNoteManager;
     snapshotManager!: SnapshotManager;
     plotlineManager!: PlotlineManager;
     /** Per-project plotline registry (System/plotlines.json → definitions). */
     plotlineDefinitions: PlotlineDefinition[] = [];
+    /** Project file that currently owns `plotlineDefinitions`. */
+    plotlineRegistryOwner = '';
+    /** True while System/ JSON for a project is being loaded after a switch. */
+    private _loadingProjectSystemData = false;
     linkScanner!: LinkScanner;
     cascadeRename!: CascadeRenameService;
     fieldTemplates!: FieldTemplateService;
@@ -318,6 +330,10 @@ export default class SceneCardsPlugin extends Plugin {
         locations: ReturnType<LocationManager['exportSnapshot']>;
         codex: ReturnType<CodexManager['exportSnapshot']>;
         research: ReturnType<ResearchManager['exportSnapshot']>;
+        plotlineDefinitions: PlotlineDefinition[];
+        plotlineRegistryOwner: string;
+        tagColors: Record<string, string>;
+        tagTypeOverrides: Record<string, string>;
     }>();
     /** True while writing type/name frontmatter onto plain Library notes. */
     private _adoptingLibrary = false;
@@ -406,6 +422,11 @@ export default class SceneCardsPlugin extends Plugin {
         });
         this.seriesManager = new SeriesManager(this.app, this);
         this.researchManager = new ResearchManager(this.app, this);
+        this.floatingStickyNotes = new FloatingStickyNoteManager(this);
+        this.globalWritingTracker = new GlobalWritingTracker(this);
+        this.register(() => {
+            void this.floatingStickyNotes.unloadAll();
+        });
 
         // Wire up undo/redo to refresh views + re-index
         this.sceneManager.undoManager.onAfterUndoRedo = async () => {
@@ -493,6 +514,12 @@ export default class SceneCardsPlugin extends Plugin {
         this.registerView(RESEARCH_VIEW_TYPE, (leaf) =>
             new ResearchView(leaf, this, this.researchManager)
         );
+        this.registerView(WRITING_TRACKER_PANEL_TYPE, (leaf) =>
+            new WritingTrackerPanel(leaf, this)
+        );
+        this.registerView(WRITING_TRACKER_VIEW_TYPE, (leaf) =>
+            new WritingTrackerView(leaf, this)
+        );
 
         // Register layout bootstrap BEFORE awaiting Narrative Canvas.
         // Awaiting the embedded canvas inside onload delays Obsidian from
@@ -546,6 +573,15 @@ export default class SceneCardsPlugin extends Plugin {
             // Initialize writing tracker from per-project System/stats.json
             const stats = this.sceneManager.queryService.getStatistics();
             this.writingTracker.startSession(stats.totalWords);
+            this.writingTracker.setSprintDuration(
+                Math.max(1, this.settings.sprintDurationMinutes || 25) * 60_000,
+            );
+            try {
+                await this.globalWritingTracker.load();
+                this.globalWritingTracker.seedFromProjectIfEmpty(this.writingTracker.exportData());
+            } catch (trackErr) {
+                console.warn('[NarrativeLab] Could not load writing tracker:', trackErr);
+            }
 
             // If the navigator was already restored with the workspace, leave
             // the sidebars alone (revealLeaf/expand causes a visible jump).
@@ -558,9 +594,23 @@ export default class SceneCardsPlugin extends Plugin {
                 }
             }
 
+            if (this.settings.autoOpenWritingTrackerPanel) {
+                try {
+                    await this.openWritingTrackerPanel({ quiet: true });
+                } catch (trackErr) {
+                    console.warn('[NarrativeLab] Could not open writing tracker panel:', trackErr);
+                }
+            }
+
             // Refresh open views after sidebars are settled so a full redraw
             // doesn't fight the initial workspace paint.
             this.refreshOpenViews();
+            try {
+                await this.floatingStickyNotes.load();
+                this.floatingStickyNotes.restoreFloatingNotes();
+            } catch (noteErr) {
+                console.warn('[NarrativeLab] Could not restore floating sticky notes:', noteErr);
+            }
 
             // Vault-wide migrations are not needed to show Board/corkboard — defer.
             window.setTimeout(() => {
@@ -604,6 +654,12 @@ export default class SceneCardsPlugin extends Plugin {
         this.addRibbonIcon('book-open-text', t('NarrativeLab projects'), () => {
             const modal = new ProjectSelectModal(this.app, this);
             modal.open();
+        });
+        this.addRibbonIcon('sticky-note', t('New sticky note'), () => {
+            this.floatingStickyNotes.createStickyNote();
+        });
+        this.addRibbonIcon('activity', t('Open writing tracker'), () => {
+            void this.openWritingTracker();
         });
 
         // Commands
@@ -781,6 +837,7 @@ export default class SceneCardsPlugin extends Plugin {
                 NOTES_VIEW_TYPE, SYNOPSIS_VIEW_TYPE, DETAILS_VIEW_TYPE,
                 MANUSCRIPT_VIEW_TYPE, RESEARCH_VIEW_TYPE,
                 NAVIGATOR_VIEW_TYPE,
+                WRITING_TRACKER_PANEL_TYPE, WRITING_TRACKER_VIEW_TYPE,
             ];
             if (!slViewTypes.includes(viewType)) return;
 
@@ -827,6 +884,34 @@ export default class SceneCardsPlugin extends Plugin {
             id: 'open-scene-notes',
             name: t('Open scene notes sidebar'),
             callback: () => this.openNotesView(),
+        });
+
+        this.addCommand({
+            id: 'open-writing-tracker',
+            name: t('Open writing tracker'),
+            icon: 'activity',
+            callback: () => { void this.openWritingTracker(); },
+        });
+
+        this.addCommand({
+            id: 'open-writing-tracker-panel',
+            name: t('Open writing tracker panel'),
+            icon: 'activity',
+            callback: () => { void this.openWritingTrackerPanel(); },
+        });
+
+        this.addCommand({
+            id: 'create-floating-sticky-note',
+            name: t('Create sticky note'),
+            icon: 'sticky-note',
+            callback: () => this.floatingStickyNotes.createStickyNote(),
+        });
+
+        this.addCommand({
+            id: 'toggle-floating-sticky-notes',
+            name: t('Show or hide sticky notes'),
+            icon: 'eye',
+            callback: () => { void this.floatingStickyNotes.toggleVisibility(); },
         });
 
         this.addCommand({
@@ -1648,8 +1733,9 @@ export default class SceneCardsPlugin extends Plugin {
             if (this.writingTracker.isSprintRunning()) {
                 this.writingTracker.stopSprint(stats.totalWords);
             }
-            this.writingTracker.flushSession(stats.totalWords);
+            this.flushWritingTrackers(stats.totalWords);
             this.saveProjectSystemData();
+            void this.globalWritingTracker?.save();
         } catch { /* best effort */ }
 
         try {
@@ -1675,6 +1761,7 @@ export default class SceneCardsPlugin extends Plugin {
 
         // Clean up any floating lightbox windows left on activeDocument.body
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(el => el.remove());
+        void this.floatingStickyNotes?.unloadAll();
     }
 
     /**
@@ -1865,6 +1952,13 @@ export default class SceneCardsPlugin extends Plugin {
         }
 
         this.settings = Object.assign({}, DEFAULT_SETTINGS, migratedData);
+        if (
+            !this.settings.libraryUiByProject
+            || typeof this.settings.libraryUiByProject !== 'object'
+            || Array.isArray(this.settings.libraryUiByProject)
+        ) {
+            this.settings.libraryUiByProject = {};
+        }
         const navigatorCollapsedSections = Array.isArray(this.settings.navigatorCollapsedSections)
             ? this.settings.navigatorCollapsedSections.filter(
                 (section): section is 'notes' | 'scenes' => section === 'notes' || section === 'scenes',
@@ -2599,11 +2693,16 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
-     * Write a JSON object to a file in the current project's System/ folder.
+     * Write a JSON object to a file in the given project's System/ folder.
      * Creates the System/ folder if it doesn't exist.
+     * Pass `projectFilePath` from a snapshot taken before any await so a
+     * project switch cannot redirect the write.
      */
-    private async writeSystemJson(filename: string, data: Record<string, unknown>): Promise<void> {
-        const projectFilePath = this.sceneManager.activeProject?.filePath;
+    private async writeSystemJson(
+        filename: string,
+        data: Record<string, unknown>,
+        projectFilePath = this.sceneManager.activeProject?.filePath,
+    ): Promise<void> {
         if (!await this.projectExistsForWrite(projectFilePath)) return;
         const baseFolder = deriveProjectFoldersFromFilePath(projectFilePath!).baseFolder;
         const filePath = normalizePath(`${baseFolder}/System/${filename}`);
@@ -2719,11 +2818,23 @@ export default class SceneCardsPlugin extends Plugin {
         throw lastError instanceof Error ? lastError : new Error(String(lastError));
     }
 
+    async loadProjectSystemData(): Promise<void> {
+        this._loadingProjectSystemData = true;
+        try {
+            await this.loadProjectSystemDataNow();
+        } finally {
+            this._loadingProjectSystemData = false;
+        }
+    }
+
     /**
      * Load per-project data from System/ files into the in-memory settings.
      * Called after a project is loaded or switched.
      */
-    async loadProjectSystemData(): Promise<void> {
+    private async loadProjectSystemDataNow(): Promise<void> {
+        const targetProjectFile = this.sceneManager?.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : '';
         const plotlines = await this.readSystemJson('plotlines.json');
         const characters = await this.readSystemJson('characters.json');
         const stats = await this.readSystemJson('stats.json');
@@ -2785,7 +2896,7 @@ export default class SceneCardsPlugin extends Plugin {
             ? (plotlines.tagTypeOverrides as Record<string, string>)
             : {};
 
-        this.plotlineManager.applyLoaded(plotlines.definitions);
+        this.plotlineManager.applyLoaded(plotlines.definitions, targetProjectFile);
 
         // Per-project colour overrides (if the project has them stored)
         if (isRecord(plotlines.projectColors)) {
@@ -2970,17 +3081,26 @@ export default class SceneCardsPlugin extends Plugin {
      * Called when settings are saved or before switching projects.
      */
     async saveProjectSystemData(): Promise<void> {
-        const projectFilePath = this.sceneManager?.activeProject?.filePath;
-        if (!await this.projectExistsForWrite(projectFilePath)) return;
+        if (this._loadingProjectSystemData) return;
+        const projectFilePath = this.sceneManager?.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : '';
+        if (!projectFilePath) return;
+        const owner = this.plotlineRegistryOwner
+            ? normalizePath(this.plotlineRegistryOwner)
+            : '';
+        if (owner && owner !== projectFilePath) return;
 
+        // Snapshot payloads before any await so a project switch cannot mix
+        // this project's plotlines into another project's System/ files.
         const plotlinesPayload: Record<string, unknown> = {
-            tagColors: this.settings.tagColors || {},
-            tagTypeOverrides: this.settings.tagTypeOverrides || {},
+            tagColors: { ...(this.settings.tagColors || {}) },
+            tagTypeOverrides: { ...(this.settings.tagTypeOverrides || {}) },
             uiTheme: this.settings.uiTheme === 'light' || this.settings.uiTheme === 'dark' || this.settings.uiTheme === 'auto'
                 ? this.settings.uiTheme
                 : 'auto',
             uiThemeVersion: 2,
-            definitions: this.plotlineDefinitions.map(d => ({
+            definitions: clonePlotlineDefinitions(this.plotlineDefinitions).map(d => ({
                 id: d.id,
                 label: d.label,
                 scenePaths: d.scenePaths,
@@ -2997,36 +3117,32 @@ export default class SceneCardsPlugin extends Plugin {
                 stickyNoteHue: this.settings.stickyNoteHue,
                 stickyNoteSaturation: this.settings.stickyNoteSaturation,
                 stickyNoteLightness: this.settings.stickyNoteLightness,
-                stickyNoteOverrides: this.settings.stickyNoteOverrides || {},
+                stickyNoteOverrides: { ...(this.settings.stickyNoteOverrides || {}) },
                 stickyNoteFontColorLight: this.settings.stickyNoteFontColorLight ?? '',
                 stickyNoteFontColorDark: this.settings.stickyNoteFontColorDark ?? '',
             };
         }
 
-        await this.writeSystemJson('plotlines.json', plotlinesPayload);
-
-        await this.writeSystemJson('characters.json', {
-            characterAliases: this.settings.characterAliases || {},
-            ignoredCharacters: this.settings.ignoredCharacters || [],
-        });
-
-        // Save writing tracker data
-        await this.writeSystemJson('stats.json', {
+        const charactersPayload: Record<string, unknown> = {
+            characterAliases: { ...(this.settings.characterAliases || {}) },
+            ignoredCharacters: [...(this.settings.ignoredCharacters || [])],
+        };
+        const statsPayload: Record<string, unknown> = {
             writingTrackerData: this.writingTracker.exportData(),
-        });
+        };
+        const libraryCategoriesPayload = readLibraryCategorySettings(this.settings) as unknown as Record<string, unknown>;
+        const libraryLayoutPayload = {
+            version: 1,
+            ...readLibraryProfileLayout(this.settings),
+        } as unknown as Record<string, unknown>;
 
-        await this.writeSystemJson(
-            LIBRARY_CATEGORIES_FILENAME,
-            readLibraryCategorySettings(this.settings) as unknown as Record<string, unknown>,
-        );
+        if (!await this.projectExistsForWrite(projectFilePath)) return;
 
-        await this.writeSystemJson(
-            LIBRARY_PROFILE_LAYOUT_FILENAME,
-            {
-                version: 1,
-                ...readLibraryProfileLayout(this.settings),
-            } as unknown as Record<string, unknown>,
-        );
+        await this.writeSystemJson('plotlines.json', plotlinesPayload, projectFilePath);
+        await this.writeSystemJson('characters.json', charactersPayload, projectFilePath);
+        await this.writeSystemJson('stats.json', statsPayload, projectFilePath);
+        await this.writeSystemJson(LIBRARY_CATEGORIES_FILENAME, libraryCategoriesPayload, projectFilePath);
+        await this.writeSystemJson(LIBRARY_PROFILE_LAYOUT_FILENAME, libraryLayoutPayload, projectFilePath);
     }
 
     /**
@@ -3873,6 +3989,49 @@ export default class SceneCardsPlugin extends Plugin {
         await this.revealOrOpenRightSidebarView(DETAILS_VIEW_TYPE);
     }
 
+    async openWritingTrackerPanel(opts?: { quiet?: boolean }): Promise<void> {
+        const quiet = opts?.quiet === true;
+        const { workspace } = this.app;
+        const existing = workspace.getLeavesOfType(WRITING_TRACKER_PANEL_TYPE);
+        if (existing.length > 0) {
+            if (quiet) return;
+            await this.revealOrOpenRightSidebarView(WRITING_TRACKER_PANEL_TYPE);
+            return;
+        }
+        const ensureSideLeaf = (workspace as unknown as {
+            ensureSideLeaf?: (type: string, side: 'left' | 'right', opts?: { active?: boolean }) => Promise<WorkspaceLeaf>;
+        }).ensureSideLeaf;
+        if (typeof ensureSideLeaf === 'function') {
+            const leaf = await ensureSideLeaf.call(workspace, WRITING_TRACKER_PANEL_TYPE, 'right', {
+                active: !quiet,
+            });
+            if (!quiet && leaf) workspace.revealLeaf(leaf);
+            return;
+        }
+        await this.revealOrOpenRightSidebarView(WRITING_TRACKER_PANEL_TYPE);
+    }
+
+    async openWritingTracker(): Promise<void> {
+        const { workspace } = this.app;
+        const existing = workspace.getLeavesOfType(WRITING_TRACKER_VIEW_TYPE);
+        if (existing.length > 0) {
+            workspace.revealLeaf(existing[0]);
+            workspace.setActiveLeaf(existing[0], { focus: true });
+            return;
+        }
+        const leaf = workspace.getLeaf('tab');
+        await leaf.setViewState({ type: WRITING_TRACKER_VIEW_TYPE, active: true });
+        workspace.revealLeaf(leaf);
+    }
+
+    flushWritingTrackers(totalWords?: number): void {
+        try {
+            const words = totalWords ?? this.sceneManager.queryService.getStatistics().totalWords;
+            const delta = this.writingTracker.flushSession(words);
+            this.globalWritingTracker?.recordFlush(delta);
+        } catch { /* project may not be set yet */ }
+    }
+
     /** Returns true when the Scene Inspector sidebar is open and visible. */
     isSceneInspectorOpen(): boolean {
         const leaves = this.app.workspace.getLeavesOfType(SCENE_INSPECTOR_VIEW_TYPE);
@@ -4500,6 +4659,37 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
+    claimPlotlineRegistry(projectFile: string): void {
+        this.plotlineRegistryOwner = projectFile ? normalizePath(projectFile) : '';
+    }
+
+    /**
+     * Swap the in-memory plotline registry to the target project before any
+     * await. Restores a cached snapshot when available; otherwise clears so
+     * the previous project's thread names cannot paint or save as this one.
+     */
+    adoptPlotlineRegistryForProject(projectFile: string): void {
+        const key = normalizePath(projectFile);
+        if (!key) {
+            this.plotlineDefinitions = [];
+            this.plotlineRegistryOwner = '';
+            this.plotlineManager?.markLoaded(false);
+            return;
+        }
+        const cached = this._projectRuntimeCache.get(key);
+        if (cached) {
+            this.plotlineDefinitions = clonePlotlineDefinitions(cached.plotlineDefinitions);
+            this.plotlineRegistryOwner = cached.plotlineRegistryOwner || key;
+            this.settings.tagColors = { ...cached.tagColors };
+            this.settings.tagTypeOverrides = { ...cached.tagTypeOverrides };
+            this.plotlineManager?.markLoaded(this.plotlineDefinitions.length > 0);
+            return;
+        }
+        this.plotlineDefinitions = [];
+        this.plotlineRegistryOwner = key;
+        this.plotlineManager?.markLoaded(false);
+    }
+
     stashProjectRuntime(projectFile: string): void {
         const key = normalizePath(projectFile);
         if (!key) return;
@@ -4509,6 +4699,10 @@ export default class SceneCardsPlugin extends Plugin {
             locations: this.locationManager.exportSnapshot(),
             codex: this.codexManager.exportSnapshot(),
             research: this.researchManager.exportSnapshot(),
+            plotlineDefinitions: clonePlotlineDefinitions(this.plotlineDefinitions),
+            plotlineRegistryOwner: this.plotlineRegistryOwner || key,
+            tagColors: { ...(this.settings.tagColors || {}) },
+            tagTypeOverrides: { ...(this.settings.tagTypeOverrides || {}) },
         });
     }
 
@@ -4521,6 +4715,11 @@ export default class SceneCardsPlugin extends Plugin {
         this.locationManager.restoreSnapshot(snapshot.locations);
         this.codexManager.restoreSnapshot(snapshot.codex);
         this.researchManager.restoreSnapshot(snapshot.research);
+        this.plotlineDefinitions = clonePlotlineDefinitions(snapshot.plotlineDefinitions);
+        this.plotlineRegistryOwner = snapshot.plotlineRegistryOwner || key;
+        this.settings.tagColors = { ...snapshot.tagColors };
+        this.settings.tagTypeOverrides = { ...snapshot.tagTypeOverrides };
+        this.plotlineManager?.markLoaded(this.plotlineDefinitions.length > 0);
         const customDefs = (this.settings.codexCustomCategories || []).map(
             (cc: { id: string; label: string; icon: string }) =>
                 makeProfileCodexCategory(cc.id, cc.label, cc.icon),
@@ -4783,10 +4982,7 @@ export default class SceneCardsPlugin extends Plugin {
         }
 
         // Flush writing tracker so daily stats update in real-time
-        try {
-            const stats = this.sceneManager.queryService.getStatistics();
-            this.writingTracker.flushSession(stats.totalWords);
-        } catch { /* project may not be set yet */ }
+        this.flushWritingTrackers();
 
         const viewTypes = [
             BOARD_VIEW_TYPE,
@@ -4800,6 +4996,8 @@ export default class SceneCardsPlugin extends Plugin {
             NAVIGATOR_VIEW_TYPE,
             MANUSCRIPT_VIEW_TYPE,
             RESEARCH_VIEW_TYPE,
+            WRITING_TRACKER_PANEL_TYPE,
+            WRITING_TRACKER_VIEW_TYPE,
         ];
 
         const activePath = this.sceneManager.activeProject?.filePath

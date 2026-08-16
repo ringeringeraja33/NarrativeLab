@@ -108,41 +108,135 @@ function normalizeLibraryContentMode(value: unknown): LibraryContentMode | null 
     return null;
 }
 
+type LibraryUiMemory = {
+    contentMode?: LibraryContentMode;
+    categoryId?: string;
+};
+
+type LibraryUiHost = SceneCardsPlugin & {
+    _libraryUiByProject?: Map<string, LibraryUiMemory>;
+};
+
+function libraryUiMemory(plugin: SceneCardsPlugin): Map<string, LibraryUiMemory> {
+    const host = plugin as LibraryUiHost;
+    if (!host._libraryUiByProject) host._libraryUiByProject = new Map();
+    return host._libraryUiByProject;
+}
+
+function normalizeLibraryProjectFile(projectFile?: string | null): string {
+    return (projectFile || '').replace(/\\/g, '/').trim();
+}
+
+/** Bound project for Library chrome; never borrow another tab's active project. */
+export function resolveLibraryUiProjectFile(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+): string {
+    return normalizeLibraryProjectFile(projectFile)
+        || normalizeLibraryProjectFile(plugin.sceneManager?.activeProject?.filePath);
+}
+
+function readLibraryUi(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+): { contentMode: LibraryContentMode; categoryId: string } {
+    const key = resolveLibraryUiProjectFile(plugin, projectFile);
+    const fromMemory = key ? libraryUiMemory(plugin).get(key) : undefined;
+    const fromProject = key ? plugin.settings?.libraryUiByProject?.[key] : undefined;
+    // Keyed state only — global lastLibrary* belongs to whichever project
+    // was focused last and must not paint a background tab.
+    const contentMode = normalizeLibraryContentMode(fromMemory?.contentMode)
+        || normalizeLibraryContentMode(fromProject?.contentMode)
+        || 'profile';
+    const categoryId = (
+        fromMemory?.categoryId
+        || fromProject?.categoryId
+        || 'characters'
+    ).trim() || 'characters';
+    return { contentMode, categoryId };
+}
+
+function writeLibraryUi(
+    plugin: SceneCardsPlugin,
+    patch: LibraryUiMemory,
+    projectFile?: string | null,
+): void {
+    const key = resolveLibraryUiProjectFile(plugin, projectFile);
+    const current = readLibraryUi(plugin, key || projectFile);
+    const next: LibraryUiMemory = {
+        contentMode: patch.contentMode ?? current.contentMode,
+        categoryId: (patch.categoryId ?? current.categoryId)?.trim() || current.categoryId,
+    };
+    if (key) {
+        libraryUiMemory(plugin).set(key, next);
+        plugin.settings.libraryUiByProject = {
+            ...(plugin.settings.libraryUiByProject || {}),
+            [key]: next,
+        };
+    }
+    const active = normalizeLibraryProjectFile(plugin.sceneManager?.activeProject?.filePath);
+    if (!key || key === active) {
+        if (next.contentMode) plugin.settings.lastLibraryContentMode = next.contentMode;
+        if (next.categoryId) plugin.settings.lastLibraryCategoryId = next.categoryId;
+    }
+    void plugin.saveSettings();
+}
+
 /** Session + persisted Library Profiles / Browse / Story Graph tab. */
-export function getLibraryContentMode(plugin: SceneCardsPlugin): LibraryContentMode {
-    const p = plugin as SceneCardsPlugin & { libraryContentMode?: LibraryContentMode };
-    const fromMemory = normalizeLibraryContentMode(p.libraryContentMode);
-    const fromSettings = normalizeLibraryContentMode(plugin.settings?.lastLibraryContentMode);
-    const mode = fromMemory || fromSettings || 'profile';
+export function getLibraryContentMode(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+): LibraryContentMode {
+    const mode = readLibraryUi(plugin, projectFile).contentMode;
     // Story Graph stays desktop-only; Profiles / Browse still restore on mobile.
     if (isMobile && mode === 'story-graph') return 'browse';
     return mode;
 }
 
-export function setLibraryContentMode(plugin: SceneCardsPlugin, mode: LibraryContentMode): void {
+export function setLibraryContentMode(
+    plugin: SceneCardsPlugin,
+    mode: LibraryContentMode,
+    projectFile?: string | null,
+): void {
     const next = normalizeLibraryContentMode(mode) || 'browse';
-    (plugin as SceneCardsPlugin & { libraryContentMode?: LibraryContentMode }).libraryContentMode = next;
-    if (plugin.settings.lastLibraryContentMode !== next) {
-        plugin.settings.lastLibraryContentMode = next;
-        void plugin.saveSettings();
+    const current = readLibraryUi(plugin, projectFile);
+    if (current.contentMode === next && resolveLibraryUiProjectFile(plugin, projectFile)) {
+        const key = resolveLibraryUiProjectFile(plugin, projectFile);
+        const stored = plugin.settings.libraryUiByProject?.[key];
+        if (normalizeLibraryContentMode(stored?.contentMode) === next) return;
     }
+    writeLibraryUi(plugin, { contentMode: next }, projectFile);
 }
 
 /** Persist which Library category tab was last active (characters / locations / codex id). */
-export function rememberLibraryCategory(plugin: SceneCardsPlugin, categoryId: string): void {
+export function rememberLibraryCategory(
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+    projectFile?: string | null,
+): void {
     const id = (categoryId || '').trim();
-    if (!id || plugin.settings.lastLibraryCategoryId === id) return;
-    plugin.settings.lastLibraryCategoryId = id;
-    void plugin.saveSettings();
+    if (!id) return;
+    const current = readLibraryUi(plugin, projectFile);
+    if (current.categoryId === id) {
+        const key = resolveLibraryUiProjectFile(plugin, projectFile);
+        if (key && plugin.settings.libraryUiByProject?.[key]?.categoryId === id) return;
+    }
+    writeLibraryUi(plugin, { categoryId: id }, projectFile);
 }
 
-export function getRememberedLibraryCategory(plugin: SceneCardsPlugin): string {
-    return (plugin.settings.lastLibraryCategoryId || 'characters').trim() || 'characters';
+export function getRememberedLibraryCategory(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+): string {
+    return readLibraryUi(plugin, projectFile).categoryId;
 }
 
 /** Resolve which NarrativeLab view hosts the remembered Library category. */
-export function resolveLibraryViewType(plugin: SceneCardsPlugin): string {
-    const id = getRememberedLibraryCategory(plugin);
+export function resolveLibraryViewType(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+): string {
+    const id = getRememberedLibraryCategory(plugin, projectFile);
     if (id === 'characters') return CHARACTER_VIEW_TYPE;
     if (id === 'locations') return LOCATION_VIEW_TYPE;
     return CODEX_VIEW_TYPE;
@@ -163,10 +257,11 @@ export function renderLibraryModeToggle(
     plugin: SceneCardsPlugin,
     onChange: () => void,
     profileMode?: LibraryProfileModeAction,
+    projectFile?: string | null,
 ): HTMLElement | null {
     if (isMobile && !profileMode) return null;
 
-    const mode = getLibraryContentMode(plugin);
+    const mode = getLibraryContentMode(plugin, projectFile);
     const toggle = parent.createDiv('library-mode-toggle character-mode-toggle');
 
     if (profileMode) {
@@ -191,8 +286,8 @@ export function renderLibraryModeToggle(
     obsidian.setIcon(browseIcon, 'layout-grid');
         browseBtn.createSpan({ text: t('Browse') });
     browseBtn.addEventListener('click', () => {
-        if (getLibraryContentMode(plugin) === 'browse' && !profileMode?.active) return;
-        setLibraryContentMode(plugin, 'browse');
+        if (getLibraryContentMode(plugin, projectFile) === 'browse' && !profileMode?.active) return;
+        setLibraryContentMode(plugin, 'browse', projectFile);
         onChange();
     });
 

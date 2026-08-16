@@ -148,14 +148,7 @@ export class CharacterView extends ProjectBoundItemView {
         // own instance and re-loaded only from the project Characters
         // folder on every refresh, wiping out externally-scanned entries.
         this.characterManager = plugin.characterManager;
-        {
-            const mode = getLibraryContentMode(plugin);
-            this.characterOverviewMode = mode === 'story-graph'
-                ? 'story-graph'
-                : mode === 'browse'
-                    ? 'base'
-                    : 'editor';
-        }
+        this.characterOverviewMode = 'editor';
     }
 
     getViewType(): string {
@@ -178,10 +171,20 @@ export class CharacterView extends ProjectBoundItemView {
         return el;
     }
 
+    private syncOverviewModeFromLibraryUi(): void {
+        const mode = getLibraryContentMode(this.plugin, this.getBoundProjectFile());
+        this.characterOverviewMode = mode === 'story-graph'
+            ? 'story-graph'
+            : mode === 'browse'
+                ? 'base'
+                : 'editor';
+    }
+
     async onOpen(): Promise<void> {
         this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
-        rememberLibraryCategory(this.plugin, 'characters');
+        this.syncOverviewModeFromLibraryUi();
+        rememberLibraryCategory(this.plugin, 'characters', this.getBoundProjectFile());
         const container = this.getViewRoot();
         container.empty();
         container.addClass('story-line-character-container');
@@ -312,14 +315,14 @@ export class CharacterView extends ProjectBoundItemView {
                 () => {
                     this.selectedCharacter = null;
                     this.characterOverviewMode = 'story-graph';
-                    setLibraryContentMode(this.plugin, 'story-graph');
+                    setLibraryContentMode(this.plugin, 'story-graph', this.getBoundProjectFile());
                     if (this.rootContainer) this.renderView(this.rootContainer);
                 },
             ),
             onCategoryActivate: (categoryId) => {
                 if (categoryId !== 'characters') return;
                 this.selectedCharacter = null;
-                this.characterOverviewMode = getLibraryContentMode(this.plugin) === 'browse'
+                this.characterOverviewMode = getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'browse'
                     ? 'base'
                     : 'editor';
                 if (this.rootContainer) this.renderView(this.rootContainer);
@@ -372,6 +375,7 @@ export class CharacterView extends ProjectBoundItemView {
                 setLibraryContentMode(
                     this.plugin,
                     mode.id === 'base' ? 'browse' : 'profile',
+                    this.getBoundProjectFile(),
                 );
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });

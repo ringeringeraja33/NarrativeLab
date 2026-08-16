@@ -18,7 +18,18 @@ import {
     type PlotGridUniverHost,
 } from '../utils/loadPlotGridUniver';
 import { conceptGridContentFingerprint } from '../services/PlotGridXlsxCodec';
-import { cellRequiresMarkdownEditor } from '../utils/plotGridCellEdit';
+import {
+    AXIS_CORNER_CELL_ID,
+    axisColumnCellId,
+    axisRowCellId,
+    cellHasNoteLink,
+    cellRequiresMarkdownEditor,
+    getPlotGridCellAtUniverCoords,
+    syncAxisLabelFromCell,
+    univerCoordsForPlotGridCell,
+    unwrapAllNoteLinks,
+    unwrapMatchingNoteLinks,
+} from '../utils/plotGridCellEdit';
 import { SceneManager } from '../services/SceneManager';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
 import { isMobile } from '../components/MobileAdapter';
@@ -83,6 +94,7 @@ export class PlotgridView extends ProjectBoundItemView {
         __nlCellEditorCleanup?: () => void;
         __nlCellEditorFlush?: () => void;
         __nlCellEditorFocus?: (opts?: { insertWikilink?: boolean }) => void;
+        __nlCellEditorSetContent?: (value: string, resetLink?: boolean) => void;
     }>();
     private cellEditorZSeq = 10000;
 
@@ -977,7 +989,9 @@ export class PlotgridView extends ProjectBoundItemView {
                             row: info.row,
                             col: info.col,
                         };
-                        // Ensure the NL cell exists, then open the Markdown editor.
+                        // Pull Univer first so Clear contents / Clear all are in cell.content
+                        // before the Markdown editor reads it.
+                        this.flushUniverIntoDocument();
                         const cell = this.getActiveDataCellFromUniver();
                         if (cell) this.openCellMarkdownEditor(cell);
                     },
@@ -1026,6 +1040,7 @@ export class PlotgridView extends ProjectBoundItemView {
                         this.document = normalizeConceptGridDocument(doc);
                         this.synchronizeWikilinkCells();
                         this.bindActivePage();
+                        this.syncOpenCellEditorsFromDocument();
                         // Univer already applied sheet-bar / cell mutations.
                         // Keep the structure sig current so a later toolbar
                         // render does not remount and wipe those edits.
@@ -1175,7 +1190,7 @@ export class PlotgridView extends ProjectBoundItemView {
             return;
         }
         if (action === 'unlink-note') {
-            if (!cell.linkedSceneId) {
+            if (!cellHasNoteLink(cell)) {
                 new Notice(t('No linked note'));
                 return;
             }
@@ -1266,12 +1281,32 @@ export class PlotgridView extends ProjectBoundItemView {
 
     /** Read-only cell lookup (Univer coords; does not expand the grid). */
     private getDataCellAt(sheetId: string, row: number, col: number): CellData | null {
-        if (row < 1 || col < 1) return null;
         const page = this.document.pages.find(p => p.id === sheetId);
-        const rowMeta = page?.rows[row - 1];
-        const colMeta = page?.columns[col - 1];
-        if (!page || !rowMeta || !colMeta) return null;
-        return page.cells[`${rowMeta.id}-${colMeta.id}`] || null;
+        return getPlotGridCellAtUniverCoords(page, row, col);
+    }
+
+    private emptyGridCell(id: string, content = ''): CellData {
+        return {
+            id,
+            content,
+            bgColor: '',
+            textColor: '',
+            bold: false,
+            italic: false,
+            align: 'left',
+            manualContent: !!content,
+        };
+    }
+
+    private ensureAxisCell(page: ConceptGridPage, id: string, label: string): CellData {
+        const existing = page.cells[id];
+        if (existing) {
+            if (!existing.manualContent) existing.content = label || '';
+            return existing;
+        }
+        const cell = this.emptyGridCell(id, label || '');
+        page.cells[id] = cell;
+        return cell;
     }
 
     /** Map Univer sheet coords (including header row/col at 0) → data CellData. */
@@ -1284,14 +1319,11 @@ export class PlotgridView extends ProjectBoundItemView {
         // would mutate the wrong grid at the same coordinates.
         const page = this.document.pages.find(p => p.id === sel.sheetId);
         if (!page) return null;
-        // Univer uses row 0 / column 0 for NarrativeLab's editable labels (A1 is
-        // the corner). Never steal selection away from those cells — remapping to
-        // B2 aborted in-cell edits and made A1 feel uneditable.
-        if (sel.row < 1 || sel.col < 1) return null;
         const dataRow = sel.row;
         const dataCol = sel.col;
+        if (dataRow < 0 || dataCol < 0) return null;
         let expanded = false;
-        while (page.rows.length < dataRow) {
+        while (dataRow >= 1 && page.rows.length < dataRow) {
             const index = page.rows.length + 1;
             page.rows.push({
                 id: makeId('r-'),
@@ -1302,7 +1334,7 @@ export class PlotgridView extends ProjectBoundItemView {
             });
             expanded = true;
         }
-        while (page.columns.length < dataCol) {
+        while (dataCol >= 1 && page.columns.length < dataCol) {
             const index = page.columns.length + 1;
             page.columns.push({
                 id: makeId('c-'),
@@ -1322,20 +1354,28 @@ export class PlotgridView extends ProjectBoundItemView {
             this.scheduleSave();
         }
         const livePage = this.document.pages.find(p => p.id === sel.sheetId) || page;
+        if (dataRow === 0 && dataCol === 0) {
+            if (livePage.id === this.document.activePageId) this.data = livePage;
+            return this.ensureAxisCell(livePage, AXIS_CORNER_CELL_ID, livePage.cornerLabel || '');
+        }
+        if (dataRow === 0) {
+            const column = livePage.columns[dataCol - 1];
+            if (!column) return null;
+            if (livePage.id === this.document.activePageId) this.data = livePage;
+            return this.ensureAxisCell(livePage, axisColumnCellId(column.id), column.label || '');
+        }
+        if (dataCol === 0) {
+            const row = livePage.rows[dataRow - 1];
+            if (!row) return null;
+            if (livePage.id === this.document.activePageId) this.data = livePage;
+            return this.ensureAxisCell(livePage, axisRowCellId(row.id), row.label || '');
+        }
         const row = livePage.rows[dataRow - 1];
         const col = livePage.columns[dataCol - 1];
         if (!row || !col) return null;
                 const key = `${row.id}-${col.id}`;
         if (!livePage.cells[key]) {
-            livePage.cells[key] = {
-                            id: key,
-                            content: '',
-                            bgColor: '',
-                            textColor: '',
-                            bold: false,
-                            italic: false,
-                align: 'left',
-            };
+            livePage.cells[key] = this.emptyGridCell(key);
         }
         // Keep working set bound when selection is on active page
         if (livePage.id === this.document.activePageId) this.data = livePage;
@@ -1354,6 +1394,7 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     private openCellEditorForActiveCell(): void {
+        this.flushUniverIntoDocument();
         const cell = this.getActivePlotGridCell();
         if (!cell) {
             new Notice(t('Select a cell first'));
@@ -1362,10 +1403,45 @@ export class PlotgridView extends ProjectBoundItemView {
         this.openCellMarkdownEditor(cell);
     }
 
+    private findLivePlotGridCell(id: string): CellData | undefined {
+        for (const page of this.document.pages) {
+            const live = page.cells?.[id];
+            if (live) return live;
+        }
+        return undefined;
+    }
+
+    /** Keep already-open Markdown editors aligned after Univer Clear contents / Clear all. */
+    private syncOpenCellEditorsFromDocument(): void {
+        for (const [id, win] of this.cellEditorWindows) {
+            const live = this.findLivePlotGridCell(id);
+            if (!live || !win.isConnected) continue;
+            const textarea = win.querySelector('textarea.plot-grid-cell-editor-input');
+            if (!(textarea instanceof HTMLTextAreaElement)) continue;
+            if (textarea.value === (live.content || '')) continue;
+            if (textarea.ownerDocument.activeElement === textarea) continue;
+            win.__nlCellEditorSetContent?.(live.content || '');
+        }
+    }
+
     private openCellMarkdownEditor(cell: CellData, options: { insertWikilink?: boolean } = {}): void {
+        this.flushUniverIntoDocument();
+        cell = this.findLivePlotGridCell(cell.id) || cell;
+        const coords = this.findCellUniverCoords(cell);
+        if (coords && this.univerHost) {
+            const liveText = this.univerHost.readLiveCellPlainText(coords.sheetId, coords.row, coords.col);
+            // Univer Clear contents / Clear all empty the painted cell while the
+            // NarrativeLab Markdown source can lag. The editor must follow the grid.
+            if (liveText === '' && (cell.content || cell.formula)) {
+                cell.content = '';
+                cell.formula = undefined;
+                cell.manualContent = true;
+            }
+        }
         const cellKey = cell.id || `${Date.now()}`;
         const existing = this.cellEditorWindows.get(cellKey);
         if (existing?.isConnected) {
+            existing.__nlCellEditorSetContent?.(cell.content || '');
             existing.__nlCellEditorFocus?.(options);
             return;
         }
@@ -1383,6 +1459,7 @@ export class PlotgridView extends ProjectBoundItemView {
             const linkChanged = (editorLinkedSceneId || undefined) !== (liveCell.linkedSceneId || undefined);
             const contentChanged = liveCell.content !== value || !liveCell.manualContent;
             if (!contentChanged && !linkChanged) return;
+            const hadNoteLink = cellHasNoteLink(liveCell);
             liveCell.content = value;
             liveCell.manualContent = true;
             if (linkChanged) {
@@ -1390,6 +1467,11 @@ export class PlotgridView extends ProjectBoundItemView {
                 if (!editorLinkedSceneId) liveCell.linkedViaWikilink = undefined;
             }
             this.synchronizeWikilinkCell(liveCell);
+            if (hadNoteLink && !cellHasNoteLink(liveCell)) liveCell.textColor = '';
+            const page = this.document.pages.find(item => Object.values(item.cells || {}).includes(liveCell)
+                || item.cells[liveCell.id] === liveCell)
+                || this.data;
+            syncAxisLabelFromCell(page, liveCell);
             this.pushCellSourceToUniver(liveCell);
             this.scheduleSave();
         };
@@ -1412,6 +1494,7 @@ export class PlotgridView extends ProjectBoundItemView {
             __nlCellEditorCleanup?: () => void;
             __nlCellEditorFlush?: () => void;
             __nlCellEditorFocus?: (opts?: { insertWikilink?: boolean }) => void;
+            __nlCellEditorSetContent?: (value: string, resetLink?: boolean) => void;
         };
         const win = activeDocument.body.createDiv('plot-grid-cell-editor-window') as EditorWin;
         win.dataset.cellKey = cellKey;
@@ -1614,10 +1697,7 @@ export class PlotgridView extends ProjectBoundItemView {
         const linksBar = win.createDiv('plot-grid-cell-editor-links');
         const removeConnectedNoteFromDraft = (note: { path: string; name: string }): void => {
             if (!textarea) return;
-            const next = textarea.value.replace(
-                /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g,
-                (full, target: string) => (draftMatchesNote(target, note.path) ? '' : full),
-            ).replace(/[ \t]{2,}/g, ' ').replace(/ ?\n ?/g, '\n');
+            const next = unwrapMatchingNoteLinks(textarea.value, target => draftMatchesNote(target, note.path));
             replaceTextareaValue(textarea, next);
             if (editorLinkedSceneId && notePathKey(editorLinkedSceneId) === notePathKey(note.path)) {
                 editorLinkedSceneId = undefined;
@@ -1625,6 +1705,8 @@ export class PlotgridView extends ProjectBoundItemView {
                 editorLinkedSceneId = undefined;
             }
             refreshLinkedNotesBar();
+            if (previewMode) void setPreview(true);
+            persistDraft();
         };
         const addConnectedNoteViaPicker = (): void => {
             void setPreview(false).then(() => {
@@ -1752,6 +1834,7 @@ export class PlotgridView extends ProjectBoundItemView {
             delete win.__nlCellEditorCleanup;
             delete win.__nlCellEditorFlush;
             delete win.__nlCellEditorFocus;
+            delete win.__nlCellEditorSetContent;
         };
         const onKey = (e: KeyboardEvent) => {
             if (e.key !== 'Escape') return;
@@ -1789,6 +1872,13 @@ export class PlotgridView extends ProjectBoundItemView {
                 textarea.focus();
                 if (opts?.insertWikilink) insertWikilinkToken();
             });
+        };
+        win.__nlCellEditorSetContent = (value: string, resetLink = false) => {
+            if (!textarea) return;
+            replaceTextareaValue(textarea, value);
+            if (resetLink) editorLinkedSceneId = undefined;
+            refreshLinkedNotesBar();
+            if (previewMode) void setPreview(true);
         };
 
         const applyAlwaysOnTop = (): void => {
@@ -1986,15 +2076,8 @@ export class PlotgridView extends ProjectBoundItemView {
 
     private findCellUniverCoords(cell: CellData): { sheetId: string; row: number; col: number } | null {
         for (const page of this.document.pages) {
-            for (let rowIndex = 0; rowIndex < page.rows.length; rowIndex++) {
-                for (let colIndex = 0; colIndex < page.columns.length; colIndex++) {
-                    const key = `${page.rows[rowIndex].id}-${page.columns[colIndex].id}`;
-                    const found = page.cells[key];
-                    if (found === cell || found?.id === cell.id) {
-                        return { sheetId: page.id, row: rowIndex + 1, col: colIndex + 1 };
-                    }
-                }
-            }
+            const coords = univerCoordsForPlotGridCell(page, cell);
+            if (coords) return { sheetId: page.id, ...coords };
         }
         return this.lastUniverSel;
     }
@@ -2072,6 +2155,8 @@ export class PlotgridView extends ProjectBoundItemView {
             liveCell.manualContent = true;
         }
         // Keep host meta aligned so the next Univer pull does not erase the link.
+        const page = this.document.pages.find(item => item.cells[liveCell.id] === liveCell) || this.data;
+        syncAxisLabelFromCell(page, liveCell);
         try { this.univerHost?.syncMeta(this.document); } catch { /* ignore */ }
         this.pushCellSourceToUniver(liveCell);
         this.scheduleSave();
@@ -2079,27 +2164,28 @@ export class PlotgridView extends ProjectBoundItemView {
 
     private unlinkCell(cellKey: string): void {
         // Prefer active page; also clear on the page that owns the key when using Univer selection.
+        const applyUnlink = (cell: CellData, page: PlotGridData): void => {
+            cell.content = unwrapAllNoteLinks(cell.content || '');
+            cell.linkedSceneId = undefined;
+            cell.linkedViaWikilink = undefined;
+            cell.manualContent = true;
+            cell.textColor = '';
+            syncAxisLabelFromCell(page, cell);
+            this.pushCellSourceToUniver(cell);
+            const editor = this.cellEditorWindows.get(cell.id);
+            editor?.__nlCellEditorSetContent?.(cell.content || '', true);
+        };
         let cleared = false;
         const activeCell = this.data.cells[cellKey];
         if (activeCell) {
-            if (activeCell.linkedViaWikilink) {
-                activeCell.content = (activeCell.content || '')
-                    .replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_match, target: string, alias?: string) => alias || target);
-            }
-            activeCell.linkedSceneId = undefined;
-            activeCell.linkedViaWikilink = undefined;
+            applyUnlink(activeCell, this.data);
             cleared = true;
         }
         if (!cleared) {
             for (const page of this.document.pages) {
                 const cell = page.cells[cellKey];
                 if (cell) {
-                    if (cell.linkedViaWikilink) {
-                        cell.content = (cell.content || '')
-                            .replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_match, target: string, alias?: string) => alias || target);
-                    }
-                    cell.linkedSceneId = undefined;
-                    cell.linkedViaWikilink = undefined;
+                    applyUnlink(cell, page);
                     cleared = true;
                     break;
                 }

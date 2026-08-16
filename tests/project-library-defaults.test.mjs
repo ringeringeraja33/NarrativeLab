@@ -63,7 +63,7 @@ test('Library categories always have a profile page and no optional toggle', asy
     assert.doesNotMatch(tabs, /Disable profile page/);
     assert.match(manager, /hasProfilePage: true/);
     assert.match(source, /hasProfilePage: true/);
-    assert.match(manager, /setLibraryContentMode\(this\.plugin, 'profile'\)/);
+    assert.match(manager, /setLibraryContentMode\(this\.plugin, 'profile', this\.getBoundProjectFile\(\)\)/);
     assert.doesNotMatch(manager, /profileAvailable/);
     assert.doesNotMatch(manager, /activeCategoryHasProfilePage/);
     assert.match(switcher, /makeProfileCodexCategory\(c\.id, c\.label, c\.icon\)/);

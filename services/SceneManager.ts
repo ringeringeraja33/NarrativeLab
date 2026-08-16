@@ -799,10 +799,22 @@ export class SceneManager implements ISceneStore {
         }
     }
 
+    private _setActiveProjectQueue: Promise<void> = Promise.resolve();
+
     /**
      * Switch to a different active project and re-index scenes.
      */
     async setActiveProject(
+        project: StoryLineProject,
+        options?: { fromLeafFocus?: boolean },
+    ): Promise<void> {
+        const run = () => this.setActiveProjectNow(project, options);
+        const pending = this._setActiveProjectQueue.then(run, run);
+        this._setActiveProjectQueue = pending.then(() => undefined, () => undefined);
+        return pending;
+    }
+
+    private async setActiveProjectNow(
         project: StoryLineProject,
         options?: { fromLeafFocus?: boolean },
     ): Promise<void> {
@@ -817,6 +829,9 @@ export class SceneManager implements ISceneStore {
         this._activeProject = project;
         this.plugin.settings.activeProjectFile = project.filePath;
         this.applyActiveProjectLocale();
+        // Swap the in-memory plotline registry before any await so a late
+        // save cannot write the previous project's threads into this one.
+        this.plugin.adoptPlotlineRegistryForProject(project.filePath);
 
         // Load per-project data from the new project's System/ folder BEFORE
         // saveSettings (which also calls saveProjectSystemData — with the new
@@ -2617,8 +2632,15 @@ export class SceneManager implements ISceneStore {
         const mgr = this.plugin.plotlineManager;
         const ids = new Set<string>();
         const ordered: string[] = [];
+        const activeFile = this._activeProject?.filePath
+            ? normalizePath(this._activeProject.filePath)
+            : '';
+        const owner = this.plugin.plotlineRegistryOwner
+            ? normalizePath(this.plugin.plotlineRegistryOwner)
+            : '';
+        const registryBelongsHere = !owner || !activeFile || owner === activeFile;
 
-        if (mgr) {
+        if (mgr && registryBelongsHere) {
             for (const def of mgr.getPlotlineDefinitions()) {
                 if (!ids.has(def.id)) {
                     ids.add(def.id);
@@ -2635,8 +2657,12 @@ export class SceneManager implements ISceneStore {
             }
         }
 
+        const base = this._activeProject
+            ? `${normalizePath(deriveProjectFoldersFromFilePath(this._activeProject.filePath).baseFolder)}/`
+            : '';
         for (const scene of this.scenes.values()) {
             if (scene.corkboardNote) continue;
+            if (base && !normalizePath(scene.filePath).startsWith(base)) continue;
             for (const tag of scene.tags ?? []) {
                 const name = String(tag).trim();
                 if (name && !ids.has(name)) {
@@ -2742,12 +2768,15 @@ export class SceneManager implements ISceneStore {
 
         const project = this._activeProject;
         if (project && uniqueTags.length > 0) {
-            const defined = new Set(project.plotlines ?? []);
-            const before = defined.size;
-            uniqueTags.forEach(tag => defined.add(tag));
-            if (defined.size !== before) {
-                project.plotlines = [...defined];
-                await this.saveProjectFrontmatter(project);
+            const base = `${normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder)}/`;
+            if (normalizePath(filePath).startsWith(base)) {
+                const defined = new Set(project.plotlines ?? []);
+                const before = defined.size;
+                uniqueTags.forEach(tag => defined.add(tag));
+                if (defined.size !== before) {
+                    project.plotlines = [...defined];
+                    await this.saveProjectFrontmatter(project);
+                }
             }
         }
 

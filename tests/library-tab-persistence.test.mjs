@@ -15,8 +15,10 @@ const [settings, modeBar, characterView, locationView, codexView, viewSwitcher, 
 test('settings remember Library category and content tab', () => {
     assert.match(settings, /lastLibraryContentMode:\s*'profile'\s*\|\s*'browse'\s*\|\s*'story-graph'/);
     assert.match(settings, /lastLibraryCategoryId:\s*string/);
+    assert.match(settings, /libraryUiByProject:\s*Record<string,/);
     assert.match(settings, /lastLibraryContentMode:\s*'profile'/);
     assert.match(settings, /lastLibraryCategoryId:\s*'characters'/);
+    assert.match(settings, /libraryUiByProject:\s*\{\}/);
 });
 
 test('settings remember Structure sub-tab', () => {
@@ -26,7 +28,7 @@ test('settings remember Structure sub-tab', () => {
 
 test('Library content mode includes profile and persists to settings', () => {
     assert.match(modeBar, /export type LibraryContentMode = 'profile' \| 'browse' \| 'story-graph'/);
-    assert.match(modeBar, /lastLibraryContentMode/);
+    assert.match(modeBar, /libraryUiByProject/);
     assert.match(modeBar, /rememberLibraryCategory/);
     assert.match(modeBar, /resolveLibraryViewType/);
     assert.match(modeBar, /void plugin\.saveSettings\(\)/);
@@ -35,8 +37,8 @@ test('Library content mode includes profile and persists to settings', () => {
 test('Character and Location profile tabs save profile mode, not browse', () => {
     assert.match(characterView, /mode\.id === 'base'\s*\?\s*'browse'\s*:\s*'profile'/);
     assert.match(locationView, /mode\.id === 'base'\s*\?\s*'browse'\s*:\s*'profile'/);
-    assert.match(characterView, /rememberLibraryCategory\(this\.plugin, 'characters'\)/);
-    assert.match(locationView, /rememberLibraryCategory\(this\.plugin, 'locations'\)/);
+    assert.match(characterView, /rememberLibraryCategory\(this\.plugin, 'characters', this\.getBoundProjectFile\(\)\)/);
+    assert.match(locationView, /rememberLibraryCategory\(this\.plugin, 'locations', this\.getBoundProjectFile\(\)\)/);
 });
 
 test('Location profile labels go through i18n', () => {
@@ -54,7 +56,7 @@ test('Uncategorized New sits in the browse toolbar like other Library tabs', () 
 });
 
 test('Uncategorized gallery matches Location Profiles chrome', () => {
-    assert.match(codexView, /UNCATEGORIZED_CATEGORY_ID\) return true/);
+    assert.match(codexView, /catDef\.id === UNCATEGORIZED_CATEGORY_ID/);
     assert.match(codexView, /t\('Uncategorized Profiles'\)/);
     assert.doesNotMatch(codexView, /codex-overview-heading/);
     assert.match(codexView, /showLayoutToggle: false/);
@@ -64,8 +66,8 @@ test('Uncategorized gallery matches Location Profiles chrome', () => {
 });
 
 test('Codex profile mode and category restore from memory', () => {
-    assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile'\)/);
-    assert.match(codexView, /getLibraryContentMode\(this\.plugin\) === 'profile'/);
+    assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile', this\.getBoundProjectFile\(\)\)/);
+    assert.match(codexView, /getLibraryContentMode\(this\.plugin, this\.getBoundProjectFile\(\)\) === 'profile'/);
     assert.match(codexView, /getRememberedLibraryCategory/);
     assert.match(codexView, /rememberLibraryCategory\(this\.plugin, categoryId/);
 });
@@ -85,10 +87,10 @@ test('Library category hide keeps folders without resurrecting tabs', async () =
 });
 
 test('Library view switcher and category tabs restore the last category', () => {
-    assert.match(viewSwitcher, /resolveLibraryViewType\(plugin\)/);
+    assert.match(viewSwitcher, /resolveLibraryViewType\(plugin, projectFile\)/);
     assert.match(categoryTabs, /switchTo\(leaf, plugin, CHARACTER_VIEW_TYPE, 'characters'\)/);
     assert.match(categoryTabs, /switchTo\(leaf, plugin, LOCATION_VIEW_TYPE, 'locations'\)/);
-    assert.match(categoryTabs, /rememberLibraryCategory\(plugin, categoryId\)/);
+    assert.match(categoryTabs, /rememberLibraryCategory\(plugin, categoryId, projectFile\)/);
     assert.match(categoryTabs, /activateCategory\(cat\.id\)/);
 });
 

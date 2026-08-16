@@ -126,14 +126,7 @@ export class LocationView extends ProjectBoundItemView {
         // Use the plugin's shared LocationManager so entries scanned from
         // Additional Source Folders survive view refreshes.
         this.locationManager = plugin.locationManager;
-        {
-            const mode = getLibraryContentMode(plugin);
-            this.locationOverviewMode = mode === 'story-graph'
-                ? 'story-graph'
-                : mode === 'browse'
-                    ? 'base'
-                    : 'editor';
-        }
+        this.locationOverviewMode = 'editor';
     }
 
     getViewType(): string { return LOCATION_VIEW_TYPE; }
@@ -145,10 +138,20 @@ export class LocationView extends ProjectBoundItemView {
 
     getIcon(): string { return 'map-pin'; }
 
+    private syncOverviewModeFromLibraryUi(): void {
+        const mode = getLibraryContentMode(this.plugin, this.getBoundProjectFile());
+        this.locationOverviewMode = mode === 'story-graph'
+            ? 'story-graph'
+            : mode === 'browse'
+                ? 'base'
+                : 'editor';
+    }
+
     async onOpen(): Promise<void> {
         this.captureProjectBinding(this.sceneManager);
         this.plugin.storyLeaf = this.leaf;
-        rememberLibraryCategory(this.plugin, 'locations');
+        this.syncOverviewModeFromLibraryUi();
+        rememberLibraryCategory(this.plugin, 'locations', this.getBoundProjectFile());
         const container = this.containerEl.children[1] as HTMLElement;
         container.empty();
         container.addClass('story-line-location-container');
@@ -198,14 +201,14 @@ export class LocationView extends ProjectBoundItemView {
                 () => {
                     this.selectedItem = null;
                     this.locationOverviewMode = 'story-graph';
-                    setLibraryContentMode(this.plugin, 'story-graph');
+                    setLibraryContentMode(this.plugin, 'story-graph', this.getBoundProjectFile());
                     if (this.rootContainer) this.renderView(this.rootContainer);
                 },
             ),
             onCategoryActivate: (categoryId) => {
                 if (categoryId !== 'locations') return;
                 this.selectedItem = null;
-                this.locationOverviewMode = getLibraryContentMode(this.plugin) === 'browse'
+                this.locationOverviewMode = getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'browse'
                     ? 'base'
                     : 'editor';
                 if (this.rootContainer) this.renderView(this.rootContainer);
@@ -257,6 +260,7 @@ export class LocationView extends ProjectBoundItemView {
                 setLibraryContentMode(
                     this.plugin,
                     mode.id === 'base' ? 'browse' : 'profile',
+                    this.getBoundProjectFile(),
                 );
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });

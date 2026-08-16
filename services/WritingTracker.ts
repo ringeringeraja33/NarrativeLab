@@ -116,8 +116,8 @@ export class WritingTracker {
      * Safe to call multiple times — only the incremental difference since the
      * last flush is recorded, so daily history is never double-counted.
      */
-    flushSession(currentTotalWords: number): void {
-        if (this.baselineWords === null) return;   // session never started
+    flushSession(currentTotalWords: number): { words: number; revisions: number } {
+        if (this.baselineWords === null) return { words: 0, revisions: 0 };
         const totalSessionWords = this.getSessionWords(currentTotalWords);
         const increment = totalSessionWords - this._flushedSessionWords;
         if (increment > 0) {
@@ -125,14 +125,16 @@ export class WritingTracker {
             this._flushedSessionWords = totalSessionWords;
         }
 
-        // Track revision volume (absolute change since last flush)
+        let revisions = 0;
         if (this.lastKnownTotal !== null) {
             const delta = Math.abs(currentTotalWords - this.lastKnownTotal);
             if (delta > 0) {
                 this.recordRevisionToday(delta);
+                revisions = delta;
             }
         }
         this.lastKnownTotal = currentTotalWords;
+        return { words: Math.max(0, increment), revisions };
     }
 
     /** Record today's revision volume */
@@ -203,6 +205,30 @@ export class WritingTracker {
     /** Return the raw daily history record (date→words) */
     getFullHistory(): Record<string, number> {
         return { ...this.history };
+    }
+
+    /** Sum of every stored daily net-word total. */
+    getTotalHistoryWords(): number {
+        let total = 0;
+        for (const words of Object.values(this.history)) total += words || 0;
+        return total;
+    }
+
+    /** Mean daily net words across days that have a positive total. */
+    getDailyAverage(): number {
+        const active = Object.values(this.history).filter(words => words > 0);
+        if (active.length === 0) return 0;
+        return Math.round(active.reduce((sum, words) => sum + words, 0) / active.length);
+    }
+
+    /** Add net words to today's history without touching the session baseline. */
+    addTodayWords(words: number): void {
+        if (words > 0) this.recordToday(words);
+    }
+
+    /** Add revision volume to today's history. */
+    addTodayRevisions(absChange: number): void {
+        if (absChange > 0) this.recordRevisionToday(absChange);
     }
 
     /** Sum of words written across the last N days (inclusive of today). */

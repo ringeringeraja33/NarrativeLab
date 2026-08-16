@@ -28,3 +28,12 @@ export function normalizePlotlineDefinitions(raw: unknown): PlotlineDefinition[]
     }
     return out;
 }
+
+export function clonePlotlineDefinitions(defs: PlotlineDefinition[] | undefined | null): PlotlineDefinition[] {
+    if (!Array.isArray(defs)) return [];
+    return defs.map(d => ({
+        id: d.id,
+        label: d.label,
+        scenePaths: [...d.scenePaths],
+    }));
+}

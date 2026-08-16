@@ -252,10 +252,17 @@ test('story graph legend rows filter independently without remounting the canvas
 test('library story-graph refresh keeps the canvas mounted', () => {
     assert.match(characterView, /characterOverviewMode === 'story-graph'/);
     assert.match(characterView, /querySelector\('\.story-graph-page'\)/);
-    assert.match(codexView, /getLibraryContentMode\(this\.plugin\) === 'story-graph'/);
+    assert.match(codexView, /getLibraryContentMode\(this\.plugin, this\.getBoundProjectFile\(\)\) === 'story-graph'/);
     assert.match(codexView, /querySelector\('\.story-graph-page'\)/);
     assert.match(locationView, /locationOverviewMode === 'story-graph'/);
     assert.match(locationView, /querySelector\('\.story-graph-page'\)/);
+});
+
+test('Library Archive/Browse chrome is keyed by project, not a global plugin field', () => {
+    assert.match(libraryModeBar, /libraryUiByProject/);
+    assert.match(libraryModeBar, /resolveLibraryUiProjectFile/);
+    assert.doesNotMatch(libraryModeBar, /p\.libraryContentMode/);
+    assert.match(codexView, /getBoundProjectFile\(\)/);
 });
 
 test('project switching remounts project-bound Library embeds', () => {
@@ -267,6 +274,12 @@ test('project switching remounts project-bound Library embeds', () => {
     assert.match(switchProject, /fromLeafFocus/);
     assert.match(switchProject, /stashProjectRuntime/);
     assert.match(switchProject, /restoreProjectRuntime/);
+    assert.match(switchProject, /adoptPlotlineRegistryForProject/);
+    assert.ok(
+        switchProject.indexOf('adoptPlotlineRegistryForProject')
+            < switchProject.indexOf('loadProjectSystemData()'),
+        'plotline registry must swap before System JSON load so a late save cannot mix projects',
+    );
     assert.match(switchProject, /libraryCategoriesStructureEpoch \+= 1/);
     assert.ok(
         switchProject.indexOf('libraryCategoriesStructureEpoch += 1')
@@ -314,7 +327,7 @@ test('editable Base field names stay neutral while preset category labels locali
 test('custom profile categories expose a working profile overview mode', () => {
     assert.match(codexView, /private renderOverviewModes\(parent: HTMLElement\)/);
     assert.match(libraryModeBar, /data-mode': 'profile'/);
-    assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile'\)/);
+    assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile', this\.getBoundProjectFile\(\)\)/);
     assert.match(codexView, /showLayoutToggle: false/);
     assert.match(codexView, /this\.isProfileOverviewMode\(\)\s*\? 'cards'/);
 });
@@ -367,7 +380,7 @@ test('Story Graph is the first peer tab while profile and browse modes stay in t
     assert.match(categoryTabs, /renderLeadingTabs\?: \(container: HTMLElement\) => void/);
     assert.match(categoryTabs, /const tabs = parent\.createDiv\('codex-category-tabs'\);\s*renderLeadingTabs\?\.\(tabs\);\s*const renderedTabs/);
     assert.match(categoryTabs, /tabs\.insertBefore\(uncategorizedTab, categoryActions\)/);
-    assert.match(categoryTabs, /getLibraryContentMode\(plugin\) === 'story-graph'[\s\S]*?setLibraryContentMode/);
+    assert.match(categoryTabs, /getLibraryContentMode\(plugin, projectFile\) === 'story-graph'[\s\S]*?setLibraryContentMode/);
     assert.match(libraryBrowseLayout, /renderLeadingActions\?: \(actionsEl: HTMLElement\) => void/);
     assert.match(libraryBrowseLayout, /if \(opts\.renderLeadingActions\) \{[\s\S]*?library-browse-mode-actions[\s\S]*?const actions = toolbar\.createDiv\('library-browse-actions'\)/);
     assert.match(libraryBrowseLayout, /export function renderLibraryModeToolbar/);
@@ -428,6 +441,9 @@ test('plot-grid text keeps Markdown source and renders rich text with native wik
     );
     assert.match(contextMenu, /link-note/);
     assert.match(contextMenu, /unlink-note/);
+    assert.match(contextMenu, /convert-to-research/);
+    assert.match(contextMenu, /转为研究/);
+    assert.doesNotMatch(contextMenu, /转为调研/);
     assert.match(contextMenu, /connectedTitle|Connected notes|已连接笔记/);
     assert.match(markdownInput, /getHotkeys/);
     assert.match(markdownInput, /insert-wikilink/);

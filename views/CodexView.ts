@@ -252,7 +252,7 @@ export class CodexView extends ProjectBoundItemView {
         }
 
         // Restore the last Library category when it belongs to CodexView.
-        const remembered = getRememberedLibraryCategory(this.plugin);
+        const remembered = getRememberedLibraryCategory(this.plugin, this.getBoundProjectFile());
         if (
             remembered
             && remembered !== 'characters'
@@ -299,7 +299,7 @@ export class CodexView extends ProjectBoundItemView {
         this.selectedEntry = null;
         this.activeTagFilters.clear();
         this.browseShown = LIBRARY_BROWSE_PAGE_SIZE;
-        rememberLibraryCategory(this.plugin, categoryId || UNCATEGORIZED_CATEGORY_ID);
+        rememberLibraryCategory(this.plugin, categoryId || UNCATEGORIZED_CATEGORY_ID, this.getBoundProjectFile());
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 
@@ -342,7 +342,7 @@ export class CodexView extends ProjectBoundItemView {
         if (
             !categoriesChanged
             && !this.selectedEntry
-            && getLibraryContentMode(this.plugin) === 'browse'
+            && getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'browse'
             && this.rootContainer?.querySelector('.library-native-base-embed')
         ) {
             const title = this.plugin.getProjectDisplayName(this.getBoundProjectFile());
@@ -354,7 +354,7 @@ export class CodexView extends ProjectBoundItemView {
         if (
             !categoriesChanged
             && !this.selectedEntry
-            && getLibraryContentMode(this.plugin) === 'story-graph'
+            && getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'story-graph'
             && this.storyGraph
             && this.rootContainer?.querySelector('.story-graph-page')
         ) {
@@ -384,7 +384,7 @@ export class CodexView extends ProjectBoundItemView {
 
         // Same tab bar placement as CharacterView / LocationView (outside content)
         const storyGraphActive = !this.selectedEntry
-            && getLibraryContentMode(this.plugin) === 'story-graph'
+            && getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'story-graph'
             && !isMobile;
         renderCodexCategoryTabs(container, {
             activeId: storyGraphActive ? 'story-graph' : this.activeCategory || '',
@@ -395,7 +395,7 @@ export class CodexView extends ProjectBoundItemView {
                 storyGraphActive,
                 () => {
                     this.selectedEntry = null;
-                    setLibraryContentMode(this.plugin, 'story-graph');
+                    setLibraryContentMode(this.plugin, 'story-graph', this.getBoundProjectFile());
                     if (this.rootContainer) this.renderView(this.rootContainer);
                 },
             ),
@@ -415,7 +415,7 @@ export class CodexView extends ProjectBoundItemView {
 
         if (this.selectedEntry) {
             this.renderDetail(content);
-        } else if (getLibraryContentMode(this.plugin) === 'story-graph' && !isMobile) {
+        } else if (getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'story-graph' && !isMobile) {
             this.storyGraph = renderLibraryStoryGraph(content, this.plugin, () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             });
@@ -430,7 +430,7 @@ export class CodexView extends ProjectBoundItemView {
 
     private renderOverview(container: HTMLElement): void {
         container.empty();
-        if (getLibraryContentMode(this.plugin) === 'browse' && !this.isProfileOverviewMode()) {
+        if (getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'browse' && !this.isProfileOverviewMode()) {
             renderLibraryModeToolbar(container, actions => this.renderOverviewModes(actions));
             void renderNativeLibraryBase(
                 container,
@@ -855,7 +855,7 @@ export class CodexView extends ProjectBoundItemView {
     }
 
     private isProfileOverviewMode(): boolean {
-        return getLibraryContentMode(this.plugin) === 'profile';
+        return getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'profile';
     }
 
     private renderOverviewModes(parent: HTMLElement): void {
@@ -876,10 +876,11 @@ export class CodexView extends ProjectBoundItemView {
                 label: profileLabel,
                 active: this.isProfileOverviewMode(),
                 onClick: () => {
-                    setLibraryContentMode(this.plugin, 'profile');
+                    setLibraryContentMode(this.plugin, 'profile', this.getBoundProjectFile());
                     if (this.rootContainer) this.renderView(this.rootContainer);
                 },
             },
+            this.getBoundProjectFile(),
         );
     }
 

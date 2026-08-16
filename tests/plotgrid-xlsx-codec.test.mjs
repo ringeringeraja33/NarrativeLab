@@ -287,6 +287,45 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(cleared.pages[0].cells['r1-c1'].formula, undefined);
         assert.equal(cleared.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
 
+        // Explicit empty `v` must beat a leftover rich-text `p` (Delete / unlink).
+        const staleRich = codec.mergeUniverCellDataIntoDocument(structuredClone(merged), 'page-1', {
+            0: { 0: { v: '' }, 1: { v: 'Hero' } },
+            1: {
+                0: { v: 'Scene 1' },
+                1: {
+                    v: '',
+                    p: { body: { dataStream: 'updated text\r\n' } },
+                    custom: { narrativeLabSource: '[[Scenes/opening]]' },
+                },
+            },
+        });
+        assert.equal(staleRich.pages[0].cells['r1-c1'].content, '');
+        assert.equal(staleRich.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+
+        // Univer "Clear contents" stores null v/p/custom; that is a committed clear
+        // even when surrounding cells are still sparse (no clearMissing flag).
+        const clearedContents = codec.mergeUniverCellDataIntoDocument(structuredClone(merged), 'page-1', {
+            0: { 0: { v: '' }, 1: { v: 'Hero' } },
+            1: {
+                0: { v: 'Scene 1' },
+                1: { v: null, p: null, f: null, custom: null },
+            },
+        });
+        assert.equal(clearedContents.pages[0].cells['r1-c1'].content, '');
+        assert.equal(clearedContents.pages[0].cells['r1-c1'].formula, undefined);
+        assert.equal(clearedContents.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+
+        // Univer "Clear all" writes an explicit null into the matrix.
+        const clearedAll = codec.mergeUniverCellDataIntoDocument(structuredClone(merged), 'page-1', {
+            0: { 0: { v: '' }, 1: { v: 'Hero' } },
+            1: {
+                0: { v: 'Scene 1' },
+                1: null,
+            },
+        });
+        assert.equal(clearedAll.pages[0].cells['r1-c1'].content, '');
+        assert.equal(clearedAll.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+
         // Empty reserved matrix must not expand row/col extents
         const same = codec.mergeUniverCellDataIntoDocument(decoded, 'page-1', {
             0: { 0: { v: '' }, 1: { v: 'Hero' } },
@@ -557,7 +596,13 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /syncMeta/);
     assert.match(view, /univerMountGeneration/);
     assert.match(view, /openCellMarkdownEditor/);
-    assert.match(view, /pushCellSourceToUniver/);
+    assert.match(view, /unlinkCell/);
+    assert.match(view, /unwrapAllNoteLinks/);
+    assert.match(view, /unwrapMatchingNoteLinks/);
+    assert.match(view, /this\.pushCellSourceToUniver\(cell\)/);
+    assert.match(view, /__nlCellEditorSetContent/);
+    assert.match(view, /if \(!cellHasNoteLink\(cell\)\)/);
+    assert.doesNotMatch(view, /draftMatchesNote\(target, note.path\) \? '' : full/);
     assert.match(view, /isExternalEditorBusy/);
     assert.doesNotMatch(view, /scheduleUniverVisibilitySync/);
     assert.doesNotMatch(view, /persistDraft\(\{ pushGrid: true \}\)/);
@@ -587,7 +632,9 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /applyUniverViewState/);
     assert.match(view, /renderGrid\(\{ forcePush: true \}\)/);
     assert.match(view, /Query Univer first/);
-    assert.match(view, /sel\.row < 1 \|\| sel\.col < 1/);
+    assert.match(view, /AXIS_CORNER_CELL_ID|__nl-axis-corner/);
+    assert.match(view, /axisColumnCellId|axisRowCellId/);
+    assert.doesNotMatch(view, /sel\.row < 1 \|\| sel\.col < 1/);
     assert.doesNotMatch(view, /setActiveCell\(sel\.sheetId, dataRow, dataCol\)/);
     assert.match(view, /scheduleSave\(\)/);
     assert.match(view, /info\.sheetId !== this\.document\.activePageId/);
@@ -684,6 +731,8 @@ test('integrated Univer host receives Obsidian UI through the community main bun
     assert.doesNotMatch(host, /from ['"]obsidian['"]/);
     assert.match(host, /onContextMenuRequest/);
     assert.match(host, /applyCellSource/);
+    assert.match(host, /getPlotGridCellAtUniverCoords\(page, row, col\)/);
+    assert.match(host, /payload\.s = \{ cl: null \}/);
     assert.match(host, /isExternalEditorBusy/);
     assert.match(host, /event\?\.detail/);
     assert.match(loader, /import \{ createPlotGridUniverHost, warmupPlotGridUniver \}/);
@@ -710,6 +759,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
     const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
     const codecSrc = await readFile(new URL('../services/PlotGridXlsxCodec.ts', import.meta.url), 'utf8');
+    const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
     for (const method of ['setZoom', 'setFreeze', 'setActiveCell']) {
         assert.match(host, new RegExp(`${method}:`));
     }
@@ -769,7 +819,29 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /plot-grid-cell-editor-window/);
     assert.doesNotMatch(host, /active\.closest\('\[class\*="univer"\]'\)/);
     assert.match(host, /sheet\.mutation\.set-range-values/);
+    assert.match(host, /sheet\.command\.clear-selection-all/);
+    assert.match(host, /sheet\.command\.clear-selection-content/);
     assert.match(host, /pendingAfterEdit = true/);
+    assert.match(host, /schedulePull\(\{ clearMissing: true \}\)/);
+    assert.match(host, /pendingAfterMenu/);
+    assert.match(host, /data-u-context-menu-submenu/);
+    assert.match(host, /isUniverContextMenuOpen/);
+    assert.match(host, /desktop-context-menu/);
+    assert.match(host, /retireOlderVisibleUniverSubmenus/);
+    assert.match(host, /style\.visibility !== 'hidden'/);
+    assert.match(host, /kickUniverSubmenuPosition/);
+    assert.match(host, /dispatchEvent\(new Event\('scroll'\)\)/);
+    assert.match(host, /MutationObserver/);
+    assert.match(host, /menuHoldUntil/);
+    assert.doesNotMatch(host, /addEventListener\('pointerover'/);
+    assert.match(host, /pendingClearMissing \|\| pendingAfterEdit/);
+    assert.doesNotMatch(host, /narrativelab-univer-submenu-stale/);
+    assert.doesNotMatch(host, /pruneStackedUniverSubmenus/);
+    assert.match(host, /narrativelab-univer-submenu-retired/);
+    assert.match(styles, /narrativelab-univer-submenu-retired/);
+    assert.doesNotMatch(styles, /narrativelab-univer-submenu-stale/);
+    assert.match(host, /readLiveCellPlainText/);
+    assert.match(view, /readLiveCellPlainText/);
     assert.match(host, /hasPendingSync/);
     assert.match(host, /tryCommitCellEditor|executeCommand\?\.\('sheet\.operation\.set-cell-edit-visible'/);
     assert.match(host, /clearMissing/);
@@ -787,6 +859,8 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.doesNotMatch(view, /saveBusyRetries/);
     assert.match(view, /must never force-close a user who is still typing/);
     assert.match(view, /univerHost\.flush\(\)/);
+    assert.match(view, /flushUniverIntoDocument\(\)/);
+    assert.match(view, /syncOpenCellEditorsFromDocument/);
     assert.match(view, /cellEditorWindows\.values\(\)/);
     assert.match(view, /Own autosave \/ no-op disk echo/);
     assert.match(view, /Only re-apply sheet\/freeze\/zoom/);
@@ -814,7 +888,10 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(view, /refreshLinkedNotesBar/);
     assert.match(view, /plot-grid-cell-editor-links-add/);
     assert.match(view, /plot-grid-cell-editor-link-chip-remove/);
+    assert.match(styles, /\.plot-grid-cell-editor-window button\.plot-grid-cell-editor-link-chip-open\s*\{[^}]*padding:\s*3px 8px/s);
     assert.match(view, /removeConnectedNoteFromDraft/);
+    assert.match(view, /unwrapMatchingNoteLinks\(textarea\.value/);
+    assert.match(view, /if \(previewMode\) void setPreview\(true\)/);
     assert.match(view, /addConnectedNoteViaPicker/);
     assert.match(view, /scheduleAutosave/);
     assert.match(view, /flushAutosave/);
@@ -862,4 +939,59 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(view, /persistBoundPlotGrid\(\)/);
     assert.match(view, /disposeUniverHost\(\{\s*persist:\s*false\s*\}\)/);
     assert.match(view, /this\.cancelPendingSave\(\)/);
+});
+
+test('first row and first column map to axis cells instead of being rejected', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'nl-plotgrid-axis-'));
+    const outfile = join(dir, 'axis.cjs');
+    try {
+        await esbuild.build({
+            absWorkingDir: projectRoot,
+            entryPoints: [join(projectRoot, 'utils/plotGridCellEdit.ts')],
+            bundle: true,
+            platform: 'node',
+            format: 'cjs',
+            outfile,
+            logLevel: 'silent',
+        });
+        const edit = require(outfile);
+        const page = {
+            cornerLabel: 'Corner',
+            rows: [{ id: 'r1', label: 'Row 1' }],
+            columns: [{ id: 'c1', label: 'Col 1' }],
+            cells: {
+                [edit.AXIS_CORNER_CELL_ID]: { id: edit.AXIS_CORNER_CELL_ID, content: 'Corner' },
+                [edit.axisColumnCellId('c1')]: { id: edit.axisColumnCellId('c1'), content: 'Col 1' },
+                [edit.axisRowCellId('r1')]: { id: edit.axisRowCellId('r1'), content: 'Row 1' },
+                'r1-c1': { id: 'r1-c1', content: 'body' },
+            },
+        };
+        assert.equal(edit.getPlotGridCellAtUniverCoords(page, 0, 0)?.content, 'Corner');
+        assert.equal(edit.getPlotGridCellAtUniverCoords(page, 0, 1)?.content, 'Col 1');
+        assert.equal(edit.getPlotGridCellAtUniverCoords(page, 1, 0)?.content, 'Row 1');
+        assert.equal(edit.getPlotGridCellAtUniverCoords(page, 1, 1)?.content, 'body');
+        assert.deepEqual(edit.univerCoordsForPlotGridCell(page, page.cells[edit.AXIS_CORNER_CELL_ID]), { row: 0, col: 0 });
+        assert.deepEqual(edit.univerCoordsForPlotGridCell(page, page.cells[edit.axisRowCellId('r1')]), { row: 1, col: 0 });
+        assert.equal(edit.cellRequiresMarkdownEditor(null, 0, 0, true), true);
+        assert.equal(edit.cellRequiresMarkdownEditor({ content: 'plain' }, 0, 0, false), false);
+        const linked = { content: '[[Note]]', linkedSceneId: 'Notes/Note.md' };
+        assert.equal(edit.cellRequiresMarkdownEditor(linked, 0, 0, false), true);
+        edit.syncAxisLabelFromCell(page, { id: edit.AXIS_CORNER_CELL_ID, content: 'New corner' });
+        assert.equal(page.cornerLabel, 'New corner');
+        assert.equal(edit.noteLinkDisplayLabel('Library/Games/Valorant.md'), 'Valorant');
+        assert.equal(edit.noteLinkDisplayLabel('Games/Valorant', '游隼'), '游隼');
+        assert.equal(
+            edit.unwrapMatchingNoteLinks('100个if线 [[Valorant]]', (target) => target === 'Valorant'),
+            '100个if线 Valorant',
+        );
+        assert.equal(
+            edit.unwrapMatchingNoteLinks('keep [[Other]] and [[Games/Valorant|Valorant]]', (target) => target.includes('Valorant')),
+            'keep [[Other]] and Valorant',
+        );
+        assert.equal(edit.unwrapAllNoteLinks('[[path/Note.md|Shown]] and text'), 'Shown and text');
+        assert.equal(edit.unwrapAllNoteLinks('[Valorant](https://playvalorant.com)'), '[Valorant](https://playvalorant.com)');
+        assert.equal(edit.unwrapAllNoteLinks('[Valorant](Valorant.md)'), 'Valorant');
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
 });
