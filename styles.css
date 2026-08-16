@@ -10887,6 +10887,9 @@ body /* Clamp title on mobile too, in case it's very long */
 .sl-nav-series-root {
     font-weight: 700;
 }
+.sl-nav-series-root.is-inactive-project {
+    font-weight: 500;
+}
 .sl-nav-series-root .sl-nav-folder-count {
     margin-left: auto;
 }

@@ -23,6 +23,11 @@ test('navigator filter and sort apply to the project/series tree', () => {
     assert.match(i18nViews, /'No projects or scenes match the current filter\.'/);
 });
 
+test('inactive series titles use the same muted style as inactive projects', () => {
+    assert.match(navigatorView, /sl-nav-series-root is-active-project/);
+    assert.match(navigatorView, /sl-nav-series-root is-inactive-project/);
+});
+
 test('series-nested project folders indent one step past the project row', () => {
     assert.match(navigatorView, /this\.renderActiveProjectContents\(node\.body, depth \+ 1\)/);
     assert.match(navigatorView, /private renderActiveProjectContents\(parent: HTMLElement, folderDepth: number\)/);

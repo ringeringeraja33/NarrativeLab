@@ -664,7 +664,9 @@ export class NavigatorView extends ItemView {
                     icon: 'library',
                     count: root.projects.length,
                     depth: 0,
-                    cls: 'sl-nav-project-root sl-nav-series-root',
+                    cls: containsActive
+                        ? 'sl-nav-project-root sl-nav-series-root is-active-project'
+                        : 'sl-nav-project-root sl-nav-series-root is-inactive-project',
                     expandable: true,
                     onActivate: () => this.toggleNode(root.key),
                 });

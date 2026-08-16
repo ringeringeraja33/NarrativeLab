@@ -1,5 +1,9 @@
 # NarrativeLab — Changelog
 
+## 1.2.2
+
+- Navigator series titles that do not contain the open project are muted like inactive books.
+
 ## 1.2.1
 
 - Moving or deleting a project folder no longer recreates empty `Library` / `System` / `Scenes` trees at the vacated path. Folder creates go through a shared helper that honors that tombstone.
