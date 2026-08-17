@@ -1720,7 +1720,7 @@ export function reconcileUniverSheetsIntoDocument(
         const sheet = sheets[id] || { id };
         const name = (sheet.name || '').trim();
         const existing = byId.get(id);
-        const inSnapshot = Object.prototype.hasOwnProperty.call(sheets, id);
+        const inSnapshot = id in sheets;
         if (existing) {
             if (inSnapshot) {
                 if (name) existing.title = name;
