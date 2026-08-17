@@ -345,6 +345,7 @@ export class PlotgridView extends ProjectBoundItemView {
 
     /** Commit the active native sheet into the authoritative NL document. */
     private flushUniverIntoDocument(options: { acceptCleared?: boolean } = {}): void {
+        void options.acceptCleared;
         const host = this.univerHost;
         if (!host) return;
         try {
