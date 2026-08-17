@@ -109,7 +109,7 @@ function injectUniverCss(activeDocument: Document): void {
 import { installUniverContextMenuHoverAssist, retireUniverSubmenus } from '../utils/univerContextMenu';
 import { installUniverSheetListReorder } from '../utils/univerSheetListReorder';
 import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
-import { isDefaultEmptyConceptGrid, isIncompleteConceptGridPull, normalizeUniverStyleMap, normalizeUniverWorkbookResources, workbookSnapshotBelongsToDocument } from '../models/PlotGridData';
+import { conceptGridDocumentsSharePage, isDefaultEmptyConceptGrid, isIncompleteConceptGridPull, normalizeUniverStyleMap, normalizeUniverWorkbookResources, workbookSnapshotBelongsToDocument } from '../models/PlotGridData';
 import { cellHasNoteLink, getPlotGridCellAtUniverCoords } from '../utils/plotGridCellEdit';
 import {
     conceptGridContentFingerprint,
@@ -119,6 +119,7 @@ import {
     reconcileUniverSheetsIntoDocument,
     applyUniverSheetChromeMutation,
     moveConceptGridAxis,
+    overlayConceptGridCellMeta,
     preserveConceptGridAxisSizes,
     spliceConceptGridAxis,
     plotGridSourceToUniverRichText,
@@ -945,6 +946,11 @@ function createPlotGridWorkbookUnitId(): string {
     return `nl-plotgrid-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function commandWorkbookUnitId(params: Record<string, unknown> | undefined): string {
+    const raw = params?.unitId ?? params?.unitID ?? params?.workbookId;
+    return typeof raw === 'string' ? raw : '';
+}
+
 function notifySiblingPlotGridHosts(except?: () => void): void {
     for (const relayout of livePlotGridRelayouts) {
         if (relayout === except) continue;
@@ -1063,8 +1069,26 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         || '#5e6ad2';
     let nativeRichTextEnabled = true;
     let disposed = false;
+    let disposing = false;
     let syncEnabled = false;
     let ourUnitId: string | null = null;
+    const recentlyClearedCells = new Set<string>();
+    const markClearedUniverCells = (
+        sheetId: string | undefined,
+        cellValue: Record<number, Record<number, unknown>> | undefined,
+    ) => {
+        if (!sheetId || !cellValue) return;
+        for (const [rowKey, rowBucket] of Object.entries(cellValue)) {
+            if (!rowBucket || typeof rowBucket !== 'object') continue;
+            for (const [colKey, raw] of Object.entries(rowBucket)) {
+                const snapshot = raw as { v?: unknown; p?: unknown } | null;
+                const empty = snapshot == null
+                    || (!('v' in snapshot) && !('p' in snapshot))
+                    || univerCellPlainText(snapshot) === '';
+                if (empty) recentlyClearedCells.add(`${sheetId}:${rowKey}:${colKey}`);
+            }
+        }
+    };
     let revealFrame = 0;
     let revealTries = 0;
     const disposeOwnedWorkbook = () => {
@@ -1177,11 +1201,16 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     };
 
     const relayout = () => {
-        if (disposed || !syncEnabled) return;
+        if (disposed || disposing || !syncEnabled) return;
         if (!opts.container.isConnected) return;
         if (opts.container.clientWidth < 8 || opts.container.clientHeight < 8) return;
         try {
             const wb = univerAPI.getActiveWorkbook?.();
+            const wbId = wb?.getId?.();
+            if (ourUnitId && wbId && wbId !== ourUnitId) {
+                if (!isDefaultEmptyConceptGrid(liveDoc)) replaceWorkbook(liveDoc);
+                return;
+            }
             const saved = wb?.save?.() as { sheets?: Record<string, { id?: string }> } | undefined;
             if (!workbookSnapshotBelongsToDocument(saved, liveDoc)) {
                 if (!isDefaultEmptyConceptGrid(liveDoc)) replaceWorkbook(liveDoc);
@@ -1248,7 +1277,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     const pullFromUniver = (
         force = false,
-        mergeOptions: { clearMissing?: boolean; mergeDimensions?: boolean } = {},
+        mergeOptions: { clearMissing?: boolean; mergeDimensions?: boolean; silent?: boolean } = {},
     ) => {
         if (disposed) return;
         if (!force && isSuppressed()) return;
@@ -1258,6 +1287,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         try {
             const wb = univerAPI.getActiveWorkbook?.();
             if (!wb) return;
+            const wbId = wb.getId?.();
+            if (ourUnitId && wbId && wbId !== ourUnitId) return;
             const saved = wb.save?.() as {
                 sheetOrder?: string[];
                 resources?: Array<{ name?: string; data?: string }>;
@@ -1288,10 +1319,16 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             if (!saved?.sheets) return;
             if (!workbookSnapshotBelongsToDocument(saved, liveDoc)) return;
 
-            // Always merge into the latest NL document so link/meta edits survive.
-            const base = structuredClone(
+            // Merge Univer cells into the host snapshot first so in-flight edits
+            // are not replaced by a lagging parent document. Copy note links
+            // from the view afterwards — Univer does not own those fields.
+            const authoritative = structuredClone(
                 (opts.getAuthoritativeDocument?.() ?? liveDoc),
             );
+            const liveIsSafe = conceptGridDocumentsSharePage(authoritative, liveDoc)
+                && !isIncompleteConceptGridPull(authoritative, liveDoc);
+            const base = liveIsSafe ? structuredClone(liveDoc) : authoritative;
+            if (liveIsSafe) overlayConceptGridCellMeta(base, authoritative);
 
             // Dimensions are owned by resize mutations during polling. Mid-drag
             // workbook.save() often lags and would snap sizes back — but the host
@@ -1342,7 +1379,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             }
             liveDoc = next;
             contentFp = nextFp;
-            opts.onDocumentChange(liveDoc);
+            if (!mergeOptions.silent) opts.onDocumentChange(liveDoc);
         } catch (e) {
             console.warn('[NarrativeLab] Univer → document sync failed:', e);
         }
@@ -1663,7 +1700,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 const params = commandParams(command);
                 // Univer's default blank workbook emits insert/remove while ours
                 // is still replacing it. Ignore that until the real sheets paint.
-                if (!syncEnabled) return;
+                if (disposing || !syncEnabled) return;
+                const commandUnit = commandWorkbookUnitId(params);
+                if (ourUnitId && commandUnit && commandUnit !== ourUnitId) return;
 
                 if (id === 'sheet.operation.set-cell-edit-visible'
                     || id === 'sheet.operation.set-cell-edit-visible-f2'
@@ -1758,6 +1797,20 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     || id === 'sheet.mutation.set-range-formatted-value'
                     || id === 'sheet.command.set-range-values'
                 ) {
+                    const sheetId = typeof params?.subUnitId === 'string' ? params.subUnitId : lastSelection?.sheetId;
+                    markClearedUniverCells(
+                        sheetId,
+                        params?.cellValue as Record<number, Record<number, unknown>> | undefined,
+                    );
+                    if (
+                        (id === 'sheet.command.clear-selection-all'
+                            || id === 'sheet.command.clear-selection-content')
+                        && lastSelection
+                    ) {
+                        recentlyClearedCells.add(
+                            `${lastSelection.sheetId}:${lastSelection.row}:${lastSelection.col}`,
+                        );
+                    }
                     const mutated = applyRangeValuesMutation(liveDoc, command);
                     if (mutated) {
                         liveDoc = mutated;
@@ -1880,7 +1933,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     return {
         dispose: () => {
-            if (disposed) return;
+            if (disposed || disposing) return;
+            disposing = true;
             if (revealFrame) {
                 window.cancelAnimationFrame(revealFrame);
                 revealFrame = 0;
@@ -1904,15 +1958,18 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             tryCommitCellEditor();
             cellEditing = false;
             composing = false;
-            // Final commit: read live axis sizes from Univer (drag has finished).
+            // Teardown snapshots are sparse. Never treat omitted cells as deletes,
+            // and never publish this pull back into the view (it already flushed).
             try {
                 pullFromUniver(true, {
-                    clearMissing: pendingClearMissing,
+                    clearMissing: false,
                     mergeDimensions: true,
+                    silent: true,
                 });
             } catch { /* ignore */ }
             pendingClearMissing = false;
             pendingMergeDimensions = false;
+            recentlyClearedCells.clear();
             disposed = true;
             livePlotGridRelayouts.delete(relayout);
             for (const d of disposers) {
@@ -2063,7 +2120,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             const active = lastSelection;
             if (active) {
                 const text = readLiveCellPlainText(active.sheetId, active.row, active.col);
-                if (text != null) {
+                const clearedKey = `${active.sheetId}:${active.row}:${active.col}`;
+                // Stale getValue() after Delete must not resurrect header/body text
+                // the mutation stream already cleared.
+                if (text != null && !(text && recentlyClearedCells.has(clearedKey))) {
                     const next = mergeUniverCellDataIntoDocument(liveDoc, active.sheetId, {
                         [active.row]: { [active.col]: { v: text } },
                     });
@@ -2075,6 +2135,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     }
                 }
             }
+            recentlyClearedCells.clear();
         },
         relayout,
         focus: () => {

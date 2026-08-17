@@ -1390,11 +1390,12 @@ export async function decodePlotGridXlsx(
                 const fill = excelCell.fill && excelCell.fill.type === 'pattern'
                     ? argbToCss(excelCell.fill.fgColor?.argb)
                     : '';
-                // Prefer live Excel text; fall back to meta content when a cell was wiped.
-                const metaContent = saved?.content || saved?.markdownSource || '';
+                // Excel is canonical for visible text. Stale sidecar content must
+                // not resurrect a cell the user (or Excel) already cleared.
+                // Markdown/wikilink recovery only applies when the live display matches.
                 cells[key] = defaultCell({
                     id: key,
-                    content: restoredMarkdown || recoveredWikilink || content || metaContent,
+                    content: restoredMarkdown || recoveredWikilink || content,
                     linkedSceneId,
                     linkedViaWikilink: restoredMarkdown
                         ? saved?.linkedViaWikilink
@@ -2091,6 +2092,28 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
     }
     if (doc.univerStyles) parts.push(`styles:${JSON.stringify(doc.univerStyles)}`);
     return parts.join('\n');
+}
+
+/**
+ * Copy note-link metadata onto a live Univer snapshot.
+ * Cell text stays on `target`; only fields Univer does not own are filled in.
+ */
+export function overlayConceptGridCellMeta(
+    target: ConceptGridDocument,
+    source: ConceptGridDocument,
+): void {
+    for (const page of target.pages) {
+        const srcPage = source.pages.find(item => item.id === page.id);
+        if (!srcPage) continue;
+        for (const [key, cell] of Object.entries(page.cells || {})) {
+            const src = srcPage.cells?.[key];
+            if (!cell || !src) continue;
+            if (src.linkedSceneId && !cell.linkedSceneId) cell.linkedSceneId = src.linkedSceneId;
+            if (src.linkedViaWikilink != null && cell.linkedViaWikilink == null) {
+                cell.linkedViaWikilink = src.linkedViaWikilink;
+            }
+        }
+    }
 }
 
 /**

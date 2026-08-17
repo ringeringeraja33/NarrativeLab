@@ -336,14 +336,14 @@ export default class SceneCardsPlugin extends Plugin {
     private _reloadEntitiesQueued = false;
     /** Bumps when Library category tabs are adopted from vault folders (live sync). */
     libraryCategoriesStructureEpoch = 0;
-    /** Last decoded datasheet — skip ExcelJS on reopen when the file is unchanged. */
-    private _plotGridDocCache: {
+    /** Last decoded datasheet per project — skip ExcelJS on reopen when the file is unchanged. */
+    private _plotGridDocCache = new Map<string, {
         projectFile: string;
         xlsxPath: string;
         mtime: number;
         size: number;
         doc: ConceptGridDocument;
-    } | null = null;
+    }>();
     /** Cached plotgrid mention scan — rebuilds are expensive on large grids. */
     private _plotGridScanCache: {
         projectFile: string;
@@ -1128,8 +1128,14 @@ export default class SceneCardsPlugin extends Plugin {
                     const systemFolder = normalizePath(this.getProjectSystemFolder() || '');
                     const plotXlsx = normalizePath(plotGridXlsxPath(this.getProjectBaseFolder() || ''));
                     const plotMeta = normalizePath(plotGridNlMetaPath(this.getProjectSystemFolder() || ''));
-                    if (filePath === plotXlsx || filePath === plotMeta) {
-                        void this.refreshPlotGridViews();
+                    if (
+                        /\/Library\/datasheet\.xlsx$/i.test(filePath)
+                        || /\/System\/datasheet\.nlmeta\.json$/i.test(filePath)
+                        || /\/Library\/datasheet\.nlmeta\.json$/i.test(filePath)
+                        || filePath === plotXlsx
+                        || filePath === plotMeta
+                    ) {
+                        void this.refreshPlotGridViews(filePath);
                         return;
                     }
                     if (systemFolder
@@ -2472,8 +2478,8 @@ export default class SceneCardsPlugin extends Plugin {
      */
     private async existingPlotGridFilledCount(path: string): Promise<number> {
         const normalized = normalizePath(path);
-        const cached = this._plotGridDocCache;
-        if (cached && cached.xlsxPath === normalized) {
+        const cached = this.lookupPlotGridDocCache({ xlsxPath: normalized });
+        if (cached) {
             const cachedFilled = countConceptGridFilledCells(cached.doc);
             if (cachedFilled > 0) return cachedFilled;
         }
@@ -2496,7 +2502,7 @@ export default class SceneCardsPlugin extends Plugin {
     /** In-memory datasheet for the current project — skip the xlsx wait on reopen. */
     peekPlotGridDoc(projectFile?: string | null): ConceptGridDocument | null {
         const target = normalizePath(projectFile || this.sceneManager.activeProject?.filePath || '');
-        const cached = this._plotGridDocCache;
+        const cached = this.lookupPlotGridDocCache({ projectFile: target });
         if (!cached || !target || cached.projectFile !== target) return null;
         const doc = cached.doc;
         if (isDefaultEmptyConceptGrid(doc)) return null;
@@ -2509,19 +2515,43 @@ export default class SceneCardsPlugin extends Plugin {
         this._plotGridScanCache = null;
     }
 
+    private lookupPlotGridDocCache(options: {
+        projectFile?: string;
+        xlsxPath?: string;
+    }): {
+        projectFile: string;
+        xlsxPath: string;
+        mtime: number;
+        size: number;
+        doc: ConceptGridDocument;
+    } | null {
+        if (options.projectFile) {
+            const hit = this._plotGridDocCache.get(normalizePath(options.projectFile));
+            if (hit) return hit;
+        }
+        if (options.xlsxPath) {
+            const path = normalizePath(options.xlsxPath);
+            for (const hit of this._plotGridDocCache.values()) {
+                if (hit.xlsxPath === path) return hit;
+            }
+        }
+        return null;
+    }
+
     private rememberPlotGridDocCache(
         projectFile: string,
         xlsxPath: string,
         doc: ConceptGridDocument,
         stat?: { mtime?: number; size?: number } | null,
     ): void {
-        this._plotGridDocCache = {
-            projectFile: normalizePath(projectFile),
+        const key = normalizePath(projectFile);
+        this._plotGridDocCache.set(key, {
+            projectFile: key,
             xlsxPath: normalizePath(xlsxPath),
             mtime: stat?.mtime ?? Date.now(),
             size: stat?.size ?? 0,
             doc: structuredClone(doc),
-        };
+        });
     }
 
     // ────────────────────────────────────
@@ -3347,7 +3377,7 @@ export default class SceneCardsPlugin extends Plugin {
             }
             return;
         }
-        const cached = this._plotGridDocCache;
+        const cached = this.lookupPlotGridDocCache({ projectFile: projectFilePath, xlsxPath: path });
         if (
             cached
             && cached.xlsxPath === path
@@ -3575,7 +3605,7 @@ export default class SceneCardsPlugin extends Plugin {
             const xlsxPath = normalizePath(plotGridXlsxPath(baseFolder));
             const pendingWrite = this._systemJsonWriteQueues.get(xlsxPath);
             if (pendingWrite) await pendingWrite.catch(() => undefined);
-            const cached = this._plotGridDocCache;
+            const cached = this.lookupPlotGridDocCache({ projectFile: targetProjectFile, xlsxPath });
             if (
                 cached
                 && cached.projectFile === targetProjectFile
@@ -5263,15 +5293,23 @@ export default class SceneCardsPlugin extends Plugin {
         await Promise.allSettled(refreshTasks);
     }
 
-    /** Refresh only open Plot Grid leaves (external datasheet.xlsx edits). */
-    private async refreshPlotGridViews(): Promise<void> {
+    /** Refresh Plot Grid leaves for the project that owns `changedPath`. */
+    private async refreshPlotGridViews(changedPath?: string): Promise<void> {
         const activePath = this.sceneManager.activeProject?.filePath
             ? normalizePath(this.sceneManager.activeProject.filePath)
             : null;
+        const targetProject = changedPath
+            ? this.findProjectFileForVaultPath(changedPath)
+            : activePath;
         const leaves = this.app.workspace.getLeavesOfType(PLOTGRID_VIEW_TYPE);
         for (const leaf of leaves) {
             const bound = getLeafNarrativeLabProjectFile(leaf);
-            if (bound && activePath && bound !== activePath) continue;
+            if (bound) {
+                if (targetProject && bound !== targetProject) continue;
+                if (!targetProject && activePath && bound !== activePath) continue;
+            } else if (targetProject && activePath && targetProject !== activePath) {
+                continue;
+            }
             const view = leaf.view as unknown as {
                 refresh?: (options?: { reloadFromDisk?: boolean }) => void | Promise<void>;
             };

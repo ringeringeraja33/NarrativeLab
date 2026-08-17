@@ -261,6 +261,35 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         });
         assert.equal(reordered.pages[0].id, 'page-2');
         assert.equal(reordered.pages[1].id, 'page-1');
+
+        const linkedLive = structuredClone(decoded);
+        linkedLive.pages[0].cells['r1-c1'] = {
+            ...linkedLive.pages[0].cells['r1-c1'],
+            linkedSceneId: undefined,
+            linkedViaWikilink: undefined,
+        };
+        codec.overlayConceptGridCellMeta(linkedLive, decoded);
+        assert.equal(linkedLive.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+        assert.equal(linkedLive.pages[0].cells['r1-c1'].content, 'meets mentor');
+
+        const staleMetaDoc = structuredClone(decoded);
+        staleMetaDoc.pages[0].cells['r1-c1'] = {
+            ...staleMetaDoc.pages[0].cells['r1-c1'],
+            content: 'stale resurrect',
+            markdownSource: 'stale resurrect',
+        };
+        const clearedBook = new ExcelJS.Workbook();
+        const clearedSheet = clearedBook.addWorksheet('Act I');
+        clearedSheet.getCell(1, 2).value = 'Hero';
+        clearedSheet.getCell(1, 3).value = 'Character';
+        clearedSheet.getCell(2, 1).value = 'Scene 1';
+        clearedSheet.getCell(2, 3).value = '[[Characters/Falcon|游隼]]';
+        const clearedDecoded = await codec.decodePlotGridXlsx(
+            await clearedBook.xlsx.writeBuffer(),
+            { meta: codec.buildNlMetaForDocument(staleMetaDoc) },
+        );
+        assert.equal(clearedDecoded.pages[0].cells['r1-c1'].content, '');
+        assert.equal(clearedDecoded.pages[0].cells['r1-c2'].content.includes('Falcon'), true);
         assert.equal(sheet.rowData[1].h, 40);
         assert.equal(sheet.rowData[1].ia, 0, 'manual row height must disable Univer auto-height');
         assert.equal(sheet.columnData[1].w, 120);
@@ -836,6 +865,10 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /decodePlotGridXlsx/);
     assert.match(mainTs, /releasePlotGridWorkbookCache/);
     assert.match(mainTs, /_plotGridDocCache/);
+    assert.match(mainTs, /lookupPlotGridDocCache/);
+    assert.match(mainTs, /new Map<string,/);
+    assert.match(mainTs, /refreshPlotGridViews\(filePath\)/);
+    assert.match(mainTs, /findProjectFileForVaultPath\(changedPath\)/);
     assert.match(mainTs, /peekPlotGridDoc/);
     assert.match(mainTs, /countConceptGridFilledCells\(doc\) === 0/);
     assert.match(mainTs, /rememberPlotGridDocCache/);
@@ -879,7 +912,7 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /conceptGridDocumentsSharePage/);
     assert.match(host, /workbookSnapshotBelongsToDocument/);
     assert.match(host, /scheduleReveal/);
-    assert.match(host, /if \(!syncEnabled\) return/);
+    assert.match(host, /if \(disposing \|\| !syncEnabled\) return/);
     assert.match(view, /showSpreadsheetLoading/);
     assert.match(view, /hideSpreadsheetLoading/);
     assert.match(view, /Loading spreadsheet…/);
@@ -948,11 +981,14 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /univerHost\?\.dispose|disposeUniverHost/);
     assert.match(view, /allowEmptyOverwrite:\s*true/);
     assert.doesNotMatch(view, /openActivePageCsv|plotGridCsvSync|Open page CSV/);
-    // Cross-project isolation: track System folder and abort mismatched autosaves
+    // Cross-project isolation: always write to the bound project, never abort.
     assert.match(view, /loadedSystemFolder/);
     assert.match(view, /loadedProjectFile/);
     assert.match(view, /getBoundProjectFile\(\)/);
     assert.match(view, /folderAtSchedule/);
+    assert.match(view, /if \(!projectAtSchedule\) return/);
+    assert.doesNotMatch(view, /folderAtSchedule !== currentFolder/);
+    assert.match(view, /hasHydratedDocument = false;\s*this\.disposeUniverHost\(\{\s*persist:\s*false\s*\}\)/);
     assert.match(view, /projectChanged/);
     assert.match(view, /projectFilePath: projectAtSchedule/);
     assert.match(view, /loadPlotGrid\(projectFile\)/);
@@ -1135,6 +1171,15 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /sheet\.mutation\.set-range-values/);
     assert.match(host, /applyRangeValuesMutation/);
     assert.match(host, /createPlotGridWorkbookUnitId/);
+    assert.match(host, /commandWorkbookUnitId/);
+    assert.match(host, /recentlyClearedCells/);
+    assert.match(host, /overlayConceptGridCellMeta/);
+    assert.match(host, /conceptGridDocumentsSharePage/);
+    assert.match(host, /silent: true/);
+    assert.match(host, /clearMissing: false/);
+    assert.match(host, /disposing \|\| !syncEnabled/);
+    assert.match(codecSrc, /overlayConceptGridCellMeta/);
+    assert.match(codecSrc, /Stale sidecar content must/);
     assert.match(host, /workbookId: workbookUnitId/);
     assert.match(host, /livePlotGridRelayouts/);
     assert.match(host, /scheduleSiblingPlotGridRelayout/);
@@ -1166,7 +1211,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /menuHoldUntil/);
     assert.doesNotMatch(host, /addEventListener\('pointerover'/);
     assert.match(host, /pullFromUniver\(true, \{ clearMissing: false, mergeDimensions: true \}\)/);
-    assert.match(host, /if \(text != null\)/);
+    assert.match(host, /if \(text != null && !\(text && recentlyClearedCells\.has\(clearedKey\)\)\)/);
     assert.doesNotMatch(host, /narrativelab-univer-submenu-stale/);
     assert.doesNotMatch(host, /pruneStackedUniverSubmenus/);
     assert.match(host, /retireUniverSubmenus/);

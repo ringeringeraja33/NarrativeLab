@@ -580,14 +580,11 @@ export class PlotgridView extends ProjectBoundItemView {
                     this.scheduleSave();
                     return;
                 }
-                const currentFolder = this.getActiveSystemFolder();
-                if (folderAtSchedule && currentFolder && folderAtSchedule !== currentFolder) {
-                    // Active project changed — do not write the previous workbook into the new folder.
-                    return;
-                }
+                if (!projectAtSchedule) return;
                 // Always write to the folder this workbook was loaded from. If the
                 // global active project changed, path-scoped save keeps edits in
                 // the bound book instead of aborting or bleeding into another project.
+                void folderAtSchedule;
                 if (this.univerHost && this.cellEditorWindows.size === 0) {
                     this.flushUniverIntoDocument({ acceptCleared: true });
                 }
@@ -2100,6 +2097,7 @@ export class PlotgridView extends ProjectBoundItemView {
             if (projectChanged) {
                 // Always reload on project switch — never skip for pending saves / focus.
                 await this.persistBoundPlotGrid();
+                this.hasHydratedDocument = false;
                 this.disposeUniverHost({ persist: false });
             } else if (!reloadFromDisk && this.univerHost && this.loadedProjectFile === projectFile) {
                 // Generic view refresh / tab focus must not re-read datasheet.xlsx

@@ -1,5 +1,12 @@
 # NarrativeLab — Changelog
 
+## 1.3.0
+
+- Concept Grid saves stay on the bound project: autosave no longer drops when another book is focused, and each project keeps its own datasheet cache.
+- Closing or switching a spreadsheet tab can no longer write a sparse teardown snapshot over a filled workbook.
+- Deleted cells, including first-row / first-column / A1, are not resurrected by a stale Univer `getValue()` or leftover sidecar text.
+- Spreadsheet commands and vault echoes are scoped to the owning workbook, so one project's datasheet cannot mix into another open grid.
+
 ## 1.2.5
 
 - Concept Grid overflow sheet lists can be reordered from drag handles.

@@ -41,7 +41,8 @@ test('Open Project reuses the same project tab and opens a new tab only for anot
     assert.match(mainTs, /countProjectScopedLeaves/);
     assert.match(mainTs, /hasScopedLeaves \? workspace\.getLeaf\('tab'\) : workspace\.getLeaf\(false\)/);
     assert.match(mainTs, /syncActiveProjectFromLeaf/);
-    assert.match(mainTs, /bound && activePath && bound !== activePath/);
+    assert.match(mainTs, /bound !== targetProject/);
+    assert.match(mainTs, /refreshPlotGridViews\(filePath\)/);
     assert.match(navigatorView, /openBoardForProject\(project\)/);
     assert.match(navigatorView, /openProjectFromNavigator\(project\)/);
     assert.doesNotMatch(navigatorView, /activateView\(BOARD_VIEW_TYPE\)/);
