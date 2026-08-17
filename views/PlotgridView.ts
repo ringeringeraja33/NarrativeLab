@@ -9,6 +9,7 @@ import {
     createEmptyConceptGridDocument,
     getActiveConceptGridPage,
     isDefaultEmptyConceptGrid,
+    isIncompleteConceptGridPull,
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
 import { getActiveUiLanguage, t } from '../utils/i18n';
@@ -78,6 +79,8 @@ export class PlotgridView extends ProjectBoundItemView {
     private wrapperEl: HTMLDivElement | null = null;
     private scrollAreaEl: HTMLDivElement | null = null;
     private canvasEl: HTMLDivElement | null = null;
+    /** Covers Univer's empty default workbook until the real sheet paints. */
+    private loadingEl: HTMLDivElement | null = null;
     /** Active data cell, kept in sync with Univer selection. */
     private selectedRow: number | null = null;
     private selectedCol: number | null = null;
@@ -139,7 +142,7 @@ export class PlotgridView extends ProjectBoundItemView {
         this.buildLayout(container);
         this.renderToolbar();
         const peeked = this.plugin?.peekPlotGridDoc?.(this.getTargetProjectFile()) ?? null;
-        if (peeked) {
+        if (peeked && !isDefaultEmptyConceptGrid(normalizeConceptGridDocument(peeked))) {
             this.document = normalizeConceptGridDocument(peeked);
             this.bindActivePage();
             this.hasHydratedDocument = true;
@@ -261,6 +264,7 @@ export class PlotgridView extends ProjectBoundItemView {
             }
         }
         this.disposeUniverHost({ persist: false });
+        this.hideSpreadsheetLoading();
         // disposeUniverHost performs one last pull; the explicit save above is
         // authoritative, so do not leave a second autosave running after close.
         this.cancelPendingSave();
@@ -346,11 +350,14 @@ export class PlotgridView extends ProjectBoundItemView {
         try {
             host.flush();
             const next = normalizeConceptGridDocument(host.getDocument());
+            // Insert-sheet / mid-dispose snapshots can omit existing worksheets
+            // and look like an empty workbook. Never replace a real grid with that.
+            if (isIncompleteConceptGridPull(this.document, next)) return;
             // A dispose/remount can yield the default placeholder. Persist,
-            // autosave, and tab-close pass acceptCleared so user deletes win.
+            // autosave, and tab-close pass acceptCleared so user deletes win —
+            // but still refuse wiping a filled workbook down to the placeholder.
             if (
-                !options.acceptCleared
-                && isDefaultEmptyConceptGrid(next)
+                isDefaultEmptyConceptGrid(next)
                 && !isDefaultEmptyConceptGrid(this.document)
             ) {
                 return;
@@ -946,6 +953,13 @@ export class PlotgridView extends ProjectBoundItemView {
             this.renderUniverLoadError();
             return;
         }
+        // Never mount Univer on the default empty placeholder while the real
+        // workbook is still loading — that paints "页面 1" and then autosave
+        // can lag behind the cells the user types into it.
+        if (!this.hasHydratedDocument) {
+            this.showSpreadsheetLoading();
+            return;
+        }
         const sig = this.getUniverStructureSig();
         const push = !!this.univerHost && (options.forcePush === true || sig !== this.univerStructureSig);
         if (push) this.univerViewStateSig = '';
@@ -1108,7 +1122,9 @@ export class PlotgridView extends ProjectBoundItemView {
                     },
                     onDocumentChange: (doc) => {
                         if (mountGen !== this.univerMountGeneration) return;
-                        this.document = normalizeConceptGridDocument(doc);
+                        const next = normalizeConceptGridDocument(doc);
+                        if (isIncompleteConceptGridPull(this.document, next)) return;
+                        this.document = next;
                         this.synchronizeWikilinkCells();
                         this.bindActivePage();
                         this.syncOpenCellEditorsFromDocument();
@@ -1147,12 +1163,16 @@ export class PlotgridView extends ProjectBoundItemView {
                         window.dispatchEvent(new Event('resize'));
                     });
                 });
+                await nextPaint();
+                if (mountGen !== this.univerMountGeneration) return;
+                this.hideSpreadsheetLoading();
             } catch (e) {
                 if (mountGen !== this.univerMountGeneration) return;
                 console.error('[NarrativeLab] Univer Plot Grid failed to initialize', e);
                 this.univerLoadFailed = true;
                 this.univerLoadError = e;
                 this.univerHost = null;
+                this.hideSpreadsheetLoading();
                 this.renderUniverLoadError();
             } finally {
                 if (mountGen === this.univerMountGeneration) {
@@ -1165,10 +1185,16 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     private showSpreadsheetLoading(): void {
-        if (!this.canvasEl) return;
-        this.canvasEl.empty();
-        const panel = this.canvasEl.createDiv('plot-grid-univer-loading');
+        if (!this.scrollAreaEl) return;
+        if (this.loadingEl?.isConnected) return;
+        const panel = this.scrollAreaEl.createDiv('plot-grid-univer-loading');
         panel.createEl('p', { text: t('Loading spreadsheet…') });
+        this.loadingEl = panel;
+    }
+
+    private hideSpreadsheetLoading(): void {
+        this.loadingEl?.remove();
+        this.loadingEl = null;
     }
 
     private renderUniverLoadError(): void {

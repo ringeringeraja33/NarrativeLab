@@ -3734,6 +3734,7 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 .story-line-character-content {
     padding: 12px;
     overflow-y: auto;
+    overscroll-behavior: contain;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -5564,11 +5565,16 @@ button.library-profile-orientation-btn.is-active:hover,
     display: flex;
     flex-direction: column;
     height: 100%;
+    /* Match Character/Codex: only the inner pane scrolls. Nested overflow:auto
+       on this shell + .story-line-location-content made wheel events bounce
+       the archive grid back to the top. */
+    overflow: hidden;
 }
 
 .story-line-location-content {
     padding: 12px;
     overflow-y: auto;
+    overscroll-behavior: contain;
     flex: 1;
     min-height: 0;
     display: flex;
@@ -7481,16 +7487,22 @@ button.library-profile-orientation-btn.is-active:hover,
 }
 
 .plot-grid-univer-loading {
-    align-self: center;
+    position: absolute;
+    inset: 0;
+    z-index: 40;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 100%;
-    height: 100%;
-    min-height: 160px;
-    margin: auto;
+    margin: 0;
+    background: var(--background-primary);
     color: var(--text-muted);
     font-size: var(--font-ui-small);
+    pointer-events: none;
+}
+
+.plot-grid-univer-host.is-univer-pending {
+    opacity: 0;
+    pointer-events: none;
 }
 
 .plot-grid-univer-error {

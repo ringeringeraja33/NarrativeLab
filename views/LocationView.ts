@@ -119,6 +119,8 @@ export class LocationView extends ProjectBoundItemView {
         this._portaledDropdowns = [];
     }
     private embedOptions: LibraryProfileEmbedOptions | null = null;
+    /** Focus the search field after the user opens it — not after every re-render. */
+    private focusSearchOnNextOverview = false;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -285,6 +287,11 @@ export class LocationView extends ProjectBoundItemView {
     // ── Overview: tree hierarchy ───────────────────────
 
     private renderOverview(container: HTMLElement): void {
+        const searchWasFocused = activeDocument.activeElement instanceof HTMLInputElement
+            && activeDocument.activeElement.classList.contains('library-browse-search-input')
+            && container.contains(activeDocument.activeElement);
+        const shouldFocusSearch = searchWasFocused || this.focusSearchOnNextOverview;
+        this.focusSearchOnNextOverview = false;
         container.empty();
         if (this.locationOverviewMode === 'base') {
             renderLibraryModeToolbar(container, actions => this.renderLocationOverviewModes(actions));
@@ -311,6 +318,7 @@ export class LocationView extends ProjectBoundItemView {
             searchOpen: this.browseSearchOpen,
             onSearchOpenChange: (open) => {
                 this.browseSearchOpen = open;
+                this.focusSearchOnNextOverview = open;
                 this.renderOverview(container);
             },
             onSearchChange: (value) => {
@@ -352,8 +360,7 @@ export class LocationView extends ProjectBoundItemView {
             },
         });
 
-        const hadFocus = activeDocument.activeElement?.closest('.story-line-location-container') != null;
-        if (searchInput && (hadFocus || this.browseSearchOpen)) {
+        if (searchInput && shouldFocusSearch) {
             window.setTimeout(() => {
                 searchInput.focus();
                 searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
@@ -2222,7 +2229,18 @@ export class LocationView extends ProjectBoundItemView {
             return;
         }
         if (this.rootContainer) {
+            const scroller = this.rootContainer.querySelector('.story-line-location-content') as HTMLElement | null;
+            const scrollTop = !this.selectedItem ? (scroller?.scrollTop ?? 0) : 0;
             this.renderView(this.rootContainer);
+            if (scrollTop > 0) {
+                const next = this.rootContainer.querySelector('.story-line-location-content') as HTMLElement | null;
+                if (next) {
+                    next.scrollTop = scrollTop;
+                    window.requestAnimationFrame(() => {
+                        if (next.isConnected) next.scrollTop = scrollTop;
+                    });
+                }
+            }
         }
     }
 

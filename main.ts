@@ -50,6 +50,7 @@ import {
     type PlotGridData,
     countConceptGridFilledCells,
     isConceptGridDocumentEmpty,
+    isIncompleteConceptGridPull,
     normalizeConceptGridDocument,
     shouldRefuseEmptyPlotGridWrite,
 } from './models/PlotGridData';
@@ -3340,6 +3341,16 @@ export default class SceneCardsPlugin extends Plugin {
                 this._reportedInvalidPlotGridXlsxPaths.add(path);
                 new Notice(t('Empty spreadsheet save blocked — existing datasheet.xlsx was kept.'));
             }
+            return;
+        }
+        const cached = this._plotGridDocCache;
+        if (
+            cached
+            && cached.xlsxPath === path
+            && !options.allowEmptyOverwrite
+            && isIncompleteConceptGridPull(cached.doc, document)
+        ) {
+            console.warn('[NarrativeLab] Skipping datasheet write — snapshot is missing worksheets still on disk.');
             return;
         }
 

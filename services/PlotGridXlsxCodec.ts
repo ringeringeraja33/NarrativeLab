@@ -46,6 +46,7 @@ import {
     normalizeUniverSheetExtras,
     normalizeUniverStyleMap,
     normalizeUniverWorkbookResources,
+    pageHasPersistableContent,
 } from '../models/PlotGridData';
 import { t } from '../utils/i18n';
 
@@ -1672,29 +1673,65 @@ export function reconcileUniverSheetsIntoDocument(
     activeSheetId?: string,
 ): ConceptGridDocument {
     if (!sheets) return raw;
-    const order = (sheetOrder?.length ? [...sheetOrder] : Object.keys(sheets)).filter((id) => {
-        const sheet = sheets[id];
-        const name = (sheet?.name || id).trim();
-        return name.toLowerCase() !== NL_META_SHEET.toLowerCase();
-    });
+    const isMetaSheet = (id: string): boolean => {
+        const name = (sheets[id]?.name || id).trim();
+        return name.toLowerCase() === NL_META_SHEET.toLowerCase();
+    };
+    const snapshotIds = Object.keys(sheets).filter(id => !isMetaSheet(id));
+    // Univer insert-sheet snapshots often put new ids in `sheets` before
+    // `sheetOrder` catches up (or the reverse). Union both so tabs are not dropped.
+    const order: string[] = [];
+    const seen = new Set<string>();
+    for (const id of (sheetOrder?.length ? sheetOrder : snapshotIds)) {
+        if (!snapshotIds.includes(id) || seen.has(id) || isMetaSheet(id)) continue;
+        seen.add(id);
+        order.push(id);
+    }
+    for (const id of snapshotIds) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        order.push(id);
+    }
     if (order.length === 0) return raw;
+
+    const snapshotSet = new Set(order);
+    const rawIds = new Set(raw.pages.map(page => page.id));
+    const lostFilled = raw.pages.filter(page =>
+        !snapshotSet.has(page.id) && pageHasPersistableContent(page),
+    );
+    const gained = order.some(id => !rawIds.has(id));
+    // Adding sheets while existing filled pages vanish is an incomplete snapshot,
+    // not a user delete. Keep the filled pages and append the new tabs.
+    const keepIds = new Set(order);
+    if (lostFilled.length > 0 && gained) {
+        for (const page of lostFilled) keepIds.add(page.id);
+    }
+    const finalOrder: string[] = lostFilled.length > 0 && gained
+        ? [
+            ...raw.pages.filter(page => keepIds.has(page.id)).map(page => page.id),
+            ...order.filter(id => !rawIds.has(id)),
+        ]
+        : order;
 
     const doc = structuredClone(raw);
     const byId = new Map(doc.pages.map(page => [page.id, page]));
     const nextPages: ConceptGridPage[] = [];
-    for (const id of order) {
+    for (const id of finalOrder) {
         const sheet = sheets[id] || { id };
         const name = (sheet.name || '').trim();
         const existing = byId.get(id);
+        const inSnapshot = Object.prototype.hasOwnProperty.call(sheets, id);
         if (existing) {
-            if (name) existing.title = name;
-            existing.hidden = isUniverSheetHidden(sheet.hidden);
-            existing.tabColor = normalizeUniverTabColor(sheet.tabColor);
-            if (typeof sheet.zoomRatio === 'number' && Number.isFinite(sheet.zoomRatio) && sheet.zoomRatio > 0) {
-                existing.zoom = sheet.zoomRatio;
+            if (inSnapshot) {
+                if (name) existing.title = name;
+                existing.hidden = isUniverSheetHidden(sheet.hidden);
+                existing.tabColor = normalizeUniverTabColor(sheet.tabColor);
+                if (typeof sheet.zoomRatio === 'number' && Number.isFinite(sheet.zoomRatio) && sheet.zoomRatio > 0) {
+                    existing.zoom = sheet.zoomRatio;
+                }
+                applyUniverFreezeToPage(existing, sheet.freeze);
+                existing.univerExtras = extractUniverSheetExtras(sheet);
             }
-            applyUniverFreezeToPage(existing, sheet.freeze);
-            existing.univerExtras = extractUniverSheetExtras(sheet);
             nextPages.push(existing);
             continue;
         }

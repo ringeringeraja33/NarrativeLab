@@ -108,7 +108,7 @@ function injectUniverCss(activeDocument: Document): void {
 
 import { installUniverContextMenuHoverAssist, retireUniverSubmenus } from '../utils/univerContextMenu';
 import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
-import { normalizeUniverStyleMap, normalizeUniverWorkbookResources } from '../models/PlotGridData';
+import { isIncompleteConceptGridPull, normalizeUniverStyleMap, normalizeUniverWorkbookResources } from '../models/PlotGridData';
 import { cellHasNoteLink, getPlotGridCellAtUniverCoords } from '../utils/plotGridCellEdit';
 import {
     conceptGridContentFingerprint,
@@ -844,6 +844,50 @@ function applyAxisMoveMutation(doc: ConceptGridDocument, command: unknown): Conc
     return null;
 }
 
+/**
+ * Apply Univer cell mutations immediately. workbook.save() lags behind typing
+ * and a later pull would persist only the first half of a burst of edits.
+ */
+function applyRangeValuesMutation(doc: ConceptGridDocument, command: unknown): ConceptGridDocument | null {
+    const { id, params } = command as {
+        id?: string;
+        params?: {
+            subUnitId?: string;
+            cellValue?: Record<number, Record<number, {
+                v?: unknown;
+                f?: unknown;
+                p?: unknown;
+                custom?: Record<string, unknown>;
+                s?: unknown;
+            } | null>>;
+            range?: { startRow?: number; startColumn?: number };
+            value?: {
+                v?: unknown;
+                f?: unknown;
+                p?: unknown;
+                custom?: Record<string, unknown>;
+                s?: unknown;
+            };
+        };
+    };
+    if (!id || !/set-range-values|set-range-formatted-value/i.test(id)) return null;
+    const sheetId = params?.subUnitId;
+    if (!sheetId) return null;
+    let cellData = params?.cellValue;
+    if (!cellData && params?.range && params.value) {
+        const row = params.range.startRow ?? 0;
+        const col = params.range.startColumn ?? 0;
+        cellData = { [row]: { [col]: params.value } };
+    }
+    if (!cellData) return null;
+    const next = mergeUniverCellDataIntoDocument(
+        structuredClone(doc),
+        sheetId,
+        cellData as Parameters<typeof mergeUniverCellDataIntoDocument>[2],
+    );
+    return next;
+}
+
 /** Keep stable row/column ids aligned with Univer native insert/delete actions. */
 function applyAxisStructureMutation(doc: ConceptGridDocument, command: unknown): ConceptGridDocument | null {
     const { id, params } = command as AxisStructureMutation;
@@ -922,6 +966,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     opts.container.empty();
     opts.container.addClass('plot-grid-univer-host');
+    opts.container.addClass('is-univer-pending');
     opts.container.setCssStyles({
         width: '100%',
         height: '100%',
@@ -1002,7 +1047,11 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             }));
         }
     };
+    // UniverSheetsCorePreset paints a blank default workbook first. Dispose it
+    // before creating ours so a restored tab never flashes an empty sheet.
+    disposeActiveWorkbook();
     createNativeWorkbook(liveDoc);
+    opts.container.removeClass('is-univer-pending');
     orderRibbonTabs(univerInstance);
     moveFinancialFormulaMenuLast(univerInstance);
     tryActivateSheet(univerAPI, liveDoc.activePageId);
@@ -1169,6 +1218,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             }
             next.univerResources = normalizeUniverWorkbookResources(saved.resources);
             next.univerStyles = normalizeUniverStyleMap(saved.styles);
+            if (isIncompleteConceptGridPull(base, next)) return;
             const nextFp = conceptGridContentFingerprint(next);
             // Also detect meta drift (links) even when display text is unchanged.
             const metaChanged = JSON.stringify(pickMeta(next)) !== JSON.stringify(pickMeta(liveDoc));
@@ -1527,6 +1577,17 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     return;
                 }
 
+                // Sheet-bar add/copy/delete/reorder: workbook.save() lags one
+                // frame and can omit existing tabs. Pull after Univer settles.
+                if (
+                    /insert-sheet|remove-sheet|copy-sheet|set-worksheet-order|set-tab-color/i.test(id)
+                ) {
+                    window.setTimeout(() => {
+                        if (!disposed) schedulePull({ mergeDimensions: true });
+                    }, 120);
+                    return;
+                }
+
                 // Value edits while the cell editor is open are deferred via isEditorBusy.
                 // Also skip noisy formula/doc mutations until the editor session ends —
                 // polling mid-keystroke causes autosave → vault refresh → workbook remount jumps.
@@ -1547,10 +1608,19 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     || id === 'sheet.mutation.set-range-formatted-value'
                     || id === 'sheet.command.set-range-values'
                 ) {
+                    const mutated = applyRangeValuesMutation(liveDoc, command);
+                    if (mutated) {
+                        liveDoc = mutated;
+                        contentFp = conceptGridContentFingerprint(liveDoc);
+                        opts.onDocumentChange(liveDoc);
+                    }
                     if (isEditorBusy()) {
                         pendingAfterEdit = true;
                         return;
                     }
+                    // Mutations already captured typed cells. workbook.save() lags
+                    // and a clearMissing pull would drop the rest of the sheet.
+                    if (mutated) return;
                     schedulePull({ clearMissing: true });
                     return;
                 }
@@ -1827,8 +1897,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             pendingAfterEdit = false;
             pendingClearMissing = false;
             pendingMergeDimensions = false;
-            // Full workbook.save() after commit: omitted cells are real clears.
-            pullFromUniver(true, { clearMissing: true, mergeDimensions: true });
+            // Do not clear omitted cells here — workbook.save() still lags the
+            // mutation stream and would persist only part of a typing burst.
+            pullFromUniver(true, { clearMissing: false, mergeDimensions: true });
             // Prefer the live active cell, including an empty value (Delete).
             const active = lastSelection;
             if (active) {

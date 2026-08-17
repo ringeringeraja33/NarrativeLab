@@ -424,6 +424,7 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(save, /projectFilePath\?:/);
     assert.match(save, /_reportedInvalidPlotGridXlsxPaths\.has\(path\)/);
     assert.match(save, /shouldRefuseEmptyPlotGridWrite/);
+    assert.match(save, /isIncompleteConceptGridPull\(cached\.doc, document\)/);
     assert.match(mainTs, /existingPlotGridFilledCount/);
     assert.match(mainTs, /plotGridXlsxExists/);
     assert.equal((save.match(/new Notice\(/g) || []).length, 1, 'corrupt workbook warning is deduplicated');
@@ -529,6 +530,17 @@ test('Story Graph is the first peer tab while profile and browse modes stay in t
     assert.match(styles, /\.codex-category-tabs\s*\{[^}]*justify-content:\s*flex-start/s);
     assert.match(styles, /\.codex-category-tabs \.library-story-graph-tab\s*\{[^}]*margin-left:\s*0/s);
     assert.match(styles, /\.codex-category-tabs \.codex-category-actions\s*\{[^}]*border-left:/s);
+});
+
+test('Library location archive uses one inner scroller and keeps scroll across refresh', () => {
+    assert.match(styles, /\.story-line-location-container\s*\{[^}]*overflow:\s*hidden/s);
+    assert.match(styles, /\.story-line-character-container\s*\{[^}]*overflow:\s*hidden/s);
+    assert.match(styles, /\.story-line-location-content\s*\{[^}]*overscroll-behavior:\s*contain/s);
+    assert.match(locationView, /querySelector\('\.story-line-location-content'\)[\s\S]*?scrollTop/);
+    assert.match(locationView, /library-browse-search-input[\s\S]*?shouldFocusSearch/);
+    assert.match(characterView, /library-browse-search-input[\s\S]*?shouldFocusSearch/);
+    assert.doesNotMatch(locationView, /hadFocus \|\| this\.browseSearchOpen/);
+    assert.doesNotMatch(characterView, /hadFocus \|\| this\.browseSearchOpen/);
 });
 
 test('plot-grid text keeps Markdown source and renders rich text with native wikilinks', async () => {

@@ -200,6 +200,29 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.deepEqual(freezeSync.pages[0].univerExtras.mergeData, [
             { startRow: 0, endRow: 2, startColumn: 0, endColumn: 0 },
         ]);
+
+        // sheetOrder lag: new tab is in `sheets` but not yet in sheetOrder.
+        const orderLag = codec.reconcileUniverSheetsIntoDocument(decoded, {
+            'page-1': { id: 'page-1', name: 'Act I' },
+            'sheet-new': { id: 'sheet-new', name: 'Sheet3' },
+        }, ['page-1'], 'sheet-new');
+        assert.equal(orderLag.pages.length, 2);
+        assert.equal(orderLag.pages.some(page => page.id === 'page-1'), true);
+        assert.equal(orderLag.pages.some(page => page.id === 'sheet-new'), true);
+        assert.equal(orderLag.pages.find(page => page.id === 'page-1').cells['r1-c1'].content, 'meets mentor');
+
+        // Incomplete insert-sheet snapshot: only the new tab is present.
+        const incompleteInsert = codec.reconcileUniverSheetsIntoDocument(decoded, {
+            'sheet-new': { id: 'sheet-new', name: 'Sheet3' },
+        }, ['sheet-new'], 'sheet-new');
+        assert.equal(incompleteInsert.pages.length, 2);
+        assert.equal(incompleteInsert.pages[0].id, 'page-1');
+        assert.equal(incompleteInsert.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+        assert.equal(incompleteInsert.pages[1].id, 'sheet-new');
+        assert.equal(incompleteInsert.pages[1].title, 'Sheet3');
+
+        const emptySnap = codec.reconcileUniverSheetsIntoDocument(decoded, {}, []);
+        assert.equal(emptySnap.pages[0].id, 'page-1');
         assert.equal(sheet.rowData[1].h, 40);
         assert.equal(sheet.rowData[1].ia, 0, 'manual row height must disable Univer auto-height');
         assert.equal(sheet.columnData[1].w, 120);
@@ -650,14 +673,14 @@ test('empty in-memory grid cannot overwrite an existing workbook', async () => {
         assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, existingFilledCells: 0 }), true);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: false }), false);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, allowEmptyOverwrite: true }), false);
-        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, fromLiveEditor: true, existingFilledCells: 12 }), false);
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, fromLiveEditor: true, existingFilledCells: 12 }), true);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite(rich, { existed: true, existingFilledCells: 12 }), false);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite(headerOnly, { existed: true, existingFilledCells: 0 }), false);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite(headerOnly, { existed: true, existingFilledCells: 12 }), false);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite({
             ...empty,
             univerResources: [{ name: 'SHEET_DRAWING_PLUGIN', data: '{"images":1}' }],
-        }, { existed: true, existingFilledCells: 12 }), false);
+        }, { existed: true, existingFilledCells: 12 }), true);
         assert.deepEqual(model.normalizeUniverWorkbookResources([
             { name: 'NARRATIVELAB_PLOTGRID_META', data: '{}' },
             { name: 'SHEET_DRAWING_PLUGIN', data: '{"images":1}' },
@@ -669,12 +692,21 @@ test('empty in-memory grid cannot overwrite an existing workbook', async () => {
                 ...empty.pages[0],
                 univerExtras: { mergeData: [{ startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }] },
             }],
-        }, { existed: true, existingFilledCells: 12 }), false);
+        }, { existed: true, existingFilledCells: 12 }), true);
         assert.equal(model.isConceptGridDocumentEmpty(empty), true);
         assert.equal(model.isConceptGridDocumentEmpty(headerOnly), true);
         assert.equal(model.isConceptGridDocumentEmpty(rich), false);
         assert.equal(model.isDefaultEmptyConceptGrid(empty), true);
         assert.equal(model.isDefaultEmptyConceptGrid(headerOnly), false);
+        assert.equal(model.isIncompleteConceptGridPull(rich, empty), true);
+        assert.equal(model.isIncompleteConceptGridPull(rich, {
+            ...empty,
+            pages: [
+                { id: 'sheet-new', title: 'Sheet3', rows: [], columns: [], cells: {} },
+            ],
+        }), true);
+        assert.equal(model.isIncompleteConceptGridPull(rich, headerOnly), false);
+        assert.equal(model.pageHasPersistableContent(rich.pages[0]), true);
     } finally {
         await rm(dir, { recursive: true, force: true });
     }
@@ -732,7 +764,11 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /this\.buildLayout\(container\);[\s\S]*?this\.loadData\(\)/);
     assert.match(view, /peekPlotGridDoc/);
     assert.match(view, /showSpreadsheetLoading/);
+    assert.match(view, /hideSpreadsheetLoading/);
     assert.match(view, /Loading spreadsheet…/);
+    assert.match(view, /scrollAreaEl\.createDiv\('plot-grid-univer-loading'\)/);
+    assert.match(styles, /\.plot-grid-univer-loading\s*\{[^}]*position:\s*absolute/s);
+    assert.match(styles, /\.plot-grid-univer-host\.is-univer-pending/);
     assert.match(view, /await nextPaint\(\)/);
     assert.match(view, /createPlotGridUniverHost/);
     assert.match(view, /onContextMenuRequest/);
@@ -866,6 +902,9 @@ test('Univer sheet bar chrome is persisted without dropping linked cells', async
     assert.match(view, /plot-grid-cell-editor-links/);
     assert.match(view, /addConnectedNoteViaPicker/);
     assert.match(codecSrc, /export function reconcileUniverSheetsIntoDocument/);
+    assert.match(codecSrc, /incomplete snapshot/);
+    assert.match(host, /insert-sheet\|remove-sheet\|copy-sheet/);
+    assert.match(view, /isIncompleteConceptGridPull/);
     assert.match(codecSrc, /hidden: page\.hidden \? 1 : 0/);
     assert.match(codecSrc, /tabColor: page\.tabColor/);
     assert.doesNotMatch(view, /this\.sidebarEl = this\.bodyEl\.createDiv\('concept-grid-sheet-bar'\)/);
@@ -973,6 +1012,10 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.doesNotMatch(host, /\[class\*="sheet-bar"\]/);
     assert.doesNotMatch(host, /active\.closest\('\[class\*="univer"\]'\)/);
     assert.match(host, /sheet\.mutation\.set-range-values/);
+    assert.match(host, /applyRangeValuesMutation/);
+    assert.match(host, /workbook\.save\(\) lags/);
+    assert.match(host, /isIncompleteConceptGridPull\(base, next\)/);
+    assert.match(host, /clearMissing: false/);
     assert.match(host, /sheet\.command\.clear-selection-all/);
     assert.match(host, /sheet\.command\.clear-selection-content/);
     assert.match(host, /pendingAfterEdit = true/);
@@ -989,7 +1032,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /MutationObserver/);
     assert.match(host, /menuHoldUntil/);
     assert.doesNotMatch(host, /addEventListener\('pointerover'/);
-    assert.match(host, /pullFromUniver\(true, \{ clearMissing: true, mergeDimensions: true \}\)/);
+    assert.match(host, /pullFromUniver\(true, \{ clearMissing: false, mergeDimensions: true \}\)/);
     assert.match(host, /if \(text != null\)/);
     assert.doesNotMatch(host, /narrativelab-univer-submenu-stale/);
     assert.doesNotMatch(host, /pruneStackedUniverSubmenus/);
@@ -1017,6 +1060,8 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(view, /must never force-close a user who is still typing/);
     assert.match(view, /host\.flush\(\)/);
     assert.match(view, /flushUniverIntoDocument\(\{ acceptCleared: true \}\)/);
+    assert.match(view, /isIncompleteConceptGridPull\(this\.document, next\)/);
+    assert.match(view, /Never mount Univer on the default empty placeholder/);
     assert.match(view, /syncOpenCellEditorsFromDocument/);
     assert.match(view, /cellEditorWindows\.values\(\)/);
     assert.match(view, /Own autosave \/ no-op disk echo/);
@@ -1072,6 +1117,8 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.equal((host.match(/toolbar:\s*true/g) || []).length, 1);
     assert.equal((host.match(/formulaBar:\s*true/g) || []).length, 1);
     assert.match(host, /createNativeWorkbook\(liveDoc\)/);
+    assert.match(host, /is-univer-pending/);
+    assert.match(host, /disposeActiveWorkbook\(\);\s*createNativeWorkbook\(liveDoc\)/);
     assert.match(host, /richText:\s*false/);
     assert.match(host, /retrying with native plain cells/);
     assert.match(host, /--link-color/);

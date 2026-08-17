@@ -1,5 +1,11 @@
 # NarrativeLab — Changelog
 
+## 1.2.4
+
+- Concept Grid cell edits are applied as they happen, so a lagging Univer workbook snapshot can no longer save only the first half of a typing burst.
+- Incomplete or empty spreadsheet snapshots cannot overwrite a richer `datasheet.xlsx`. Restoring the last focused grid no longer flashes a blank “Page 1” before the real workbook loads.
+- Library Locations and Characters archives keep their scroll position on refresh instead of jumping to the top.
+
 ## 1.2.3
 
 - Concept Grid loads the open-source Univer sheet tools (filter, sort, find/replace, validation, conditional formatting, notes, tables, comments, drawing, hyperlinks). Freeze, merges, and extra sheet styles survive save and remount.

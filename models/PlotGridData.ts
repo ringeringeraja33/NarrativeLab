@@ -415,11 +415,42 @@ export function isDefaultEmptyConceptGrid(doc: ConceptGridDocument): boolean {
     );
 }
 
+/** True when a page has axes or any filled cell — dropping it would lose user work. */
+export function pageHasPersistableContent(page: ConceptGridPage): boolean {
+    if ((page.rows?.length ?? 0) > 0 || (page.columns?.length ?? 0) > 0) return true;
+    return Object.values(page.cells || {}).some(cell =>
+        !!(cell && ((cell.content || '').trim() || (cell.formula || '').trim())),
+    );
+}
+
 /**
- * Refuse only an unhydrated placeholder over an existing workbook.
- * A live Univer flush (user cleared cells/rows) must be allowed to save.
- * Reset Grid may pass allowEmptyOverwrite; persist after a live editor
- * passes fromLiveEditor.
+ * Univer insert/copy-sheet snapshots sometimes omit existing worksheets while
+ * the new tabs are already present. Applying that pull wipes the workbook.
+ */
+export function isIncompleteConceptGridPull(
+    previous: ConceptGridDocument,
+    next: ConceptGridDocument,
+): boolean {
+    if (countConceptGridFilledCells(previous) > 0
+        && isDefaultEmptyConceptGrid(next)
+        && !isDefaultEmptyConceptGrid(previous)) {
+        return true;
+    }
+    const nextIds = new Set((next.pages || []).map(page => page.id));
+    const prevIds = new Set((previous.pages || []).map(page => page.id));
+    const lostFilled = (previous.pages || []).some(page =>
+        !nextIds.has(page.id) && pageHasPersistableContent(page),
+    );
+    const gained = (next.pages || []).some(page => !prevIds.has(page.id));
+    return lostFilled && gained;
+}
+
+/**
+ * Refuse a placeholder workbook over an existing file.
+ * `fromLiveEditor` used to bypass this, so a lagging Univer snapshot could
+ * write the default empty grid (or stub plugin resources) over real cells.
+ * Reset Grid still passes allowEmptyOverwrite. Clearing cells on a sheet that
+ * still has rows/columns is not a default-empty document and may save.
  */
 export function shouldRefuseEmptyPlotGridWrite(
     incoming: ConceptGridDocument,
@@ -430,10 +461,12 @@ export function shouldRefuseEmptyPlotGridWrite(
         existingFilledCells?: number;
     },
 ): boolean {
-    if (options.allowEmptyOverwrite || options.fromLiveEditor || !options.existed) return false;
+    if (options.allowEmptyOverwrite || !options.existed) return false;
+    if (isDefaultEmptyConceptGrid(incoming)) return true;
+    if (options.fromLiveEditor) return false;
     if ((incoming.univerResources?.length ?? 0) > 0) return false;
     if (incoming.univerStyles && Object.keys(incoming.univerStyles).length > 0) return false;
     if ((incoming.pages || []).some(pageHasUniverExtras)) return false;
-    return isDefaultEmptyConceptGrid(incoming);
+    return false;
 }
 /* eslint-enable @typescript-eslint/no-redundant-type-constituents -- end of file-wide suppression block opened at line 1 */

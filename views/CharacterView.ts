@@ -119,6 +119,8 @@ export class CharacterView extends ProjectBoundItemView {
      * book (i.e. is non-empty and does not contain the current title).
      */
     private bookFilterActive: boolean = false;
+    /** Focus the search field after the user opens it — not after every re-render. */
+    private focusSearchOnNextOverview = false;
 
     /** Issue #102 — dropdowns portaled to <body> so position:fixed escapes
      *  ancestors with transform/contain. Cleaned up on each re-render. */
@@ -393,6 +395,11 @@ export class CharacterView extends ProjectBoundItemView {
     // ── Overview Grid ──────────────────────────────────
 
     private renderCharacterOverview(container: HTMLElement): void {
+        const searchWasFocused = activeDocument.activeElement instanceof HTMLInputElement
+            && activeDocument.activeElement.classList.contains('library-browse-search-input')
+            && container.contains(activeDocument.activeElement);
+        const shouldFocusSearch = searchWasFocused || this.focusSearchOnNextOverview;
+        this.focusSearchOnNextOverview = false;
         container.empty();
         if (this.characterOverviewMode === 'base') {
             renderLibraryModeToolbar(container, actions => this.renderCharacterOverviewModes(actions));
@@ -420,6 +427,7 @@ export class CharacterView extends ProjectBoundItemView {
             searchOpen: this.browseSearchOpen,
             onSearchOpenChange: (open) => {
                 this.browseSearchOpen = open;
+                this.focusSearchOnNextOverview = open;
                 this.renderCharacterOverview(container);
             },
             onSearchChange: (value) => {
@@ -456,8 +464,7 @@ export class CharacterView extends ProjectBoundItemView {
             },
         });
 
-        const hadFocus = activeDocument.activeElement?.closest('.story-line-character-container') != null;
-        if (searchInput && (hadFocus || this.browseSearchOpen)) {
+        if (searchInput && shouldFocusSearch) {
             window.setTimeout(() => {
                 searchInput.focus();
                 searchInput.selectionStart = searchInput.selectionEnd = searchInput.value.length;
@@ -3713,7 +3720,18 @@ export class CharacterView extends ProjectBoundItemView {
                 .forEach(el => { el.textContent = title; });
             return;
         }
+        const scroller = this.getViewRoot().querySelector('.story-line-character-content') as HTMLElement | null;
+        const scrollTop = !this.selectedCharacter ? (scroller?.scrollTop ?? 0) : 0;
         this.renderView(this.getViewRoot());
+        if (scrollTop > 0) {
+            const next = this.getViewRoot().querySelector('.story-line-character-content') as HTMLElement | null;
+            if (next) {
+                next.scrollTop = scrollTop;
+                window.requestAnimationFrame(() => {
+                    if (next.isConnected) next.scrollTop = scrollTop;
+                });
+            }
+        }
     }
 
     /* ───── Character card context menu (promote/demote, book membership) ───── */
