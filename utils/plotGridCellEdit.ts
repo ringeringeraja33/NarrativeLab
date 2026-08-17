@@ -70,6 +70,16 @@ export function univerCoordsForPlotGridCell(
     return null;
 }
 
+/** Keep an existing axis cell's Markdown source aligned with a Univer label edit. */
+export function syncAxisCellFromLabel(page: PlotGridAxisPage, id: string, label: string): void {
+    const existing = page.cells[id];
+    if (!existing) return;
+    const next = label || '';
+    if (existing.content === next) return;
+    existing.content = next;
+    existing.manualContent = true;
+}
+
 /** Keep row/column/corner labels aligned with axis-cell Markdown source. */
 export function syncAxisLabelFromCell(page: PlotGridAxisPage, cell: CellData): void {
     if (cell.id === AXIS_CORNER_CELL_ID) {

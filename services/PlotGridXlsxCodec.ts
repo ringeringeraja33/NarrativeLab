@@ -46,9 +46,14 @@ import {
     normalizeUniverSheetExtras,
     normalizeUniverStyleMap,
     normalizeUniverWorkbookResources,
-    pageHasPersistableContent,
 } from '../models/PlotGridData';
 import { t } from '../utils/i18n';
+import {
+    AXIS_CORNER_CELL_ID,
+    axisColumnCellId,
+    axisRowCellId,
+    syncAxisCellFromLabel,
+} from '../utils/plotGridCellEdit';
 
 export const PLOTGRID_XLSX_FILENAME = 'datasheet.xlsx';
 /** Sidecar next to datasheet.xlsx — NarrativeLab links / ids / styles. */
@@ -805,13 +810,36 @@ function excelMergesToUniver(sheet: ExcelJS.Worksheet): unknown[] | undefined {
 }
 
 /** Prefer Univer rich-text `p` (live edits) over plain `v`. Null when neither is present. */
-function univerCellPlainText(raw: UniverCellSnapshot | null): string | null {
+export function univerCellPlainText(raw: UniverCellSnapshot | null): string | null {
     if (!raw || (!('v' in raw) && !('p' in raw))) return null;
     // An explicit empty `v` is a committed clear (Delete / Backspace / unlink).
     // Univer often leaves a stale `p` document behind; that must not resurrect text.
     if ('v' in raw && cellValueText(raw.v) === '') return '';
     const richText = univerDocumentPlainText(raw.p);
     return richText || cellValueText(raw.v);
+}
+
+function univerCellIsInBucket(
+    bucket: Record<number, UniverCellSnapshot | null> | undefined,
+    col: number,
+): boolean {
+    if (!bucket) return false;
+    return Object.keys(bucket).includes(String(col));
+}
+
+/**
+ * Text Univer has committed for this coordinate.
+ * `undefined` means the snapshot omitted the cell (do not treat as a clear).
+ */
+function committedUniverCellText(
+    bucket: Record<number, UniverCellSnapshot | null> | undefined,
+    col: number,
+): string | undefined {
+    if (!univerCellIsInBucket(bucket, col)) return undefined;
+    const raw = bucket![col];
+    // Explicit null / empty `{}` / missing v+p are Delete, Clear contents, Clear all.
+    if (raw == null || (!('v' in raw) && !('p' in raw))) return '';
+    return univerCellPlainText(raw) ?? '';
 }
 
 function univerCellHasPersistableValue(raw: UniverCellSnapshot | null | undefined): boolean {
@@ -1479,7 +1507,7 @@ export async function decodePlotGridXlsx(
 /** Convert ConceptGridDocument to a minimal Univer IWorkbookData-like snapshot. */
 export function documentToUniverWorkbookData(
     raw: unknown,
-    options: { linkColor?: string; richText?: boolean } = {},
+    options: { linkColor?: string; richText?: boolean; workbookId?: string } = {},
 ): Record<string, unknown> {
     const doc = normalizeConceptGridDocument(raw);
     const sheets: Record<string, unknown> = {};
@@ -1603,7 +1631,7 @@ export function documentToUniverWorkbookData(
     });
 
     return {
-        id: 'narrativelab-plotgrid',
+        id: options.workbookId || 'narrativelab-plotgrid',
         name: 'Concept Grid',
         appVersion: 'NarrativeLab',
         locale: 'zhCN',
@@ -1696,22 +1724,16 @@ export function reconcileUniverSheetsIntoDocument(
 
     const snapshotSet = new Set(order);
     const rawIds = new Set(raw.pages.map(page => page.id));
-    const lostFilled = raw.pages.filter(page =>
-        !snapshotSet.has(page.id) && pageHasPersistableContent(page),
-    );
-    const gained = order.some(id => !rawIds.has(id));
-    // Adding sheets while existing filled pages vanish is an incomplete snapshot,
-    // not a user delete. Keep the filled pages and append the new tabs.
-    const keepIds = new Set(order);
-    if (lostFilled.length > 0 && gained) {
-        for (const page of lostFilled) keepIds.add(page.id);
-    }
-    const finalOrder: string[] = lostFilled.length > 0 && gained
-        ? [
-            ...raw.pages.filter(page => keepIds.has(page.id)).map(page => page.id),
+    const lostPages = raw.pages.filter(page => !snapshotSet.has(page.id));
+    // workbook.save() after a fast edit/save is an incomplete snapshot: it often
+    // returns only the active tab. That is not a user delete — keep missing pages
+    // and append any new ids. Explicit remove-sheet updates liveDoc before this runs.
+    const finalOrder: string[] = lostPages.length === 0
+        ? order
+        : [
+            ...raw.pages.map(page => page.id),
             ...order.filter(id => !rawIds.has(id)),
-        ]
-        : order;
+        ];
 
     const doc = structuredClone(raw);
     const byId = new Map(doc.pages.map(page => [page.id, page]));
@@ -1756,6 +1778,85 @@ export function reconcileUniverSheetsIntoDocument(
         if (visible) doc.activePageId = visible.id;
     }
     return doc;
+}
+
+function sheetCommandId(command: unknown): string {
+    const id = (command as { id?: unknown })?.id;
+    return typeof id === 'string' ? id : '';
+}
+
+function sheetCommandParams(command: unknown): Record<string, unknown> | undefined {
+    const params = (command as { params?: unknown })?.params;
+    return params && typeof params === 'object' ? params as Record<string, unknown> : undefined;
+}
+
+function readSheetId(params: Record<string, unknown> | undefined): string {
+    const id = params?.subUnitId ?? params?.sheetId;
+    return typeof id === 'string' ? id : '';
+}
+
+/**
+ * Apply insert / remove / reorder from Univer's sheet-bar mutations immediately.
+ * workbook.save() lags and must not be the only way tabs enter or leave the model.
+ */
+export function applyUniverSheetChromeMutation(
+    doc: ConceptGridDocument,
+    command: unknown,
+): ConceptGridDocument | null {
+    const id = sheetCommandId(command);
+    const params = sheetCommandParams(command);
+    if (!params) return null;
+
+    if (id === 'sheet.mutation.remove-sheet' || id === 'sheet.command.remove-sheet') {
+        const subUnitId = readSheetId(params);
+        if (!subUnitId || doc.pages.length <= 1) return null;
+        if (!doc.pages.some(page => page.id === subUnitId)) return null;
+        const next = structuredClone(doc);
+        next.pages = next.pages.filter(page => page.id !== subUnitId);
+        if (next.activePageId === subUnitId) {
+            const visible = next.pages.find(page => !page.hidden) ?? next.pages[0];
+            if (visible) next.activePageId = visible.id;
+        }
+        return next;
+    }
+
+    if (id === 'sheet.mutation.insert-sheet') {
+        const sheet = params.sheet && typeof params.sheet === 'object'
+            ? params.sheet as { id?: unknown; name?: unknown }
+            : null;
+        const sheetId = typeof sheet?.id === 'string' ? sheet.id : '';
+        if (!sheetId || doc.pages.some(page => page.id === sheetId)) return null;
+        const name = typeof sheet?.name === 'string' ? sheet.name.trim() : '';
+        const page = createEmptyConceptGridPage(name || undefined);
+        page.id = sheetId;
+        if (name) page.title = name;
+        const next = structuredClone(doc);
+        const index = typeof params.index === 'number' && Number.isFinite(params.index)
+            ? Math.max(0, Math.min(Math.floor(params.index), next.pages.length))
+            : next.pages.length;
+        next.pages.splice(index, 0, page);
+        return next;
+    }
+
+    if (id === 'sheet.mutation.set-worksheet-order' || id === 'sheet.command.set-worksheet-order') {
+        const subUnitId = readSheetId(params);
+        const from = pageIndexOf(doc.pages, subUnitId);
+        if (from < 0) return null;
+        const toOrder = typeof params.toOrder === 'number' ? params.toOrder : params.order;
+        if (typeof toOrder !== 'number' || !Number.isFinite(toOrder)) return null;
+        const next = structuredClone(doc);
+        const [page] = next.pages.splice(from, 1);
+        const to = Math.max(0, Math.min(Math.floor(toOrder), next.pages.length));
+        next.pages.splice(to, 0, page);
+        return next;
+    }
+
+    return null;
+}
+
+function pageIndexOf(pages: ConceptGridPage[], sheetId: string): number {
+    if (!sheetId) return -1;
+    return pages.findIndex(page => page.id === sheetId);
 }
 
 export type MergeUniverCellDataOptions = {
@@ -1825,39 +1926,54 @@ export function mergeUniverCellDataIntoDocument(
 
     // Update corner (A1) + headers — same rich-text path as body cells so
     // mid-edit Univer `p` snapshots (and cleared labels) persist.
-    {
-        const corner = cellData[0]?.[0];
-        const next = univerCellPlainText(corner);
-        if (next != null && (page.cornerLabel || '') !== next) {
-            page.cornerLabel = next;
-            changed = true;
-        } else if (clearMissing && next == null && (page.cornerLabel || '')) {
-            page.cornerLabel = '';
-            changed = true;
+    // Delete / Clear all write explicit null or `{}` into row 0 / col 0; those
+    // are committed clears even when the surrounding snapshot is still sparse.
+    const applyAxisLabel = (
+        current: string,
+        next: string | undefined,
+        axisCellId: string,
+        set: (value: string) => void,
+    ): boolean => {
+        if (next !== undefined) {
+            if (current !== next) {
+                set(next);
+                syncAxisCellFromLabel(page, axisCellId, next);
+                return true;
+            }
+            const axisCell = page.cells[axisCellId];
+            if (axisCell && (axisCell.content || '') !== next) {
+                syncAxisCellFromLabel(page, axisCellId, next);
+                return true;
+            }
+            return false;
         }
+        if (clearMissing && current) {
+            set('');
+            syncAxisCellFromLabel(page, axisCellId, '');
+            return true;
+        }
+        return false;
+    };
+    {
+        const next = committedUniverCellText(cellData[0], 0);
+        if (applyAxisLabel(page.cornerLabel || '', next, AXIS_CORNER_CELL_ID, value => {
+            page.cornerLabel = value;
+        })) changed = true;
     }
     cols.forEach((col, ci) => {
         const raw = cellData[0]?.[ci + 1];
-        const next = univerCellPlainText(raw);
-        if (next != null && col.label !== next) {
-            col.label = next;
-            changed = true;
-        } else if (clearMissing && next == null && col.label) {
-            col.label = '';
-            changed = true;
-        }
+        const next = committedUniverCellText(cellData[0], ci + 1);
+        if (applyAxisLabel(col.label || '', next, axisColumnCellId(col.id), value => {
+            col.label = value;
+        })) changed = true;
         if (applyHeaderStyleFromUniver(col, raw, styles)) changed = true;
     });
     rows.forEach((row, ri) => {
         const raw = cellData[ri + 1]?.[0];
-        const next = univerCellPlainText(raw);
-        if (next != null && row.label !== next) {
-            row.label = next;
-            changed = true;
-        } else if (clearMissing && next == null && row.label) {
-            row.label = '';
-            changed = true;
-        }
+        const next = committedUniverCellText(cellData[ri + 1], 0);
+        if (applyAxisLabel(row.label || '', next, axisRowCellId(row.id), value => {
+            row.label = value;
+        })) changed = true;
         if (applyHeaderStyleFromUniver(row, raw, styles)) changed = true;
     });
 

@@ -425,7 +425,8 @@ export function pageHasPersistableContent(page: ConceptGridPage): boolean {
 
 /**
  * Univer insert/copy-sheet snapshots sometimes omit existing worksheets while
- * the new tabs are already present. Applying that pull wipes the workbook.
+ * the new tabs are already present. A fast edit/save can also drop several
+ * existing tabs with no new ids. Applying either pull wipes the workbook.
  */
 export function isIncompleteConceptGridPull(
     previous: ConceptGridDocument,
@@ -438,11 +439,42 @@ export function isIncompleteConceptGridPull(
     }
     const nextIds = new Set((next.pages || []).map(page => page.id));
     const prevIds = new Set((previous.pages || []).map(page => page.id));
-    const lostFilled = (previous.pages || []).some(page =>
+    const lostFilledCount = (previous.pages || []).filter(page =>
         !nextIds.has(page.id) && pageHasPersistableContent(page),
-    );
+    ).length;
     const gained = (next.pages || []).some(page => !prevIds.has(page.id));
-    return lostFilled && gained;
+    if (lostFilledCount > 0 && gained) return true;
+    // A real Univer delete removes one sheet per command. Losing several filled
+    // tabs at once is a lagging workbook.save(), not a user delete.
+    return lostFilledCount > 1;
+}
+
+/**
+ * True when a Univer workbook.save() snapshot is our document, not the
+ * blank default workbook Univer paints before createWorkbook settles.
+ */
+export function workbookSnapshotBelongsToDocument(
+    saved: { sheets?: Record<string, { id?: string } | undefined> } | null | undefined,
+    doc: ConceptGridDocument,
+): boolean {
+    if (!saved?.sheets) return false;
+    if (isDefaultEmptyConceptGrid(doc)) return true;
+    const ids = new Set<string>();
+    for (const [key, sheet] of Object.entries(saved.sheets)) {
+        if (key) ids.add(key);
+        if (typeof sheet?.id === 'string' && sheet.id) ids.add(sheet.id);
+    }
+    return (doc.pages || []).some(page => ids.has(page.id));
+}
+
+/** Reject a pull that swapped in a foreign workbook (no shared page ids). */
+export function conceptGridDocumentsSharePage(
+    previous: ConceptGridDocument,
+    next: ConceptGridDocument,
+): boolean {
+    if (isDefaultEmptyConceptGrid(previous)) return true;
+    const ids = new Set((next.pages || []).map(page => page.id));
+    return (previous.pages || []).some(page => ids.has(page.id));
 }
 
 /**

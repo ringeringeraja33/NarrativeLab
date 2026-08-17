@@ -166,6 +166,8 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(recoveredLink.linkedViaWikilink, true);
 
         const univer = codec.documentToUniverWorkbookData(decoded);
+        assert.equal(univer.id, 'narrativelab-plotgrid');
+        assert.equal(codec.documentToUniverWorkbookData(decoded, { workbookId: 'nl-a' }).id, 'nl-a');
         assert.ok(univer.resources.some(item => item.name === 'SHEET_DRAWING_PLUGIN' && item.data === '{"images":1}'));
         assert.deepEqual(univer.styles, { s1: { bd: { t: { s: 1, cl: { rgb: '#111111' } } } } });
         const sheet = univer.sheets['page-1'];
@@ -223,6 +225,42 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
 
         const emptySnap = codec.reconcileUniverSheetsIntoDocument(decoded, {}, []);
         assert.equal(emptySnap.pages[0].id, 'page-1');
+
+        // Fast edit/save: subset of existing ids, no new tab. Must not drop pages.
+        const decodedTwo = structuredClone(decoded);
+        decodedTwo.pages.push({
+            ...decoded.pages[0],
+            id: 'page-2',
+            title: 'Act II',
+            cells: { 'r1-c1': { ...decoded.pages[0].cells['r1-c1'], content: 'later' } },
+        });
+        const subsetSnap = codec.reconcileUniverSheetsIntoDocument(decodedTwo, {
+            'page-2': { id: 'page-2', name: 'Act II' },
+        }, ['page-2'], 'page-2');
+        assert.equal(subsetSnap.pages.length, 2);
+        assert.equal(subsetSnap.pages[0].id, 'page-1');
+        assert.equal(subsetSnap.pages[0].cells['r1-c1'].content, 'meets mentor');
+        assert.equal(subsetSnap.pages[1].id, 'page-2');
+
+        const removed = codec.applyUniverSheetChromeMutation(decodedTwo, {
+            id: 'sheet.mutation.remove-sheet',
+            params: { subUnitId: 'page-2' },
+        });
+        assert.equal(removed.pages.length, 1);
+        assert.equal(removed.pages[0].id, 'page-1');
+        const inserted = codec.applyUniverSheetChromeMutation(decoded, {
+            id: 'sheet.mutation.insert-sheet',
+            params: { index: 1, sheet: { id: 'sheet-new', name: '工作表1' } },
+        });
+        assert.equal(inserted.pages.length, 2);
+        assert.equal(inserted.pages[1].id, 'sheet-new');
+        assert.equal(inserted.pages[1].title, '工作表1');
+        const reordered = codec.applyUniverSheetChromeMutation(decodedTwo, {
+            id: 'sheet.mutation.set-worksheet-order',
+            params: { subUnitId: 'page-2', fromOrder: 1, toOrder: 0 },
+        });
+        assert.equal(reordered.pages[0].id, 'page-2');
+        assert.equal(reordered.pages[1].id, 'page-1');
         assert.equal(sheet.rowData[1].h, 40);
         assert.equal(sheet.rowData[1].ia, 0, 'manual row height must disable Univer auto-height');
         assert.equal(sheet.columnData[1].w, 120);
@@ -313,6 +351,44 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
             /corner:Corner/,
             'corner edits must dirty the content fingerprint so autosave runs',
         );
+
+        // First row / first column Delete must persist without clearMissing.
+        // Univer writes explicit null, empty `{}`, or `{ v: null }` into the axis;
+        // those used to leave labels (and leftover axis cells) in place.
+        const headerDoc = structuredClone(headerRich);
+        headerDoc.pages[0].cells['__nl-axis-corner'] = {
+            id: '__nl-axis-corner', content: 'Corner', manualContent: true,
+        };
+        headerDoc.pages[0].cells['__nl-axis-col-c1'] = {
+            id: '__nl-axis-col-c1', content: 'Heroine', manualContent: true,
+        };
+        headerDoc.pages[0].cells['__nl-axis-row-r1'] = {
+            id: '__nl-axis-row-r1', content: 'Act I', manualContent: true,
+        };
+        const headerCleared = codec.mergeUniverCellDataIntoDocument(headerDoc, 'page-1', {
+            0: {
+                0: null,
+                1: { v: null, p: null, custom: null },
+            },
+            1: {
+                0: {},
+                1: { v: 'meets mentor' },
+            },
+        });
+        assert.equal(headerCleared.pages[0].cornerLabel, '');
+        assert.equal(headerCleared.pages[0].columns[0].label, '');
+        assert.equal(headerCleared.pages[0].rows[0].label, '');
+        assert.equal(headerCleared.pages[0].cells['__nl-axis-corner'].content, '');
+        assert.equal(headerCleared.pages[0].cells['__nl-axis-col-c1'].content, '');
+        assert.equal(headerCleared.pages[0].cells['__nl-axis-row-r1'].content, '');
+        const headerStale = codec.mergeUniverCellDataIntoDocument(structuredClone(headerRich), 'page-1', {
+            0: {
+                0: { v: '', p: { body: { dataStream: 'Corner\r\n' } } },
+            },
+        });
+        assert.equal(headerStale.pages[0].cornerLabel, '');
+        assert.equal(codec.univerCellPlainText({ v: '', p: { body: { dataStream: 'stale\r\n' } } }), '');
+
         headerRich.pages[0].columns[0].width = 240;
         headerRich.pages[0].rows[0].height = 48;
         assert.match(
@@ -706,6 +782,39 @@ test('empty in-memory grid cannot overwrite an existing workbook', async () => {
             ],
         }), true);
         assert.equal(model.isIncompleteConceptGridPull(rich, headerOnly), false);
+        const richTwo = {
+            ...rich,
+            pages: [
+                rich.pages[0],
+                { ...rich.pages[0], id: 'page-2', title: 'Act II' },
+            ],
+        };
+        const richThree = {
+            ...rich,
+            pages: [
+                ...richTwo.pages,
+                { ...rich.pages[0], id: 'page-3', title: 'Act III' },
+            ],
+        };
+        assert.equal(model.isIncompleteConceptGridPull(richTwo, {
+            ...richTwo,
+            pages: [richTwo.pages[1]],
+        }), false, 'deleting a single filled sheet is a real Univer remove');
+        assert.equal(model.isIncompleteConceptGridPull(richThree, {
+            ...richThree,
+            pages: [richThree.pages[0]],
+        }), true, 'dropping several filled tabs at once is a lagging snapshot');
+        assert.equal(model.workbookSnapshotBelongsToDocument({
+            sheets: { [rich.pages[0].id]: { id: rich.pages[0].id } },
+        }, rich), true);
+        assert.equal(model.workbookSnapshotBelongsToDocument({
+            sheets: { 'workbook-default': { id: 'workbook-default' } },
+        }, rich), false);
+        assert.equal(model.conceptGridDocumentsSharePage(rich, {
+            ...empty,
+            pages: [{ ...empty.pages[0], id: 'foreign-sheet' }],
+        }), false);
+        assert.equal(model.conceptGridDocumentsSharePage(empty, rich), true);
         assert.equal(model.pageHasPersistableContent(rich.pages[0]), true);
     } finally {
         await rm(dir, { recursive: true, force: true });
@@ -728,6 +837,7 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /releasePlotGridWorkbookCache/);
     assert.match(mainTs, /_plotGridDocCache/);
     assert.match(mainTs, /peekPlotGridDoc/);
+    assert.match(mainTs, /countConceptGridFilledCells\(doc\) === 0/);
     assert.match(mainTs, /rememberPlotGridDocCache/);
     assert.match(mainTs, /warmupPlotGridUniver/);
     assert.match(mainTs, /\.bak`|jsonPath.*bak|rename\(jsonPath/);
@@ -748,9 +858,10 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
 });
 
 test('PlotgridView lazy-loads Univer host and edits links as Markdown text', async () => {
-    const [view, styles] = await Promise.all([
+    const [view, styles, host] = await Promise.all([
         readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8'),
         readFile(new URL('../styles.css', import.meta.url), 'utf8'),
+        readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8'),
     ]);
     assert.match(view, /hasHydratedDocument/);
     assert.match(view, /if \(!plugin \|\| !this\.hasHydratedDocument\) return/);
@@ -763,6 +874,12 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /loadPlotGridUniverModule/);
     assert.match(view, /this\.buildLayout\(container\);[\s\S]*?this\.loadData\(\)/);
     assert.match(view, /peekPlotGridDoc/);
+    assert.doesNotMatch(view, /if \(peeked\) this\.renderGrid\(\)/);
+    assert.match(view, /onReady:/);
+    assert.match(view, /conceptGridDocumentsSharePage/);
+    assert.match(host, /workbookSnapshotBelongsToDocument/);
+    assert.match(host, /scheduleReveal/);
+    assert.match(host, /if \(!syncEnabled\) return/);
     assert.match(view, /showSpreadsheetLoading/);
     assert.match(view, /hideSpreadsheetLoading/);
     assert.match(view, /Loading spreadsheet…/);
@@ -817,6 +934,7 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /Query Univer first/);
     assert.match(view, /AXIS_CORNER_CELL_ID|__nl-axis-corner/);
     assert.match(view, /axisColumnCellId|axisRowCellId/);
+    assert.match(view, /syncAxisLabelFromCell\(page, cell\)/);
     assert.doesNotMatch(view, /sel\.row < 1 \|\| sel\.col < 1/);
     assert.doesNotMatch(view, /setActiveCell\(sel\.sheetId, dataRow, dataCol\)/);
     assert.match(view, /scheduleSave\(\)/);
@@ -903,6 +1021,9 @@ test('Univer sheet bar chrome is persisted without dropping linked cells', async
     assert.match(view, /addConnectedNoteViaPicker/);
     assert.match(codecSrc, /export function reconcileUniverSheetsIntoDocument/);
     assert.match(codecSrc, /incomplete snapshot/);
+    assert.match(codecSrc, /export function applyUniverSheetChromeMutation/);
+    assert.match(host, /applyUniverSheetChromeMutation/);
+    assert.match(host, /snapshotOmitsPages/);
     assert.match(host, /insert-sheet\|remove-sheet\|copy-sheet/);
     assert.match(view, /isIncompleteConceptGridPull/);
     assert.match(codecSrc, /hidden: page\.hidden \? 1 : 0/);
@@ -1013,6 +1134,16 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.doesNotMatch(host, /active\.closest\('\[class\*="univer"\]'\)/);
     assert.match(host, /sheet\.mutation\.set-range-values/);
     assert.match(host, /applyRangeValuesMutation/);
+    assert.match(host, /createPlotGridWorkbookUnitId/);
+    assert.match(host, /workbookId: workbookUnitId/);
+    assert.match(host, /livePlotGridRelayouts/);
+    assert.match(host, /scheduleSiblingPlotGridRelayout/);
+    assert.match(host, /popupRootId/);
+    assert.match(view, /onResize\(\)/);
+    assert.match(view, /univerHost\?\.relayout\(\)/);
+    assert.match(view, /active-leaf-change/);
+    assert.match(host, /next === clone \? null : next/);
+    assert.match(host, /univerCellPlainText/);
     assert.match(host, /workbook\.save\(\) lags/);
     assert.match(host, /isIncompleteConceptGridPull\(base, next\)/);
     assert.match(host, /clearMissing: false/);
@@ -1025,6 +1156,8 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /isUniverContextMenuOpen/);
     assert.match(host, /desktop-context-menu/);
     assert.match(host, /installUniverContextMenuHoverAssist/);
+    assert.match(host, /installUniverSheetListReorder/);
+    assert.match(host, /sheet\.command\.set-worksheet-order/);
     assert.match(host, /retireOlderVisibleUniverSubmenus/);
     assert.match(host, /retireUniverSubmenus\(doc, \{ keepLatest: true \}\)/);
     assert.match(host, /kickUniverSubmenuPosition/);
@@ -1196,6 +1329,9 @@ test('first row and first column map to axis cells instead of being rejected', a
         assert.equal(edit.cellRequiresMarkdownEditor(linked, 0, 0, false), true);
         edit.syncAxisLabelFromCell(page, { id: edit.AXIS_CORNER_CELL_ID, content: 'New corner' });
         assert.equal(page.cornerLabel, 'New corner');
+        edit.syncAxisCellFromLabel(page, edit.AXIS_CORNER_CELL_ID, '');
+        assert.equal(page.cells[edit.AXIS_CORNER_CELL_ID].content, '');
+        assert.equal(page.cells[edit.AXIS_CORNER_CELL_ID].manualContent, true);
         assert.equal(edit.noteLinkDisplayLabel('Library/Games/Valorant.md'), 'Valorant');
         assert.equal(edit.noteLinkDisplayLabel('Games/Valorant', '游隼'), '游隼');
         assert.equal(

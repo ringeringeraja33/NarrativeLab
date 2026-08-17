@@ -50,6 +50,7 @@ import {
     type PlotGridData,
     countConceptGridFilledCells,
     isConceptGridDocumentEmpty,
+    isDefaultEmptyConceptGrid,
     isIncompleteConceptGridPull,
     normalizeConceptGridDocument,
     shouldRefuseEmptyPlotGridWrite,
@@ -2497,7 +2498,10 @@ export default class SceneCardsPlugin extends Plugin {
         const target = normalizePath(projectFile || this.sceneManager.activeProject?.filePath || '');
         const cached = this._plotGridDocCache;
         if (!cached || !target || cached.projectFile !== target) return null;
-        return structuredClone(cached.doc);
+        const doc = cached.doc;
+        if (isDefaultEmptyConceptGrid(doc)) return null;
+        if (countConceptGridFilledCells(doc) === 0 && (doc.pages?.length ?? 0) < 2) return null;
+        return structuredClone(doc);
     }
 
     /** Drop cached plotgrid mention scan (call after plotgrid writes). */

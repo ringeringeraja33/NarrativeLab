@@ -107,14 +107,17 @@ function injectUniverCss(activeDocument: Document): void {
 }
 
 import { installUniverContextMenuHoverAssist, retireUniverSubmenus } from '../utils/univerContextMenu';
+import { installUniverSheetListReorder } from '../utils/univerSheetListReorder';
 import type { CellData, ConceptGridDocument } from '../models/PlotGridData';
-import { isIncompleteConceptGridPull, normalizeUniverStyleMap, normalizeUniverWorkbookResources } from '../models/PlotGridData';
+import { isDefaultEmptyConceptGrid, isIncompleteConceptGridPull, normalizeUniverStyleMap, normalizeUniverWorkbookResources, workbookSnapshotBelongsToDocument } from '../models/PlotGridData';
 import { cellHasNoteLink, getPlotGridCellAtUniverCoords } from '../utils/plotGridCellEdit';
 import {
     conceptGridContentFingerprint,
     documentToUniverWorkbookData,
     mergeUniverCellDataIntoDocument,
+    univerCellPlainText,
     reconcileUniverSheetsIntoDocument,
+    applyUniverSheetChromeMutation,
     moveConceptGridAxis,
     preserveConceptGridAxisSizes,
     spliceConceptGridAxis,
@@ -152,6 +155,8 @@ export interface PlotGridUniverHostOptions {
     onRequestMarkdownCellEdit?: (info: { sheetId: string; row: number; col: number }) => void;
     /** True while NarrativeLab's floating Markdown editor is open. */
     isExternalEditorBusy?: () => boolean;
+    /** Fired once the real workbook (not Univer's default blank) is on screen. */
+    onReady?: () => void;
     onDocumentChange: (doc: ConceptGridDocument) => void;
     onSelectionChange?: (info: { sheetId: string; row: number; col: number }) => void;
 }
@@ -191,6 +196,8 @@ export interface PlotGridUniverHost {
     hasPendingSync: () => boolean;
     /** Force a sync pull from Univer cell matrix into the live document. */
     flush: () => void;
+    /** Resize / repaint this host without pulling a foreign workbook. */
+    relayout: () => void;
     focus: () => void;
 }
 
@@ -216,6 +223,11 @@ type UniverAPI = {
             getColumn?: () => number;
             getRange?: () => { startRow?: number; startColumn?: number };
         } | null;
+        getSheets?: () => Array<{
+            getSheetId: () => string;
+            getSheetName?: () => string;
+            getName?: () => string;
+        }>;
         getSheetBySheetId: (id: string) => {
             getSheetId: () => string;
             activate?: () => void;
@@ -880,12 +892,16 @@ function applyRangeValuesMutation(doc: ConceptGridDocument, command: unknown): C
         cellData = { [row]: { [col]: params.value } };
     }
     if (!cellData) return null;
+    const clone = structuredClone(doc);
     const next = mergeUniverCellDataIntoDocument(
-        structuredClone(doc),
+        clone,
         sheetId,
         cellData as Parameters<typeof mergeUniverCellDataIntoDocument>[2],
     );
-    return next;
+    // Unchanged clones must not count as applied — otherwise a header Delete
+    // that Univer stored as null/`{}` would skip the clearMissing pull and
+    // resurrect A1 / first-row / first-column labels on remount.
+    return next === clone ? null : next;
 }
 
 /** Keep stable row/column ids aligned with Univer native insert/delete actions. */
@@ -923,12 +939,35 @@ function applyAxisStructureMutation(doc: ConceptGridDocument, command: unknown):
     return next === doc ? null : next;
 }
 
+const livePlotGridRelayouts = new Set<() => void>();
+
+function createPlotGridWorkbookUnitId(): string {
+    return `nl-plotgrid-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function notifySiblingPlotGridHosts(except?: () => void): void {
+    for (const relayout of livePlotGridRelayouts) {
+        if (relayout === except) continue;
+        try { relayout(); } catch { /* keep other workbooks painted */ }
+    }
+}
+
+function scheduleSiblingPlotGridRelayout(except?: () => void): void {
+    const kick = () => notifySiblingPlotGridHosts(except);
+    kick();
+    // Univer's React unmount is delayed (~500ms). Repaint survivors after that.
+    window.setTimeout(kick, 50);
+    window.setTimeout(kick, 320);
+    window.setTimeout(kick, 600);
+}
+
 /**
  * Mount Univer Sheets into `container` and keep a ConceptGridDocument in sync.
  */
 export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotGridUniverHost {
     let liveDoc = structuredClone(opts.initialDocument);
     let contentFp = conceptGridContentFingerprint(liveDoc);
+    const workbookUnitId = createPlotGridWorkbookUnitId();
     const locale = opts.locale === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US;
     const locales = opts.locale === 'zh'
         ? {
@@ -996,6 +1035,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         presets: [
             UniverSheetsCorePreset({
                 container: opts.container,
+                popupRootId: `nl-univer-popup-${workbookUnitId}`,
                 footer: univerFooter,
                 toolbar: true,
                 formulaBar: true,
@@ -1022,41 +1062,92 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         || getComputedStyle(opts.container).getPropertyValue('--interactive-accent').trim()
         || '#5e6ad2';
     let nativeRichTextEnabled = true;
+    let disposed = false;
+    let syncEnabled = false;
+    let ourUnitId: string | null = null;
+    let revealFrame = 0;
+    let revealTries = 0;
+    const disposeOwnedWorkbook = () => {
+        try {
+            if (ourUnitId && typeof univerAPI.disposeUnit === 'function') {
+                univerAPI.disposeUnit(ourUnitId);
+            }
+        } catch { /* ignore cleanup failures */ }
+        ourUnitId = null;
+    };
     const disposeActiveWorkbook = () => {
         try {
             const existing = univerAPI.getActiveWorkbook?.();
             const unitId = existing?.getId?.();
             if (unitId && typeof univerAPI.disposeUnit === 'function') univerAPI.disposeUnit(unitId);
         } catch { /* ignore cleanup failures */ }
+        ourUnitId = null;
     };
     const createNativeWorkbook = (doc: ConceptGridDocument) => {
         const workbookData = documentToUniverWorkbookData(doc, {
             linkColor: nativeLinkColor,
             richText: nativeRichTextEnabled,
+            workbookId: workbookUnitId,
         });
         try {
-            return univerAPI.createWorkbook(workbookData);
+            const created = univerAPI.createWorkbook(workbookData);
+            ourUnitId = univerAPI.getActiveWorkbook?.()?.getId?.() ?? null;
+            return created;
         } catch (error) {
             if (!nativeRichTextEnabled) throw error;
             console.warn('[NarrativeLab] Univer rich-text cells failed; retrying with native plain cells.', error);
             disposeActiveWorkbook();
             nativeRichTextEnabled = false;
-            return univerAPI.createWorkbook(documentToUniverWorkbookData(doc, {
+            const created = univerAPI.createWorkbook(documentToUniverWorkbookData(doc, {
                 linkColor: nativeLinkColor,
                 richText: false,
+                workbookId: workbookUnitId,
             }));
+            ourUnitId = univerAPI.getActiveWorkbook?.()?.getId?.() ?? null;
+            return created;
         }
+    };
+    const revealWhenOurs = () => {
+        if (disposed) return;
+        revealFrame = 0;
+        const wb = univerAPI.getActiveWorkbook?.();
+        const activeId = wb?.getId?.() ?? null;
+        if (ourUnitId && activeId && activeId !== ourUnitId) {
+            try { univerAPI.disposeUnit?.(activeId); } catch { /* keep ours */ }
+            tryActivateSheet(univerAPI, liveDoc.activePageId);
+        }
+        const saved = wb?.save?.() as { sheets?: Record<string, { id?: string }> } | undefined;
+        const ours = workbookSnapshotBelongsToDocument(saved, liveDoc);
+        revealTries += 1;
+        if (!ours && revealTries < 40) {
+            if (revealTries === 1 || revealTries === 8 || revealTries === 20) {
+                disposeActiveWorkbook();
+                createNativeWorkbook(liveDoc);
+                tryActivateSheet(univerAPI, liveDoc.activePageId);
+            }
+            revealFrame = window.requestAnimationFrame(revealWhenOurs);
+            return;
+        }
+        opts.container.removeClass('is-univer-pending');
+        syncEnabled = true;
+        opts.onReady?.();
+    };
+    const scheduleReveal = () => {
+        syncEnabled = false;
+        opts.container.addClass('is-univer-pending');
+        revealTries = 0;
+        if (revealFrame) window.cancelAnimationFrame(revealFrame);
+        revealFrame = window.requestAnimationFrame(revealWhenOurs);
     };
     // UniverSheetsCorePreset paints a blank default workbook first. Dispose it
     // before creating ours so a restored tab never flashes an empty sheet.
     disposeActiveWorkbook();
     createNativeWorkbook(liveDoc);
-    opts.container.removeClass('is-univer-pending');
+    tryActivateSheet(univerAPI, liveDoc.activePageId);
+    scheduleReveal();
     orderRibbonTabs(univerInstance);
     moveFinancialFormulaMenuLast(univerInstance);
-    tryActivateSheet(univerAPI, liveDoc.activePageId);
 
-    let disposed = false;
     let suppressUntil = 0;
     let lastSelection: { sheetId: string; row: number; col: number } | null = null;
     const disposers: Array<() => void> = [];
@@ -1084,6 +1175,23 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             univerAPI.getActiveWorkbook?.()?.getActiveSheet?.()?.refreshCanvas?.();
         } catch { /* drawing is cosmetic */ }
     };
+
+    const relayout = () => {
+        if (disposed || !syncEnabled) return;
+        if (!opts.container.isConnected) return;
+        if (opts.container.clientWidth < 8 || opts.container.clientHeight < 8) return;
+        try {
+            const wb = univerAPI.getActiveWorkbook?.();
+            const saved = wb?.save?.() as { sheets?: Record<string, { id?: string }> } | undefined;
+            if (!workbookSnapshotBelongsToDocument(saved, liveDoc)) {
+                if (!isDefaultEmptyConceptGrid(liveDoc)) replaceWorkbook(liveDoc);
+                return;
+            }
+            void opts.container.offsetWidth;
+            wb?.getActiveSheet?.()?.refreshCanvas?.();
+        } catch { /* sibling dispose must not take this grid down */ }
+    };
+    livePlotGridRelayouts.add(relayout);
 
     try {
         const linkIconRender: PlotGridCellRender = {
@@ -1130,9 +1238,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     const replaceWorkbook = (doc: ConceptGridDocument) => {
         suppressUntil = Date.now() + 800;
-        disposeActiveWorkbook();
+        disposeOwnedWorkbook();
         createNativeWorkbook(doc);
         tryActivateSheet(univerAPI, doc.activePageId);
+        scheduleReveal();
         // Workbook remount clears canvas overlays until the next paint.
         window.requestAnimationFrame(() => refreshLinkMarkers());
     };
@@ -1177,6 +1286,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 }>;
             } | undefined;
             if (!saved?.sheets) return;
+            if (!workbookSnapshotBelongsToDocument(saved, liveDoc)) return;
 
             // Always merge into the latest NL document so link/meta edits survive.
             const base = structuredClone(
@@ -1216,8 +1326,12 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     { clearMissing, mergeDimensions },
                 );
             }
-            next.univerResources = normalizeUniverWorkbookResources(saved.resources);
-            next.univerStyles = normalizeUniverStyleMap(saved.styles);
+            const snapshotIds = new Set(Object.keys(saved.sheets));
+            const snapshotOmitsPages = base.pages.some(page => !snapshotIds.has(page.id));
+            if (!snapshotOmitsPages) {
+                next.univerResources = normalizeUniverWorkbookResources(saved.resources);
+                next.univerStyles = normalizeUniverStyleMap(saved.styles);
+            }
             if (isIncompleteConceptGridPull(base, next)) return;
             const nextFp = conceptGridContentFingerprint(next);
             // Also detect meta drift (links) even when display text is unchanged.
@@ -1291,10 +1405,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
                 return '';
             };
-            if (data && ('v' in data || 'p' in data)) {
-                const fromV = asText(data.v);
-                if ('v' in data && fromV === '') return '';
-                if (fromV) return fromV;
+            if (data && typeof data === 'object') {
+                const fromCell = univerCellPlainText(data);
+                if (fromCell != null) return fromCell;
+                if (!('v' in data) && !('p' in data) && !('f' in data)) return '';
             }
             return asText(value);
         } catch {
@@ -1431,6 +1545,28 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         stopHoverAssist = null;
     };
     disposers.push(endHoverAssist);
+    disposers.push(installUniverSheetListReorder({
+        doc: opts.container.ownerDocument,
+        getSheets: () => {
+            const workbook = univerAPI.getActiveWorkbook?.();
+            const sheets = workbook?.getSheets?.() ?? [];
+            if (sheets.length) {
+                return sheets.map(sheet => ({
+                    id: sheet.getSheetId(),
+                    title: sheet.getSheetName?.() || sheet.getName?.() || '',
+                }));
+            }
+            return liveDoc.pages.map(page => ({ id: page.id, title: page.title }));
+        },
+        getUnitId: () => univerAPI.getActiveWorkbook?.()?.getId?.() ?? null,
+        reorderSheet: (sheetId, order, unitId) => {
+            univerAPI.executeCommand?.('sheet.command.set-worksheet-order', {
+                order,
+                subUnitId: sheetId,
+                unitId,
+            });
+        },
+    }));
     disposers.push(installUniverContextMenuGuard(
         univerInstance,
         opts.container.ownerDocument,
@@ -1525,6 +1661,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             const sub = univerAPI.addEvent(api.Event.CommandExecuted, (command) => {
                 const id = commandId(command);
                 const params = commandParams(command);
+                // Univer's default blank workbook emits insert/remove while ours
+                // is still replacing it. Ignore that until the real sheets paint.
+                if (!syncEnabled) return;
 
                 if (id === 'sheet.operation.set-cell-edit-visible'
                     || id === 'sheet.operation.set-cell-edit-visible-f2'
@@ -1574,6 +1713,17 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     // Clearing omitted cells is safe after the structural mutation
                     // settles and prevents old content from duplicating into them.
                     schedulePull({ clearMissing: true, mergeDimensions: true });
+                    return;
+                }
+
+                const sheetChrome = applyUniverSheetChromeMutation(liveDoc, command);
+                if (sheetChrome) {
+                    liveDoc = sheetChrome;
+                    contentFp = conceptGridContentFingerprint(liveDoc);
+                    opts.onDocumentChange(liveDoc);
+                    window.setTimeout(() => {
+                        if (!disposed) schedulePull({ mergeDimensions: true });
+                    }, 120);
                     return;
                 }
 
@@ -1731,6 +1881,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     return {
         dispose: () => {
             if (disposed) return;
+            if (revealFrame) {
+                window.cancelAnimationFrame(revealFrame);
+                revealFrame = 0;
+            }
             // Commit any pending edits before tearing down.
             if (timer) {
                 window.clearTimeout(timer);
@@ -1760,13 +1914,18 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             pendingClearMissing = false;
             pendingMergeDimensions = false;
             disposed = true;
+            livePlotGridRelayouts.delete(relayout);
             for (const d of disposers) {
                 try { d(); } catch { /* ignore */ }
             }
             try {
+                disposeOwnedWorkbook();
+            } catch { /* ignore */ }
+            try {
                 univerAPI.dispose?.();
             } catch { /* ignore */ }
             opts.container.empty();
+            scheduleSiblingPlotGridRelayout(relayout);
         },
         getDocument: () => liveDoc,
         setDocument: (doc: ConceptGridDocument) => {
@@ -1917,6 +2076,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 }
             }
         },
+        relayout,
         focus: () => {
             opts.container.querySelector<HTMLElement>('[contenteditable], canvas, .univer-workbook')?.focus?.();
         },

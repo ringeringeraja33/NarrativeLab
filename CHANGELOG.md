@@ -1,5 +1,12 @@
 # NarrativeLab — Changelog
 
+## 1.2.5
+
+- Concept Grid overflow sheet lists can be reordered from drag handles.
+- First-row / first-column / A1 deletes and edits persist instead of resurrecting old header labels.
+- Closing a project that is on the spreadsheet tab no longer blanks other open projects’ Concept Grids.
+- Lagging Univer snapshots can no longer drop sibling worksheets, and opening a grid no longer flashes a blank “Page 1” workbook.
+
 ## 1.2.4
 
 - Concept Grid cell edits are applied as they happen, so a lagging Univer workbook snapshot can no longer save only the first half of a typing burst.

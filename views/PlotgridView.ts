@@ -10,6 +10,7 @@ import {
     getActiveConceptGridPage,
     isDefaultEmptyConceptGrid,
     isIncompleteConceptGridPull,
+    conceptGridDocumentsSharePage,
     normalizeConceptGridDocument,
 } from '../models/PlotGridData';
 import { getActiveUiLanguage, t } from '../utils/i18n';
@@ -148,14 +149,14 @@ export class PlotgridView extends ProjectBoundItemView {
             this.hasHydratedDocument = true;
         }
         this.showSpreadsheetLoading();
-        const peekedFp = peeked ? conceptGridContentFingerprint(this.document) : '';
-        const loadP = this.loadData();
-        if (peeked) this.renderGrid();
-        await loadP;
+        await this.loadData();
         if (!container.isConnected) return;
         this.renderToolbar();
-        const loadedChanged = !!peeked && conceptGridContentFingerprint(this.document) !== peekedFp;
-        this.renderGrid(loadedChanged ? { forcePush: true } : {});
+        this.renderGrid({ forcePush: true });
+
+        this.registerEvent(this.app.workspace.on('active-leaf-change', leaf => {
+            if (leaf === this.leaf) this.univerHost?.relayout();
+        }));
 
         // Watch for file renames to update linkedSceneId paths AND row sourceIds
         this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
@@ -270,6 +271,10 @@ export class PlotgridView extends ProjectBoundItemView {
         this.cancelPendingSave();
         this.loadedSystemFolder = null;
         this.loadedProjectFile = null;
+    }
+
+    onResize(): void {
+        this.univerHost?.relayout();
     }
 
     private closeAllCellEditors(): void {
@@ -1055,6 +1060,10 @@ export class PlotgridView extends ProjectBoundItemView {
                     locale,
                     getAuthoritativeDocument: () => this.document,
                     isExternalEditorBusy: () => this.cellEditorWindows.size > 0,
+                    onReady: () => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        this.hideSpreadsheetLoading();
+                    },
                     shouldBlockUniverCellEdit: (sheetId, row, col) => {
                         const cell = this.getDataCellAt(sheetId, row, col);
                         const mode = this.plugin?.settings?.plotGridMarkdownEditMode === true;
@@ -1124,7 +1133,12 @@ export class PlotgridView extends ProjectBoundItemView {
                     onDocumentChange: (doc) => {
                         if (mountGen !== this.univerMountGeneration) return;
                         const next = normalizeConceptGridDocument(doc);
+                        if (!conceptGridDocumentsSharePage(this.document, next)) return;
                         if (isIncompleteConceptGridPull(this.document, next)) return;
+                        if (
+                            isDefaultEmptyConceptGrid(next)
+                            && !isDefaultEmptyConceptGrid(this.document)
+                        ) return;
                         this.document = next;
                         this.synchronizeWikilinkCells();
                         this.bindActivePage();
@@ -1166,7 +1180,12 @@ export class PlotgridView extends ProjectBoundItemView {
                 });
                 await nextPaint();
                 if (mountGen !== this.univerMountGeneration) return;
-                this.hideSpreadsheetLoading();
+                // Overlay stays until onReady (real sheets, not Univer's blank
+                // default). Fall back so a hung reveal cannot block the view.
+                window.setTimeout(() => {
+                    if (mountGen !== this.univerMountGeneration) return;
+                    this.hideSpreadsheetLoading();
+                }, 2500);
             } catch (e) {
                 if (mountGen !== this.univerMountGeneration) return;
                 console.error('[NarrativeLab] Univer Plot Grid failed to initialize', e);
@@ -1534,6 +1553,10 @@ export class PlotgridView extends ProjectBoundItemView {
                 cell.content = '';
                 cell.formula = undefined;
                 cell.manualContent = true;
+                const page = this.document.pages.find(item => item.cells[cell.id] === cell)
+                    || this.document.pages.find(item => item.cells[cell.id])
+                    || this.data;
+                syncAxisLabelFromCell(page, cell);
             }
         }
         const cellKey = cell.id || `${Date.now()}`;
