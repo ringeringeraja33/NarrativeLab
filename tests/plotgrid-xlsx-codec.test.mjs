@@ -860,7 +860,7 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /legacySystemPlotGridXlsxPath/);
     assert.match(mainTs, /legacyPlotGridFolderXlsxPath|cleanupLegacyPlotGridArtifacts/);
     assert.match(mainTs, /migratePlotGridToLibraryIfNeeded/);
-    assert.match(mainTs, /Library\/datasheet\.xlsx|datasheet\.xlsx/);
+    assert.match(mainTs, /datasheet-\*\.xlsx|PLOTGRID_XLSX_PREFIX/);
     assert.match(mainTs, /encodePlotGridXlsx/);
     assert.match(mainTs, /decodePlotGridXlsx/);
     assert.match(mainTs, /releasePlotGridWorkbookCache/);

@@ -144,11 +144,12 @@ export const LEGACY_SYSTEM_NCANVAS_FOLDER = 'System/NCanvas';
 export const DEFAULT_BASES_FOLDER = 'Bases';
 /** Former nested Bases location — still scanned during migration. */
 export const LEGACY_SYSTEM_BASES_FOLDER = 'System/Bases';
-/** Former single-file location under System/ — migrated to Library/library.base. */
+/** Former single-file location under System/ — migrated to per-project Library/library-<projectName>.base. */
 export const LEGACY_SYSTEM_LIBRARY_BASE = `System/library.base`;
-/** Canonical single Library Base filename under Library/. */
-export const LIBRARY_BASE_FILENAME = 'library.base';
-/** Format marker written into Library/library.base. */
+export const LIBRARY_BASE_PREFIX = 'library';
+/** Legacy single Library Base filename under Library/. */
+export const LIBRARY_BASE_LEGACY_FILENAME = 'library.base';
+/** Format marker written into per-project `Library/library-<projectName>.base`. */
 export const LIBRARY_BASE_FORMAT = 3;
 /** Default attachment folder name inside each project root */
 export const DEFAULT_ATTACHMENT_FOLDER = 'Attachments';

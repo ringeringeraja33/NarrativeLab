@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; matching enable at end of file */
-import { StoryLineProject, ProjectDraft, SeriesMetadata, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER, DEFAULT_CANVAS_FOLDER, DEFAULT_PROJECT_LIBRARY_FOLDERS, DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES } from '../models/StoryLineProject';
+import { StoryLineProject, ProjectDraft, SeriesMetadata, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER, DEFAULT_CANVAS_FOLDER, DEFAULT_PROJECT_LIBRARY_FOLDERS, DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES, LIBRARY_BASE_PREFIX } from '../models/StoryLineProject';
 import { MetadataParser, setWordcountLocale, setSceneTitleToStemMap } from './MetadataParser';
 import { normalizeStoryLineLocale, resolveLocale, DEFAULT_STORYLINE_LOCALE, AUTO_DETECT_LOCALE, type StoryLineLocale } from '../utils/locale';
 import { UndoManager } from './UndoManager';
@@ -11,6 +11,7 @@ import { BeatSheetApplyOptions, BeatSheetApplyPreview, BeatSheetTemplate, Filter
 import { localizeForLanguage, t } from '../utils/i18n';
 import { coerceString } from '../utils/narrow';
 import { ensureVaultFolder, registerDeletedProjectPathGuard, vaultRelativeFolderPath } from '../utils/vaultFolders';
+import { plotGridXlsxPath } from './PlotGridXlsxCodec';
 
 /**
  * Normalize a frontmatter `acts` / `chapters` value into a clean sorted
@@ -994,6 +995,52 @@ export class SceneManager implements ISceneStore {
             });
         } catch (err) {
             console.warn('[NarrativeLab] corkboard canvas rename skipped:', err);
+        }
+
+        // Rename per-project datasheet / library base files after the folder move.
+        try {
+            const adapter = this.app.vault.adapter;
+            const oldLeaf = oldBaseFolder.split('/').pop() ?? '';
+            const newLeaf = safeName;
+
+            const sanitizeArtifactName = (value: string): string => {
+                const cleaned = value
+                    .replace(/[\\/:*?"<>|]/g, '-')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                return cleaned || 'project';
+            };
+
+            // datasheet rename (file name changes with project name)
+            const movedOldPlot = normalizePath(plotGridXlsxPath(newBaseFolder, oldLeaf));
+            const movedNewPlot = normalizePath(plotGridXlsxPath(newBaseFolder, newLeaf));
+            if (await adapter.exists(movedOldPlot) && !await adapter.exists(movedNewPlot)) {
+                await adapter.rename(movedOldPlot, movedNewPlot);
+            }
+
+            // library base rename (series codex keeps it in parent folder)
+            const seriesFolder = this.getSeriesFolderForProject(project);
+            const libraryRoot = seriesFolder
+                ? (() => {
+                    const library = normalizePath(`${seriesFolder}/Library`);
+                    const legacyCodex = normalizePath(`${seriesFolder}/Codex`);
+                    if (this.app.vault.getAbstractFileByPath(library)) return library;
+                    if (this.app.vault.getAbstractFileByPath(legacyCodex)) return legacyCodex;
+                    return library;
+                })()
+                : normalizePath(`${newBaseFolder}/Library`);
+
+            const movedOldBase = normalizePath(
+                `${libraryRoot}/${LIBRARY_BASE_PREFIX}-${sanitizeArtifactName(oldLeaf)}.base`,
+            );
+            const movedNewBase = normalizePath(
+                `${libraryRoot}/${LIBRARY_BASE_PREFIX}-${sanitizeArtifactName(newLeaf)}.base`,
+            );
+            if (await adapter.exists(movedOldBase) && !await adapter.exists(movedNewBase)) {
+                await adapter.rename(movedOldBase, movedNewBase);
+            }
+        } catch (err) {
+            console.warn('[NarrativeLab] datasheet/library.base rename skipped:', err);
         }
 
         // If this was the active project, update settings

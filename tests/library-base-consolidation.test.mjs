@@ -17,10 +17,11 @@ const [nativeLibraryBase, storyLineProject, sceneManager, entityFileCache, codex
 ]);
 const libraryModeBar = await readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8');
 
-test('canonical Library Base lives under Library/library.base', () => {
-    assert.match(storyLineProject, /LIBRARY_BASE_FILENAME = 'library\.base'/);
+test('canonical Library Base lives under per-project Library/library-*.base', () => {
+    assert.match(storyLineProject, /LIBRARY_BASE_PREFIX = 'library'/);
+    assert.match(storyLineProject, /LIBRARY_BASE_LEGACY_FILENAME = 'library\.base'/);
     assert.match(storyLineProject, /LEGACY_SYSTEM_LIBRARY_BASE = `System\/library\.base`/);
-    assert.match(nativeLibraryBase, /\$\{libraryRoot\}\/\$\{LIBRARY_BASE_FILENAME\}/);
+    assert.match(nativeLibraryBase, /\$\{libraryRoot\}\/\$\{LIBRARY_BASE_PREFIX\}-/);
     assert.match(nativeLibraryBase, /getCodexFolder/);
     assert.match(nativeLibraryBase, /narrativeLabLibraryBase/);
     assert.match(nativeLibraryBase, /narrativeLabCategoryId/);

@@ -1,5 +1,10 @@
 # NarrativeLab — Changelog
 
+## 1.3.1
+
+- Project-scoped default filenames now include the project name suffix: `Library/datasheet-<project>.xlsx`, `Library/library-<project>.base`, and `Canvas/corkboard-<project>.canvas`.
+- Legacy default filenames are auto-migrated when projects open, and project rename now also renames these project-scoped artifacts.
+
 ## 1.3.0
 
 - Concept Grid saves stay on the bound project: autosave no longer drops when another book is focused, and each project keeps its own datasheet cache.

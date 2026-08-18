@@ -69,10 +69,12 @@ import {
     plotGridNlMetaStructureMatchesDocument,
     plotGridXlsxNeedsRewrite,
     plotGridXlsxPath,
+    legacyPlotGridXlsxPath,
     serializePlotGridNlMeta,
     tryParseNlMeta,
     LEGACY_PLOTGRID_XLSX_FILENAME,
-    PLOTGRID_XLSX_FILENAME,
+    PLOTGRID_XLSX_LEGACY_FILENAME,
+    PLOTGRID_XLSX_PREFIX,
 } from './services/PlotGridXlsxCodec';
 import {
     deriveProjectFoldersFromFilePath,
@@ -1129,7 +1131,7 @@ export default class SceneCardsPlugin extends Plugin {
                     const plotXlsx = normalizePath(plotGridXlsxPath(this.getProjectBaseFolder() || ''));
                     const plotMeta = normalizePath(plotGridNlMetaPath(this.getProjectSystemFolder() || ''));
                     if (
-                        /\/Library\/datasheet\.xlsx$/i.test(filePath)
+                        /\/Library\/datasheet(?:-[^/]+)?\.xlsx$/i.test(filePath)
                         || /\/System\/datasheet\.nlmeta\.json$/i.test(filePath)
                         || /\/Library\/datasheet\.nlmeta\.json$/i.test(filePath)
                         || filePath === plotXlsx
@@ -2459,13 +2461,16 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
-    /** True when Library/datasheet.xlsx already exists for this project. */
+    /** True when per-project Library/datasheet-*.xlsx already exists. */
     async plotGridXlsxExists(projectFilePath?: string | null): Promise<boolean> {
         const target = normalizePath(projectFilePath || this.sceneManager.activeProject?.filePath || '');
         if (!target) return false;
         const baseFolder = normalizePath(deriveProjectFoldersFromFilePath(target).baseFolder);
         try {
-            return await this.app.vault.adapter.exists(normalizePath(plotGridXlsxPath(baseFolder)));
+            const adapter = this.app.vault.adapter;
+            const canonical = normalizePath(plotGridXlsxPath(baseFolder));
+            const legacy = normalizePath(legacyPlotGridXlsxPath(baseFolder));
+            return await adapter.exists(canonical) || await adapter.exists(legacy);
         } catch {
             return false;
         }
@@ -3436,7 +3441,7 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
-    /** Remove legacy System/plotgrid.xlsx and System/PlotGrid/ once Library/datasheet.xlsx exists. */
+    /** Remove legacy System/plotgrid.xlsx and System/PlotGrid/ once Library/datasheet-*.xlsx exists. */
     private async cleanupLegacyPlotGridArtifacts(baseFolder: string, systemFolder: string): Promise<void> {
         const adapter = this.app.vault.adapter;
         const gridFolder = normalizePath(plotGridFolderPath(systemFolder));
@@ -3461,10 +3466,13 @@ export default class SceneCardsPlugin extends Plugin {
                 const lower = name.toLowerCase();
                 // Only known NarrativeLab artifacts — never wipe arbitrary user CSVs.
                 const isKnown =
-                    lower === PLOTGRID_XLSX_FILENAME.toLowerCase()
+                    // New per-project datasheet name.
+                    lower.startsWith(`${PLOTGRID_XLSX_PREFIX}-`) && lower.endsWith('.xlsx')
+                    || lower === PLOTGRID_XLSX_LEGACY_FILENAME.toLowerCase()
                     || lower === LEGACY_PLOTGRID_XLSX_FILENAME.toLowerCase()
                     || lower === '_index.json'
-                    || lower === `${PLOTGRID_XLSX_FILENAME}.tmp`
+                    || lower === `${PLOTGRID_XLSX_LEGACY_FILENAME}.tmp`
+                    || (lower.startsWith(`${PLOTGRID_XLSX_PREFIX}-`) && lower.endsWith('.xlsx.tmp'))
                     || lower === `${LEGACY_PLOTGRID_XLSX_FILENAME}.tmp`
                     || lower === '_index.json.tmp'
                     || /__.+\.csv$/i.test(name)
@@ -3541,7 +3549,8 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
-     * Move legacy System/plotgrid.xlsx into Library/datasheet.xlsx without opening the grid.
+     * Migrate plot grid xlsx into per-project Library/datasheet-<projectName>.xlsx
+     * without opening the grid.
      * Safe to call on project switch so every project migrates even if Concept Grid stays closed.
      */
     async migratePlotGridToLibraryIfNeeded(projectFilePath?: string): Promise<void> {
@@ -3558,9 +3567,22 @@ export default class SceneCardsPlugin extends Plugin {
             const systemFolder = normalizePath(`${baseFolder}/System`);
             const adapter = this.app.vault.adapter;
             const canonical = normalizePath(plotGridXlsxPath(baseFolder));
+            const legacyLibraryXlsx = normalizePath(legacyPlotGridXlsxPath(baseFolder));
             if (await adapter.exists(canonical)) {
                 void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
                 return;
+            }
+            if (await adapter.exists(legacyLibraryXlsx)) {
+                try {
+                    const bin = await adapter.readBinary(legacyLibraryXlsx);
+                    await this.ensureVaultFolder(libraryFolder);
+                    await this.writeVaultBinaryResilient(canonical, bin);
+                    try { await adapter.remove(legacyLibraryXlsx); } catch { /* keep if remove fails */ }
+                    void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
+                    return;
+                } catch (e) {
+                    console.warn('[NarrativeLab] datasheet rename migrate failed:', legacyLibraryXlsx, e);
+                }
             }
             const candidates = [
                 normalizePath(legacySystemPlotGridXlsxPath(systemFolder)),

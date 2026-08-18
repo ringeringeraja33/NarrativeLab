@@ -34,12 +34,18 @@ export function vaultRelativeFolderPath(path: string | null | undefined): string
 
 export function isProjectScopedLibraryArtifact(name: string): boolean {
     const n = name.toLowerCase();
-    return n === 'datasheet.xlsx'
+    return (
+        n === 'datasheet.xlsx'
+        || (n.startsWith('datasheet-') && n.endsWith('.xlsx'))
         || n === 'datasheet.nlmeta.json'
         || n.endsWith('.nlmeta.json')
         || n === 'library.base'
+        || (n.startsWith('library-') && n.endsWith('.base'))
         || n === '_narrativelab.base'
-        || n === '.narrative-lab.base';
+        || n === '.narrative-lab.base'
+        || n === 'corkboard.canvas'
+        || (n.startsWith('corkboard-') && n.endsWith('.canvas'))
+    );
 }
 
 /**

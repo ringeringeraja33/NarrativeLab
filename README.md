@@ -55,12 +55,12 @@ Any folder/
   Project name/
     Project name.md       # type: narrative-lab
     Canvas/
-      corkboard.canvas
+      corkboard-<projectName>.canvas
       Project name.ncanvas
       Project name.narrative.canvas  # optional native projection
     Library/
-      library.base
-      datasheet.xlsx
+      library-<projectName>.base
+      datasheet-<projectName>.xlsx
       Characters/
       Locations/
       ...custom categories

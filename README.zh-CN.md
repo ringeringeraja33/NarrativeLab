@@ -43,12 +43,12 @@ NarrativeLab 是用于规划、写作和维护叙事项目的 Obsidian 工作区
   项目名称/
     项目名称.md           # type: narrative-lab
     Canvas/
-      corkboard.canvas
+      corkboard-<projectName>.canvas
       项目名称.ncanvas
       项目名称.narrative.canvas
     Library/
-      library.base
-      datasheet.xlsx
+      library-<projectName>.base
+      datasheet-<projectName>.xlsx
       Characters/
       Locations/
       ...自定义分类

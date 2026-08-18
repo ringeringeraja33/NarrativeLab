@@ -55,7 +55,8 @@ import {
     syncAxisCellFromLabel,
 } from '../utils/plotGridCellEdit';
 
-export const PLOTGRID_XLSX_FILENAME = 'datasheet.xlsx';
+export const PLOTGRID_XLSX_PREFIX = 'datasheet';
+export const PLOTGRID_XLSX_LEGACY_FILENAME = 'datasheet.xlsx';
 /** Sidecar next to datasheet.xlsx — NarrativeLab links / ids / styles. */
 export const PLOTGRID_NLMETA_FILENAME = 'datasheet.nlmeta.json';
 /** Previous canonical filename under System/ — migrated to Library/datasheet.xlsx */
@@ -68,10 +69,40 @@ const META_SCHEMA = 2;
 /** Excel shared-string / cell text hard limit (OOXML). Exceeding it makes Excel repair sharedStrings.xml. */
 export const EXCEL_MAX_CELL_CHARS = 32767;
 
-/** Canonical path: `{projectBase}/Library/datasheet.xlsx` */
-export function plotGridXlsxPath(projectBaseFolder: string): string {
+function sanitizeProjectArtifactName(name: string): string {
+    const cleaned = name
+        .replace(/[\\/:*?"<>|]/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cleaned || 'project';
+}
+
+export function plotGridProjectLeafName(projectFilePath: string): string {
+    const leaf = projectFilePath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+    return sanitizeProjectArtifactName(leaf);
+}
+
+export function plotGridXlsxFileName(projectLeaf?: string | null): string {
+    const leaf = (projectLeaf ?? '').trim();
+    const safe = sanitizeProjectArtifactName(leaf);
+    return `${PLOTGRID_XLSX_PREFIX}-${safe}.xlsx`;
+}
+
+/** Canonical path: `{projectBase}/Library/datasheet-<projectName>.xlsx` */
+export function plotGridXlsxPath(
+    projectBaseFolder: string,
+    projectLeaf?: string | null,
+): string {
     const base = projectBaseFolder.replace(/\/+$/, '');
-    return `${base}/Library/${PLOTGRID_XLSX_FILENAME}`.replace(/\\/g, '/');
+    const leaf = (projectLeaf ?? projectBaseFolder.split('/').filter(Boolean).pop() ?? '');
+    const name = plotGridXlsxFileName(leaf);
+    return `${base}/Library/${name}`.replace(/\\/g, '/');
+}
+
+/** Legacy canonical path: `{projectBase}/Library/datasheet.xlsx` */
+export function legacyPlotGridXlsxPath(projectBaseFolder: string): string {
+    const base = projectBaseFolder.replace(/\/+$/, '');
+    return `${base}/Library/${PLOTGRID_XLSX_LEGACY_FILENAME}`.replace(/\\/g, '/');
 }
 
 /** Canonical sidecar: `{systemFolder}/datasheet.nlmeta.json` */

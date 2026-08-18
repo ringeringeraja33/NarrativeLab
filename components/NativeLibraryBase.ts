@@ -14,7 +14,8 @@ import {
     DEFAULT_BASES_FOLDER,
     LEGACY_SYSTEM_BASES_FOLDER,
     LEGACY_SYSTEM_LIBRARY_BASE,
-    LIBRARY_BASE_FILENAME,
+    LIBRARY_BASE_PREFIX,
+    LIBRARY_BASE_LEGACY_FILENAME,
     LIBRARY_BASE_FORMAT,
     deriveProjectFoldersFromFilePath,
 } from '../models/StoryLineProject';
@@ -132,7 +133,19 @@ function getProjectBaseFolder(plugin: SceneCardsPlugin): string | null {
     return normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
 }
 
-/** Canonical single Library Base: `{Library}/library.base` (project or shared series). */
+function sanitizeProjectArtifactName(name: string): string {
+    const cleaned = name
+        .replace(/[\\/:*?"<>|]/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cleaned || 'project';
+}
+
+function projectLeafNameFromProjectFilePath(projectFilePath: string): string {
+    return sanitizeProjectArtifactName(projectFilePath.split('/').pop()?.replace(/\.md$/i, '') ?? '');
+}
+
+/** Canonical single Library Base: `{Library}/library-<projectName>.base`. */
 function getLibraryBasePath(plugin: SceneCardsPlugin): string | null {
     const libraryRoot = plugin.sceneManager.getCodexFolder?.()
         || (() => {
@@ -140,7 +153,19 @@ function getLibraryBasePath(plugin: SceneCardsPlugin): string | null {
             return baseFolder ? `${baseFolder}/Library` : null;
         })();
     if (!libraryRoot) return null;
-    return normalizePath(`${libraryRoot}/${LIBRARY_BASE_FILENAME}`);
+    const leaf = projectLeafNameFromProjectFilePath(plugin.sceneManager.activeProject?.filePath ?? '');
+    return normalizePath(`${libraryRoot}/${LIBRARY_BASE_PREFIX}-${leaf}.base`);
+}
+
+/** Legacy pre-rename Library Base: `{libraryRoot}/library.base` (series or project-wide). */
+function getLegacyLibraryBasePath(plugin: SceneCardsPlugin): string | null {
+    const libraryRoot = plugin.sceneManager.getCodexFolder?.()
+        || (() => {
+            const baseFolder = getProjectBaseFolder(plugin);
+            return baseFolder ? `${baseFolder}/Library` : null;
+        })();
+    if (!libraryRoot) return null;
+    return normalizePath(`${libraryRoot}/${LIBRARY_BASE_LEGACY_FILENAME}`);
 }
 
 /** Former System/library.base path for the active project. */
@@ -1089,6 +1114,15 @@ async function ensureConsolidatedLibraryBase(
                 config = await readBaseConfig(plugin, legacySystem);
             } catch { /* fall through to empty shell */ }
         }
+        // Copy the previous shared Library/library.base into the new per-project file.
+        if (!config) {
+            const legacyLibrary = getLegacyLibraryBasePath(plugin);
+            if (legacyLibrary && await pathExists(plugin, legacyLibrary)) {
+                try {
+                    config = await readBaseConfig(plugin, legacyLibrary);
+                } catch { /* fall through to empty shell */ }
+            }
+        }
         if (config) {
             dirty = true;
         } else {
@@ -1134,6 +1168,12 @@ async function trashLegacyLibraryBaseFiles(plugin: SceneCardsPlugin): Promise<vo
     const canonical = getLibraryBasePath(plugin);
     const seen = new Set<string>();
     await trashBasePath(plugin, getLegacySystemLibraryBasePath(plugin));
+    // If the legacy shared Library/library.base belongs to a single project
+    // (no series codex), we can safely remove it after per-project migration.
+    // For series codex, keep it so other open projects can still copy from it.
+    if (!plugin.sceneManager.activeProject?.seriesId) {
+        await trashBasePath(plugin, getLegacyLibraryBasePath(plugin));
+    }
     for (const categoryId of getKnownLibraryCategoryIds(plugin)) {
         for (const path of getLegacyNativeBasePaths(plugin, categoryId)) {
             const normalized = normalizePath(path);

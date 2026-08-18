@@ -57,13 +57,31 @@ export type CorkboardPos = { x: number; y: number; z?: number; w?: number; h?: n
 
 const DEFAULT_W = 280;
 const DEFAULT_H = 200;
-/** Canonical tiled corkboard canvas filename for every project. */
-export const CORKBOARD_CANVAS_NAME = 'corkboard.canvas';
+export const CORKBOARD_CANVAS_PREFIX = 'corkboard';
+export const CORKBOARD_CANVAS_LEGACY_FILENAME = 'corkboard.canvas';
 
-/** `{project}/Canvas/corkboard.canvas` for a project manifest path. */
+function sanitizeProjectArtifactName(name: string): string {
+    const cleaned = name
+        .replace(/[\\/:*?"<>|]/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return cleaned || 'project';
+}
+
+function corkboardProjectLeafName(projectFilePath: string): string {
+    return projectFilePath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+}
+
+export function corkboardCanvasFileNameForProject(projectFilePath: string): string {
+    const leaf = corkboardProjectLeafName(projectFilePath);
+    const safe = sanitizeProjectArtifactName(leaf);
+    return `${CORKBOARD_CANVAS_PREFIX}-${safe}.canvas`;
+}
+
+/** `{project}/Canvas/corkboard-<projectName>.canvas` for a project manifest path. */
 export function corkboardCanvasPathForProject(projectFilePath: string): string {
     const { canvasFolder } = deriveProjectFoldersFromFilePath(projectFilePath);
-    return normalizePath(`${canvasFolder}/${CORKBOARD_CANVAS_NAME}`);
+    return normalizePath(`${canvasFolder}/${corkboardCanvasFileNameForProject(projectFilePath)}`);
 }
 
 function sanitizeCanvasFileBase(name: string): string {
@@ -113,12 +131,13 @@ export class CorkboardCanvasService {
         return next;
     }
 
-    /** Filename for the tiled corkboard canvas: always `corkboard.canvas`. */
-    getCanvasFileName(_projectFilePath?: string, _title?: string): string {
-        return CORKBOARD_CANVAS_NAME;
+    /** Filename for the tiled corkboard canvas: `corkboard-<projectName>.canvas`. */
+    getCanvasFileName(projectFilePath?: string | null, _title?: string): string {
+        if (projectFilePath) return corkboardCanvasFileNameForProject(projectFilePath);
+        return CORKBOARD_CANVAS_LEGACY_FILENAME;
     }
 
-    /** Canonical corkboard canvas: `{project}/Canvas/corkboard.canvas`. */
+    /** Canonical corkboard canvas: `{project}/Canvas/corkboard-<projectName>.canvas`. */
     getCanvasPath(projectFilePath?: string | null): string | null {
         const filePath = (projectFilePath && projectFilePath.trim())
             ? projectFilePath
@@ -144,14 +163,15 @@ export class CorkboardCanvasService {
                 : null);
         const derived = deriveProjectFoldersFromFilePath(filePath);
         const paths: string[] = [];
-        paths.push(normalizePath(`${derived.baseFolder}/System/${CORKBOARD_CANVAS_NAME}`));
+        paths.push(normalizePath(`${derived.baseFolder}/System/${CORKBOARD_CANVAS_LEGACY_FILENAME}`));
+        paths.push(normalizePath(`${derived.canvasFolder}/${CORKBOARD_CANVAS_LEGACY_FILENAME}`));
 
         const leaf = filePath.split('/').pop()?.replace(/\.md$/i, '')?.trim() || '';
         const title = String(project?.title ?? '').trim();
         for (const base of [leaf, title]) {
             if (!base) continue;
             const named = normalizePath(`${derived.canvasFolder}/${sanitizeCanvasFileBase(base)}.canvas`);
-            if (named.endsWith(`/${CORKBOARD_CANVAS_NAME}`)) continue;
+            if (named.endsWith(`/${CORKBOARD_CANVAS_LEGACY_FILENAME}`)) continue;
             paths.push(named);
         }
         return paths;
@@ -491,8 +511,8 @@ export class CorkboardCanvasService {
     }
 
     /**
-     * After a project rename, fold any `{old/new name}.canvas` left in Canvas/
-     * back into the fixed `corkboard.canvas` name.
+     * After a project rename, migrate any legacy / old-named corkboard canvas
+     * back into the canonical `corkboard-<projectName>.canvas` name.
      */
     async renameCanvasForProject(opts: {
         oldBaseFolder: string;
@@ -503,13 +523,19 @@ export class CorkboardCanvasService {
         const { canvasFolder: newCanvasFolder } = deriveProjectFoldersFromFilePath(
             normalizePath(`${opts.newBaseFolder}/${opts.newLeaf}.md`)
         );
-        const target = normalizePath(`${newCanvasFolder}/${CORKBOARD_CANVAS_NAME}`);
+        const targetFileName = `${CORKBOARD_CANVAS_PREFIX}-${sanitizeProjectArtifactName(opts.newLeaf)}.canvas`;
+        const target = normalizePath(`${newCanvasFolder}/${targetFileName}`);
         if (this.app.vault.getAbstractFileByPath(target) instanceof TFile) return;
 
         const candidates = [
+            // Old/new project leaf based names
+            normalizePath(`${newCanvasFolder}/${CORKBOARD_CANVAS_PREFIX}-${sanitizeProjectArtifactName(opts.oldLeaf)}.canvas`),
+            normalizePath(`${newCanvasFolder}/${CORKBOARD_CANVAS_PREFIX}-${sanitizeProjectArtifactName(opts.newLeaf)}.canvas`),
+            // Pre-fix legacy: `{project}.canvas` and `corkboard.canvas` under Canvas/System
             normalizePath(`${newCanvasFolder}/${sanitizeCanvasFileBase(opts.oldLeaf)}.canvas`),
             normalizePath(`${newCanvasFolder}/${sanitizeCanvasFileBase(opts.newLeaf)}.canvas`),
-            normalizePath(`${opts.newBaseFolder}/System/${CORKBOARD_CANVAS_NAME}`),
+            normalizePath(`${opts.newBaseFolder}/System/${CORKBOARD_CANVAS_LEGACY_FILENAME}`),
+            normalizePath(`${newCanvasFolder}/${CORKBOARD_CANVAS_LEGACY_FILENAME}`),
         ];
         for (const legacy of candidates) {
             if (legacy === target) continue;

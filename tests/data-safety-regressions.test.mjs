@@ -671,7 +671,7 @@ test('default view setting opens a project tab and unused portrait leftovers are
     assert.doesNotMatch(mainTs, /--sl-character-detail-portrait-size/);
     assert.doesNotMatch(plotgrid, /computeTotalWidth/);
     assert.doesNotMatch(plotgrid, /ROW_HEADER_WIDTH/);
-    assert.match(plotgrid, /Library\/datasheet\.xlsx/);
+    assert.match(plotgrid, /datasheet-\*\.xlsx/);
     assert.doesNotMatch(projectModel, /LEGACY_CANVAS_FOLDER/);
     assert.doesNotMatch(styles, /\.codex-detail-portrait\s*\{/);
     assert.doesNotMatch(styles, /\.location-detail-portrait\s*\{/);
