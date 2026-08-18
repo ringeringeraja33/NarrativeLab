@@ -40,6 +40,7 @@ interface NativeBaseEmbedState {
     liveView?: BasesViewLike | null;
     unhook?: (() => void) | null;
     newNoteUnhook?: (() => void) | null;
+    horizontalScrollUnhook?: (() => void) | null;
     persistTimer?: number | null;
     /** Last time this embed produced a layout snapshot (ms). Newer wins on merge. */
     lastLayoutAt?: number;
@@ -1382,8 +1383,10 @@ export function disposeNativeLibraryBase(owner: Component): void {
     const flush = flushEmbedLayout(state);
     state.unhook?.();
     state.newNoteUnhook?.();
+    state.horizontalScrollUnhook?.();
     state.unhook = null;
     state.newNoteUnhook = null;
+    state.horizontalScrollUnhook = null;
     state.generation += 1;
     if (state.child) {
         owner.removeChild(state.child);
@@ -1399,6 +1402,107 @@ export function disposeNativeLibraryBase(owner: Component): void {
 
 function escapeWikilinkPath(path: string): string {
     return path.replace(/\]/g, '\\]');
+}
+
+/** Mirror the native Bases table's horizontal position at the Library pane bottom. */
+function mountBottomHorizontalScrollbar(host: HTMLElement): () => void {
+    const rail = host.createDiv('library-native-base-bottom-scroll');
+    const spacer = rail.createDiv('library-native-base-bottom-scroll-spacer');
+    const pane = host.closest<HTMLElement>(
+        '.story-line-codex-content, .story-line-character-content, .story-line-location-content',
+    );
+    let source: HTMLElement | null = null;
+    let syncing = false;
+    let updateFrame = 0;
+    let resizeObserver: ResizeObserver | null = null;
+
+    const findSource = (): HTMLElement | null => {
+        const preferred = Array.from(host.querySelectorAll<HTMLElement>(
+            '.bases-table-container, .bases-view [class*="table"], .bases-view',
+        ));
+        const fallback = Array.from(host.querySelectorAll<HTMLElement>('.bases-view *'));
+        const candidates = Array.from(new Set([...preferred, ...fallback]))
+            .filter(element => (
+                element !== rail
+                && element.clientWidth > 0
+                && element.scrollWidth > element.clientWidth + 1
+                && ['auto', 'scroll'].includes(getComputedStyle(element).overflowX)
+            ));
+        candidates.sort((left, right) => {
+            const preferredDelta = Number(right.matches('.bases-table-container'))
+                - Number(left.matches('.bases-table-container'));
+            if (preferredDelta) return preferredDelta;
+            return right.clientWidth * right.clientHeight - left.clientWidth * left.clientHeight;
+        });
+        return candidates[0] || null;
+    };
+
+    const syncFromSource = () => {
+        if (!source || syncing) return;
+        syncing = true;
+        rail.scrollLeft = source.scrollLeft;
+        syncing = false;
+    };
+    const syncFromRail = () => {
+        if (!source || syncing) return;
+        syncing = true;
+        source.scrollLeft = rail.scrollLeft;
+        syncing = false;
+    };
+    const updateNow = () => {
+        updateFrame = 0;
+        const next = findSource();
+        if (next !== source) {
+            source?.removeEventListener('scroll', syncFromSource);
+            if (source) resizeObserver?.unobserve(source);
+            source = next;
+            source?.addEventListener('scroll', syncFromSource, { passive: true });
+            if (source) resizeObserver?.observe(source);
+        }
+        const rect = pane?.getBoundingClientRect();
+        if (!source || !rect || rect.width <= 0 || rect.height <= 0) {
+            rail.hide();
+            return;
+        }
+        spacer.style.width = `${source.scrollWidth}px`;
+        rail.style.left = `${Math.max(0, rect.left)}px`;
+        rail.style.width = `${Math.max(0, rect.width)}px`;
+        rail.style.bottom = `${Math.max(0, window.innerHeight - rect.bottom)}px`;
+        rail.show();
+        syncFromSource();
+    };
+    const scheduleUpdate = () => {
+        if (updateFrame) return;
+        updateFrame = window.requestAnimationFrame(updateNow);
+    };
+
+    rail.addEventListener('scroll', syncFromRail, { passive: true });
+    const mutationObserver = new MutationObserver(records => {
+        if (records.every(record => rail.contains(record.target))) return;
+        scheduleUpdate();
+    });
+    mutationObserver.observe(host, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class', 'style'],
+    });
+    resizeObserver = new ResizeObserver(scheduleUpdate);
+    resizeObserver.observe(host);
+    if (pane) resizeObserver.observe(pane);
+    window.addEventListener('resize', scheduleUpdate, { passive: true });
+    scheduleUpdate();
+
+    return () => {
+        if (updateFrame) window.cancelAnimationFrame(updateFrame);
+        source?.removeEventListener('scroll', syncFromSource);
+        rail.removeEventListener('scroll', syncFromRail);
+        mutationObserver.disconnect();
+        resizeObserver?.disconnect();
+        resizeObserver = null;
+        window.removeEventListener('resize', scheduleUpdate);
+        rail.remove();
+    };
 }
 
 /**
@@ -1466,6 +1570,7 @@ export async function renderNativeLibraryBase(
         owner.removeChild(child);
         return;
     }
+    state.horizontalScrollUnhook = mountBottomHorizontalScrollbar(host);
 
     // Hook the live Bases view so Properties / Sort toolbar changes are written
     // back into Library/library.base (embedded Bases often keep these in memory).

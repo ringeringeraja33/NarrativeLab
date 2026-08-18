@@ -96,6 +96,15 @@ test('Browse Properties/Sort changes are persisted into library.base', () => {
     assert.match(nativeLibraryBase, /newestByCategory/);
 });
 
+test('native Base mirrors horizontal scrolling at the bottom of the Library pane', () => {
+    assert.match(nativeLibraryBase, /mountBottomHorizontalScrollbar/);
+    assert.match(nativeLibraryBase, /library-native-base-bottom-scroll/);
+    assert.match(nativeLibraryBase, /source\.scrollLeft = rail\.scrollLeft/);
+    assert.match(nativeLibraryBase, /rail\.style\.bottom/);
+    assert.match(nativeLibraryBase, /requestAnimationFrame\(updateNow\)/);
+    assert.match(nativeLibraryBase, /attributeFilter: \['class', 'style'\]/);
+});
+
 test('Library Base folder filters use file.inFolder and only the native New control', () => {
     assert.match(nativeLibraryBase, /single-library-base-v5-null-file-guard/);
     assert.match(nativeLibraryBase, /guardLibraryBaseFileFilter/);

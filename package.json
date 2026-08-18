@@ -1,6 +1,6 @@
 {
   "name": "obsidian-narrative-lab",
-  "version": "1.3.1",
+  "version": "1.3.5",
   "description": "Plan, draft, and manage narrative projects in Obsidian",
   "main": "main.js",
   "scripts": {
@@ -49,6 +49,7 @@
     "typescript": "5.3.3"
   },
   "dependencies": {
+    "@univerjs/core": "^0.25.1",
     "@univerjs/preset-sheets-conditional-formatting": "^0.25.1",
     "@univerjs/preset-sheets-core": "^0.25.1",
     "@univerjs/preset-sheets-data-validation": "^0.25.1",
@@ -60,7 +61,6 @@
     "@univerjs/preset-sheets-sort": "^0.25.1",
     "@univerjs/preset-sheets-table": "^0.25.1",
     "@univerjs/preset-sheets-thread-comment": "^0.25.1",
-    "@univerjs/presets": "^0.25.1",
     "@univerjs/sheets-formula-ui": "^0.25.1",
     "@univerjs/ui": "^0.25.1",
     "exceljs": "^4.4.0",
@@ -73,5 +73,8 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "rxjs": "^7.8.2"
+  },
+  "overrides": {
+    "nanoid": "5.1.16"
   }
 }

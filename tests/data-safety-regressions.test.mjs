@@ -359,6 +359,7 @@ test('story graph legend rows filter independently without remounting the canvas
     assert.match(edgeToggle, /applyLegendFilters/);
     assert.match(storyGraph, /Include unlinked documents/);
     assert.match(storyGraph, /visibleEdgeSet/);
+    assert.match(storyGraph, /if \(this\.legendNodeKeys\.size === 0\) return false/);
     // Wheel zoom must not bubble to Obsidian leaf scroll (causes viewport jump-back).
     assert.match(storyGraph, /e\.stopPropagation\(\)/);
 });
@@ -427,7 +428,10 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(save, /isIncompleteConceptGridPull\(cached\.doc, document\)/);
     assert.match(mainTs, /existingPlotGridFilledCount/);
     assert.match(mainTs, /plotGridXlsxExists/);
-    assert.equal((save.match(/new Notice\(/g) || []).length, 1, 'corrupt workbook warning is deduplicated');
+    assert.ok(
+        (save.match(/new Notice\(/g) || []).length <= 2,
+        'save path only reports the deduplicated empty-write warning and a one-shot journal conflict',
+    );
     assert.match(mainTs, /getBasePath\?\./);
 });
 

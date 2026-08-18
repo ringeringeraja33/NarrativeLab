@@ -1,8 +1,10 @@
 /** Ambient modules for Univer packages (no published @types; runtime bundled separately). */
-declare module '@univerjs/presets' {
-    export const LocaleType: { ZH_CN: string; EN_US: string };
-    export function mergeLocales(...locales: unknown[]): unknown;
-    export function createUniver(options: Record<string, unknown>): { univerAPI: unknown };
+declare module '@univerjs/core/lib/facade' {
+    import type { Univer } from '@univerjs/core';
+
+    export class FUniver {
+        static newAPI(univer: Univer): FUniver;
+    }
 }
 
 declare module '@univerjs/preset-sheets-core' {

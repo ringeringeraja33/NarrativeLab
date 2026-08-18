@@ -27,7 +27,6 @@ import {
     type StoryGraphConnectNode,
     type StoryGraphDocument,
     type StoryGraphEntityColorMap,
-    type StoryGraphFilterState,
     type StoryGraphLayoutState,
     type StoryGraphLibraryCategoryColorMap,
     type StoryGraphLibraryCategoryLegend,
@@ -93,16 +92,6 @@ export interface LibraryProfileModeAction {
     onClick: () => void;
 }
 
-const DEFAULT_FILTERS: StoryGraphFilterState = {
-    showScenes: true,
-    showCharacters: true,
-    showLocations: true,
-    showCodex: true,
-    showRelationships: true,
-    showProps: true,
-    showOther: true,
-};
-
 function normalizeLibraryContentMode(value: unknown): LibraryContentMode | null {
     if (value === 'profile' || value === 'browse' || value === 'story-graph') return value;
     return null;
@@ -111,7 +100,6 @@ function normalizeLibraryContentMode(value: unknown): LibraryContentMode | null 
 type LibraryUiMemory = {
     contentMode?: LibraryContentMode;
     categoryId?: string;
-    storyGraphFilters?: StoryGraphFilterState;
 };
 
 type LibraryUiHost = SceneCardsPlugin & {
@@ -165,25 +153,21 @@ function writeLibraryUi(
     const key = resolveLibraryUiProjectFile(plugin, projectFile);
     const current = readLibraryUi(plugin, key || projectFile);
     const prevStored = key ? plugin.settings.libraryUiByProject?.[key] : undefined;
-    const prevMem = key ? libraryUiMemory(plugin).get(key) : undefined;
+    const retainedStored = { ...(prevStored || {}) } as Record<string, unknown>;
+    // Remove the obsolete persisted graph legend state from older settings.
+    delete retainedStored.storyGraphFilters;
     const next: LibraryUiMemory = {
         contentMode: patch.contentMode ?? current.contentMode,
         categoryId: (patch.categoryId ?? current.categoryId)?.trim() || current.categoryId,
-        storyGraphFilters: patch.storyGraphFilters
-            ?? prevMem?.storyGraphFilters
-            ?? (prevStored?.storyGraphFilters
-                ? { ...DEFAULT_FILTERS, ...prevStored.storyGraphFilters }
-                : undefined),
     };
     if (key) {
         libraryUiMemory(plugin).set(key, next);
         plugin.settings.libraryUiByProject = {
             ...(plugin.settings.libraryUiByProject || {}),
             [key]: {
-                ...(prevStored || {}),
+                ...retainedStored,
                 contentMode: next.contentMode,
                 categoryId: next.categoryId,
-                ...(next.storyGraphFilters ? { storyGraphFilters: next.storyGraphFilters } : {}),
             },
         };
     }
@@ -253,24 +237,6 @@ export function resolveLibraryViewType(
     if (id === 'characters') return CHARACTER_VIEW_TYPE;
     if (id === 'locations') return LOCATION_VIEW_TYPE;
     return CODEX_VIEW_TYPE;
-}
-
-export function getStoryGraphFilters(
-    plugin: SceneCardsPlugin,
-    projectFile?: string | null,
-): StoryGraphFilterState {
-    const key = resolveLibraryUiProjectFile(plugin, projectFile);
-    const fromMemory = key ? libraryUiMemory(plugin).get(key)?.storyGraphFilters : undefined;
-    const fromProject = key ? plugin.settings?.libraryUiByProject?.[key]?.storyGraphFilters : undefined;
-    return { ...DEFAULT_FILTERS, ...(fromProject || {}), ...(fromMemory || {}) };
-}
-
-export function setStoryGraphFilters(
-    plugin: SceneCardsPlugin,
-    filters: StoryGraphFilterState,
-    projectFile?: string | null,
-): void {
-    writeLibraryUi(plugin, { storyGraphFilters: { ...filters } }, projectFile);
 }
 
 /** Profile / Browse toggle rendered inside the active Library category. */
@@ -820,8 +786,6 @@ export function renderLibraryStoryGraph(
         },
         plugin.settings.tagTypeOverrides,
         (edge, evt) => showRelationEdgeMenu(plugin, edge, evt, onRefresh, openFocusFromRelation),
-        getStoryGraphFilters(plugin, projectFile),
-        (filters) => setStoryGraphFilters(plugin, filters, projectFile),
         documents,
         wikilinks,
         relationCategories,
@@ -856,6 +820,22 @@ export function renderLibraryStoryGraph(
             onShowInNativeGraph: (filePath, reveal) => {
                 const query = buildProjectFileGraphQuery(projectNativeGraphFolders(plugin), filePath);
                 void openNativeGraphWithQuery(plugin.app, query, { reveal });
+            },
+            onNodeLimitExceeded: (total, limit) => {
+                const modal = new Modal(plugin.app);
+                modal.titleEl.setText(t('Story Graph node limit reached'));
+                modal.contentEl.createEl('p', {
+                    text: t('This graph contains {total} nodes. Showing the {limit} most connected nodes; {hidden} nodes were omitted.', {
+                        total,
+                        limit,
+                        hidden: total - limit,
+                    }),
+                });
+                new Setting(modal.contentEl).addButton(button => button
+                    .setButtonText(t('Close'))
+                    .setCta()
+                    .onClick(() => modal.close()));
+                modal.open();
             },
         },
     );

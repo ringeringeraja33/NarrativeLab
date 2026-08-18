@@ -121,6 +121,41 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(workbook.getWorksheet('Act I').state, 'hidden');
         assert.equal(workbook.getWorksheet('Act I').properties.tabColor.argb, 'FFC45C26');
         assert.equal(decoded.pages[0].cells['r1-c1'].content, 'meets mentor');
+
+        // Sidecar restores values that Excel must truncate, including original
+        // page/axis labels whose sheet/cell representations have hard limits.
+        const longText = '长正文'.repeat(14000);
+        const longLabel = '长标签'.repeat(12000);
+        const longDoc = structuredClone(doc);
+        longDoc.pages[0].title = 'Act / with an original title longer than Excel permits';
+        longDoc.pages[0].cornerLabel = longLabel;
+        longDoc.pages[0].rows[0].label = longLabel;
+        longDoc.pages[0].columns[0].label = longLabel;
+        longDoc.pages[0].cells['r1-c1'].formula = undefined;
+        longDoc.pages[0].cells['r1-c1'].linkedSceneId = undefined;
+        longDoc.pages[0].cells['r1-c1'].linkedViaWikilink = undefined;
+        longDoc.pages[0].cells['r1-c1'].content = longText;
+        const longBinary = await codec.encodePlotGridXlsx(longDoc);
+        const longDecoded = await codec.decodePlotGridXlsx(longBinary, {
+            meta: codec.buildNlMetaForDocument(longDoc),
+        });
+        assert.equal(longDecoded.pages[0].title, longDoc.pages[0].title);
+        assert.equal(longDecoded.pages[0].cornerLabel, longLabel);
+        assert.equal(longDecoded.pages[0].rows[0].label, longLabel);
+        assert.equal(longDecoded.pages[0].columns[0].label, longLabel);
+        assert.equal(longDecoded.pages[0].cells['r1-c1'].content, longText);
+
+        // A formula replaced by plain text in Excel must not be resurrected from
+        // the older sidecar on the next NarrativeLab save.
+        const formulaReplacedBook = new ExcelJS.Workbook();
+        await formulaReplacedBook.xlsx.load(binary);
+        formulaReplacedBook.getWorksheet('Act I').getCell(2, 2).value = 'plain replacement';
+        const formulaReplaced = await codec.decodePlotGridXlsx(
+            await formulaReplacedBook.xlsx.writeBuffer(),
+            { meta: sidecarMeta },
+        );
+        assert.equal(formulaReplaced.pages[0].cells['r1-c1'].content, 'plain replacement');
+        assert.equal(formulaReplaced.pages[0].cells['r1-c1'].formula, undefined);
         assert.equal(decoded.pages[0].cells['r1-c1'].formula, '="meets mentor"');
         assert.equal(decoded.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
         assert.equal(decoded.pages[0].cells['r1-c1'].linkedViaWikilink, true);
@@ -248,6 +283,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         });
         assert.equal(removed.pages.length, 1);
         assert.equal(removed.pages[0].id, 'page-1');
+        assert.deepEqual(removed.explicitlyRemovedPageIds, ['page-2']);
         const inserted = codec.applyUniverSheetChromeMutation(decoded, {
             id: 'sheet.mutation.insert-sheet',
             params: { index: 1, sheet: { id: 'sheet-new', name: '工作表1' } },
@@ -271,6 +307,20 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         codec.overlayConceptGridCellMeta(linkedLive, decoded);
         assert.equal(linkedLive.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
         assert.equal(linkedLive.pages[0].cells['r1-c1'].content, 'meets mentor');
+        const unlinkedAuthoritative = structuredClone(decoded);
+        unlinkedAuthoritative.pages[0].cells['r1-c1'].linkedSceneId = undefined;
+        unlinkedAuthoritative.pages[0].cells['r1-c1'].linkedViaWikilink = undefined;
+        codec.overlayConceptGridCellMeta(linkedLive, unlinkedAuthoritative);
+        assert.equal(linkedLive.pages[0].cells['r1-c1'].linkedSceneId, undefined);
+        assert.equal(linkedLive.pages[0].cells['r1-c1'].linkedViaWikilink, undefined);
+
+        const fingerprintBefore = codec.conceptGridContentFingerprint(decoded);
+        const metadataChanged = structuredClone(decoded);
+        metadataChanged.pages[0].cells['r1-c1'].linkedSceneId = 'Scenes/changed.md';
+        assert.notEqual(codec.conceptGridContentFingerprint(metadataChanged), fingerprintBefore);
+        const resourceChanged = structuredClone(decoded);
+        resourceChanged.univerResources[0].data = '{"images":2}';
+        assert.notEqual(codec.conceptGridContentFingerprint(resourceChanged), fingerprintBefore);
 
         const staleMetaDoc = structuredClone(decoded);
         staleMetaDoc.pages[0].cells['r1-c1'] = {
@@ -438,8 +488,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(sized.pages[0].columns[0].width, 240);
         assert.equal(sized.pages[0].rows[0].height, 48);
 
-        // Cleared cells omitted from sparse Univer snapshots wipe content only when
-        // clearMissing is opted in (after the cell editor has closed).
+        // Missing cells in sparse Univer snapshots never wipe saved content.
         const kept = codec.mergeUniverCellDataIntoDocument(merged, 'page-1', {
             0: { 0: { v: '' }, 1: { v: 'Hero' } },
             1: { 0: { v: 'Scene 1' } },
@@ -449,7 +498,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
             0: { 0: { v: '' }, 1: { v: 'Hero' } },
             1: { 0: { v: 'Scene 1' } },
         }, undefined, undefined, undefined, { clearMissing: true });
-        assert.equal(cleared.pages[0].cells['r1-c1'].content, '');
+        assert.equal(cleared.pages[0].cells['r1-c1'].content, 'updated text');
         assert.equal(cleared.pages[0].cells['r1-c1'].formula, undefined);
         assert.equal(cleared.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
 
@@ -466,7 +515,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
             },
         });
         assert.equal(staleRich.pages[0].cells['r1-c1'].content, '');
-        assert.equal(staleRich.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+        assert.equal(staleRich.pages[0].cells['r1-c1'].linkedSceneId, undefined);
 
         // Univer "Clear contents" stores null v/p/custom; that is a committed clear
         // even when surrounding cells are still sparse (no clearMissing flag).
@@ -479,7 +528,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         });
         assert.equal(clearedContents.pages[0].cells['r1-c1'].content, '');
         assert.equal(clearedContents.pages[0].cells['r1-c1'].formula, undefined);
-        assert.equal(clearedContents.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+        assert.equal(clearedContents.pages[0].cells['r1-c1'].linkedSceneId, undefined);
 
         // Univer "Clear all" writes an explicit null into the matrix.
         const clearedAll = codec.mergeUniverCellDataIntoDocument(structuredClone(merged), 'page-1', {
@@ -490,7 +539,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
             },
         });
         assert.equal(clearedAll.pages[0].cells['r1-c1'].content, '');
-        assert.equal(clearedAll.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+        assert.equal(clearedAll.pages[0].cells['r1-c1'].linkedSceneId, undefined);
 
         // Empty reserved matrix must not expand row/col extents
         const same = codec.mergeUniverCellDataIntoDocument(decoded, 'page-1', {
@@ -828,11 +877,16 @@ test('empty in-memory grid cannot overwrite an existing workbook', async () => {
         assert.equal(model.isIncompleteConceptGridPull(richTwo, {
             ...richTwo,
             pages: [richTwo.pages[1]],
-        }), false, 'deleting a single filled sheet is a real Univer remove');
+        }), true, 'a missing filled sheet is blocked unless an explicit delete mutation removed it first');
         assert.equal(model.isIncompleteConceptGridPull(richThree, {
             ...richThree,
             pages: [richThree.pages[0]],
         }), true, 'dropping several filled tabs at once is a lagging snapshot');
+        assert.equal(model.isIncompleteConceptGridPull(richThree, {
+            ...richThree,
+            pages: [richThree.pages[0]],
+            explicitlyRemovedPageIds: richThree.pages.slice(1).map(page => page.id),
+        }), false, 'explicit remove-sheet mutations may delete exactly their stamped page ids');
         assert.equal(model.workbookSnapshotBelongsToDocument({
             sheets: { [rich.pages[0].id]: { id: rich.pages[0].id } },
         }, rich), true);
@@ -886,7 +940,24 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /loadPlotGrid\(projectFilePath\?: string\)/);
     assert.match(mainTs, /pendingWrite = this\._systemJsonWriteQueues\.get\(xlsxPath\)/);
     assert.match(mainTs, /migratePlotGridToLibraryIfNeeded\(targetProjectFile\)/);
-    assert.match(mainTs, /__.+\\.csv\$/);
+    assert.match(mainTs, /const documentSnapshot = normalizeConceptGridDocument\(data\)/);
+    assert.match(mainTs, /savePlotGridSafely\(documentSnapshot/);
+    assert.match(mainTs, /promoteVaultTempFile/);
+    assert.match(mainTs, /adapter\.rename\(tempPath, path\)/);
+    assert.match(mainTs, /\.swap-backup/);
+    assert.match(mainTs, /writePlotGridPairResilient/);
+    assert.match(mainTs, /recoverPlotGridWriteJournal/);
+    assert.match(mainTs, /previousXlsxDigest/);
+    assert.match(mainTs, /xlsxDigest: integrity\?\.xlsx/);
+    assert.match(mainTs, /cached\.xlsxDigest === plotGridBinaryDigest\(preloadedBinary\)/);
+    assert.match(mainTs, /cached\.metaDigest === plotGridTextDigest\(preloadedMetaText\)/);
+    assert.match(mainTs, /before-reset/);
+    assert.match(mainTs, /before-import/);
+    assert.match(mainTs, /before-repair/);
+    assert.match(mainTs, /before-sheet-delete/);
+    assert.match(mainTs, /Recovered datasheet\.xlsx from a readable legacy workbook/);
+    assert.match(mainTs, /Delete only interrupted-write temp files/);
+    assert.doesNotMatch(mainTs, /lower\.startsWith\(`\$\{PLOTGRID_XLSX_PREFIX\}-`\) && lower\.endsWith\('\.xlsx'\)/);
     assert.doesNotMatch(mainTs, /PlotGridCsvSync/);
 });
 
@@ -911,6 +982,8 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /onReady:/);
     assert.match(view, /conceptGridDocumentsSharePage/);
     assert.match(host, /workbookSnapshotBelongsToDocument/);
+    assert.match(host, /applyClearSelectionMutation/);
+    assert.doesNotMatch(host, /schedulePull\(\{ clearMissing: true/);
     assert.match(host, /scheduleReveal/);
     assert.match(host, /if \(disposing \|\| !syncEnabled\) return/);
     assert.match(view, /showSpreadsheetLoading/);
@@ -1195,7 +1268,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /sheet\.command\.clear-selection-all/);
     assert.match(host, /sheet\.command\.clear-selection-content/);
     assert.match(host, /pendingAfterEdit = true/);
-    assert.match(host, /schedulePull\(\{ clearMissing: true \}\)/);
+    assert.doesNotMatch(host, /schedulePull\(\{ clearMissing: true/);
     assert.match(host, /pendingAfterMenu/);
     assert.match(host, /data-u-context-menu-submenu/);
     assert.match(host, /isUniverContextMenuOpen/);
@@ -1224,7 +1297,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /readLiveCellPlainText\(active\.sheetId, active\.row, active\.col\)/);
     assert.match(host, /clearMissing/);
     assert.match(host, /pendingClearMissing/);
-    assert.match(host, /schedulePull\(\{ clearMissing: true, mergeDimensions: true \}\)/);
+    assert.doesNotMatch(host, /schedulePull\(\{ clearMissing: true, mergeDimensions: true \}\)/);
     assert.match(host, /mergeDimensions:\s*true/);
     assert.match(host, /mergeDimensions === true/);
     assert.match(host, /preserveConceptGridAxisSizes/);

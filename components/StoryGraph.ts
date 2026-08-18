@@ -66,17 +66,6 @@ function relKindToRelationshipType(kind: RelEdgeKind): RelationshipType {
     return kind === 'other-rel' ? 'other' : kind;
 }
 
-/** Visibility toggles for the Story Graph filter bar. */
-export interface StoryGraphFilterState {
-    showScenes: boolean;
-    showCharacters: boolean;
-    showLocations: boolean;
-    showCodex: boolean;
-    showRelationships: boolean;
-    showProps: boolean;
-    showOther: boolean;
-}
-
 interface StoryGraphNode {
     id: string;
     label: string;
@@ -194,6 +183,8 @@ export interface StoryGraphHostOptions {
     onOpenNativeGraph?: () => void;
     /** Node click / menu: reuse that search and isolate the note. */
     onShowInNativeGraph?: (filePath: string, reveal: boolean) => void;
+    /** Notify the host when the graph must omit nodes for performance. */
+    onNodeLimitExceeded?: (total: number, limit: number) => void;
 }
 
 export interface StoryGraphWikilink {
@@ -387,7 +378,7 @@ const EDGE_DASH: Record<string, string> = {
 
 // ── Component ─────────────────────────────────────────
 
-const MAX_STORY_NODES = 120;
+const MAX_STORY_NODES = 300;
 
 interface StoryEdgeDom {
     line: SVGGeometryElement;
@@ -637,6 +628,7 @@ export class StoryGraph {
     private width = 900;
     private height = 600;
     private animFrame = 0;
+    private simulationStarted = false;
     private dragging: StoryGraphNode | null = null;
     private panX = 0;
     private panY = 0;
@@ -673,10 +665,10 @@ export class StoryGraph {
     /**
      * Node-type legend selection (multi-select).
      * Keys: `entity:scene|character|location` or `library:<categoryId>`.
-     * Empty = show all node types.
+     * Empty = show no nodes.
      */
     private legendNodeKeys = new Set<string>();
-    /** Edge-type legend selection (multi-select). Empty = show all edge types. */
+    /** Edge-type legend selection (multi-select). Empty with no node selection = show nothing. */
     private legendEdgeKeys = new Set<string>();
     private legendNodeButtons = new Map<string, HTMLButtonElement>();
     private legendEdgeButtons = new Map<string, HTMLButtonElement>();
@@ -688,6 +680,8 @@ export class StoryGraph {
     private onLegendAddMenu?: (evt?: MouseEvent) => void;
     private onOpenNativeGraph?: () => void;
     private onShowInNativeGraph?: (filePath: string, reveal: boolean) => void;
+    private onNodeLimitExceeded?: (total: number, limit: number) => void;
+    private lastReportedOverflowTotal: number | null = null;
     /** Finish a user-drawn connection (wikilink and/or character relation). */
     private onConnectNodes?: (
         from: StoryGraphConnectNode,
@@ -737,9 +731,6 @@ export class StoryGraph {
     private onConnectDragUp: ((e: MouseEvent) => void) | null = null;
     private onConnectContextMenu: ((e: MouseEvent) => void) | null = null;
 
-    /** Persist filter changes (e.g. onto the plugin session state) */
-    private onFiltersChange?: (filters: StoryGraphFilterState) => void;
-
     /** Manual tag-type overrides from plugin settings */
     private tagTypeOverrides: Record<string, string>;
 
@@ -783,8 +774,6 @@ export class StoryGraph {
         onSelectScene?: (filePath: string) => void,
         tagTypeOverrides?: Record<string, string>,
         onRelationEdgeContextMenu?: (edge: RelationshipEdgeInfo, event: MouseEvent) => void,
-        filters?: Partial<StoryGraphFilterState>,
-        onFiltersChange?: (filters: StoryGraphFilterState) => void,
         documents: StoryGraphDocument[] = [],
         wikilinks: StoryGraphWikilink[] = [],
         relationCategories: StoryGraphRelationCategory[] = [],
@@ -808,7 +797,6 @@ export class StoryGraph {
         this.onRelationEdgeContextMenu = onRelationEdgeContextMenu;
         this.onEdgeFocus = onEdgeFocus;
         this.onConnectNodes = onConnectNodes;
-        this.onFiltersChange = onFiltersChange;
         this.documents = documents;
         this.wikilinks = wikilinks;
         this.relationCategories = relationCategories;
@@ -833,16 +821,8 @@ export class StoryGraph {
         this.onLegendAddMenu = host?.onLegendAddMenu;
         this.onOpenNativeGraph = host?.onOpenNativeGraph;
         this.onShowInNativeGraph = host?.onShowInNativeGraph;
+        this.onNodeLimitExceeded = host?.onNodeLimitExceeded;
         this.hydrateLayout(host?.layout);
-        if (filters) {
-            if (filters.showScenes !== undefined) this.showScenes = filters.showScenes;
-            if (filters.showCharacters !== undefined) this.showCharacters = filters.showCharacters;
-            if (filters.showLocations !== undefined) this.showLocations = filters.showLocations;
-            if (filters.showCodex !== undefined) this.showCodex = filters.showCodex;
-            if (filters.showRelationships !== undefined) this.showRelationships = filters.showRelationships;
-            if (filters.showProps !== undefined) this.showProps = filters.showProps;
-            if (filters.showOther !== undefined) this.showOther = filters.showOther;
-        }
     }
 
     private hydrateLayout(layout?: StoryGraphLayoutState): void {
@@ -1056,18 +1036,6 @@ export class StoryGraph {
         return '';
     }
 
-    private emitFilters(): void {
-        this.onFiltersChange?.({
-            showScenes: this.showScenes,
-            showCharacters: this.showCharacters,
-            showLocations: this.showLocations,
-            showCodex: this.showCodex,
-            showRelationships: this.showRelationships,
-            showProps: this.showProps,
-            showOther: this.showOther,
-        });
-    }
-
     // ── Public API ─────────────────────────────────────
 
     /**
@@ -1093,6 +1061,7 @@ export class StoryGraph {
         this.destroy();
         this.container.empty();
         this.svgBuilt = false;
+        this.simulationStarted = false;
         this.edgeDom = [];
         this.nodeDom.clear();
         this.filterEmptyEl = null;
@@ -1205,7 +1174,6 @@ export class StoryGraph {
         });
 
         this.buildSVG();
-        this.runSimulation();
         // Preserve immersive mode across filter remounts.
         if (this.isFullscreen) {
             this.applyFullscreenClass();
@@ -1231,6 +1199,7 @@ export class StoryGraph {
         }
         if (this.animFrame) cancelAnimationFrame(this.animFrame);
         this.animFrame = 0;
+        this.simulationStarted = false;
         if (this.resizeObserver) {
             this.resizeObserver.disconnect();
             this.resizeObserver = null;
@@ -2241,7 +2210,6 @@ export class StoryGraph {
         this.showRelationships = true;
         this.showProps = true;
         this.showOther = true;
-        this.emitFilters();
         if (requiresRebuild) this.render();
         else this.applyLegendFilters();
     }
@@ -2272,13 +2240,12 @@ export class StoryGraph {
         return this.legendNodeKeys.has(key);
     }
 
-    /** Toggle a node-type chip; multi-select. Empty selection = show all. */
+    /** Toggle a node-type chip; multi-select. Empty selection = show nothing. */
     private toggleNodeLegendKey(key: string): void {
         const requiresRebuild = !this.allEntityFiltersOn();
         if (this.legendNodeKeys.has(key)) this.legendNodeKeys.delete(key);
         else this.legendNodeKeys.add(key);
         this.enableAllEntityFiltersForFocus();
-        this.emitFilters();
         if (requiresRebuild) this.render();
         else this.applyLegendFilters();
     }
@@ -2298,13 +2265,12 @@ export class StoryGraph {
         if (this.legendEdgeKeys.has(key)) this.legendEdgeKeys.delete(key);
         else this.legendEdgeKeys.add(key);
         this.enableAllEntityFiltersForFocus();
-        this.emitFilters();
         if (requiresRebuild) this.render();
         else this.applyLegendFilters();
     }
 
     private nodeMatchesLegendSelection(node: StoryGraphNode): boolean {
-        if (this.legendNodeKeys.size === 0) return true;
+        if (this.legendNodeKeys.size === 0) return false;
         if (node.entityType === 'scene') {
             return this.legendNodeKeys.has('entity:scene');
         }
@@ -2341,22 +2307,24 @@ export class StoryGraph {
         this.syncLegendSelectionButtons();
         if (!this.svgBuilt) return;
 
+        const hasNodeSelection = this.legendNodeKeys.size > 0;
+        const hasEdgeSelection = this.legendEdgeKeys.size > 0;
         const seedNodeIds = new Set(
             this.nodes
                 .filter(node => this.nodeMatchesLegendSelection(node))
                 .map(node => node.id),
         );
-        const matchingEdges = this.edges.filter(edge => (
-            (this.legendEdgeKeys.size === 0 || this.legendEdgeKeys.has(this.parentIdForEdge(edge)))
-            && (this.legendNodeKeys.size === 0
-                || seedNodeIds.has(edge.source)
-                || seedNodeIds.has(edge.target))
-        ));
-        const visibleNodeIds = this.legendNodeKeys.size > 0
+        const matchingEdges = hasNodeSelection || hasEdgeSelection
+            ? this.edges.filter(edge => (
+                (!hasEdgeSelection || this.legendEdgeKeys.has(this.parentIdForEdge(edge)))
+                && (!hasNodeSelection
+                    || seedNodeIds.has(edge.source)
+                    || seedNodeIds.has(edge.target))
+            ))
+            : [];
+        const visibleNodeIds = hasNodeSelection
             ? new Set(seedNodeIds)
-            : this.legendEdgeKeys.size === 0
-                ? new Set(this.nodes.map(node => node.id))
-                : new Set<string>();
+            : new Set<string>();
         for (const edge of matchingEdges) {
             visibleNodeIds.add(edge.source);
             visibleNodeIds.add(edge.target);
@@ -2383,7 +2351,7 @@ export class StoryGraph {
             if (dom.portEnd) dom.portEnd.style.display = display;
         }
 
-        const filtersActive = this.legendNodeKeys.size > 0 || this.legendEdgeKeys.size > 0;
+        const filtersActive = hasNodeSelection || hasEdgeSelection;
         const showEmpty = filtersActive && visibleNodeIds.size === 0;
         if (showEmpty && this.wrapper) {
             if (!this.filterEmptyEl) {
@@ -2395,6 +2363,23 @@ export class StoryGraph {
         } else {
             this.filterEmptyEl?.remove();
             this.filterEmptyEl = null;
+        }
+        this.syncSimulationWithLegend(filtersActive);
+    }
+
+    /** Avoid force-layout work while the empty legend state hides the whole graph. */
+    private syncSimulationWithLegend(hasSelection: boolean): void {
+        if (hasSelection) {
+            if (!this.simulationStarted) {
+                this.simulationStarted = true;
+                this.runSimulation();
+            }
+            return;
+        }
+        if (this.animFrame) {
+            window.cancelAnimationFrame(this.animFrame);
+            this.animFrame = 0;
+            this.simulationStarted = false;
         }
     }
 
@@ -2936,10 +2921,17 @@ export class StoryGraph {
         // Cap node count for SVG + JS physics (keep highest-weight nodes).
         let nodes = Array.from(nodeMap.values());
         if (nodes.length > MAX_STORY_NODES) {
+            const total = nodes.length;
+            if (this.lastReportedOverflowTotal !== total) {
+                this.lastReportedOverflowTotal = total;
+                this.onNodeLimitExceeded?.(total, MAX_STORY_NODES);
+            }
             nodes.sort((a, b) => b.weight - a.weight);
             nodes = nodes.slice(0, MAX_STORY_NODES);
             const keep = new Set(nodes.map(n => n.id));
             edgeList = edgeList.filter(e => keep.has(e.source) && keep.has(e.target));
+        } else {
+            this.lastReportedOverflowTotal = null;
         }
         this.edges = this.applyFocusStrandThickness(edgeList, nodeMap);
         this.nodes = nodes;
@@ -2996,7 +2988,11 @@ export class StoryGraph {
         const paintEvery = this.nodes.length > 80 ? 2 : 1;
 
         const tick = () => {
-            if (!this.svg) return;
+            if (!this.svg) {
+                this.animFrame = 0;
+                this.simulationStarted = false;
+                return;
+            }
             iterations++;
 
             this.applyForces();
@@ -3018,6 +3014,7 @@ export class StoryGraph {
             if (iterations < maxIterations) {
                 this.animFrame = window.requestAnimationFrame(tick);
             } else {
+                this.animFrame = 0;
                 // Persist auto-layout for unpinned nodes after settle.
                 this.scheduleLayoutSave();
             }

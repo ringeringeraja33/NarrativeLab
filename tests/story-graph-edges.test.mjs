@@ -64,3 +64,27 @@ test('right-click connect queues the drop menu instead of showing it on mouseup'
     assert.doesNotMatch(source, /this\.showConnectDropMenu\(ue/);
     assert.match(source, /revealWikilink/);
 });
+
+test('large Story Graphs use the expanded limit and report omitted nodes', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const [graph, modeBar] = await Promise.all([
+        readFile(new URL('../components/StoryGraph.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(graph, /const MAX_STORY_NODES = 300/);
+    assert.match(graph, /onNodeLimitExceeded\?\.\(total, MAX_STORY_NODES\)/);
+    assert.match(modeBar, /Story Graph node limit reached/);
+    assert.doesNotMatch(modeBar, /DEFAULT_FILTERS|setStoryGraphFilters/);
+});
+
+test('an empty legend selection displays no Story Graph nodes or edges', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const graph = await readFile(new URL('../components/StoryGraph.ts', import.meta.url), 'utf8');
+    assert.match(graph, /if \(this\.legendNodeKeys\.size === 0\) return false/);
+    assert.match(graph, /const hasNodeSelection = this\.legendNodeKeys\.size > 0/);
+    assert.match(graph, /const hasEdgeSelection = this\.legendEdgeKeys\.size > 0/);
+    assert.match(graph, /:\s*\[\];/);
+    assert.doesNotMatch(graph, /new Set\(this\.nodes\.map\(node => node\.id\)\)/);
+    assert.match(graph, /syncSimulationWithLegend\(filtersActive\)/);
+    assert.doesNotMatch(graph, /this\.buildSVG\(\);\s*this\.runSimulation\(\)/);
+});

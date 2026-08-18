@@ -106,11 +106,10 @@ test('plotgrid mention cache is keyed by the active project file', () => {
     assert.match(scanPlotGrid, /projectFile, at: Date\.now\(\), result/);
 });
 
-test('story-graph filters and layout are keyed per project, not a global plugin field', () => {
-    assert.match(settings, /storyGraphFilters\?:/);
+test('story-graph focus is transient while layout remains keyed per project', () => {
+    assert.doesNotMatch(settings, /storyGraphFilters\?:/);
     assert.match(libraryModeBar, /export function clearPendingStoryGraphWikilinks/);
-    assert.match(libraryModeBar, /getStoryGraphFilters\(\s*plugin: SceneCardsPlugin,\s*projectFile\?:/);
-    assert.match(libraryModeBar, /setStoryGraphFilters\(\s*plugin: SceneCardsPlugin,\s*filters: StoryGraphFilterState,\s*projectFile\?:/);
+    assert.doesNotMatch(libraryModeBar, /getStoryGraphFilters|setStoryGraphFilters|StoryGraphFilterState/);
     assert.doesNotMatch(libraryModeBar, /libraryStoryGraphFilters/);
     assert.match(libraryModeBar, /resolveLibraryUiProjectFile\(plugin, projectFile\) \|\| '__global__'/);
     assert.match(characterView, /renderLibraryStoryGraph\([\s\S]*this\.getBoundProjectFile\(\)\)/);

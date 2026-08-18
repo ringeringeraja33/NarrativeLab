@@ -57,6 +57,7 @@ import {
 } from './models/PlotGridData';
 import {
     decodePlotGridXlsx,
+    documentFromNlMeta,
     encodePlotGridXlsx,
     extractEmbeddedNlMeta,
     countPlotGridXlsxFilledCells,
@@ -75,6 +76,7 @@ import {
     LEGACY_PLOTGRID_XLSX_FILENAME,
     PLOTGRID_XLSX_LEGACY_FILENAME,
     PLOTGRID_XLSX_PREFIX,
+    type PlotGridNlMeta,
 } from './services/PlotGridXlsxCodec';
 import {
     deriveProjectFoldersFromFilePath,
@@ -171,6 +173,36 @@ import {
 } from './services/LibraryEntityBoardService';
 import { buildFormattingToolbar } from './components/FormattingToolbar';
 import { setupMobileKeyboardHandling } from './components/MobileAdapter';
+
+function plotGridBinaryDigest(data: ArrayBuffer | Uint8Array): string {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    let hash = 2166136261;
+    for (const byte of bytes) {
+        hash ^= byte;
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${bytes.byteLength}:${(hash >>> 0).toString(16)}`;
+}
+
+function plotGridTextDigest(text: string): string {
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${text.length}:${(hash >>> 0).toString(16)}`;
+}
+
+interface PlotGridWriteJournal {
+    schema: 1;
+    previousXlsxDigest: string | null;
+    nextXlsxDigest: string;
+    meta: PlotGridNlMeta;
+}
+
+function plotGridWriteJournalPath(metaPath: string): string {
+    return `${metaPath}.write-journal`;
+}
 
 type EmbeddedCanvasModule = Plugin & {
     onload: () => Promise<void>;
@@ -344,6 +376,8 @@ export default class SceneCardsPlugin extends Plugin {
         xlsxPath: string;
         mtime: number;
         size: number;
+        xlsxDigest: string;
+        metaDigest: string;
         doc: ConceptGridDocument;
     }>();
     /** Cached plotgrid mention scan — rebuilds are expensive on large grids. */
@@ -2528,6 +2562,8 @@ export default class SceneCardsPlugin extends Plugin {
         xlsxPath: string;
         mtime: number;
         size: number;
+        xlsxDigest: string;
+        metaDigest: string;
         doc: ConceptGridDocument;
     } | null {
         if (options.projectFile) {
@@ -2548,6 +2584,7 @@ export default class SceneCardsPlugin extends Plugin {
         xlsxPath: string,
         doc: ConceptGridDocument,
         stat?: { mtime?: number; size?: number } | null,
+        integrity?: { xlsx?: ArrayBuffer | Uint8Array; metaText?: string },
     ): void {
         const key = normalizePath(projectFile);
         this._plotGridDocCache.set(key, {
@@ -2555,6 +2592,8 @@ export default class SceneCardsPlugin extends Plugin {
             xlsxPath: normalizePath(xlsxPath),
             mtime: stat?.mtime ?? Date.now(),
             size: stat?.size ?? 0,
+            xlsxDigest: integrity?.xlsx ? plotGridBinaryDigest(integrity.xlsx) : '',
+            metaDigest: plotGridTextDigest(integrity?.metaText ?? ''),
             doc: structuredClone(doc),
         });
     }
@@ -3318,6 +3357,9 @@ export default class SceneCardsPlugin extends Plugin {
             projectFilePath?: string;
         } = {},
     ): Promise<void> {
+        // Snapshot before the first await. Views keep mutating their live model;
+        // queued saves must never drift into a later project or partial edit.
+        const documentSnapshot = normalizeConceptGridDocument(data);
         const projectFilePath = normalizePath(
             options.projectFilePath || this.sceneManager.activeProject?.filePath || '',
         );
@@ -3333,7 +3375,7 @@ export default class SceneCardsPlugin extends Plugin {
         const previous = this._systemJsonWriteQueues.get(filePath) ?? Promise.resolve();
         const pending = previous
             .catch(() => undefined)
-            .then(() => this.savePlotGridSafely(data, writeOptions, baseFolder, libraryFolder, systemFolder, filePath, projectFilePath));
+            .then(() => this.savePlotGridSafely(documentSnapshot, writeOptions, baseFolder, libraryFolder, systemFolder, filePath, projectFilePath));
         this._systemJsonWriteQueues.set(filePath, pending);
         try {
             await pending;
@@ -3345,6 +3387,87 @@ export default class SceneCardsPlugin extends Plugin {
                 this._systemJsonWriteQueues.delete(filePath);
             }
         }
+    }
+
+    private async writePlotGridPairResilient(
+        xlsxPath: string,
+        binary: ArrayBuffer,
+        metaPath: string,
+        metaJson: string,
+        previousXlsxDigest: string | null,
+    ): Promise<void> {
+        const meta = tryParseNlMeta(metaJson);
+        if (!meta) throw new Error('Refusing to write invalid Plot Grid metadata.');
+        const journalPath = plotGridWriteJournalPath(metaPath);
+        const journal: PlotGridWriteJournal = {
+            schema: 1,
+            previousXlsxDigest,
+            nextXlsxDigest: plotGridBinaryDigest(binary),
+            meta,
+        };
+        await this.writeVaultTextResilient(journalPath, `${JSON.stringify(journal)}\n`);
+        await this.writeVaultBinaryResilient(xlsxPath, binary);
+        await this.writeVaultTextResilient(metaPath, metaJson);
+        await this.app.vault.adapter.remove(journalPath).catch(() => undefined);
+    }
+
+    /** Complete or preserve a save interrupted between xlsx and sidecar promotion. */
+    private async recoverPlotGridWriteJournal(xlsxPath: string, metaPath: string): Promise<boolean> {
+        const adapter = this.app.vault.adapter;
+        const journalPath = plotGridWriteJournalPath(metaPath);
+        await this.recoverVaultSwapBackup(xlsxPath);
+        await this.recoverVaultSwapBackup(metaPath);
+        await this.recoverVaultSwapBackup(journalPath);
+        if (!await adapter.exists(journalPath)) return true;
+        let journal: PlotGridWriteJournal | null = null;
+        try {
+            const parsed = JSON.parse(await adapter.read(journalPath)) as Partial<PlotGridWriteJournal>;
+            const meta = parsed.meta && typeof parsed.meta === 'object'
+                ? parsed.meta as PlotGridNlMeta
+                : null;
+            if (parsed.schema === 1
+                && typeof parsed.nextXlsxDigest === 'string'
+                && (typeof parsed.previousXlsxDigest === 'string' || parsed.previousXlsxDigest === null)
+                && meta) {
+                journal = {
+                    schema: 1,
+                    previousXlsxDigest: parsed.previousXlsxDigest,
+                    nextXlsxDigest: parsed.nextXlsxDigest,
+                    meta,
+                };
+            }
+        } catch { /* preserve below */ }
+
+        if (!journal) {
+            const preserved = `${journalPath}.invalid-${Date.now()}.json`;
+            await adapter.rename(journalPath, preserved).catch(() => undefined);
+            console.warn('[NarrativeLab] Preserved an invalid Plot Grid write journal:', preserved);
+            return true;
+        }
+
+        const exists = await adapter.exists(xlsxPath);
+        const currentBinary = exists ? await adapter.readBinary(xlsxPath) : null;
+        const currentDigest = currentBinary ? plotGridBinaryDigest(currentBinary) : null;
+        const metaJson = `${JSON.stringify(journal.meta, null, 2)}\n`;
+        if (currentDigest === journal.nextXlsxDigest) {
+            await this.writeVaultTextResilient(metaPath, metaJson);
+            await adapter.remove(journalPath).catch(() => undefined);
+            return true;
+        }
+        if (currentDigest === journal.previousXlsxDigest) {
+            const recovered = documentFromNlMeta(journal.meta);
+            const binary = await encodePlotGridXlsx(recovered, { vaultName: this.app.vault.getName() });
+            await this.writeVaultBinaryResilient(xlsxPath, binary);
+            await this.writeVaultTextResilient(metaPath, metaJson);
+            await adapter.remove(journalPath).catch(() => undefined);
+            console.warn('[NarrativeLab] Recovered an interrupted Plot Grid save from its journal.');
+            return true;
+        }
+
+        const preserved = `${journalPath}.conflict-${Date.now()}.json`;
+        await adapter.rename(journalPath, preserved);
+        new Notice(t('Spreadsheet recovery snapshot was preserved because datasheet.xlsx changed externally.'));
+        return true;
     }
 
     private async savePlotGridSafely(
@@ -3361,6 +3484,8 @@ export default class SceneCardsPlugin extends Plugin {
         const document = normalizeConceptGridDocument(data);
         const path = normalizePath(filePath);
         const metaPath = normalizePath(plotGridNlMetaPath(systemFolder));
+        const explicitPageRemoval = new Set(document.explicitlyRemovedPageIds || []);
+        await this.recoverPlotGridWriteJournal(path, metaPath);
         const existed = await adapter.exists(path);
 
         // Never clobber an existing workbook with an empty in-memory model.
@@ -3371,7 +3496,7 @@ export default class SceneCardsPlugin extends Plugin {
             ? await this.existingPlotGridFilledCount(path)
             : 0;
         if (shouldRefuseEmptyPlotGridWrite(document, {
-            allowEmptyOverwrite: options.allowEmptyOverwrite,
+            allowEmptyOverwrite: options.allowEmptyOverwrite || explicitPageRemoval.size > 0,
             fromLiveEditor: options.fromLiveEditor,
             existed,
             existingFilledCells: existingFilled,
@@ -3392,26 +3517,48 @@ export default class SceneCardsPlugin extends Plugin {
             console.warn('[NarrativeLab] Skipping datasheet write — snapshot is missing worksheets still on disk.');
             return;
         }
+        const documentToPersist = structuredClone(document);
+        delete documentToPersist.explicitlyRemovedPageIds;
+        const deletesPersistedPage = explicitPageRemoval.size > 0
+            && (!cached || cached.doc.pages.some(page => explicitPageRemoval.has(page.id)));
 
-        // Explicit empty overwrite (Reset Grid) still backs up a corrupt original first.
-        if (options.allowEmptyOverwrite && existed && this._invalidPlotGridXlsxPaths.has(path)) {
-            await this.backupCorruptPlotGridXlsx(path);
-        } else if (existed && this._invalidPlotGridXlsxPaths.has(path) && !options.allowEmptyOverwrite) {
+        // Destructive reset is recoverable even when the original workbook was healthy.
+        if (deletesPersistedPage && (existed || await adapter.exists(metaPath))) {
+            if (existed) await this.backupPlotGridFile(path, 'before-sheet-delete');
+            if (await adapter.exists(metaPath)) {
+                await this.backupPlotGridFile(metaPath, 'before-sheet-delete');
+            }
+        } else if (options.allowEmptyOverwrite && (existed || await adapter.exists(metaPath))) {
+            if (existed) await this.backupPlotGridFile(path, 'before-reset');
+            if (await adapter.exists(metaPath)) {
+                await this.backupPlotGridFile(metaPath, 'before-reset');
+            }
+        } else if (existed && this._invalidPlotGridXlsxPaths.has(path)) {
             // Non-empty recovery write after corrupt load: keep a corrupt bak once.
-            await this.backupCorruptPlotGridXlsx(path);
+            if (!await this.backupCorruptPlotGridXlsx(path)) {
+                throw new Error('Could not preserve unreadable datasheet.xlsx before recovery write.');
+            }
         }
 
         // Clean xlsx (no embedded meta) so Excel/Univer only see page sheets.
-        const binary = await encodePlotGridXlsx(document, { vaultName: this.app.vault.getName() });
-        const metaJson = serializePlotGridNlMeta(document);
+        const binary = await encodePlotGridXlsx(documentToPersist, { vaultName: this.app.vault.getName() });
+        const metaJson = serializePlotGridNlMeta(documentToPersist);
+        const previousXlsxDigest = existed
+            ? plotGridBinaryDigest(await adapter.readBinary(path))
+            : null;
         if (!await this.projectExistsForWrite(projectFilePath)) return;
         await this.ensureVaultFolder(libraryFolder);
         await this.ensureVaultFolder(systemFolder);
         const endSuppressXlsx = this.beginSuppressVaultRefresh(path, 2500);
         const endSuppressMeta = this.beginSuppressVaultRefresh(metaPath, 2500);
         try {
-            await this.writeVaultBinaryResilient(path, binary);
-            await this.writeVaultTextResilient(metaPath, metaJson);
+            await this.writePlotGridPairResilient(
+                path,
+                binary,
+                metaPath,
+                metaJson,
+                previousXlsxDigest,
+            );
         } finally {
             endSuppressXlsx();
             endSuppressMeta();
@@ -3421,62 +3568,58 @@ export default class SceneCardsPlugin extends Plugin {
         this.rememberPlotGridDocCache(
             projectFilePath,
             path,
-            document,
+            documentToPersist,
             await adapter.stat(path).catch(() => null),
+            { xlsx: binary, metaText: metaJson },
         );
         this.invalidatePlotGridScanCache();
         void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
     }
 
-    private async backupCorruptPlotGridXlsx(filePath: string): Promise<void> {
+    private async backupPlotGridFile(filePath: string, label: string): Promise<string | null> {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(filePath);
+        if (!await adapter.exists(path)) return null;
+        const bin = await adapter.readBinary(path);
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const baseBackupPath = `${path}.${label}-${stamp}`;
+        let backupPath = `${baseBackupPath}.bak`;
+        for (let suffix = 1; await adapter.exists(backupPath); suffix += 1) {
+            backupPath = `${baseBackupPath}-${suffix}.bak`;
+        }
+        await adapter.writeBinary(backupPath, bin);
+        return backupPath;
+    }
+
+    private async backupCorruptPlotGridXlsx(filePath: string): Promise<boolean> {
         try {
-            if (!await adapter.exists(path)) return;
-            const bin = await adapter.readBinary(path);
-            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-            await adapter.writeBinary(`${path}.corrupt-${stamp}.bak`, bin);
+            await this.backupPlotGridFile(filePath, 'corrupt');
+            return true;
         } catch (e) {
             console.warn('[NarrativeLab] Failed to backup corrupt datasheet.xlsx:', e);
+            return false;
         }
     }
 
-    /** Remove legacy System/plotgrid.xlsx and System/PlotGrid/ once Library/datasheet-*.xlsx exists. */
+    /** Remove only disposable temp artifacts. Legacy workbooks may contain unique recovery data. */
     private async cleanupLegacyPlotGridArtifacts(baseFolder: string, systemFolder: string): Promise<void> {
         const adapter = this.app.vault.adapter;
         const gridFolder = normalizePath(plotGridFolderPath(systemFolder));
         const canonicalXlsx = normalizePath(plotGridXlsxPath(baseFolder));
-        const legacySystemXlsx = normalizePath(legacySystemPlotGridXlsxPath(systemFolder));
-        const folderXlsx = normalizePath(legacyPlotGridFolderXlsxPath(systemFolder));
-
-        // Drop legacy System copies once Library/datasheet.xlsx exists.
-        if (await adapter.exists(canonicalXlsx)) {
-            for (const legacyPath of [legacySystemXlsx, folderXlsx]) {
-                if (legacyPath !== canonicalXlsx && await adapter.exists(legacyPath)) {
-                    try { await adapter.remove(legacyPath); } catch { /* ignore */ }
-                }
-            }
-        }
-
+        if (!await adapter.exists(canonicalXlsx)) return;
         if (!await adapter.exists(gridFolder)) return;
         try {
             const listing = await adapter.list(gridFolder);
             for (const filePath of listing.files || []) {
                 const name = (filePath.split('/').pop() || '');
                 const lower = name.toLowerCase();
-                // Only known NarrativeLab artifacts — never wipe arbitrary user CSVs.
+                // Delete only interrupted-write temp files. Retain every workbook,
+                // index and CSV because any of them may be the last recovery copy.
                 const isKnown =
-                    // New per-project datasheet name.
-                    lower.startsWith(`${PLOTGRID_XLSX_PREFIX}-`) && lower.endsWith('.xlsx')
-                    || lower === PLOTGRID_XLSX_LEGACY_FILENAME.toLowerCase()
-                    || lower === LEGACY_PLOTGRID_XLSX_FILENAME.toLowerCase()
-                    || lower === '_index.json'
-                    || lower === `${PLOTGRID_XLSX_LEGACY_FILENAME}.tmp`
+                    lower === `${PLOTGRID_XLSX_LEGACY_FILENAME}.tmp`
                     || (lower.startsWith(`${PLOTGRID_XLSX_PREFIX}-`) && lower.endsWith('.xlsx.tmp'))
                     || lower === `${LEGACY_PLOTGRID_XLSX_FILENAME}.tmp`
-                    || lower === '_index.json.tmp'
-                    || /__.+\.csv$/i.test(name)
-                    || /__.+\.csv\.tmp$/i.test(name);
+                    || lower === '_index.json.tmp';
                 if (!isKnown) continue;
                 try { await adapter.remove(filePath); } catch { /* ignore */ }
             }
@@ -3493,6 +3636,39 @@ export default class SceneCardsPlugin extends Plugin {
      * Write text via temp file with short retries for Windows UNKNOWN/EBUSY locks.
      * Kept for System/*.json writers; datasheet canonical path uses the binary twin.
      */
+    private async recoverVaultSwapBackup(path: string): Promise<void> {
+        const adapter = this.app.vault.adapter;
+        const backupPath = `${path}.swap-backup`;
+        const pathExists = await adapter.exists(path);
+        const backupExists = await adapter.exists(backupPath);
+        if (!pathExists && backupExists) {
+            await adapter.rename(backupPath, path);
+        } else if (pathExists && backupExists) {
+            await adapter.remove(backupPath);
+        }
+    }
+
+    private async promoteVaultTempFile(path: string, tempPath: string): Promise<void> {
+        const adapter = this.app.vault.adapter;
+        const backupPath = `${path}.swap-backup`;
+        // Recover an interrupted previous promotion before starting another.
+        await this.recoverVaultSwapBackup(path);
+
+        const hadOriginal = await adapter.exists(path);
+        if (hadOriginal) await adapter.rename(path, backupPath);
+        try {
+            await adapter.rename(tempPath, path);
+        } catch (error) {
+            if (!await adapter.exists(path) && await adapter.exists(backupPath)) {
+                await adapter.rename(backupPath, path).catch(() => undefined);
+            }
+            throw error;
+        }
+        if (await adapter.exists(backupPath)) {
+            await adapter.remove(backupPath).catch(() => undefined);
+        }
+    }
+
     async writeVaultTextResilient(filePath: string, contents: string): Promise<void> {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(filePath);
@@ -3507,8 +3683,7 @@ export default class SceneCardsPlugin extends Plugin {
         for (let attempt = 0; attempt < 5; attempt++) {
             try {
                 await adapter.write(tempPath, contents);
-                await adapter.write(path, contents);
-                await adapter.remove(tempPath).catch(() => undefined);
+                await this.promoteVaultTempFile(path, tempPath);
                 return;
             } catch (error) {
                 lastError = error;
@@ -3535,8 +3710,7 @@ export default class SceneCardsPlugin extends Plugin {
         for (let attempt = 0; attempt < 5; attempt++) {
             try {
                 await adapter.writeBinary(tempPath, data);
-                await adapter.writeBinary(path, data);
-                await adapter.remove(tempPath).catch(() => undefined);
+                await this.promoteVaultTempFile(path, tempPath);
                 return;
             } catch (error) {
                 lastError = error;
@@ -3569,7 +3743,8 @@ export default class SceneCardsPlugin extends Plugin {
             const canonical = normalizePath(plotGridXlsxPath(baseFolder));
             const legacyLibraryXlsx = normalizePath(legacyPlotGridXlsxPath(baseFolder));
             if (await adapter.exists(canonical)) {
-                void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
+                // Do not delete legacy recovery copies until the canonical file
+                // has been decoded successfully by loadPlotGrid().
                 return;
             }
             if (await adapter.exists(legacyLibraryXlsx)) {
@@ -3577,6 +3752,10 @@ export default class SceneCardsPlugin extends Plugin {
                     const bin = await adapter.readBinary(legacyLibraryXlsx);
                     await this.ensureVaultFolder(libraryFolder);
                     await this.writeVaultBinaryResilient(canonical, bin);
+                    const promoted = await adapter.readBinary(canonical);
+                    if (plotGridBinaryDigest(promoted) !== plotGridBinaryDigest(bin)) {
+                        throw new Error('Migrated datasheet verification failed.');
+                    }
                     try { await adapter.remove(legacyLibraryXlsx); } catch { /* keep if remove fails */ }
                     void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
                     return;
@@ -3594,6 +3773,10 @@ export default class SceneCardsPlugin extends Plugin {
                     const bin = await adapter.readBinary(legacyPath);
                     await this.ensureVaultFolder(libraryFolder);
                     await this.writeVaultBinaryResilient(canonical, bin);
+                    const promoted = await adapter.readBinary(canonical);
+                    if (plotGridBinaryDigest(promoted) !== plotGridBinaryDigest(bin)) {
+                        throw new Error('Migrated datasheet verification failed.');
+                    }
                     try { await adapter.remove(legacyPath); } catch { /* keep if remove fails */ }
                     void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
                     return;
@@ -3625,8 +3808,12 @@ export default class SceneCardsPlugin extends Plugin {
             const systemFolder = normalizePath(`${baseFolder}/System`);
             const adapter = this.app.vault.adapter;
             const xlsxPath = normalizePath(plotGridXlsxPath(baseFolder));
+            const metaPath = normalizePath(plotGridNlMetaPath(systemFolder));
             const pendingWrite = this._systemJsonWriteQueues.get(xlsxPath);
             if (pendingWrite) await pendingWrite.catch(() => undefined);
+            await this.recoverPlotGridWriteJournal(xlsxPath, metaPath);
+            let preloadedBinary: ArrayBuffer | null = null;
+            let preloadedMetaText: string | null = null;
             const cached = this.lookupPlotGridDocCache({ projectFile: targetProjectFile, xlsxPath });
             if (
                 cached
@@ -3636,11 +3823,18 @@ export default class SceneCardsPlugin extends Plugin {
             ) {
                 const stat = await adapter.stat(xlsxPath);
                 if (stat && stat.mtime === cached.mtime && stat.size === cached.size) {
-                    return structuredClone(cached.doc);
+                    preloadedBinary = await adapter.readBinary(xlsxPath);
+                    preloadedMetaText = await adapter.exists(metaPath)
+                        ? await adapter.read(metaPath)
+                        : '';
+                    if (cached.xlsxDigest === plotGridBinaryDigest(preloadedBinary)
+                        && cached.metaDigest === plotGridTextDigest(preloadedMetaText)) {
+                        return structuredClone(cached.doc);
+                    }
                 }
             }
-            const metaPath = normalizePath(plotGridNlMetaPath(systemFolder));
             const legacyLibraryMetaPath = normalizePath(legacyLibraryPlotGridNlMetaPath(baseFolder));
+            const legacyLibraryXlsxPath = normalizePath(legacyPlotGridXlsxPath(baseFolder));
             const legacySystemXlsxPath = normalizePath(legacySystemPlotGridXlsxPath(systemFolder));
             const folderXlsxPath = normalizePath(legacyPlotGridFolderXlsxPath(systemFolder));
             const jsonPath = normalizePath(`${systemFolder}/plotgrid.json`);
@@ -3648,14 +3842,21 @@ export default class SceneCardsPlugin extends Plugin {
             const settleCanonical = async (doc: ConceptGridDocument) => {
                 await this.ensureVaultFolder(libraryFolder);
                 await this.ensureVaultFolder(systemFolder);
+                const binary = await encodePlotGridXlsx(doc, { vaultName: this.app.vault.getName() });
+                const metaJson = serializePlotGridNlMeta(doc);
+                const previousXlsxDigest = await adapter.exists(xlsxPath)
+                    ? plotGridBinaryDigest(await adapter.readBinary(xlsxPath))
+                    : null;
                 const endXlsx = this.beginSuppressVaultRefresh(xlsxPath);
                 const endMeta = this.beginSuppressVaultRefresh(metaPath);
                 try {
-                    await this.writeVaultBinaryResilient(
+                    await this.writePlotGridPairResilient(
                         xlsxPath,
-                        await encodePlotGridXlsx(doc, { vaultName: this.app.vault.getName() }),
+                        binary,
+                        metaPath,
+                        metaJson,
+                        previousXlsxDigest,
                     );
-                    await this.writeVaultTextResilient(metaPath, serializePlotGridNlMeta(doc));
                 } finally {
                     endXlsx();
                     endMeta();
@@ -3671,7 +3872,10 @@ export default class SceneCardsPlugin extends Plugin {
                 for (const candidate of [metaPath, legacyLibraryMetaPath]) {
                     if (!await adapter.exists(candidate)) continue;
                     try {
-                        const parsed = tryParseNlMeta(await adapter.read(candidate));
+                        const text = candidate === metaPath && preloadedMetaText != null
+                            ? preloadedMetaText
+                            : await adapter.read(candidate);
+                        const parsed = tryParseNlMeta(text);
                         if (parsed) return { meta: parsed, path: candidate };
                     } catch {
                         /* try next */
@@ -3689,8 +3893,22 @@ export default class SceneCardsPlugin extends Plugin {
                     let importTxt = await adapter.read(candidate);
                     if (importTxt.charCodeAt(0) === 0xFEFF) importTxt = importTxt.slice(1);
                     const imported = normalizeConceptGridDocument(JSON.parse(importTxt));
+                    const hasExisting = await adapter.exists(xlsxPath);
+                    if (hasExisting && isDefaultEmptyConceptGrid(imported)) {
+                        throw new Error('Refusing to replace an existing spreadsheet with an empty import.');
+                    }
+                    if (hasExisting) await this.backupPlotGridFile(xlsxPath, 'before-import');
+                    if (await adapter.exists(metaPath)) {
+                        await this.backupPlotGridFile(metaPath, 'before-import');
+                    }
                     await settleCanonical(imported);
-                    await adapter.remove(candidate);
+                    try {
+                        await adapter.remove(candidate);
+                    } catch (removeError) {
+                        const preserved = `${candidate}.applied-${Date.now()}.json`;
+                        await adapter.rename(candidate, preserved).catch(() => undefined);
+                        console.warn('[NarrativeLab] Applied import file could not be removed:', candidate, removeError);
+                    }
                     return imported;
                 } catch {
                     /* try next / fall through */
@@ -3699,7 +3917,7 @@ export default class SceneCardsPlugin extends Plugin {
 
             if (await adapter.exists(xlsxPath)) {
                 try {
-                    const bin = await adapter.readBinary(xlsxPath);
+                    const bin = preloadedBinary ?? await adapter.readBinary(xlsxPath);
                     const sidecar = await readSidecarMeta();
                     let meta = sidecar.meta;
                     if (!meta) meta = await extractEmbeddedNlMeta(bin);
@@ -3718,16 +3936,33 @@ export default class SceneCardsPlugin extends Plugin {
 
                     // Only rewrite xlsx when we will not lose richer sheet values.
                     if (structuralRepair && docFilled >= xlsxFilled && (docFilled > 0 || xlsxFilled === 0)) {
-                        await settleCanonical(doc);
-                        new Notice(t('Repaired datasheet.xlsx for Excel/Univer interop. NarrativeLab metadata is in System/datasheet.nlmeta.json.'));
+                        try {
+                            await this.backupPlotGridFile(xlsxPath, 'before-repair');
+                            if (await adapter.exists(metaPath)) {
+                                await this.backupPlotGridFile(metaPath, 'before-repair');
+                            }
+                            await settleCanonical(doc);
+                            new Notice(t('Repaired datasheet.xlsx for Excel/Univer interop. NarrativeLab metadata is in System/datasheet.nlmeta.json.'));
+                        } catch (repairError) {
+                            // A failed backup or repair must not turn a readable source
+                            // workbook into a corrupt-load result.
+                            console.warn('[NarrativeLab] Skipped automatic datasheet repair:', repairError);
+                        }
                     } else if ((missingCanonicalSidecar || staleCanonicalSidecar)
                         && (docFilled > 0 || (doc.pages.some(p => (p.rows?.length ?? 0) > 0)))) {
                         // Sidecar move/create/structural repair must not re-encode
                         // a healthy xlsx. The workbook is the visible source of truth.
-                        await this.ensureVaultFolder(systemFolder);
-                        await this.writeVaultTextResilient(metaPath, serializePlotGridNlMeta(doc));
-                        if (legacyLibraryMetaPath !== metaPath && await adapter.exists(legacyLibraryMetaPath)) {
-                            try { await adapter.remove(legacyLibraryMetaPath); } catch { /* ignore */ }
+                        try {
+                            if (await adapter.exists(metaPath)) {
+                                await this.backupPlotGridFile(metaPath, 'before-repair');
+                            }
+                            await this.ensureVaultFolder(systemFolder);
+                            await this.writeVaultTextResilient(metaPath, serializePlotGridNlMeta(doc));
+                            if (legacyLibraryMetaPath !== metaPath && await adapter.exists(legacyLibraryMetaPath)) {
+                                try { await adapter.remove(legacyLibraryMetaPath); } catch { /* keep recovery copy */ }
+                            }
+                        } catch (sidecarRepairError) {
+                            console.warn('[NarrativeLab] Skipped datasheet metadata repair:', sidecarRepairError);
                         }
                     } else if (structuralRepair && xlsxFilled > docFilled) {
                         console.warn('[NarrativeLab] Skipping datasheet rewrite — Excel sheets have more cell text than recovered model.');
@@ -3738,11 +3973,32 @@ export default class SceneCardsPlugin extends Plugin {
                         xlsxPath,
                         doc,
                         await adapter.stat(xlsxPath),
+                        {
+                            xlsx: await adapter.readBinary(xlsxPath),
+                            metaText: await adapter.exists(metaPath) ? await adapter.read(metaPath) : '',
+                        },
                     );
                     return doc;
                 } catch (e) {
                     console.warn('[NarrativeLab] datasheet.xlsx unreadable:', e);
-                    await this.backupCorruptPlotGridXlsx(xlsxPath);
+                    const corruptBackedUp = await this.backupCorruptPlotGridXlsx(xlsxPath);
+                    for (const legacyPath of corruptBackedUp
+                        ? [legacyLibraryXlsxPath, legacySystemXlsxPath, folderXlsxPath]
+                        : []) {
+                        if (legacyPath === xlsxPath || !await adapter.exists(legacyPath)) continue;
+                        try {
+                            const legacyBinary = await adapter.readBinary(legacyPath);
+                            const legacyMeta = await extractEmbeddedNlMeta(legacyBinary);
+                            const recovered = await decodePlotGridXlsx(legacyBinary, { meta: legacyMeta });
+                            await settleCanonical(recovered);
+                            this._invalidPlotGridXlsxPaths.delete(xlsxPath);
+                            this._reportedInvalidPlotGridXlsxPaths.delete(xlsxPath);
+                            new Notice(t('Recovered datasheet.xlsx from a readable legacy workbook.'));
+                            return recovered;
+                        } catch (legacyError) {
+                            console.warn('[NarrativeLab] Legacy datasheet recovery failed:', legacyPath, legacyError);
+                        }
+                    }
                     this._invalidPlotGridXlsxPaths.add(xlsxPath);
                     if (!this._reportedInvalidPlotGridXlsxPaths.has(xlsxPath)) {
                         this._reportedInvalidPlotGridXlsxPaths.add(xlsxPath);

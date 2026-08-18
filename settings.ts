@@ -618,15 +618,6 @@ export interface SceneCardsSettings {
     libraryUiByProject: Record<string, {
         contentMode?: 'profile' | 'browse' | 'story-graph';
         categoryId?: string;
-        storyGraphFilters?: {
-            showScenes?: boolean;
-            showCharacters?: boolean;
-            showLocations?: boolean;
-            showCodex?: boolean;
-            showRelationships?: boolean;
-            showProps?: boolean;
-            showOther?: boolean;
-        };
     }>;
     /**
      * Remembered Structure sub-tab:

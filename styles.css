@@ -11173,6 +11173,20 @@ body /* Clamp title on mobile too, in case it's very long */
     padding: 16px;
     color: var(--text-muted);
 }
+.library-native-base-bottom-scroll {
+    position: fixed;
+    z-index: 20;
+    display: none;
+    height: 14px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: var(--background-primary);
+    border-top: 1px solid var(--background-modifier-border);
+    scrollbar-width: auto;
+}
+.library-native-base-bottom-scroll-spacer {
+    height: 1px;
+}
 
 .library-browse-chrome {
     flex-shrink: 0;
@@ -15518,4 +15532,3 @@ body .nl-floating-sticky-save-location input[type="text"] {
         max-width: none;
     }
 }
-

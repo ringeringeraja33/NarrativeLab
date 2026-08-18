@@ -2,8 +2,7 @@
  * Univer Sheets host for the Concept Grid (Plot Grid) view.
  * Instantiated on demand and bundled into the community-distributed main.js.
  */
-import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
-import type { Univer } from '@univerjs/core';
+import { LocaleType, mergeLocales, type Univer } from '@univerjs/core';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import { UniverSheetsConditionalFormattingPreset } from '@univerjs/preset-sheets-conditional-formatting';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
@@ -51,6 +50,7 @@ import sheetsNoteCss from '@univerjs/preset-sheets-note/lib/index.css';
 import sheetsSortCss from '@univerjs/preset-sheets-sort/lib/index.css';
 import sheetsTableCss from '@univerjs/preset-sheets-table/lib/index.css';
 import sheetsThreadCommentCss from '@univerjs/preset-sheets-thread-comment/lib/index.css';
+import { createUniver } from '../utils/createUniver';
 
 function withNarrativeLabZhTerminology(base: unknown): Record<string, unknown> {
     const locale = (base && typeof base === 'object' ? base : {}) as Record<string, unknown>;
@@ -76,6 +76,10 @@ function withNarrativeLabZhTerminology(base: unknown): Record<string, unknown> {
             },
         },
     };
+}
+
+function mergePlotGridLocales(...locales: unknown[]): ReturnType<typeof mergeLocales> {
+    return mergeLocales(...locales as Parameters<typeof mergeLocales>);
 }
 
 export function warmupPlotGridUniver(targetDocument: Document): void {
@@ -897,12 +901,66 @@ function applyRangeValuesMutation(doc: ConceptGridDocument, command: unknown): C
     const next = mergeUniverCellDataIntoDocument(
         clone,
         sheetId,
-        cellData as Parameters<typeof mergeUniverCellDataIntoDocument>[2],
+        cellData,
     );
     // Unchanged clones must not count as applied — otherwise a header Delete
-    // that Univer stored as null/`{}` would skip the clearMissing pull and
-    // resurrect A1 / first-row / first-column labels on remount.
+    // that Univer stored as null/`{}` could be mistaken for a sparse omission.
     return next === clone ? null : next;
+}
+
+/** Apply Clear contents / Clear all only to the ranges named by the command. */
+function applyClearSelectionMutation(
+    doc: ConceptGridDocument,
+    command: unknown,
+    fallback: { sheetId: string; row: number; col: number } | null,
+): ConceptGridDocument | null {
+    const { id, params } = command as {
+        id?: string;
+        params?: {
+            subUnitId?: string;
+            ranges?: Array<{
+                startRow?: number;
+                endRow?: number;
+                startColumn?: number;
+                endColumn?: number;
+            }>;
+        };
+    };
+    if (id !== 'sheet.command.clear-selection-all'
+        && id !== 'sheet.command.clear-selection-content') return null;
+    const sheetId = params?.subUnitId || fallback?.sheetId;
+    if (!sheetId) return null;
+    const page = doc.pages.find(item => item.id === sheetId);
+    if (!page) return null;
+    const ranges = params?.ranges?.length
+        ? params.ranges
+        : (fallback && fallback.sheetId === sheetId
+            ? [{
+                startRow: fallback.row,
+                endRow: fallback.row,
+                startColumn: fallback.col,
+                endColumn: fallback.col,
+            }]
+            : []);
+    if (!ranges.length) return null;
+
+    const cellData: Record<number, Record<number, null>> = {};
+    const lastRow = page.rows.length;
+    const lastColumn = page.columns.length;
+    for (const range of ranges) {
+        const startRow = Math.max(0, Math.min(lastRow, Math.floor(range.startRow ?? 0)));
+        const endRow = Math.max(startRow, Math.min(lastRow, Math.floor(range.endRow ?? startRow)));
+        const startColumn = Math.max(0, Math.min(lastColumn, Math.floor(range.startColumn ?? 0)));
+        const endColumn = Math.max(startColumn, Math.min(lastColumn, Math.floor(range.endColumn ?? startColumn)));
+        for (let row = startRow; row <= endRow; row += 1) {
+            const bucket = cellData[row] ?? (cellData[row] = {});
+            for (let column = startColumn; column <= endColumn; column += 1) {
+                bucket[column] = null;
+            }
+        }
+    }
+    const next = structuredClone(doc);
+    return mergeUniverCellDataIntoDocument(next, sheetId, cellData);
 }
 
 /** Keep stable row/column ids aligned with Univer native insert/delete actions. */
@@ -977,7 +1035,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     const locale = opts.locale === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US;
     const locales = opts.locale === 'zh'
         ? {
-            [LocaleType.ZH_CN]: mergeLocales(
+            [LocaleType.ZH_CN]: mergePlotGridLocales(
                 withNarrativeLabZhTerminology(sheetsCoreZhCN),
                 sheetsFilterZhCN,
                 sheetsDrawingZhCN,
@@ -992,7 +1050,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             ),
         }
         : {
-            [LocaleType.EN_US]: mergeLocales(
+            [LocaleType.EN_US]: mergePlotGridLocales(
                 sheetsCoreEnUS,
                 sheetsFilterEnUS,
                 sheetsDrawingEnUS,
@@ -1510,8 +1568,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         }
         if (!pendingAfterEdit) return;
         pendingAfterEdit = false;
-        // Editor closed: safe to treat omitted cells as clears (Delete / Backspace).
-        schedulePull({ clearMissing: true });
+        // Explicit range-value/clear mutations own deletions. A saved workbook is
+        // sparse even after the editor closes, so omitted cells are never deletes.
+        schedulePull();
     };
 
     const scheduleSuppressedDrain = () => {
@@ -1751,7 +1810,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     // Native row/column insertion produces sparse blank buckets.
                     // Clearing omitted cells is safe after the structural mutation
                     // settles and prevents old content from duplicating into them.
-                    schedulePull({ clearMissing: true, mergeDimensions: true });
+                    schedulePull({ mergeDimensions: true });
                     return;
                 }
 
@@ -1811,7 +1870,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                             `${lastSelection.sheetId}:${lastSelection.row}:${lastSelection.col}`,
                         );
                     }
-                    const mutated = applyRangeValuesMutation(liveDoc, command);
+                    const mutated = applyClearSelectionMutation(liveDoc, command, lastSelection)
+                        ?? applyRangeValuesMutation(liveDoc, command);
                     if (mutated) {
                         liveDoc = mutated;
                         contentFp = conceptGridContentFingerprint(liveDoc);
@@ -1824,7 +1884,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     // Mutations already captured typed cells. workbook.save() lags
                     // and a clearMissing pull would drop the rest of the sheet.
                     if (mutated) return;
-                    schedulePull({ clearMissing: true });
+                    schedulePull();
                     return;
                 }
 

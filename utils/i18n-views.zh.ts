@@ -334,6 +334,10 @@ export const VIEWS_ZH: Record<string, string> = {
         '已阻止用空表覆盖现有的 datasheet.xlsx，原文件已保留。',
     'Could not read datasheet.xlsx — opened empty grid; empty autosave is blocked until Reset Grid.':
         '无法读取 datasheet.xlsx — 已打开空表；在重置网格前不会用空数据自动覆盖。',
+    'Spreadsheet recovery snapshot was preserved because datasheet.xlsx changed externally.':
+        'datasheet.xlsx 已被外部修改，未完成写入的恢复快照已另行保留。',
+    'Recovered datasheet.xlsx from a readable legacy workbook.':
+        '主表损坏，已从可读取的旧工作簿恢复 datasheet.xlsx。',
     'Repaired datasheet.xlsx for Excel/Univer interop. NarrativeLab metadata is in System/datasheet.nlmeta.json.':
         '已把 datasheet.xlsx 整理为可被 Excel/Univer 直接打开的格式；NarrativeLab 元数据在 System/datasheet.nlmeta.json。',
     'datasheet.xlsx still has spreadsheet values that NarrativeLab could not fully merge; left the Excel file unchanged.':

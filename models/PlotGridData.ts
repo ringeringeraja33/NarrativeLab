@@ -142,6 +142,8 @@ export interface ConceptGridDocument {
     univerResources?: UniverWorkbookResource[];
     /** Univer workbook.styles registry (cells may reference style ids). */
     univerStyles?: Record<string, unknown>;
+    /** Transient proof that missing pages came from explicit sheet-delete commands. */
+    explicitlyRemovedPageIds?: string[];
 }
 
 const NL_UNIVER_META_RESOURCE = 'NARRATIVELAB_PLOTGRID_META';
@@ -345,6 +347,11 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
             sidebarCollapsed: Boolean(raw.sidebarCollapsed),
             univerResources: normalizeUniverWorkbookResources(raw.univerResources),
             univerStyles: normalizeUniverStyleMap(raw.univerStyles),
+            explicitlyRemovedPageIds: Array.isArray(raw.explicitlyRemovedPageIds)
+                ? [...new Set(raw.explicitlyRemovedPageIds.filter((id): id is string => (
+                    typeof id === 'string' && !!id
+                )))]
+                : undefined,
         };
     }
 
@@ -438,15 +445,14 @@ export function isIncompleteConceptGridPull(
         return true;
     }
     const nextIds = new Set((next.pages || []).map(page => page.id));
-    const prevIds = new Set((previous.pages || []).map(page => page.id));
+    const explicitlyRemoved = new Set(next.explicitlyRemovedPageIds || []);
     const lostFilledCount = (previous.pages || []).filter(page =>
-        !nextIds.has(page.id) && pageHasPersistableContent(page),
+        !nextIds.has(page.id)
+        && !explicitlyRemoved.has(page.id)
+        && pageHasPersistableContent(page),
     ).length;
-    const gained = (next.pages || []).some(page => !prevIds.has(page.id));
-    if (lostFilledCount > 0 && gained) return true;
-    // A real Univer delete removes one sheet per command. Losing several filled
-    // tabs at once is a lagging workbook.save(), not a user delete.
-    return lostFilledCount > 1;
+    // Only page ids stamped by explicit remove-sheet commands may disappear.
+    return lostFilledCount > 0;
 }
 
 /**

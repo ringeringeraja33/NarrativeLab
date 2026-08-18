@@ -147,6 +147,8 @@ export interface PlotGridNlMeta {
     pageIds: Record<string, string>;
     pages: Record<string, {
         id: string;
+        /** Original title before Excel sheet-name sanitizing/truncation. */
+        title?: string;
         zoom?: number;
         stickyHeaders?: boolean;
         frozenColumns?: number;
@@ -314,6 +316,8 @@ function sheetLooksLikeNlMetaDump(sheet: ExcelJS.Worksheet): boolean {
 }
 
 function titleForMetaPage(meta: PlotGridNlMeta, pageId: string): string {
+    const original = meta.pages[pageId]?.title?.trim();
+    if (original) return original;
     for (const [sheetName, id] of Object.entries(meta.pageIds || {})) {
         if (id === pageId) return sheetName;
     }
@@ -883,7 +887,7 @@ function univerCellHasPersistableValue(raw: UniverCellSnapshot | null | undefine
 /** Grow NL axes to cover typed Univer cells. Empty reserved matrix cells do not count. */
 function ensureOccupiedGridExtents(
     page: ConceptGridPage,
-    cellData: Record<number, Record<number, UniverCellSnapshot>>,
+    cellData: Record<number, Record<number, UniverCellSnapshot | null>>,
 ): boolean {
     let maxRow = 0;
     let maxCol = 0;
@@ -991,6 +995,7 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
         }
         pages[page.id] = {
             id: page.id,
+            title: page.title,
             zoom: page.zoom,
             stickyHeaders: page.stickyHeaders,
             frozenColumns: page.frozenColumns,
@@ -1389,11 +1394,21 @@ export async function decodePlotGridXlsx(
         // when the sheet cell is blank (external saves often omit empty headers).
         columns.forEach((col, ci) => {
             const label = cellValueText(sheet.getCell(1, ci + 2).value).trim();
-            if (label) col.label = label;
+            if (label) {
+                col.label = col.label.length > EXCEL_MAX_CELL_CHARS
+                    && clampExcelCellText(col.label) === label
+                    ? col.label
+                    : label;
+            }
         });
         rows.forEach((row, ri) => {
             const label = cellValueText(sheet.getCell(ri + 2, 1).value).trim();
-            if (label) row.label = label;
+            if (label) {
+                row.label = row.label.length > EXCEL_MAX_CELL_CHARS
+                    && clampExcelCellText(row.label) === label
+                    ? row.label
+                    : label;
+            }
         });
 
         const cells: Record<string, CellData> = {};
@@ -1411,9 +1426,19 @@ export async function decodePlotGridXlsx(
                 const saved = pageMeta?.cells?.[key];
                 const hyperlinkPath = obsidianFileFromCellValue(rawValue);
                 const linkedSceneId = saved?.linkedSceneId || hyperlinkPath;
+                const savedMarkdownDisplay = saved?.markdownSource
+                    ? plotGridSourceToUniverRichText(saved.markdownSource).displayText
+                    : '';
                 const restoredMarkdown = saved?.markdownSource
-                    && plotGridSourceToUniverRichText(saved.markdownSource).displayText === content
+                    && (savedMarkdownDisplay === content
+                        || (savedMarkdownDisplay.length > EXCEL_MAX_CELL_CHARS
+                            && clampExcelCellText(savedMarkdownDisplay) === content))
                     ? saved.markdownSource
+                    : undefined;
+                const restoredLongPlain = !saved?.markdownSource
+                    && (saved?.content?.length ?? 0) > EXCEL_MAX_CELL_CHARS
+                    && clampExcelCellText(saved?.content || '') === content
+                    ? saved?.content
                     : undefined;
                 const recoveredWikilink = !saved?.linkedSceneId && hyperlinkPath
                     ? `[[${hyperlinkPath.replace(/\.md$/i, '')}|${content || hyperlinkPath.replace(/\.md$/i, '').split('/').pop() || hyperlinkPath}]]`
@@ -1426,12 +1451,14 @@ export async function decodePlotGridXlsx(
                 // Markdown/wikilink recovery only applies when the live display matches.
                 cells[key] = defaultCell({
                     id: key,
-                    content: restoredMarkdown || recoveredWikilink || content,
+                    content: restoredMarkdown || restoredLongPlain || recoveredWikilink || content,
                     linkedSceneId,
                     linkedViaWikilink: restoredMarkdown
                         ? saved?.linkedViaWikilink
                         : (recoveredWikilink ? true : (saved?.linkedSceneId ? false : saved?.linkedViaWikilink)),
-                    formula: formulaValue?.formula ? `=${formulaValue.formula}` : saved?.formula,
+                    // The visible workbook owns formulas. Falling back to a stale
+                    // sidecar formula resurrects formulas replaced in Excel.
+                    formula: formulaValue?.formula ? `=${formulaValue.formula}` : undefined,
                     manualContent: saved?.manualContent,
                     bgColor: fill || saved?.bgColor || '',
                     textColor: saved?.textColor || '',
@@ -1445,7 +1472,10 @@ export async function decodePlotGridXlsx(
 
         pages.push({
             id: stableId,
-            title: sheet.name,
+            title: pageMeta?.title && Object.entries(meta?.pageIds || {})
+                .some(([savedSheetName, id]) => savedSheetName === sheet.name && id === stableId)
+                ? pageMeta.title
+                : sheet.name,
             rows,
             columns,
             cells,
@@ -1462,9 +1492,14 @@ export async function decodePlotGridXlsx(
                 ?? 1,
             )),
             // Sheet is canonical for visible A1; meta is only a fallback.
-            cornerLabel: cellValueText(sheet.getCell(1, 1).value)
-                || pageMeta?.cornerLabel
-                || '',
+            cornerLabel: (() => {
+                const visible = cellValueText(sheet.getCell(1, 1).value);
+                const saved = pageMeta?.cornerLabel || '';
+                if (saved.length > EXCEL_MAX_CELL_CHARS && clampExcelCellText(saved) === visible) {
+                    return saved;
+                }
+                return visible || saved;
+            })(),
             headerRowHeight: typeof pageMeta?.headerRowHeight === 'number' && pageMeta.headerRowHeight > 0
                 ? Math.round(pageMeta.headerRowHeight)
                 : (typeof sheet.getRow(1).height === 'number' && (sheet.getRow(1).height || 0) > 0
@@ -1803,6 +1838,9 @@ export function reconcileUniverSheetsIntoDocument(
     }
     if (nextPages.length === 0) return raw;
     doc.pages = nextPages;
+    const presentIds = new Set(nextPages.map(page => page.id));
+    doc.explicitlyRemovedPageIds = (doc.explicitlyRemovedPageIds || [])
+        .filter(id => !presentIds.has(id));
     if (activeSheetId && doc.pages.some(page => page.id === activeSheetId)) {
         doc.activePageId = activeSheetId;
     } else if (!doc.pages.some(page => page.id === doc.activePageId)) {
@@ -1845,6 +1883,9 @@ export function applyUniverSheetChromeMutation(
         if (!doc.pages.some(page => page.id === subUnitId)) return null;
         const next = structuredClone(doc);
         next.pages = next.pages.filter(page => page.id !== subUnitId);
+        next.explicitlyRemovedPageIds = [
+            ...new Set([...(next.explicitlyRemovedPageIds || []), subUnitId]),
+        ];
         if (next.activePageId === subUnitId) {
             const visible = next.pages.find(page => !page.hidden) ?? next.pages[0];
             if (visible) next.activePageId = visible.id;
@@ -1863,6 +1904,8 @@ export function applyUniverSheetChromeMutation(
         page.id = sheetId;
         if (name) page.title = name;
         const next = structuredClone(doc);
+        next.explicitlyRemovedPageIds = (next.explicitlyRemovedPageIds || [])
+            .filter(id => id !== sheetId);
         const index = typeof params.index === 'number' && Number.isFinite(params.index)
             ? Math.max(0, Math.min(Math.floor(params.index), next.pages.length))
             : next.pages.length;
@@ -1907,13 +1950,16 @@ export type MergeUniverCellDataOptions = {
 export function mergeUniverCellDataIntoDocument(
     doc: ConceptGridDocument,
     sheetId: string,
-    cellData: Record<number, Record<number, UniverCellSnapshot>>,
+    cellData: Record<number, Record<number, UniverCellSnapshot | null>>,
     styles?: Record<string, UniverStyleSnapshot>,
     rowData?: Record<number, { h?: number; ah?: number }>,
     columnData?: Record<number, { w?: number }>,
     options: MergeUniverCellDataOptions = {},
 ): ConceptGridDocument {
-    const clearMissing = options.clearMissing === true;
+    // Univer snapshots stay sparse after editing. Missing coordinates are never
+    // evidence of deletion; only explicit null/empty values may clear content.
+    void options.clearMissing;
+    const clearMissing = false;
     const mergeDimensions = options.mergeDimensions !== false;
     const page = doc.pages.find(p => p.id === sheetId);
     if (!page) return doc;
@@ -2033,6 +2079,8 @@ export function mergeUniverCellDataIntoDocument(
                         content: '',
                         formula: undefined,
                         manualContent: true,
+                        linkedSceneId: existing.linkedViaWikilink ? undefined : existing.linkedSceneId,
+                        linkedViaWikilink: existing.linkedViaWikilink ? undefined : existing.linkedViaWikilink,
                     };
                     changed = true;
                 }
@@ -2062,6 +2110,12 @@ export function mergeUniverCellDataIntoDocument(
                 content: nextContent,
                 formula: nextFormula,
                 manualContent: true,
+                linkedSceneId: !nextContent && existing.linkedViaWikilink
+                    ? undefined
+                    : existing.linkedSceneId,
+                linkedViaWikilink: !nextContent && existing.linkedViaWikilink
+                    ? undefined
+                    : existing.linkedViaWikilink,
                 bgColor: style ? (style.bg?.rgb || '') : existing.bgColor,
                 textColor: style ? (style.cl?.rgb || '') : existing.textColor,
                 bold: style?.bl == null ? existing.bold : !!style.bl,
@@ -2113,13 +2167,22 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
         }
         for (const [key, cell] of Object.entries(page.cells || {})) {
             if (!cell) continue;
-            parts.push(`${key}=${cell.content || ''}::${cell.formula || ''}`);
+            parts.push(
+                `${key}=${cell.content || ''}::${cell.formula || ''}`,
+                `meta:${key}:${cell.linkedSceneId || ''}:${cell.linkedViaWikilink ? 1 : 0}:${cell.manualContent ? 1 : 0}`,
+                `format:${key}:${cell.bgColor || ''}:${cell.textColor || ''}:${cell.bold ? 1 : 0}:${cell.italic ? 1 : 0}:${cell.align || ''}`,
+            );
             if (cell.univerStyle) parts.push(`style:${key}:${JSON.stringify(cell.univerStyle)}`);
         }
         if (page.univerExtras) parts.push(`extras:${page.id}:${JSON.stringify(page.univerExtras)}`);
     }
     for (const resource of doc.univerResources || []) {
-        parts.push(`res:${resource.name}:${resource.data.length}:${resource.data.slice(0, 48)}`);
+        let hash = 2166136261;
+        for (let i = 0; i < resource.data.length; i++) {
+            hash ^= resource.data.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+        parts.push(`res:${resource.name}:${resource.data.length}:${(hash >>> 0).toString(16)}`);
     }
     if (doc.univerStyles) parts.push(`styles:${JSON.stringify(doc.univerStyles)}`);
     return parts.join('\n');
@@ -2137,12 +2200,12 @@ export function overlayConceptGridCellMeta(
         const srcPage = source.pages.find(item => item.id === page.id);
         if (!srcPage) continue;
         for (const [key, cell] of Object.entries(page.cells || {})) {
+            if (!cell) continue;
             const src = srcPage.cells?.[key];
-            if (!cell || !src) continue;
-            if (src.linkedSceneId && !cell.linkedSceneId) cell.linkedSceneId = src.linkedSceneId;
-            if (src.linkedViaWikilink != null && cell.linkedViaWikilink == null) {
-                cell.linkedViaWikilink = src.linkedViaWikilink;
-            }
+            // The parent document owns note-link metadata, including intentional
+            // unlinking. Fill-only merging resurrected links that users removed.
+            cell.linkedSceneId = src?.linkedSceneId;
+            cell.linkedViaWikilink = src?.linkedViaWikilink;
         }
     }
 }
@@ -2214,7 +2277,11 @@ export function plotGridNlMetaStructureMatchesDocument(
     for (const page of doc.pages) {
         const saved = meta.pages?.[page.id];
         if (!saved) return false;
-        if ((meta.pageIds || {})[page.title] !== page.id) return false;
+        const mappedTitle = Object.entries(meta.pageIds || {})
+            .find(([, id]) => id === page.id)?.[0];
+        if (!mappedTitle) return false;
+        if (saved.title && saved.title !== page.title) return false;
+        if (!saved.title && mappedTitle !== page.title) return false;
         if ((saved.rows || []).map(row => row.id).join('\n')
             !== (page.rows || []).map(row => row.id).join('\n')) return false;
         if ((saved.columns || []).map(column => column.id).join('\n')

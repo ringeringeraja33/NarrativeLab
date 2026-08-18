@@ -93,6 +93,8 @@ export const ENTITIES_ZH: Record<string, string> = {
     'Click to filter node types · multi-select · Right-click to edit': '单击筛选节点类型（可多选）· 右键编辑',
     'Add relation': '添加关系',
     'Nothing matches the current legend focus. Click the active legend again to show all, or reset filters.': '当前图例聚焦下没有可显示内容。再次点击已选图例可恢复全部，或重置筛选。',
+    'Story Graph node limit reached': '资料图节点数量已达上限',
+    'This graph contains {total} nodes. Showing the {limit} most connected nodes; {hidden} nodes were omitted.': '当前图谱共有 {total} 个节点，现显示关联度最高的 {limit} 个，另有 {hidden} 个未显示。',
     'Manage all…': '管理全部…',
     'Node colors': '节点颜色',
     'Scenes plus Library categories (same as tabs / Library subfolders). New Library categories appear here automatically.': '场景与资料库类别（与页签及资料库子文件夹一致）。新建资料库类别会自动出现在这里。',
