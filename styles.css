@@ -14987,7 +14987,16 @@ body .nl-floating-sticky-content {
     flex-grow: 1;
     color: var(--note-text-color);
     padding-bottom: 25px;
-    background-color: transparent;
+    background: transparent !important;
+    background-color: transparent !important;
+}
+
+body .nl-floating-sticky-content:hover,
+body .nl-floating-sticky-content:focus,
+body .nl-floating-sticky-content:focus-visible,
+body .nl-floating-sticky-content:active {
+    background: transparent !important;
+    background-color: transparent !important;
 }
 
 body .nl-floating-sticky-content.is-hidden {
@@ -15004,7 +15013,8 @@ body .nl-floating-sticky-textarea {
     height: calc(100% - 10px);
     resize: none;
     border: none;
-    background: transparent;
+    background: transparent !important;
+    background-color: transparent !important;
     color: var(--note-text-color);
     font-family: var(--font-text);
     font-size: calc(0.9em * var(--sticky-zoom, 1));
@@ -15019,9 +15029,13 @@ body .nl-floating-sticky-textarea.is-visible {
     display: block;
 }
 
-body .nl-floating-sticky-textarea:focus {
-    box-shadow: none;
-    background-color: transparent;
+body .nl-floating-sticky-textarea:hover,
+body .nl-floating-sticky-textarea:focus,
+body .nl-floating-sticky-textarea:focus-visible,
+body .nl-floating-sticky-textarea:active {
+    box-shadow: none !important;
+    background: transparent !important;
+    background-color: transparent !important;
 }
 
 body .nl-floating-sticky-note.is-pinned {

@@ -752,6 +752,7 @@ export class BoardView extends ItemView {
             this.corkboardCanvasHostEl = null;
         }
         this.corkboardCanvasFilePath = null;
+        this.corkboardLastInteractAt = 0;
     }
 
     private kickNativeCorkboardLayout(): void {
@@ -788,6 +789,38 @@ export class BoardView extends ItemView {
     /** True when Board is hosting (or should defer to) corkboard Canvas undo. */
     isCorkboardUndoContext(): boolean {
         return this.boardMode === 'corkboard' && !this.corkboardNativeFailed;
+    }
+
+    /**
+     * True when a shortcut event belongs to this Board's embedded Canvas.
+     * Text editors deliberately return false so their native undo stack wins.
+     */
+    ownsCorkboardShortcutEvent(event?: KeyboardEvent): boolean {
+        const host = this.corkboardCanvasHostEl;
+        if (!this.isCorkboardUndoContext() || !this.corkboardCanvasLeaf || !host?.isConnected) {
+            return false;
+        }
+        const rawTarget = event?.composedPath?.()[0] ?? event?.target ?? null;
+        const targetNode = rawTarget && typeof (rawTarget as Node).nodeType === 'number'
+            ? rawTarget as Node
+            : null;
+        const targetEl = targetNode?.nodeType === 1
+            ? targetNode as Element
+            : targetNode?.parentElement ?? null;
+        if (targetEl && host.contains(targetEl)) {
+            return !this.isCorkboardTextEditingTarget(targetEl);
+        }
+
+        const active = host.ownerDocument.activeElement;
+        return !!(active && host.contains(active) && !this.isCorkboardTextEditingTarget(active));
+    }
+
+    /** Timestamp used only when Canvas has returned keyboard focus to body. */
+    getLastCorkboardInteractionAt(): number {
+        if (!this.isCorkboardUndoContext() || !this.corkboardCanvasLeaf || !this.corkboardCanvasHostEl?.isConnected) {
+            return 0;
+        }
+        return this.corkboardLastInteractAt;
     }
 
     /**

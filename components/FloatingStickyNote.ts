@@ -142,6 +142,24 @@ export class FloatingStickyNote extends Component {
         if (modalEl) mainDoc.body.insertBefore(this.containerEl, modalEl);
         else mainDoc.body.prepend(this.containerEl);
 
+        // Apply the note palette and build its surface before any vault I/O can
+        // yield. Otherwise the newly inserted element can briefly paint with
+        // the host theme's default (white) form-field background.
+        this.updateVisuals();
+        const onWheel = (e: WheelEvent) => {
+            if (!e.ctrlKey && !e.metaKey) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const delta = e.deltaY < 0 ? 0.1 : -0.1;
+            this.state.zoomLevel = clampStickyNoteZoom((this.state.zoomLevel || 1) + delta);
+            this.updateVisuals();
+            this.persist();
+        };
+        this.containerEl.addEventListener('wheel', onWheel, { passive: false });
+        this.register(() => this.containerEl.removeEventListener('wheel', onWheel));
+        this.registerDomEvent(this.containerEl, 'mousedown', () => this.bringToFront());
+        this.createChrome();
+
         void (async () => {
             if (this.state.filePath && !this.state.content) {
                 const file = this.app.vault.getAbstractFileByPath(this.state.filePath);
@@ -151,20 +169,6 @@ export class FloatingStickyNote extends Component {
             }
             if (this.unloaded) return;
             this.lastSavedContent = this.state.content || '';
-            this.updateVisuals();
-            const onWheel = (e: WheelEvent) => {
-                if (!e.ctrlKey && !e.metaKey) return;
-                e.preventDefault();
-                e.stopPropagation();
-                const delta = e.deltaY < 0 ? 0.1 : -0.1;
-                this.state.zoomLevel = clampStickyNoteZoom((this.state.zoomLevel || 1) + delta);
-                this.updateVisuals();
-                this.persist();
-            };
-            this.containerEl.addEventListener('wheel', onWheel, { passive: false });
-            this.register(() => this.containerEl.removeEventListener('wheel', onWheel));
-            this.registerDomEvent(this.containerEl, 'mousedown', () => this.bringToFront());
-            this.createChrome();
             await this.renderContent();
             this.plugin.floatingStickyNotes.ensureStored(this.state);
         })();

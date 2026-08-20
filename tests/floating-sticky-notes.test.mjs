@@ -103,6 +103,12 @@ test('plugin wires floating sticky notes like Web Novel Assistant', () => {
     assert.match(styles, /button\.nl-floating-sticky-btn:hover/);
     assert.match(styles, /background-color: rgba\(0, 0, 0, 0\.08\) !important/);
     assert.doesNotMatch(styles, /nl-floating-sticky-note:hover \{[^}]*background-color:\s*var\(--note-bg-color\)/);
+    assert.match(styles, /nl-floating-sticky-textarea:hover,[\s\S]*?background-color: transparent !important/);
+    assert.match(styles, /nl-floating-sticky-content:hover,[\s\S]*?background-color: transparent !important/);
+    const onloadIndex = noteUi.indexOf('onload(): void');
+    const initialVisualIndex = noteUi.indexOf('this.updateVisuals();', onloadIndex);
+    const vaultReadIndex = noteUi.indexOf('await this.app.vault.read(file);', onloadIndex);
+    assert.ok(initialVisualIndex > onloadIndex && initialVisualIndex < vaultReadIndex);
     assert.equal(FLOATING_NOTES_FILENAME, 'floating-notes.json');
     assert.equal(FLOATING_NOTES_HIDDEN_CLASS, 'narrativelab-floating-notes-hidden');
     assert.equal(FLOATING_NOTE_CLASS, 'nl-floating-sticky-note');

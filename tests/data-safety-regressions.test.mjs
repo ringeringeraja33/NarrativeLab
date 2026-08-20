@@ -202,6 +202,19 @@ test('corkboard canvas writes are queued and retried on Windows locks', () => {
     assert.match(corkboard, /attempt < 8/);
 });
 
+test('embedded corkboard undo routes by Canvas ownership without stealing text undo', () => {
+    assert.match(mainTs, /resolveCorkboardUndoBoard\(event\?: KeyboardEvent\)/);
+    assert.match(mainTs, /board\.ownsCorkboardShortcutEvent\(event\)/);
+    assert.match(mainTs, /board\.getLastCorkboardInteractionAt\(\)/);
+    assert.match(mainTs, /const corkboard = this\.resolveCorkboardUndoBoard\(evt\)/);
+    assert.match(boardView, /ownsCorkboardShortcutEvent\(event\?: KeyboardEvent\)/);
+    assert.match(boardView, /isCorkboardTextEditingTarget\(targetEl\)/);
+    assert.match(boardView, /getLastCorkboardInteractionAt\(\)/);
+    const routeAt = mainTs.indexOf('const corkboard = this.resolveCorkboardUndoBoard(evt)');
+    const activeViewAt = mainTs.indexOf('getActiveViewOfType(ItemView)', routeAt);
+    assert.ok(routeAt >= 0 && activeViewAt > routeAt);
+});
+
 test('series migrations journal transfers and roll back every move path', async () => {
     assert.match(seriesManager, /interface LibraryTransferJournal/);
     assert.match(seriesManager, /rollbackMovedLibraryFiles/);

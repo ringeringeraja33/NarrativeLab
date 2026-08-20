@@ -447,6 +447,38 @@ export default class SceneCardsPlugin extends Plugin {
     private uiThemeObserver: MutationObserver | null = null;
     private lastObservedObsidianTheme: 'light' | 'dark' | null = null;
 
+    /**
+     * Resolve the Board that owns an undo shortcut. Corkboard Canvas runs in a
+     * detached nested leaf, so Workspace's active ItemView is not a reliable
+     * signal after the user clicks it.
+     */
+    private resolveCorkboardUndoBoard(event?: KeyboardEvent): BoardView | null {
+        const boards = this.app.workspace.getLeavesOfType(BOARD_VIEW_TYPE)
+            .map(leaf => leaf.view)
+            .filter((view): view is BoardView => view instanceof BoardView);
+
+        // Prefer the Canvas that actually received the key (or currently owns
+        // focus). This also selects the correct project when several Boards are open.
+        const eventOwner = boards.find(board => board.ownsCorkboardShortcutEvent(event));
+        if (eventOwner) return eventOwner;
+
+        const activeBoard = this.app.workspace.getActiveViewOfType(BoardView);
+        if (activeBoard?.isCorkboardUndoContext()) return activeBoard;
+
+        // Some Canvas gestures return focus to document.body. In that case use
+        // the most recently interacted embedded Canvas for a short grace period.
+        let recentBoard: BoardView | null = null;
+        let recentAt = 0;
+        for (const board of boards) {
+            const interactedAt = board.getLastCorkboardInteractionAt();
+            if (interactedAt > recentAt) {
+                recentAt = interactedAt;
+                recentBoard = board;
+            }
+        }
+        return recentBoard && Date.now() - recentAt <= 5_000 ? recentBoard : null;
+    }
+
     async onload(): Promise<void> {
         await this.loadSettings();
         this.applyUiTheme();
@@ -848,7 +880,7 @@ export default class SceneCardsPlugin extends Plugin {
             checkCallback: (checking) => {
                 if (isLocalTextUndoTarget()) return false;
                 if (checking) return true;
-                const board = this.app.workspace.getActiveViewOfType(BoardView);
+                const board = this.resolveCorkboardUndoBoard();
                 if (board) {
                     void board.handleBoardUndo();
                     return true;
@@ -864,7 +896,7 @@ export default class SceneCardsPlugin extends Plugin {
             checkCallback: (checking) => {
                 if (isLocalTextUndoTarget()) return false;
                 if (checking) return true;
-                const board = this.app.workspace.getActiveViewOfType(BoardView);
+                const board = this.resolveCorkboardUndoBoard();
                 if (board) {
                     void board.handleBoardRedo();
                     return true;
@@ -901,6 +933,19 @@ export default class SceneCardsPlugin extends Plugin {
 
             // Don't intercept if focus is in a text field or the cell editor.
             if (isLocalTextUndoTarget()) return;
+
+            // A corkboard Canvas lives in a detached nested WorkspaceSplit, so
+            // getActiveViewOfType(ItemView) may report a sidebar or another leaf.
+            // Route by event ownership/recent Canvas interaction before checking
+            // the outer active view.
+            const corkboard = this.resolveCorkboardUndoBoard(evt);
+            if (corkboard) {
+                evt.preventDefault();
+                evt.stopPropagation();
+                if (isUndoKey(evt)) void corkboard.handleBoardUndo();
+                else void corkboard.handleBoardRedo();
+                return;
+            }
 
             // Check if a NarrativeLab view is active
             const view = this.app.workspace.getActiveViewOfType(ItemView);

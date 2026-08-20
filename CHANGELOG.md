@@ -5,6 +5,8 @@
 - Spreadsheet tabs now commit the active Univer editor and wait for pending mutations before switching views or closing.
 - Sparse teardown snapshots can no longer silently remove persisted worksheets, rows, or columns; explicit sheet/axis deletes remain supported.
 - Concurrent Excel/Univer writes are detected before commit. NarrativeLab keeps the canonical workbook and preserves the rejected editor state under `System/Spreadsheet Recovery`.
+- Embedded corkboard Canvas now receives Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z, and Ctrl/Cmd+Y through the correct Canvas history stack without intercepting text-editor undo.
+- Floating sticky notes apply their palette before asynchronous file loading and keep editor/preview surfaces transparent across hover and focus, preventing the first-hover white flash.
 
 ## 1.3.1
 
