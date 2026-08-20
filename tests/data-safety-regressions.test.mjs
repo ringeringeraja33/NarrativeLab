@@ -428,9 +428,10 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(save, /isIncompleteConceptGridPull\(cached\.doc, document\)/);
     assert.match(mainTs, /existingPlotGridFilledCount/);
     assert.match(mainTs, /plotGridXlsxExists/);
+    assert.match(save, /_reportedPlotGridRecoveryNotices/);
     assert.ok(
-        (save.match(/new Notice\(/g) || []).length <= 2,
-        'save path only reports the deduplicated empty-write warning and a one-shot journal conflict',
+        (save.match(/new Notice\(/g) || []).length <= 3,
+        'save path only reports deduplicated empty-write, journal-conflict, and recovery warnings',
     );
     assert.match(mainTs, /getBasePath\?\./);
 });

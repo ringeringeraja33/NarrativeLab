@@ -144,6 +144,10 @@ export interface ConceptGridDocument {
     univerStyles?: Record<string, unknown>;
     /** Transient proof that missing pages came from explicit sheet-delete commands. */
     explicitlyRemovedPageIds?: string[];
+    /** Transient proof that missing row ids came from explicit Univer remove-row commands. */
+    explicitlyRemovedRowIds?: Record<string, string[]>;
+    /** Transient proof that missing column ids came from explicit Univer remove-column commands. */
+    explicitlyRemovedColumnIds?: Record<string, string[]>;
 }
 
 const NL_UNIVER_META_RESOURCE = 'NARRATIVELAB_PLOTGRID_META';
@@ -316,6 +320,19 @@ function normalizeAxisSize(value: unknown, fallback = 0): number {
     return Math.round(n);
 }
 
+function normalizeExplicitAxisRemovals(raw: unknown): Record<string, string[]> | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const normalized: Record<string, string[]> = {};
+    for (const [pageId, ids] of Object.entries(raw as Record<string, unknown>)) {
+        if (!pageId || !Array.isArray(ids)) continue;
+        const valid = [...new Set(ids.filter((id): id is string => (
+            typeof id === 'string' && !!id
+        )))];
+        if (valid.length) normalized[pageId] = valid;
+    }
+    return Object.keys(normalized).length ? normalized : undefined;
+}
+
 /** Normalize vault JSON (v1 single-page or v2 multi-page) into a ConceptGridDocument. */
 export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument {
     if (isConceptGridDocument(raw)) {
@@ -352,6 +369,8 @@ export function normalizeConceptGridDocument(raw: unknown): ConceptGridDocument 
                     typeof id === 'string' && !!id
                 )))]
                 : undefined,
+            explicitlyRemovedRowIds: normalizeExplicitAxisRemovals(raw.explicitlyRemovedRowIds),
+            explicitlyRemovedColumnIds: normalizeExplicitAxisRemovals(raw.explicitlyRemovedColumnIds),
         };
     }
 
@@ -452,7 +471,28 @@ export function isIncompleteConceptGridPull(
         && pageHasPersistableContent(page),
     ).length;
     // Only page ids stamped by explicit remove-sheet commands may disappear.
-    return lostFilledCount > 0;
+    if (lostFilledCount > 0) return true;
+
+    // A teardown workbook.save() can retain the active worksheet id while
+    // returning only a prefix of its rows/columns. Treat missing stable axis ids
+    // as data loss unless the corresponding remove mutation stamped them first.
+    for (const previousPage of previous.pages || []) {
+        const nextPage = (next.pages || []).find(page => page.id === previousPage.id);
+        if (!nextPage) continue;
+        const nextRows = new Set((nextPage.rows || []).map(row => row.id));
+        const nextColumns = new Set((nextPage.columns || []).map(column => column.id));
+        const removedRows = new Set(next.explicitlyRemovedRowIds?.[previousPage.id] || []);
+        const removedColumns = new Set(next.explicitlyRemovedColumnIds?.[previousPage.id] || []);
+        if ((previousPage.rows || []).some(row => !nextRows.has(row.id) && !removedRows.has(row.id))) {
+            return true;
+        }
+        if ((previousPage.columns || []).some(column => (
+            !nextColumns.has(column.id) && !removedColumns.has(column.id)
+        ))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**

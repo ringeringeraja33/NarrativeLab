@@ -1,5 +1,11 @@
 # NarrativeLab — Changelog
 
+## 1.3.6
+
+- Spreadsheet tabs now commit the active Univer editor and wait for pending mutations before switching views or closing.
+- Sparse teardown snapshots can no longer silently remove persisted worksheets, rows, or columns; explicit sheet/axis deletes remain supported.
+- Concurrent Excel/Univer writes are detected before commit. NarrativeLab keeps the canonical workbook and preserves the rejected editor state under `System/Spreadsheet Recovery`.
+
 ## 1.3.1
 
 - Project-scoped default filenames now include the project name suffix: `Library/datasheet-<project>.xlsx`, `Library/library-<project>.base`, and `Canvas/corkboard-<project>.canvas`.

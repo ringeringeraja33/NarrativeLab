@@ -336,6 +336,12 @@ export const VIEWS_ZH: Record<string, string> = {
         '无法读取 datasheet.xlsx — 已打开空表；在重置网格前不会用空数据自动覆盖。',
     'Spreadsheet recovery snapshot was preserved because datasheet.xlsx changed externally.':
         'datasheet.xlsx 已被外部修改，未完成写入的恢复快照已另行保留。',
+    'Spreadsheet changed outside NarrativeLab. The canonical file was kept and this editor snapshot was saved to {path}.':
+        '表格已被 NarrativeLab 之外的程序修改。主文件保持不变，本编辑器中的快照已保存到 {path}。',
+    'Incomplete spreadsheet save was blocked. The canonical file was kept and this editor snapshot was saved to {path}.':
+        '已阻止不完整的表格保存。主文件保持不变，本编辑器中的快照已保存到 {path}。',
+    'Spreadsheet could not be checked safely. The canonical file was kept and this editor snapshot was saved to {path}.':
+        '无法安全检查主表格。主文件保持不变，本编辑器中的快照已保存到 {path}。',
     'Recovered datasheet.xlsx from a readable legacy workbook.':
         '主表损坏，已从可读取的旧工作簿恢复 datasheet.xlsx。',
     'Repaired datasheet.xlsx for Excel/Univer interop. NarrativeLab metadata is in System/datasheet.nlmeta.json.':

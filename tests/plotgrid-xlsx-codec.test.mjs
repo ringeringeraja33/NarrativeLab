@@ -624,6 +624,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(rowWorkbook.sheets['page-1'].cellData[3][2].v, 'B');
         const rowRemoved = codec.spliceConceptGridAxis(rowMerged, 'page-1', 'rows', 'remove', 2, 1);
         assert.deepEqual(rowRemoved.pages[0].rows.map(row => row.id), ['r1', 'r2']);
+        assert.deepEqual(rowRemoved.explicitlyRemovedRowIds['page-1'], [insertedRowId]);
 
         // If xlsx saved first and the sidecar is one debounce behind, decode
         // must recover the live blank row instead of mapping stale row ids by
@@ -688,6 +689,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         };
         const columnRemoved = codec.spliceConceptGridAxis(columnWithTransientCell, 'page-1', 'columns', 'remove', 2, 1);
         assert.deepEqual(columnRemoved.pages[0].columns.map(column => column.id), ['c1', 'c2']);
+        assert.deepEqual(columnRemoved.explicitlyRemovedColumnIds['page-1'], [insertedColumnId]);
         assert.equal(columnRemoved.pages[0].cells[`r1-${insertedColumnId}`], undefined);
         assert.equal(columnRemoved.pages[0].cells['r2-c2'].linkedSceneId, 'Notes/B.md');
 
@@ -860,6 +862,24 @@ test('empty in-memory grid cannot overwrite an existing workbook', async () => {
             ],
         }), true);
         assert.equal(model.isIncompleteConceptGridPull(rich, headerOnly), false);
+        assert.equal(model.isIncompleteConceptGridPull(rich, {
+            ...rich,
+            pages: [{ ...rich.pages[0], rows: [] }],
+        }), true, 'a teardown snapshot may not silently shrink stable row ids');
+        assert.equal(model.isIncompleteConceptGridPull(rich, {
+            ...rich,
+            pages: [{ ...rich.pages[0], columns: [] }],
+        }), true, 'a teardown snapshot may not silently shrink stable column ids');
+        assert.equal(model.isIncompleteConceptGridPull(rich, {
+            ...rich,
+            pages: [{ ...rich.pages[0], rows: [] }],
+            explicitlyRemovedRowIds: { [rich.pages[0].id]: ['r1'] },
+        }), false, 'an explicit remove-row mutation may shrink exactly its stamped ids');
+        assert.equal(model.isIncompleteConceptGridPull(rich, {
+            ...rich,
+            pages: [{ ...rich.pages[0], columns: [] }],
+            explicitlyRemovedColumnIds: { [rich.pages[0].id]: ['c1'] },
+        }), false, 'an explicit remove-column mutation may shrink exactly its stamped ids');
         const richTwo = {
             ...rich,
             pages: [
@@ -942,6 +962,8 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /migratePlotGridToLibraryIfNeeded\(targetProjectFile\)/);
     assert.match(mainTs, /const documentSnapshot = normalizeConceptGridDocument\(data\)/);
     assert.match(mainTs, /savePlotGridSafely\(documentSnapshot/);
+    assert.match(mainTs, /delete documentToPersist\.explicitlyRemovedRowIds/);
+    assert.match(mainTs, /delete documentToPersist\.explicitlyRemovedColumnIds/);
     assert.match(mainTs, /promoteVaultTempFile/);
     assert.match(mainTs, /adapter\.rename\(tempPath, path\)/);
     assert.match(mainTs, /\.swap-backup/);
@@ -951,6 +973,14 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /xlsxDigest: integrity\?\.xlsx/);
     assert.match(mainTs, /cached\.xlsxDigest === plotGridBinaryDigest\(preloadedBinary\)/);
     assert.match(mainTs, /cached\.metaDigest === plotGridTextDigest\(preloadedMetaText\)/);
+    assert.match(mainTs, /canonicalChangedExternally/);
+    assert.match(mainTs, /cached\.xlsxDigest !== plotGridBinaryDigest\(currentBinary\)/);
+    assert.match(mainTs, /cached\.metaDigest !== plotGridTextDigest\(currentMetaText\)/);
+    assert.match(mainTs, /preserveRejectedPlotGridSnapshot/);
+    assert.match(mainTs, /Spreadsheet Recovery/);
+    assert.match(mainTs, /canonical-unavailable/);
+    assert.match(mainTs, /incomplete-snapshot/);
+    assert.match(mainTs, /canonicalChangedBeforeCommit/);
     assert.match(mainTs, /before-reset/);
     assert.match(mainTs, /before-import/);
     assert.match(mainTs, /before-repair/);
@@ -1070,7 +1100,7 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.doesNotMatch(view, /private duplicatePage/);
     assert.doesNotMatch(view, /private createPage/);
     // Floating Markdown drafts must flush before the final close save.
-    assert.match(view, /async onClose[\s\S]*?this\.closeAllCellEditors\(\);\s*this\.flushUniverIntoDocument\(\{ acceptCleared: true \}\);[\s\S]*?savePlotGrid/);
+    assert.match(view, /async onClose[\s\S]*?this\.closeAllCellEditors\(\);\s*await this\.flushUniverIntoDocumentSettled\(\);[\s\S]*?savePlotGrid/);
 });
 
 test('cell editor undo stays in the textarea instead of the workspace stack', async () => {
@@ -1294,6 +1324,10 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(view, /readLiveCellPlainText/);
     assert.match(host, /hasPendingSync/);
     assert.match(host, /tryCommitCellEditor|executeCommand\?\.\('sheet\.operation\.set-cell-edit-visible'/);
+    assert.match(host, /flushSettled/);
+    assert.match(host, /waitForUniverSettle/);
+    assert.match(view, /await this\.flushUniverIntoDocumentSettled\(\)/);
+    assert.match(view, /reloadFromDisk[\s\S]*?peekPlotGridDoc[\s\S]*?await this\.persistBoundPlotGrid\(\)/);
     assert.match(host, /readLiveCellPlainText\(active\.sheetId, active\.row, active\.col\)/);
     assert.match(host, /clearMissing/);
     assert.match(host, /pendingClearMissing/);

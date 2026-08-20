@@ -201,6 +201,8 @@ export interface PlotGridUniverHost {
     hasPendingSync: () => boolean;
     /** Force a sync pull from Univer cell matrix into the live document. */
     flush: () => void;
+    /** Commit the active editor, wait for Univer mutations to settle, then pull. */
+    flushSettled: () => Promise<void>;
     /** Resize / repaint this host without pulling a foreign workbook. */
     relayout: () => void;
     focus: () => void;
@@ -1308,19 +1310,21 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let composing = false;
 
     /** Ask Univer to commit the in-cell editor into the worksheet matrix. */
-    const tryCommitCellEditor = () => {
+    const tryCommitCellEditor = (): unknown => {
+        let commandResult: unknown;
         try {
-            univerAPI.executeCommand?.('sheet.operation.set-cell-edit-visible', { visible: false });
+            commandResult = univerAPI.executeCommand?.('sheet.operation.set-cell-edit-visible', { visible: false });
         } catch { /* ignore */ }
         try {
             // Blur leftover editors so IME/formula-bar buffers flush.
             // The formula bar lives in Univer chrome and may be outside `container`.
             const active = opts.container.ownerDocument?.activeElement;
-            if (!(active instanceof HTMLElement)) return;
+            if (!(active instanceof HTMLElement)) return commandResult;
             const inHost = opts.container.contains(active);
             const inFormula = Boolean(active.closest('.univer-formula-bar, [class*="formula-editor"]'));
             if (inHost || inFormula) active.blur();
         } catch { /* ignore */ }
+        return commandResult;
     };
 
     const replaceWorkbook = (doc: ConceptGridDocument) => {
@@ -1991,6 +1995,65 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     // Initial settle — ignore bootstrap commands from createWorkbook.
     suppressUntil = Date.now() + 800;
 
+    const flushNow = (): void => {
+        // Commit the open editor first so workbook.save() includes typed text.
+        tryCommitCellEditor();
+        cellEditing = false;
+        composing = false;
+        pendingAfterMenu = false;
+        pendingAfterSuppress = false;
+        pendingSetDoc = null;
+        if (timer) {
+            window.clearTimeout(timer);
+            timer = 0;
+        }
+        if (dimPullTimer) {
+            window.clearTimeout(dimPullTimer);
+            dimPullTimer = 0;
+        }
+        flushPendingDimensionNotify();
+        // Forced snapshots are normally sparse and keep omitted cells. A
+        // completed axis splice explicitly upgrades this to clearMissing:true
+        // so newly inserted blank rows/columns cannot inherit old content.
+        // mergeDimensions:true — capture finished resize gesture sizes.
+        pendingAfterEdit = false;
+        pendingClearMissing = false;
+        pendingMergeDimensions = false;
+        // Do not clear omitted cells here — workbook.save() still lags the
+        // mutation stream and would persist only part of a typing burst.
+        pullFromUniver(true, { clearMissing: false, mergeDimensions: true });
+        // Prefer the live active cell, including an empty value (Delete).
+        const active = lastSelection;
+        if (active) {
+            const text = readLiveCellPlainText(active.sheetId, active.row, active.col);
+            const clearedKey = `${active.sheetId}:${active.row}:${active.col}`;
+            // Stale getValue() after Delete must not resurrect header/body text
+            // the mutation stream already cleared.
+            if (text != null && !(text && recentlyClearedCells.has(clearedKey))) {
+                const next = mergeUniverCellDataIntoDocument(liveDoc, active.sheetId, {
+                    [active.row]: { [active.col]: { v: text } },
+                });
+                const nextFp = conceptGridContentFingerprint(next);
+                if (nextFp !== contentFp) {
+                    liveDoc = next;
+                    contentFp = nextFp;
+                    opts.onDocumentChange(liveDoc);
+                }
+            }
+        }
+        recentlyClearedCells.clear();
+    };
+
+    const waitForUniverSettle = async (): Promise<void> => {
+        const commandResult = tryCommitCellEditor();
+        try { await Promise.resolve(commandResult); } catch { /* final pull still runs */ }
+        // Univer publishes cell/editor and sheet-structure mutations on later
+        // animation frames. A synchronous close flush can otherwise read the
+        // teardown workbook snapshot that triggered the original data loss.
+        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+    };
+
     return {
         dispose: () => {
             if (disposed || disposing) return;
@@ -2147,55 +2210,12 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 || dimNotifyTimer !== 0
                 || dimPullTimer !== 0;
         },
-        flush: () => {
-            // Commit the open editor first so workbook.save() includes typed text.
-            tryCommitCellEditor();
-            cellEditing = false;
-            composing = false;
-            pendingAfterMenu = false;
-            pendingAfterSuppress = false;
-            pendingSetDoc = null;
-            if (timer) {
-                window.clearTimeout(timer);
-                timer = 0;
-            }
-            if (dimPullTimer) {
-                window.clearTimeout(dimPullTimer);
-                dimPullTimer = 0;
-            }
-            flushPendingDimensionNotify();
-            // Forced snapshots are normally sparse and keep omitted cells. A
-            // completed axis splice explicitly upgrades this to clearMissing:true
-            // so newly inserted blank rows/columns cannot inherit old content.
-            // mergeDimensions:true — capture finished resize gesture sizes.
-            // pendingAfterEdit means Univer value mutations ran while the editor
-            // was busy; those omitted cells are real clears once we flush.
-            pendingAfterEdit = false;
-            pendingClearMissing = false;
-            pendingMergeDimensions = false;
-            // Do not clear omitted cells here — workbook.save() still lags the
-            // mutation stream and would persist only part of a typing burst.
-            pullFromUniver(true, { clearMissing: false, mergeDimensions: true });
-            // Prefer the live active cell, including an empty value (Delete).
-            const active = lastSelection;
-            if (active) {
-                const text = readLiveCellPlainText(active.sheetId, active.row, active.col);
-                const clearedKey = `${active.sheetId}:${active.row}:${active.col}`;
-                // Stale getValue() after Delete must not resurrect header/body text
-                // the mutation stream already cleared.
-                if (text != null && !(text && recentlyClearedCells.has(clearedKey))) {
-                    const next = mergeUniverCellDataIntoDocument(liveDoc, active.sheetId, {
-                        [active.row]: { [active.col]: { v: text } },
-                    });
-                    const nextFp = conceptGridContentFingerprint(next);
-                    if (nextFp !== contentFp) {
-                        liveDoc = next;
-                        contentFp = nextFp;
-                        opts.onDocumentChange(liveDoc);
-                    }
-                }
-            }
-            recentlyClearedCells.clear();
+        flush: flushNow,
+        flushSettled: async () => {
+            if (disposed || disposing) return;
+            await waitForUniverSettle();
+            if (disposed || disposing) return;
+            flushNow();
         },
         relayout,
         focus: () => {

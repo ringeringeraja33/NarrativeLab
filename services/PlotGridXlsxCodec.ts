@@ -2348,11 +2348,23 @@ export function spliceConceptGridAxis(
 
     if (axis === 'rows') {
         const removed = page.rows.splice(modelStart, worksheetCount);
+        if (removed.length) {
+            const byPage = doc.explicitlyRemovedRowIds ?? (doc.explicitlyRemovedRowIds = {});
+            byPage[sheetId] = [
+                ...new Set([...(byPage[sheetId] || []), ...removed.map(row => row.id)]),
+            ];
+        }
         for (const row of removed) {
             for (const column of page.columns) delete page.cells[cellKey(row.id, column.id)];
         }
     } else {
         const removed = page.columns.splice(modelStart, worksheetCount);
+        if (removed.length) {
+            const byPage = doc.explicitlyRemovedColumnIds ?? (doc.explicitlyRemovedColumnIds = {});
+            byPage[sheetId] = [
+                ...new Set([...(byPage[sheetId] || []), ...removed.map(column => column.id)]),
+            ];
+        }
         for (const column of removed) {
             for (const row of page.rows) delete page.cells[cellKey(row.id, column.id)];
         }

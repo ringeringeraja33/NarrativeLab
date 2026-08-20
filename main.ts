@@ -380,6 +380,10 @@ export default class SceneCardsPlugin extends Plugin {
         metaDigest: string;
         doc: ConceptGridDocument;
     }>();
+    /** Avoid writing the same rejected in-memory grid to recovery repeatedly in one session. */
+    private _preservedPlotGridRecoveryPaths = new Map<string, string>();
+    /** A rejected save stays visible without spamming every autosave tick. */
+    private _reportedPlotGridRecoveryNotices = new Set<string>();
     /** Cached plotgrid mention scan — rebuilds are expensive on large grids. */
     private _plotGridScanCache: {
         projectFile: string;
@@ -3487,6 +3491,24 @@ export default class SceneCardsPlugin extends Plugin {
         const explicitPageRemoval = new Set(document.explicitlyRemovedPageIds || []);
         await this.recoverPlotGridWriteJournal(path, metaPath);
         const existed = await adapter.exists(path);
+        let currentBinary: ArrayBuffer | null;
+        let currentMetaText: string;
+        try {
+            currentBinary = existed ? await adapter.readBinary(path) : null;
+            currentMetaText = await adapter.exists(metaPath)
+                ? await adapter.read(metaPath)
+                : '';
+        } catch (error) {
+            const recoveryPath = await this.preserveRejectedPlotGridSnapshot(
+                document,
+                systemFolder,
+                projectFilePath,
+                'canonical-unavailable',
+            );
+            console.warn('[NarrativeLab] Skipping datasheet write — canonical files could not be checked safely.', error);
+            this.reportRejectedPlotGridSave('canonical-unavailable', projectFilePath, recoveryPath);
+            return;
+        }
 
         // Never clobber an existing workbook with an empty in-memory model.
         // Autosave / tab-close / project-switch persist used to write a default
@@ -3508,17 +3530,47 @@ export default class SceneCardsPlugin extends Plugin {
             return;
         }
         const cached = this.lookupPlotGridDocCache({ projectFile: projectFilePath, xlsxPath: path });
+        const canonicalChangedExternally = Boolean(
+            cached
+            && cached.xlsxPath === path
+            && cached.xlsxDigest
+            && currentBinary
+            && (
+                cached.xlsxDigest !== plotGridBinaryDigest(currentBinary)
+                || cached.metaDigest !== plotGridTextDigest(currentMetaText)
+            )
+        );
+        if (canonicalChangedExternally && !options.allowEmptyOverwrite) {
+            const recoveryPath = await this.preserveRejectedPlotGridSnapshot(
+                document,
+                systemFolder,
+                projectFilePath,
+                'external-change',
+            );
+            console.warn('[NarrativeLab] Skipping datasheet write — canonical files changed outside this editor.', recoveryPath);
+            this.reportRejectedPlotGridSave('external-change', projectFilePath, recoveryPath);
+            return;
+        }
         if (
             cached
             && cached.xlsxPath === path
             && !options.allowEmptyOverwrite
             && isIncompleteConceptGridPull(cached.doc, document)
         ) {
-            console.warn('[NarrativeLab] Skipping datasheet write — snapshot is missing worksheets still on disk.');
+            const recoveryPath = await this.preserveRejectedPlotGridSnapshot(
+                document,
+                systemFolder,
+                projectFilePath,
+                'incomplete-snapshot',
+            );
+            console.warn('[NarrativeLab] Skipping datasheet write — snapshot is missing persisted sheets or axes.', recoveryPath);
+            this.reportRejectedPlotGridSave('incomplete-snapshot', projectFilePath, recoveryPath);
             return;
         }
         const documentToPersist = structuredClone(document);
         delete documentToPersist.explicitlyRemovedPageIds;
+        delete documentToPersist.explicitlyRemovedRowIds;
+        delete documentToPersist.explicitlyRemovedColumnIds;
         const deletesPersistedPage = explicitPageRemoval.size > 0
             && (!cached || cached.doc.pages.some(page => explicitPageRemoval.has(page.id)));
 
@@ -3543,12 +3595,45 @@ export default class SceneCardsPlugin extends Plugin {
         // Clean xlsx (no embedded meta) so Excel/Univer only see page sheets.
         const binary = await encodePlotGridXlsx(documentToPersist, { vaultName: this.app.vault.getName() });
         const metaJson = serializePlotGridNlMeta(documentToPersist);
-        const previousXlsxDigest = existed
-            ? plotGridBinaryDigest(await adapter.readBinary(path))
+        const previousXlsxDigest = currentBinary
+            ? plotGridBinaryDigest(currentBinary)
             : null;
         if (!await this.projectExistsForWrite(projectFilePath)) return;
         await this.ensureVaultFolder(libraryFolder);
         await this.ensureVaultFolder(systemFolder);
+        let latestBinary: ArrayBuffer | null;
+        let latestMetaText: string;
+        try {
+            latestBinary = await adapter.exists(path) ? await adapter.readBinary(path) : null;
+            latestMetaText = await adapter.exists(metaPath) ? await adapter.read(metaPath) : '';
+        } catch (error) {
+            const recoveryPath = await this.preserveRejectedPlotGridSnapshot(
+                document,
+                systemFolder,
+                projectFilePath,
+                'canonical-unavailable',
+            );
+            console.warn('[NarrativeLab] Skipping datasheet write — canonical files became unavailable before commit.', error);
+            this.reportRejectedPlotGridSave('canonical-unavailable', projectFilePath, recoveryPath);
+            return;
+        }
+        const canonicalChangedBeforeCommit = (
+            Boolean(latestBinary) !== Boolean(currentBinary)
+            || Boolean(latestBinary && currentBinary
+                && plotGridBinaryDigest(latestBinary) !== plotGridBinaryDigest(currentBinary))
+            || plotGridTextDigest(latestMetaText) !== plotGridTextDigest(currentMetaText)
+        );
+        if (canonicalChangedBeforeCommit) {
+            const recoveryPath = await this.preserveRejectedPlotGridSnapshot(
+                document,
+                systemFolder,
+                projectFilePath,
+                'external-change',
+            );
+            console.warn('[NarrativeLab] Skipping datasheet write — canonical files changed before commit.', recoveryPath);
+            this.reportRejectedPlotGridSave('external-change', projectFilePath, recoveryPath);
+            return;
+        }
         const endSuppressXlsx = this.beginSuppressVaultRefresh(path, 2500);
         const endSuppressMeta = this.beginSuppressVaultRefresh(metaPath, 2500);
         try {
@@ -3574,6 +3659,55 @@ export default class SceneCardsPlugin extends Plugin {
         );
         this.invalidatePlotGridScanCache();
         void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
+    }
+
+    /**
+     * Preserve an editor snapshot that is unsafe to promote to the canonical workbook.
+     * The recovery pair lives outside Library so it cannot be mistaken for the live
+     * datasheet by NarrativeLab or another spreadsheet plugin.
+     */
+    private async preserveRejectedPlotGridSnapshot(
+        document: ConceptGridDocument,
+        systemFolder: string,
+        projectFilePath: string,
+        reason: 'canonical-unavailable' | 'external-change' | 'incomplete-snapshot',
+    ): Promise<string> {
+        const recoveryDocument = structuredClone(normalizeConceptGridDocument(document));
+        delete recoveryDocument.explicitlyRemovedPageIds;
+        delete recoveryDocument.explicitlyRemovedRowIds;
+        delete recoveryDocument.explicitlyRemovedColumnIds;
+        const metaJson = serializePlotGridNlMeta(recoveryDocument);
+        const recoveryKey = `${normalizePath(projectFilePath)}|${reason}|${plotGridTextDigest(metaJson)}`;
+        const recoveryFolder = normalizePath(`${systemFolder}/Spreadsheet Recovery`);
+        const existingRecoveryPath = this._preservedPlotGridRecoveryPaths.get(recoveryKey);
+        if (existingRecoveryPath) return existingRecoveryPath;
+
+        await this.ensureVaultFolder(recoveryFolder);
+        const binary = await encodePlotGridXlsx(recoveryDocument, { vaultName: this.app.vault.getName() });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const baseName = `datasheet-${reason}-${stamp}`;
+        const xlsxPath = normalizePath(`${recoveryFolder}/${baseName}.xlsx`);
+        const metaPath = normalizePath(`${recoveryFolder}/${baseName}.nlmeta.json`);
+        await this.writeVaultBinaryResilient(xlsxPath, binary);
+        await this.writeVaultTextResilient(metaPath, metaJson);
+        this._preservedPlotGridRecoveryPaths.set(recoveryKey, xlsxPath);
+        return xlsxPath;
+    }
+
+    private reportRejectedPlotGridSave(
+        reason: 'canonical-unavailable' | 'external-change' | 'incomplete-snapshot',
+        projectFilePath: string,
+        recoveryPath: string,
+    ): void {
+        const noticeKey = `${normalizePath(projectFilePath)}|${reason}`;
+        if (this._reportedPlotGridRecoveryNotices.has(noticeKey)) return;
+        this._reportedPlotGridRecoveryNotices.add(noticeKey);
+        const message = reason === 'external-change'
+            ? 'Spreadsheet changed outside NarrativeLab. The canonical file was kept and this editor snapshot was saved to {path}.'
+            : reason === 'incomplete-snapshot'
+                ? 'Incomplete spreadsheet save was blocked. The canonical file was kept and this editor snapshot was saved to {path}.'
+                : 'Spreadsheet could not be checked safely. The canonical file was kept and this editor snapshot was saved to {path}.';
+        new Notice(t(message, { path: recoveryPath }), 10_000);
     }
 
     private async backupPlotGridFile(filePath: string, label: string): Promise<string | null> {

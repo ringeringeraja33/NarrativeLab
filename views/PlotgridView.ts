@@ -230,7 +230,7 @@ export class PlotgridView extends ProjectBoundItemView {
         if (!this.hasHydratedDocument) return;
         const projectFile = this.loadedProjectFile;
         this.closeAllCellEditors();
-        this.flushUniverIntoDocument({ acceptCleared: true });
+        await this.flushUniverIntoDocumentSettled();
         this.cancelPendingSave();
         if (!projectFile || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
         try {
@@ -247,7 +247,7 @@ export class PlotgridView extends ProjectBoundItemView {
         // Floating Markdown drafts must enter the model before Univer's final pull.
         const projectFile = this.loadedProjectFile;
         this.closeAllCellEditors();
-        this.flushUniverIntoDocument({ acceptCleared: true });
+        await this.flushUniverIntoDocumentSettled();
         this.cancelPendingSave();
         if (
             this.hasHydratedDocument
@@ -355,24 +355,37 @@ export class PlotgridView extends ProjectBoundItemView {
         if (!host) return;
         try {
             host.flush();
-            const next = normalizeConceptGridDocument(host.getDocument());
-            // Insert-sheet / mid-dispose snapshots can omit existing worksheets
-            // and look like an empty workbook. Never replace a real grid with that.
-            if (isIncompleteConceptGridPull(this.document, next)) return;
-            // A dispose/remount can yield the default placeholder. Persist,
-            // autosave, and tab-close pass acceptCleared so user deletes win —
-            // but still refuse wiping a filled workbook down to the placeholder.
-            if (
-                isDefaultEmptyConceptGrid(next)
-                && !isDefaultEmptyConceptGrid(this.document)
-            ) {
-                return;
-            }
-            this.document = next;
-            this.bindActivePage();
+            this.adoptUniverHostDocument(host);
         } catch (error) {
             console.warn('[NarrativeLab] Could not flush spreadsheet state:', error);
         }
+    }
+
+    /** Lifecycle-safe flush used before switching/closing a spreadsheet tab. */
+    private async flushUniverIntoDocumentSettled(): Promise<void> {
+        const host = this.univerHost;
+        if (!host) return;
+        try {
+            await host.flushSettled();
+            this.adoptUniverHostDocument(host);
+        } catch (error) {
+            console.warn('[NarrativeLab] Could not settle spreadsheet state before save:', error);
+        }
+    }
+
+    private adoptUniverHostDocument(host: PlotGridUniverHost): void {
+        const next = normalizeConceptGridDocument(host.getDocument());
+        // Insert-sheet / mid-dispose snapshots can omit worksheets or return a
+        // prefix of stable row/column ids. Never replace a richer live model.
+        if (isIncompleteConceptGridPull(this.document, next)) return;
+        if (
+            isDefaultEmptyConceptGrid(next)
+            && !isDefaultEmptyConceptGrid(this.document)
+        ) {
+            return;
+        }
+        this.document = next;
+        this.bindActivePage();
     }
 
     /** Undo Univer host layout so the next mount measures a clean flex canvas. */
@@ -2127,6 +2140,21 @@ export class PlotgridView extends ProjectBoundItemView {
                 // Univer in-cell / formula editor or IME — remounting clears composition.
                 if (this.univerHost?.isEditorBusy()) return;
                 if (this.scrollAreaEl?.querySelector('[contenteditable="true"]:focus, textarea:focus, input:focus')) return;
+
+                // A foreign Excel/Univer write may arrive between the last
+                // mutation callback and the autosave timer. Preserve any local
+                // divergence through the conflict-aware save path before disk
+                // reload replaces the view document.
+                if (reloadFromDisk && this.hasHydratedDocument) {
+                    const cachedDocument = this.plugin?.peekPlotGridDoc?.(projectFile);
+                    if (
+                        !cachedDocument
+                        || conceptGridContentFingerprint(cachedDocument)
+                            !== conceptGridContentFingerprint(this.document)
+                    ) {
+                        await this.persistBoundPlotGrid();
+                    }
+                }
             }
 
             const beforeFp = conceptGridContentFingerprint(this.document);
