@@ -101,6 +101,15 @@ test('sidebar panel splits vault/project and pins a vertical heatmap for the act
     assert.match(styles, /\.nl-tracker-cards,\s*\n\.nl-tracker-page-cards \{[^}]*justify-content:\s*center/s);
 });
 
+test('project tracker names its project and follows open project files', () => {
+    assert.match(panel, /Project: \{title\}/);
+    assert.match(panel, /Paused — no project files are open\./);
+    assert.match(mainTs, /hasOpenFileForProject/);
+    assert.match(mainTs, /leaf\.view instanceof FileView/);
+    assert.match(mainTs, /setProjectFilesOpen/);
+    assert.match(mainTs, /workspace\.on\('layout-change'/);
+});
+
 test('ribbon tracker page is vault-wide and not project-bound', () => {
     assert.match(page, /WRITING_TRACKER_VIEW_TYPE/);
     assert.doesNotMatch(page, /ProjectBoundItemView/);
@@ -155,9 +164,27 @@ test('sprints refuse a zero or missing word-count baseline', () => {
     const tracker = new WritingTracker();
     assert.equal(tracker.startSprint(0), false);
     assert.equal(tracker.startSprint(-3), false);
+    tracker.setProjectFilesOpen(true);
     assert.equal(tracker.startSprint(13408), true);
     assert.match(panel, /if \(!tracker\.startSprint\(totalNow\)\)/);
     assert.match(panel, /Cannot start a sprint until the project word count is ready/);
+});
+
+test('project session and sprint clocks pause while every project file is closed', () => {
+    const tracker = new WritingTracker();
+    tracker.startSession(1000, true, 1000);
+    assert.equal(tracker.getSessionDuration(4000), 3000);
+    assert.equal(tracker.startSprint(1000, 2000), true);
+    assert.equal(tracker.getSprintElapsed(4000), 2000);
+
+    assert.equal(tracker.setProjectFilesOpen(false, 4000), true);
+    assert.equal(tracker.getSessionDuration(9000), 3000);
+    assert.equal(tracker.getSprintElapsed(9000), 2000);
+
+    assert.equal(tracker.setProjectFilesOpen(true, 9000), true);
+    assert.equal(tracker.getSessionDuration(11000), 5000);
+    assert.equal(tracker.getSprintElapsed(11000), 4000);
+    assert.equal(tracker.stopSprint(1010, 11000)?.durationMs, 4000);
 });
 
 test('revisions ignore empty-index recounts and only measure positive totals', () => {

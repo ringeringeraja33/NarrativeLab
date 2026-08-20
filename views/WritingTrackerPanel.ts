@@ -99,6 +99,21 @@ export class WritingTrackerPanel extends ItemView {
                 text: t('Open a NarrativeLab project to see project stats.'),
             });
         } else {
+            if (this.trackerScope === 'project') {
+                const project = this.plugin.sceneManager.activeProject!;
+                const context = body.createDiv('nl-tracker-project-context');
+                const name = context.createDiv({
+                    cls: 'nl-tracker-project-name',
+                    text: t('Project: {title}', { title: project.title }),
+                });
+                name.setAttr('title', project.filePath);
+                if (!this.plugin.writingTracker.isProjectFilesOpen()) {
+                    context.createDiv({
+                        cls: 'nl-tracker-project-status is-paused',
+                        text: t('Paused — no project files are open.'),
+                    });
+                }
+            }
             this.renderSprint(body, totalWords);
             this.renderSession(body, totalWords);
             renderGoalRings(
@@ -195,7 +210,7 @@ export class WritingTrackerPanel extends ItemView {
                 timerDisplay.classList.remove('is-overtime');
                 sprintWordsEl.textContent = '';
                 sprintWpmEl.textContent = '';
-                startBtn.disabled = false;
+                startBtn.disabled = !tracker.isProjectFilesOpen();
                 stopBtn.disabled = true;
                 durationInput.disabled = false;
             }
@@ -232,7 +247,7 @@ export class WritingTrackerPanel extends ItemView {
             updateTimerDisplay();
         });
 
-        if (tracker.isSprintRunning()) {
+        if (tracker.isSprintRunning() && tracker.isProjectFilesOpen()) {
             this.sprintTimerId = window.setInterval(updateTimerDisplay, 1000);
         }
         updateTimerDisplay(currentTotalWords);

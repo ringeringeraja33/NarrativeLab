@@ -11,6 +11,13 @@ const require = createRequire(import.meta.url);
 const ExcelJS = require('exceljs');
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 
+test('production bundle guards ExcelJS UUID buffer writes', async () => {
+    const packageJson = JSON.parse(await readFile(join(projectRoot, 'package.json'), 'utf8'));
+    const bundle = await readFile(join(projectRoot, 'main.js'), 'utf8');
+    assert.equal(packageJson.overrides.exceljs.uuid, '11.1.1');
+    assert.match(bundle, /UUID byte range is out of buffer bounds/);
+});
+
 test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'nl-plotgrid-xlsx-'));
     const outfile = join(dir, 'codec.cjs');

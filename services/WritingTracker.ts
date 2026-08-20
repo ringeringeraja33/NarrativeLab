@@ -34,8 +34,12 @@ export interface SprintLogEntry {
 export class WritingTracker {
     /** Word count at the moment the session started – null until startSession() is called */
     private baselineWords: number | null = null;
-    /** Timestamp the session started */
-    private sessionStart: number = Date.now();
+    /** Active time accumulated while at least one file from this project was open. */
+    private sessionElapsedMs = 0;
+    /** Start of the current active interval; null while every project file is closed. */
+    private sessionActiveSince: number | null = null;
+    /** Project activity gate shared by session and sprint clocks. */
+    private _projectFilesOpen = false;
     /** Persisted daily history */
     private history: Record<string, number> = {};
     /** Persisted daily revision (absolute change) history */
@@ -48,8 +52,10 @@ export class WritingTracker {
     // ── Sprint state ───────────────────────────────────
     /** Whether a timed sprint is currently running */
     private _sprintRunning = false;
-    /** Sprint start timestamp (ms) */
-    private _sprintStart = 0;
+    /** Active sprint time accumulated across project-file open intervals. */
+    private _sprintElapsedMs = 0;
+    /** Start of the current active sprint interval; null while paused. */
+    private _sprintActiveSince: number | null = null;
     /** Sprint baseline word count */
     private _sprintBaseline = 0;
     /** Configured sprint duration (ms) */
@@ -62,14 +68,16 @@ export class WritingTracker {
      * as the baseline.  Also sanitises today's history entry if it looks
      * corrupted (from earlier 0-baseline bug).
      */
-    startSession(currentTotalWords: number): void {
+    startSession(currentTotalWords: number, projectFilesOpen = true, now = Date.now()): void {
         // If the project word count isn't available yet, don't start — keep
         // baseline null so getSessionWords / flushSession remain no-ops.
         if (currentTotalWords <= 0) return;
 
         this.baselineWords = currentTotalWords;
         this.lastKnownTotal = currentTotalWords;
-        this.sessionStart = Date.now();
+        this.sessionElapsedMs = 0;
+        this._projectFilesOpen = projectFilesOpen;
+        this.sessionActiveSince = projectFilesOpen ? now : null;
 
         // Sanitise: if today's stored value is unreasonably large (≥ 50% of
         // the entire project), it's almost certainly corrupted from the old
@@ -85,15 +93,45 @@ export class WritingTracker {
     getSessionWords(currentTotalWords: number): number {
         if (this.baselineWords === null) {
             // Lazy-start: if the init call had 0 but now we have a real count
-            if (currentTotalWords > 0) this.startSession(currentTotalWords);
+            if (currentTotalWords > 0) {
+                this.startSession(currentTotalWords, this._projectFilesOpen);
+            }
             return 0;
         }
         return Math.max(0, currentTotalWords - this.baselineWords);
     }
 
     /** How long the session has been running (ms) */
-    getSessionDuration(): number {
-        return Date.now() - this.sessionStart;
+    getSessionDuration(now = Date.now()): number {
+        return this.sessionElapsedMs
+            + (this.sessionActiveSince === null ? 0 : Math.max(0, now - this.sessionActiveSince));
+    }
+
+    /** Pause/resume project clocks when the first project file opens or the last one closes. */
+    setProjectFilesOpen(open: boolean, now = Date.now()): boolean {
+        if (this._projectFilesOpen === open) return false;
+        this._projectFilesOpen = open;
+        if (this.baselineWords !== null) {
+            if (open) {
+                this.sessionActiveSince = now;
+            } else if (this.sessionActiveSince !== null) {
+                this.sessionElapsedMs += Math.max(0, now - this.sessionActiveSince);
+                this.sessionActiveSince = null;
+            }
+        }
+        if (this._sprintRunning) {
+            if (open) {
+                this._sprintActiveSince = now;
+            } else if (this._sprintActiveSince !== null) {
+                this._sprintElapsedMs += Math.max(0, now - this._sprintActiveSince);
+                this._sprintActiveSince = null;
+            }
+        }
+        return true;
+    }
+
+    isProjectFilesOpen(): boolean {
+        return this._projectFilesOpen;
     }
 
     /** Words per minute for this session */
@@ -280,19 +318,21 @@ export class WritingTracker {
     // ── Sprint controls ────────────────────────────────
 
     /** Start a timed writing sprint. Returns false when the project word count is not ready. */
-    startSprint(currentTotalWords: number): boolean {
-        if (currentTotalWords <= 0) return false;
+    startSprint(currentTotalWords: number, now = Date.now()): boolean {
+        if (currentTotalWords <= 0 || !this._projectFilesOpen) return false;
         this._sprintRunning = true;
-        this._sprintStart = Date.now();
+        this._sprintElapsedMs = 0;
+        this._sprintActiveSince = now;
         this._sprintBaseline = currentTotalWords;
         return true;
     }
 
     /** Stop the current sprint and record it */
-    stopSprint(currentTotalWords: number): SprintLogEntry | null {
+    stopSprint(currentTotalWords: number, now = Date.now()): SprintLogEntry | null {
         if (!this._sprintRunning) return null;
+        const elapsed = this.getSprintElapsed(now);
         this._sprintRunning = false;
-        const elapsed = Date.now() - this._sprintStart;
+        this._sprintActiveSince = null;
         const words = Math.max(0, currentTotalWords - this._sprintBaseline);
         const minutes = elapsed / 60_000;
         const wpm = minutes >= 0.5 ? Math.round(words / minutes) : 0;
@@ -309,7 +349,8 @@ export class WritingTracker {
     /** Reset sprint state without recording */
     resetSprint(): void {
         this._sprintRunning = false;
-        this._sprintStart = 0;
+        this._sprintElapsedMs = 0;
+        this._sprintActiveSince = null;
         this._sprintBaseline = 0;
     }
 
@@ -317,15 +358,16 @@ export class WritingTracker {
     isSprintRunning(): boolean { return this._sprintRunning; }
 
     /** Elapsed sprint time (ms) */
-    getSprintElapsed(): number {
+    getSprintElapsed(now = Date.now()): number {
         if (!this._sprintRunning) return 0;
-        return Date.now() - this._sprintStart;
+        return this._sprintElapsedMs
+            + (this._sprintActiveSince === null ? 0 : Math.max(0, now - this._sprintActiveSince));
     }
 
     /** Remaining sprint time (ms). Returns 0 if overtime. */
     getSprintRemaining(): number {
         if (!this._sprintRunning) return this._sprintDurationMs;
-        return Math.max(0, this._sprintDurationMs - (Date.now() - this._sprintStart));
+        return Math.max(0, this._sprintDurationMs - this.getSprintElapsed());
     }
 
     /** Words written during the current sprint */
@@ -385,7 +427,9 @@ export class WritingTracker {
         this.baselineWords = null;
         this.lastKnownTotal = null;
         this._flushedSessionWords = 0;
-        this.sessionStart = Date.now();
+        this.sessionElapsedMs = 0;
+        this.sessionActiveSince = null;
+        this._projectFilesOpen = false;
         this.resetSprint();
     }
 

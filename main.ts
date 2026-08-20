@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars, no-useless-escape -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { AbstractInputSuggest, App, ButtonComponent, DropdownComponent, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
+import { AbstractInputSuggest, App, ButtonComponent, DropdownComponent, FileView, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
 import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './settings';
 import { asRecord, isRecord } from './utils/narrow';
 import { consumeTextareaUndoKey, isLocalTextUndoTarget, isRedoKey, isUndoKey } from './utils/textareaHistory';
@@ -681,7 +681,10 @@ export default class SceneCardsPlugin extends Plugin {
             // (createPlotGridIfMissing removed — it caused race-condition overwrites)
 
             // Initialize writing tracker from per-project System/stats.json
-            this.writingTracker.startSession(this.getTrackedWordTotal());
+            this.writingTracker.startSession(
+                this.getTrackedWordTotal(),
+                this.hasOpenFileForProject(),
+            );
             this.writingTracker.setSprintDuration(
                 Math.max(1, this.settings.sprintDurationMinutes || 25) * 60_000,
             );
@@ -1446,7 +1449,8 @@ export default class SceneCardsPlugin extends Plugin {
             this.app.workspace.on('active-leaf-change', (leaf) => {
                 this.injectFormattingToolbar(leaf);
                 this.updateFrontmatterVisibility();
-                void this.syncActiveProjectFromLeaf(leaf);
+                void this.syncActiveProjectFromLeaf(leaf)
+                    .finally(() => this.syncWritingTrackerActivity());
             })
         );
 
@@ -1455,11 +1459,13 @@ export default class SceneCardsPlugin extends Plugin {
             this.app.workspace.on('layout-change', () => {
                 // CSS hide/show only — do not re-fold (would fight user expanding Properties).
                 this.updateFrontmatterVisibility();
+                this.syncWritingTrackerActivity();
             })
         );
         this.registerEvent(
             this.app.workspace.on('file-open', () => {
                 this.updateFrontmatterVisibility({ collapseOpenFiles: true });
+                this.syncWritingTrackerActivity();
                 // Metadata editor mounts slightly after file-open; fold again once ready.
                 window.setTimeout(() => {
                     this.updateFrontmatterVisibility({ collapseOpenFiles: true });
@@ -4668,6 +4674,36 @@ export default class SceneCardsPlugin extends Plugin {
         ).totalWords;
     }
 
+    /** Whether any file-backed workspace leaf belongs to the selected project folder. */
+    hasOpenFileForProject(projectFilePath?: string | null): boolean {
+        const target = normalizePath(
+            projectFilePath || this.sceneManager.activeProject?.filePath || '',
+        );
+        if (!target) return false;
+        const base = normalizePath(deriveProjectFoldersFromFilePath(target).baseFolder);
+        if (!base) return false;
+        const prefix = `${base}/`;
+        let found = false;
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            if (found || !(leaf.view instanceof FileView)) return;
+            const path = normalizePath(leaf.view.file?.path || '');
+            if (path === base || path.startsWith(prefix)) found = true;
+        });
+        return found;
+    }
+
+    /** Pause/resume project session and sprint clocks as project files open and close. */
+    syncWritingTrackerActivity(): void {
+        const project = this.sceneManager.activeProject;
+        const changed = this.writingTracker.setProjectFilesOpen(
+            project ? this.hasOpenFileForProject(project.filePath) : false,
+        );
+        if (!changed) return;
+        for (const leaf of this.app.workspace.getLeavesOfType(WRITING_TRACKER_PANEL_TYPE)) {
+            (leaf.view as WritingTrackerPanel).refresh?.();
+        }
+    }
+
     flushWritingTrackers(totalWords?: number): void {
         try {
             const words = totalWords ?? this.getTrackedWordTotal();
@@ -4705,7 +4741,9 @@ export default class SceneCardsPlugin extends Plugin {
         try {
             const words = this.getTrackedWordTotal();
             this.writingTracker.resetSession();
-            if (words > 0) this.writingTracker.startSession(words);
+            if (words > 0) {
+                this.writingTracker.startSession(words, this.hasOpenFileForProject());
+            }
         } catch { /* project may not be set yet */ }
     }
 

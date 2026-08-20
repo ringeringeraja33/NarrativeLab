@@ -1,6 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
-import { copyFileSync, existsSync, readdirSync, realpathSync } from "fs";
+import { copyFileSync, existsSync, readFileSync, readdirSync, realpathSync } from "fs";
 import { homedir } from "os";
 import { basename, delimiter, dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
@@ -105,6 +105,27 @@ function deployPluginFiles() {
   }
 }
 
+function secureExcelJsBrowserBundle() {
+  const unsafeUuidV35 = "o){a=a||0;for(let e=0;e<16;++e)o[a+e]=l[e];return o}";
+  const safeUuidV35 = "o){if(a=a||0,a<0||a+16>o.length)throw new RangeError(\"UUID byte range is out of buffer bounds\");for(let e=0;e<16;++e)o[a+e]=l[e];return o}";
+  return {
+    name: "secure-exceljs-browser-uuid",
+    setup(build) {
+      build.onLoad({ filter: /exceljs\/dist\/exceljs\.min\.js$/ }, (args) => {
+        const source = readFileSync(args.path, "utf8");
+        const matches = source.split(unsafeUuidV35).length - 1;
+        if (matches !== 1) {
+          throw new Error(`Expected one vulnerable ExcelJS UUID v3/v5 implementation, found ${matches}`);
+        }
+        return {
+          contents: source.replace(unsafeUuidV35, safeUuidV35),
+          loader: "js",
+        };
+      });
+    },
+  };
+}
+
 const shared = {
   absWorkingDir: projectRoot,
   bundle: true,
@@ -147,6 +168,7 @@ const mainContext = await esbuild.context({
   entryPoints: [join(projectRoot, "main.ts")],
   outfile: join(projectRoot, "main.js"),
   plugins: [
+    secureExcelJsBrowserBundle(),
     {
       name: "deploy-to-vault",
       setup(build) {
