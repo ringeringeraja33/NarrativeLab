@@ -17,15 +17,25 @@ export interface DailyEntry {
 export interface WritingTrackerData {
     /** Daily word counts keyed by ISO date */
     history: Record<string, number>;
-    /** Daily revision counts (absolute word changes — adds + deletes) keyed by ISO date */
+    /** Daily revision counts (inserted + deleted readable word tokens) keyed by ISO date */
     revisionHistory?: Record<string, number>;
     /** Persisted sprint log entries */
     sprintLog?: SprintLogEntry[];
+    /** Recoverable in-progress sprint state (restored when a project file is open). */
+    activeSprint?: ActiveSprintState;
+}
+
+export interface ActiveSprintState {
+    baselineWords: number;
+    elapsedMs: number;
+    durationMs: number;
+    startedAt: number;
 }
 
 /** A completed sprint record */
 export interface SprintLogEntry {
     date: string;       // ISO date
+    endDate?: string;   // ISO date when a sprint crosses midnight
     words: number;      // net words written
     durationMs: number; // actual elapsed time
     wpm: number;        // words per minute
@@ -44,8 +54,8 @@ export class WritingTracker {
     private history: Record<string, number> = {};
     /** Persisted daily revision (absolute change) history */
     private revisionHistory: Record<string, number> = {};
-    /** Last known total word count — used to measure revision deltas between flushes */
-    private lastKnownTotal: number | null = null;
+    /** Exact word-token churn waiting to be copied into the vault-wide ledger. */
+    private pendingRevisionWords = 0;
     /** Session words already flushed to daily history — avoids double-counting */
     private _flushedSessionWords = 0;
 
@@ -58,6 +68,8 @@ export class WritingTracker {
     private _sprintActiveSince: number | null = null;
     /** Sprint baseline word count */
     private _sprintBaseline = 0;
+    /** Wall-clock start used only for honest cross-midnight attribution. */
+    private _sprintStartedAt = 0;
     /** Configured sprint duration (ms) */
     private _sprintDurationMs = 25 * 60_000; // default 25 min
     /** Completed sprint log */
@@ -65,40 +77,27 @@ export class WritingTracker {
 
     /**
      * Start (or restart) a session, capturing the current total word count
-     * as the baseline.  Also sanitises today's history entry if it looks
-     * corrupted (from earlier 0-baseline bug).
+     * as the baseline. Zero is a valid baseline for a new empty project.
      */
     startSession(currentTotalWords: number, projectFilesOpen = true, now = Date.now()): void {
-        // If the project word count isn't available yet, don't start — keep
-        // baseline null so getSessionWords / flushSession remain no-ops.
-        if (currentTotalWords <= 0) return;
+        if (!Number.isFinite(currentTotalWords) || currentTotalWords < 0) return;
 
         this.baselineWords = currentTotalWords;
-        this.lastKnownTotal = currentTotalWords;
         this.sessionElapsedMs = 0;
         this._projectFilesOpen = projectFilesOpen;
         this.sessionActiveSince = projectFilesOpen ? now : null;
-
-        // Sanitise: if today's stored value is unreasonably large (≥ 50% of
-        // the entire project), it's almost certainly corrupted from the old
-        // 0-baseline bug.  Clear it.
-        const today = this.todayKey();
-        const stored = this.history[today] || 0;
-        if (stored > 0 && stored >= currentTotalWords * 0.5) {
-            delete this.history[today];
-        }
+        if (this._sprintRunning) this._sprintActiveSince = projectFilesOpen ? now : null;
     }
 
     /** Words written this session (0 if session not started yet) */
     getSessionWords(currentTotalWords: number): number {
         if (this.baselineWords === null) {
-            // Lazy-start: if the init call had 0 but now we have a real count
-            if (currentTotalWords > 0) {
+            if (Number.isFinite(currentTotalWords) && currentTotalWords >= 0) {
                 this.startSession(currentTotalWords, this._projectFilesOpen);
             }
             return 0;
         }
-        return Math.max(0, currentTotalWords - this.baselineWords);
+        return Number.isFinite(currentTotalWords) ? currentTotalWords - this.baselineWords : 0;
     }
 
     /** How long the session has been running (ms) */
@@ -144,9 +143,13 @@ export class WritingTracker {
     // ── Daily history ──────────────────────────────────
 
     /** Record today's total to history (call periodically or on save) */
-    recordToday(sessionWords: number): void {
-        const today = this.todayKey();
-        this.history[today] = (this.history[today] || 0) + sessionWords;
+    recordToday(sessionWords: number, now = Date.now()): void {
+        if (!Number.isFinite(sessionWords) || sessionWords === 0) return;
+        const today = this.todayKey(now);
+        const next = (this.history[today] || 0) + sessionWords;
+        // Keep an explicit zero so the safe JSON writer can distinguish an
+        // intentional net rollback from an accidentally empty ledger.
+        this.history[today] = next;
     }
 
     /**
@@ -154,35 +157,35 @@ export class WritingTracker {
      * Safe to call multiple times — only the incremental difference since the
      * last flush is recorded, so daily history is never double-counted.
      */
-    flushSession(currentTotalWords: number): { words: number; revisions: number } {
-        if (this.baselineWords === null) return { words: 0, revisions: 0 };
+    flushSession(currentTotalWords: number, now = Date.now()): { words: number; revisions: number } {
+        if (!Number.isFinite(currentTotalWords) || currentTotalWords < 0) {
+            return { words: 0, revisions: 0 };
+        }
+        if (this.baselineWords === null) {
+            this.startSession(currentTotalWords, this._projectFilesOpen, now);
+            return { words: 0, revisions: 0 };
+        }
         const totalSessionWords = this.getSessionWords(currentTotalWords);
         const increment = totalSessionWords - this._flushedSessionWords;
-        if (increment > 0) {
-            this.recordToday(increment);
-            this._flushedSessionWords = totalSessionWords;
-        }
+        if (increment !== 0) this.recordToday(increment, now);
+        this._flushedSessionWords = totalSessionWords;
 
-        // Revisions are edit churn between two known positive totals.
-        // A 0 total means the scene index is empty or not ready — do not
-        // treat "the whole book appeared/disappeared" as a revision.
-        let revisions = 0;
-        if (this.lastKnownTotal !== null && this.lastKnownTotal > 0 && currentTotalWords > 0) {
-            const delta = Math.abs(currentTotalWords - this.lastKnownTotal);
-            if (delta > 0) {
-                this.recordRevisionToday(delta);
-                revisions = delta;
-            }
-            this.lastKnownTotal = currentTotalWords;
-        } else if (currentTotalWords > 0) {
-            this.lastKnownTotal = currentTotalWords;
-        }
-        return { words: Math.max(0, increment), revisions };
+        const revisions = this.pendingRevisionWords;
+        this.pendingRevisionWords = 0;
+        return { words: increment, revisions };
+    }
+
+    /** Record exact inserted + deleted word tokens from one text edit. */
+    recordRevisionWords(churn: number, now = Date.now()): void {
+        if (!Number.isFinite(churn) || churn <= 0) return;
+        const amount = Math.round(churn);
+        this.recordRevisionToday(amount, now);
+        this.pendingRevisionWords += amount;
     }
 
     /** Record today's revision volume */
-    private recordRevisionToday(absChange: number): void {
-        const today = this.todayKey();
+    private recordRevisionToday(absChange: number, now = Date.now()): void {
+        const today = this.todayKey(now);
         this.revisionHistory[today] = (this.revisionHistory[today] || 0) + absChange;
     }
 
@@ -191,7 +194,7 @@ export class WritingTracker {
         return this.history[this.todayKey()] || 0;
     }
 
-    /** Get revision volume for today (absolute word changes — adds + deletes) */
+    /** Get revision volume for today (inserted + deleted readable word tokens) */
     getTodayRevisions(): number {
         return this.revisionHistory[this.todayKey()] || 0;
     }
@@ -257,21 +260,32 @@ export class WritingTracker {
         return total;
     }
 
-    /** Mean daily net words across days that have a positive total. */
-    getDailyAverage(): number {
-        const active = Object.values(this.history).filter(words => words > 0);
-        if (active.length === 0) return 0;
-        return Math.round(active.reduce((sum, words) => sum + words, 0) / active.length);
+    /** Calendar-day mean from the first tracked date through today (zero days included). */
+    getDailyAverage(now = Date.now()): number {
+        const today = new Date(now);
+        const todayOrdinal = Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()) / 86_400_000;
+        let firstOrdinal = Number.POSITIVE_INFINITY;
+        let total = 0;
+        for (const [key, words] of Object.entries(this.history)) {
+            if (!this.isValidDateKey(key)) continue;
+            const [year, month, day] = key.split('-').map(Number);
+            const ordinal = Date.UTC(year, month - 1, day) / 86_400_000;
+            if (ordinal > todayOrdinal) continue;
+            firstOrdinal = Math.min(firstOrdinal, ordinal);
+            total += words;
+        }
+        if (!Number.isFinite(firstOrdinal)) return 0;
+        return Math.round(total / (todayOrdinal - firstOrdinal + 1));
     }
 
     /** Add net words to today's history without touching the session baseline. */
-    addTodayWords(words: number): void {
-        if (words > 0) this.recordToday(words);
+    addTodayWords(words: number, now = Date.now()): void {
+        if (Number.isFinite(words) && words !== 0) this.recordToday(words, now);
     }
 
     /** Add revision volume to today's history. */
-    addTodayRevisions(absChange: number): void {
-        if (absChange > 0) this.recordRevisionToday(absChange);
+    addTodayRevisions(absChange: number, now = Date.now()): void {
+        if (Number.isFinite(absChange) && absChange > 0) this.recordRevisionToday(absChange, now);
     }
 
     /** Sum of words written across the last N days (inclusive of today). */
@@ -319,11 +333,12 @@ export class WritingTracker {
 
     /** Start a timed writing sprint. Returns false when the project word count is not ready. */
     startSprint(currentTotalWords: number, now = Date.now()): boolean {
-        if (currentTotalWords <= 0 || !this._projectFilesOpen) return false;
+        if (!Number.isFinite(currentTotalWords) || currentTotalWords < 0 || !this._projectFilesOpen) return false;
         this._sprintRunning = true;
         this._sprintElapsedMs = 0;
         this._sprintActiveSince = now;
         this._sprintBaseline = currentTotalWords;
+        this._sprintStartedAt = now;
         return true;
     }
 
@@ -333,11 +348,14 @@ export class WritingTracker {
         const elapsed = this.getSprintElapsed(now);
         this._sprintRunning = false;
         this._sprintActiveSince = null;
-        const words = Math.max(0, currentTotalWords - this._sprintBaseline);
+        const words = Number.isFinite(currentTotalWords) ? currentTotalWords - this._sprintBaseline : 0;
         const minutes = elapsed / 60_000;
         const wpm = minutes >= 0.5 ? Math.round(words / minutes) : 0;
+        const startDate = this.todayKey(this._sprintStartedAt || now);
+        const endDate = this.todayKey(now);
         const entry: SprintLogEntry = {
-            date: this.todayKey(),
+            date: startDate,
+            ...(endDate === startDate ? {} : { endDate }),
             words,
             durationMs: elapsed,
             wpm,
@@ -352,6 +370,7 @@ export class WritingTracker {
         this._sprintElapsedMs = 0;
         this._sprintActiveSince = null;
         this._sprintBaseline = 0;
+        this._sprintStartedAt = 0;
     }
 
     /** Is a sprint currently active? */
@@ -373,7 +392,7 @@ export class WritingTracker {
     /** Words written during the current sprint */
     getSprintWords(currentTotalWords: number): number {
         if (!this._sprintRunning) return 0;
-        return Math.max(0, currentTotalWords - this._sprintBaseline);
+        return Number.isFinite(currentTotalWords) ? currentTotalWords - this._sprintBaseline : 0;
     }
 
     /** WPM during the current sprint */
@@ -403,29 +422,54 @@ export class WritingTracker {
     // ── Persistence ────────────────────────────────────
 
     /** Export data for saving */
-    exportData(): WritingTrackerData {
-        return {
+    exportData(now = Date.now()): WritingTrackerData {
+        const data: WritingTrackerData = {
             history: { ...this.history },
             revisionHistory: { ...this.revisionHistory },
             sprintLog: [...this._sprintLog],
         };
+        if (this._sprintRunning) {
+            data.activeSprint = {
+                baselineWords: this._sprintBaseline,
+                elapsedMs: this.getSprintElapsed(now),
+                durationMs: this._sprintDurationMs,
+                startedAt: this._sprintStartedAt || now,
+            };
+        }
+        return data;
     }
 
     /**
      * Replace persisted history with another project's (or empty) ledger.
-     * Session / sprint baselines are cleared so totals cannot leak across books.
+     * Session state is cleared; a validated persisted sprint is restored paused.
      */
     importData(data: WritingTrackerData | undefined): void {
-        this.history = data?.history ? { ...data.history } : {};
-        this.revisionHistory = data?.revisionHistory ? { ...data.revisionHistory } : {};
-        this._sprintLog = data?.sprintLog ? [...data.sprintLog] : [];
         this.resetSession();
+        this.history = this.sanitiseDailyRecord(data?.history, true);
+        this.revisionHistory = this.sanitiseDailyRecord(data?.revisionHistory, false);
+        this._sprintLog = Array.isArray(data?.sprintLog)
+            ? data.sprintLog.filter((entry): entry is SprintLogEntry => this.isValidSprintLogEntry(entry))
+                .map(entry => ({ ...entry }))
+            : [];
+        const active = data?.activeSprint;
+        if (active
+            && Number.isFinite(active.baselineWords) && active.baselineWords >= 0
+            && Number.isFinite(active.elapsedMs) && active.elapsedMs >= 0
+            && Number.isFinite(active.durationMs) && active.durationMs >= 60_000
+            && Number.isFinite(active.startedAt) && active.startedAt > 0) {
+            this._sprintRunning = true;
+            this._sprintBaseline = active.baselineWords;
+            this._sprintElapsedMs = active.elapsedMs;
+            this._sprintDurationMs = active.durationMs;
+            this._sprintStartedAt = active.startedAt;
+            this._sprintActiveSince = null;
+        }
     }
 
     /** Drop the in-memory session so the next startSession belongs to this project. */
     resetSession(): void {
         this.baselineWords = null;
-        this.lastKnownTotal = null;
+        this.pendingRevisionWords = 0;
         this._flushedSessionWords = 0;
         this.sessionElapsedMs = 0;
         this.sessionActiveSince = null;
@@ -435,8 +479,8 @@ export class WritingTracker {
 
     // ── Helpers ────────────────────────────────────────
 
-    private todayKey(): string {
-        return this.dateKey(new Date());
+    private todayKey(now = Date.now()): string {
+        return this.dateKey(new Date(now));
     }
 
     private dateKey(d: Date): string {
@@ -444,5 +488,42 @@ export class WritingTracker {
         const m = String(d.getMonth() + 1).padStart(2, '0');
         const day = String(d.getDate()).padStart(2, '0');
         return `${y}-${m}-${day}`;
+    }
+
+    private isValidDateKey(key: string): boolean {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
+        if (!match) return false;
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const date = new Date(year, month - 1, day);
+        return date.getFullYear() === year
+            && date.getMonth() === month - 1
+            && date.getDate() === day;
+    }
+
+    private sanitiseDailyRecord(
+        source: Record<string, number> | undefined,
+        allowNegative: boolean,
+    ): Record<string, number> {
+        const clean: Record<string, number> = {};
+        if (!source || typeof source !== 'object') return clean;
+        for (const [key, raw] of Object.entries(source)) {
+            const value = Number(raw);
+            if (!this.isValidDateKey(key) || !Number.isFinite(value)) continue;
+            if (!allowNegative && value <= 0) continue;
+            clean[key] = value;
+        }
+        return clean;
+    }
+
+    private isValidSprintLogEntry(entry: unknown): entry is SprintLogEntry {
+        if (!entry || typeof entry !== 'object') return false;
+        const value = entry as Partial<SprintLogEntry>;
+        return typeof value.date === 'string' && this.isValidDateKey(value.date)
+            && (value.endDate === undefined || (typeof value.endDate === 'string' && this.isValidDateKey(value.endDate)))
+            && typeof value.words === 'number' && Number.isFinite(value.words)
+            && typeof value.durationMs === 'number' && Number.isFinite(value.durationMs) && value.durationMs >= 0
+            && typeof value.wpm === 'number' && Number.isFinite(value.wpm);
     }
 }

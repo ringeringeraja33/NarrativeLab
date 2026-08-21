@@ -2,6 +2,7 @@
 import { AbstractInputSuggest, App, ButtonComponent, DropdownComponent, FileView, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
 import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './settings';
 import { asRecord, isRecord } from './utils/narrow';
+import { countWordRevisionChurn } from './utils/wordcountText';
 import { consumeTextareaUndoKey, isLocalTextUndoTarget, isRedoKey, isUndoKey } from './utils/textareaHistory';
 import {
     getLeafNarrativeLabProjectFile,
@@ -340,6 +341,7 @@ export default class SceneCardsPlugin extends Plugin {
     codexManager!: CodexManager;
     writingTracker: WritingTracker = new WritingTracker();
     globalWritingTracker!: GlobalWritingTracker;
+    private _writingTrackerSaveTimer: number | null = null;
     floatingStickyNotes!: FloatingStickyNoteManager;
     snapshotManager!: SnapshotManager;
     plotlineManager!: PlotlineManager;
@@ -419,6 +421,8 @@ export default class SceneCardsPlugin extends Plugin {
     _syncingLibraryFolders = false;
     /** Files currently receiving/migrating the active frontmatter field. */
     private _activeFieldWrites = new Set<string>();
+    /** Serialize per-scene revision snapshots so rapid saves cannot double-count churn. */
+    private _writingRevisionQueues = new Map<string, Promise<void>>();
     /** Serialize writes to each System JSON file and protect unreadable originals. */
     private _systemJsonWriteQueues = new Map<string, Promise<void>>();
     private _invalidSystemJsonPaths = new Set<string>();
@@ -534,6 +538,10 @@ export default class SceneCardsPlugin extends Plugin {
         this.researchManager = new ResearchManager(this.app, this);
         this.floatingStickyNotes = new FloatingStickyNoteManager(this);
         this.globalWritingTracker = new GlobalWritingTracker(this);
+        const writingTrackerCheckpoint = window.setInterval(() => {
+            if (this.writingTracker.isSprintRunning()) this.scheduleWritingTrackerSave();
+        }, 30_000);
+        this.register(() => window.clearInterval(writingTrackerCheckpoint));
         this.register(() => {
             void this.floatingStickyNotes.unloadAll();
         });
@@ -690,7 +698,7 @@ export default class SceneCardsPlugin extends Plugin {
             );
             try {
                 await this.globalWritingTracker.load();
-                this.globalWritingTracker.seedFromProjectIfEmpty(this.writingTracker.exportData());
+                await this.globalWritingTracker.reconcileProjectLedgers();
             } catch (trackErr) {
                 console.warn('[NarrativeLab] Could not load writing tracker:', trackErr);
             }
@@ -1205,6 +1213,7 @@ export default class SceneCardsPlugin extends Plugin {
                 if (file instanceof TFile) {
                     if (file.extension.toLowerCase() === 'base') return;
                     const filePath = normalizePath(file.path);
+                    const revisionChangedAt = Date.now();
                     this.invalidateForeignProjectRuntimeCache(filePath);
                     if (this._activeFieldWrites.has(filePath)) return;
                     if (this._suppressVaultRefreshPaths.has(filePath)) return;
@@ -1239,10 +1248,33 @@ export default class SceneCardsPlugin extends Plugin {
                     }
                     const lightRefresh = file.extension.toLowerCase() === 'md'
                         && this.isActiveManagedPath(filePath);
-                    this.sceneManager.handleFileChange(file).then(async () => {
+                    const previousRevision = this._writingRevisionQueues.get(filePath) ?? Promise.resolve();
+                    const revisionTask = previousRevision.catch(() => undefined).then(async () => {
+                        const previousSceneBody = this.sceneManager.getScene(filePath)?.body;
+                        await this.sceneManager.handleFileChange(file);
                         await this.researchManager?.handleFileChange(file);
+                        const nextSceneBody = this.sceneManager.getScene(filePath)?.body;
+                        if (previousSceneBody !== undefined && nextSceneBody !== undefined) {
+                            const churn = countWordRevisionChurn(
+                                previousSceneBody,
+                                nextSceneBody,
+                                normalizeStoryLineLocale(this.sceneManager.getEffectiveLocale()),
+                                {
+                                    excludeComments: this.settings.excludeCommentsFromWordcount !== false,
+                                    excludeChecklists: this.settings.excludeChecklistFromWordcount === true,
+                                },
+                            );
+                            this.writingTracker.recordRevisionWords(churn, revisionChangedAt);
+                            this.flushWritingTrackers(undefined, revisionChangedAt);
+                        }
                         if (lightRefresh) debouncedViewsOnly();
                         else debouncedRefresh();
+                    });
+                    this._writingRevisionQueues.set(filePath, revisionTask);
+                    void revisionTask.finally(() => {
+                        if (this._writingRevisionQueues.get(filePath) === revisionTask) {
+                            this._writingRevisionQueues.delete(filePath);
+                        }
                     });
                 }
             })
@@ -1265,12 +1297,27 @@ export default class SceneCardsPlugin extends Plugin {
                     return;
                 }
                 if (file instanceof TFile) {
+                    const createdAt = Date.now();
                     this.invalidateForeignProjectRuntimeCache(file.path);
                     if (file.extension.toLowerCase() === 'base') return;
                     if (file.extension.toLowerCase() === 'md' && this.isActiveManagedPath(file.path)) {
                         void this.ensureActiveField(file).then(() =>
                             this.sceneManager.handleFileCreate(file).then(async () => {
                                 await this.researchManager?.handleFileCreate(file);
+                                const createdBody = this.sceneManager.getScene(file.path)?.body;
+                                if (createdBody !== undefined) {
+                                    const churn = countWordRevisionChurn(
+                                        '',
+                                        createdBody,
+                                        normalizeStoryLineLocale(this.sceneManager.getEffectiveLocale()),
+                                        {
+                                            excludeComments: this.settings.excludeCommentsFromWordcount !== false,
+                                            excludeChecklists: this.settings.excludeChecklistFromWordcount === true,
+                                        },
+                                    );
+                                    this.writingTracker.recordRevisionWords(churn, createdAt);
+                                    this.flushWritingTrackers(undefined, createdAt);
+                                }
                                 debouncedRefresh();
                             }));
                         return;
@@ -1306,6 +1353,7 @@ export default class SceneCardsPlugin extends Plugin {
                     return;
                 }
                 if (file instanceof TFile) {
+                    const deletedAt = Date.now();
                     this.invalidateForeignProjectRuntimeCache(file.path);
                     const projectDelete = this.sceneManager.handleProjectTreeDelete(file.path, false);
                     if (projectDelete.changed) {
@@ -1321,8 +1369,22 @@ export default class SceneCardsPlugin extends Plugin {
                         debouncedLibraryEntityReload();
                         return;
                     }
+                    const deletedSceneBody = this.sceneManager.getScene(filePath)?.body;
                     this.sceneManager.handleFileDelete(file.path);
                     this.researchManager?.handleFileDelete(file.path);
+                    if (deletedSceneBody !== undefined) {
+                        const churn = countWordRevisionChurn(
+                            deletedSceneBody,
+                            '',
+                            normalizeStoryLineLocale(this.sceneManager.getEffectiveLocale()),
+                            {
+                                excludeComments: this.settings.excludeCommentsFromWordcount !== false,
+                                excludeChecklists: this.settings.excludeChecklistFromWordcount === true,
+                            },
+                        );
+                        this.writingTracker.recordRevisionWords(churn, deletedAt);
+                        this.flushWritingTrackers(undefined, deletedAt);
+                    }
                     debouncedRefresh();
                 }
             })
@@ -1862,6 +1924,10 @@ export default class SceneCardsPlugin extends Plugin {
         this.canvasModule = null;
         // Flush writing session into daily history and persist to System/stats.json
         try {
+            if (this._writingTrackerSaveTimer !== null) {
+                window.clearTimeout(this._writingTrackerSaveTimer);
+                this._writingTrackerSaveTimer = null;
+            }
             const totalWords = this.getTrackedWordTotal();
             // Stop any active sprint so it gets recorded
             if (this.writingTracker.isSprintRunning()) {
@@ -3336,6 +3402,10 @@ export default class SceneCardsPlugin extends Plugin {
      */
     async saveProjectSystemData(): Promise<void> {
         if (this._loadingProjectSystemData) return;
+        if (this._writingTrackerSaveTimer !== null) {
+            window.clearTimeout(this._writingTrackerSaveTimer);
+            this._writingTrackerSaveTimer = null;
+        }
         const projectFilePath = this.sceneManager?.activeProject?.filePath
             ? normalizePath(this.sceneManager.activeProject.filePath)
             : '';
@@ -3397,6 +3467,31 @@ export default class SceneCardsPlugin extends Plugin {
         await this.writeSystemJson('stats.json', statsPayload, projectFilePath);
         await this.writeSystemJson(LIBRARY_CATEGORIES_FILENAME, libraryCategoriesPayload, projectFilePath);
         await this.writeSystemJson(LIBRARY_PROFILE_LAYOUT_FILENAME, libraryLayoutPayload, projectFilePath);
+    }
+
+    /** Persist only the tracker ledger; safe to call frequently from edit autosave. */
+    async saveWritingTrackerData(
+        projectFilePath = this.sceneManager?.activeProject?.filePath,
+        trackerData = this.writingTracker.exportData(),
+    ): Promise<void> {
+        const target = projectFilePath ? normalizePath(projectFilePath) : '';
+        if (!target || this._loadingProjectSystemData) return;
+        await this.writeSystemJson('stats.json', {
+            writingTrackerData: trackerData,
+        }, target);
+    }
+
+    scheduleWritingTrackerSave(): void {
+        const projectFilePath = this.sceneManager?.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : '';
+        if (!projectFilePath) return;
+        const trackerData = this.writingTracker.exportData();
+        if (this._writingTrackerSaveTimer !== null) window.clearTimeout(this._writingTrackerSaveTimer);
+        this._writingTrackerSaveTimer = window.setTimeout(() => {
+            this._writingTrackerSaveTimer = null;
+            void this.saveWritingTrackerData(projectFilePath, trackerData);
+        }, 800);
     }
 
     /**
@@ -4704,11 +4799,17 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
-    flushWritingTrackers(totalWords?: number): void {
+    async settleWritingTrackerChanges(): Promise<void> {
+        const pending = [...this._writingRevisionQueues.values()];
+        if (pending.length > 0) await Promise.allSettled(pending);
+    }
+
+    flushWritingTrackers(totalWords?: number, now = Date.now()): void {
         try {
             const words = totalWords ?? this.getTrackedWordTotal();
-            const delta = this.writingTracker.flushSession(words);
-            this.globalWritingTracker?.recordFlush(delta);
+            const delta = this.writingTracker.flushSession(words, now);
+            this.globalWritingTracker?.recordFlush(delta, now);
+            if (delta.words !== 0 || delta.revisions > 0) this.scheduleWritingTrackerSave();
         } catch { /* project may not be set yet */ }
     }
 
@@ -4740,10 +4841,7 @@ export default class SceneCardsPlugin extends Plugin {
     rebindWritingTrackerSession(): void {
         try {
             const words = this.getTrackedWordTotal();
-            this.writingTracker.resetSession();
-            if (words > 0) {
-                this.writingTracker.startSession(words, this.hasOpenFileForProject());
-            }
+            this.writingTracker.startSession(words, this.hasOpenFileForProject());
         } catch { /* project may not be set yet */ }
     }
 

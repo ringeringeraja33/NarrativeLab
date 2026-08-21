@@ -9,8 +9,15 @@ export function writingTrackerDateKey(date: Date): string {
 export function parseWritingTrackerDate(key: string): Date | null {
     const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key);
     if (!match) return null;
-    const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-    return Number.isNaN(date.getTime()) ? null : date;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const date = new Date(year, month - 1, day);
+    return date.getFullYear() === year
+        && date.getMonth() === month - 1
+        && date.getDate() === day
+        ? date
+        : null;
 }
 
 export function addCalendarDays(date: Date, days: number): Date {
@@ -137,14 +144,14 @@ export function parseWritingTrackerFile(raw: unknown): {
         for (const [key, value] of Object.entries(obj.history as Record<string, unknown>)) {
             if (!parseWritingTrackerDate(key)) continue;
             const words = Number(value);
-            if (Number.isFinite(words) && words !== 0) history[key] = words;
+            if (Number.isFinite(words)) history[key] = words;
         }
     }
     if (obj.revisionHistory && typeof obj.revisionHistory === 'object') {
         for (const [key, value] of Object.entries(obj.revisionHistory as Record<string, unknown>)) {
             if (!parseWritingTrackerDate(key)) continue;
             const words = Number(value);
-            if (Number.isFinite(words) && words !== 0) revisionHistory[key] = words;
+            if (Number.isFinite(words) && words > 0) revisionHistory[key] = words;
         }
     }
     return { history, revisionHistory };

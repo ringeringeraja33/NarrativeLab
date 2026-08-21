@@ -31,6 +31,16 @@ const trackerBuild = await build({
 const { WritingTracker } = await import(
     `data:text/javascript;base64,${Buffer.from(trackerBuild.outputFiles[0].text).toString('base64')}`
 );
+const revisionBuild = await build({
+    entryPoints: ['utils/wordcountText.ts'],
+    bundle: true,
+    format: 'esm',
+    platform: 'node',
+    write: false,
+});
+const { countWordRevisionChurn } = await import(
+    `data:text/javascript;base64,${Buffer.from(revisionBuild.outputFiles[0].text).toString('base64')}`
+);
 
 const [mainTs, settings, panel, page, widgets, globalTracker, sceneManager] = await Promise.all([
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
@@ -78,13 +88,16 @@ test('year heatmap stays inside the requested calendar year', () => {
 
 test('parseWritingTrackerFile keeps dated totals only', () => {
     const parsed = parseWritingTrackerFile({
-        history: { '2026-08-16': 12, nope: 3, '2026-08-17': '8' },
-        revisionHistory: { '2026-08-16': 4 },
+        history: { '2026-08-16': 12, nope: 3, '2026-08-17': '8', '2026-08-18': 0, '2026-02-31': 99 },
+        revisionHistory: { '2026-08-16': 4, '2026-08-17': -3 },
     });
     assert.equal(parsed.history['2026-08-16'], 12);
     assert.equal(parsed.history['2026-08-17'], 8);
+    assert.equal(parsed.history['2026-08-18'], 0);
     assert.equal(parsed.history.nope, undefined);
+    assert.equal(parsed.history['2026-02-31'], undefined);
     assert.equal(parsed.revisionHistory['2026-08-16'], 4);
+    assert.equal(parsed.revisionHistory['2026-08-17'], undefined);
     assert.equal(WRITING_TRACKER_FILENAME, 'writing-tracker.json');
 });
 
@@ -137,12 +150,12 @@ test('tracker settings are a dedicated settings tab', () => {
 
 test('session flush records into the vault-wide tracker file', () => {
     assert.match(mainTs, /flushWritingTrackers/);
-    assert.match(mainTs, /globalWritingTracker\?\.recordFlush\(delta\)/);
+    assert.match(mainTs, /globalWritingTracker\?\.recordFlush\(delta, now\)/);
     assert.match(mainTs, /rebindWritingTrackerSession/);
     assert.match(sceneManager, /flushWritingTrackers/);
     assert.match(sceneManager, /rebindWritingTrackerSession/);
     assert.match(globalTracker, /WRITING_TRACKER_FILENAME/);
-    assert.match(globalTracker, /seedFromProjectIfEmpty/);
+    assert.match(globalTracker, /reconcileProjectLedgers/);
 });
 
 test('importing another project ledger replaces history and clears the session', () => {
@@ -160,11 +173,14 @@ test('importing another project ledger replaces history and clears the session',
     assert.equal(tracker.getTodayWords(), 140);
 });
 
-test('sprints refuse a zero or missing word-count baseline', () => {
+test('empty projects start at zero and keep their first words', () => {
     const tracker = new WritingTracker();
-    assert.equal(tracker.startSprint(0), false);
+    tracker.startSession(0);
+    assert.equal(tracker.flushSession(25).words, 25);
+    assert.equal(tracker.getTodayWords(), 25);
+    assert.equal(tracker.startSprint(0, 2000), true);
+    tracker.resetSprint();
     assert.equal(tracker.startSprint(-3), false);
-    tracker.setProjectFilesOpen(true);
     assert.equal(tracker.startSprint(13408), true);
     assert.match(panel, /if \(!tracker\.startSprint\(totalNow\)\)/);
     assert.match(panel, /Cannot start a sprint until the project word count is ready/);
@@ -187,12 +203,77 @@ test('project session and sprint clocks pause while every project file is closed
     assert.equal(tracker.stopSprint(1010, 11000)?.durationMs, 4000);
 });
 
-test('revisions ignore empty-index recounts and only measure positive totals', () => {
+test('daily net words roll back deletions instead of retaining a high-water mark', () => {
     const tracker = new WritingTracker();
-    tracker.startSession(13408);
-    assert.equal(tracker.flushSession(0).revisions, 0);
-    assert.equal(tracker.getTodayRevisions(), 0);
-    assert.equal(tracker.flushSession(13408).revisions, 0);
-    assert.equal(tracker.flushSession(13420).revisions, 12);
-    assert.equal(tracker.getTodayRevisions(), 12);
+    tracker.startSession(1000);
+    assert.equal(tracker.flushSession(1100).words, 100);
+    assert.equal(tracker.flushSession(1000).words, -100);
+    assert.equal(tracker.getTodayWords(), 0);
+    assert.ok(Object.values(tracker.getFullHistory()).includes(0));
+    assert.equal(tracker.flushSession(1050).words, 50);
+    assert.equal(tracker.getTodayWords(), 50);
+});
+
+test('starting a session never deletes a legitimate large daily total', () => {
+    const today = writingTrackerDateKey(new Date());
+    const tracker = new WritingTracker();
+    tracker.importData({ history: { [today]: 800 } });
+    tracker.startSession(1000);
+    assert.equal(tracker.getTodayWords(), 800);
+});
+
+test('revision volume counts inserted and deleted tokens including equal-length replacements', () => {
+    assert.equal(countWordRevisionChurn('alpha beta', 'alpha gamma', 'en'), 2);
+    assert.equal(countWordRevisionChurn('alpha beta', 'beta alpha', 'en'), 0);
+    assert.equal(countWordRevisionChurn('Alpha', 'alpha', 'en'), 2);
+    const tracker = new WritingTracker();
+    tracker.startSession(2);
+    tracker.recordRevisionWords(2);
+    assert.equal(tracker.flushSession(2).revisions, 2);
+    assert.equal(tracker.getTodayRevisions(), 2);
+});
+
+test('daily average includes zero-output calendar days', () => {
+    const tracker = new WritingTracker();
+    tracker.importData({
+        history: {
+            '2026-08-10': 100,
+            '2026-08-12': 200,
+        },
+    });
+    assert.equal(tracker.getDailyAverage(new Date(2026, 7, 12, 12).getTime()), 100);
+});
+
+test('flush timestamps and sprint ranges preserve cross-midnight attribution', () => {
+    const dayOne = new Date(2026, 7, 20, 23, 59, 50).getTime();
+    const dayTwo = new Date(2026, 7, 21, 0, 0, 10).getTime();
+    const tracker = new WritingTracker();
+    tracker.startSession(100, true, dayOne);
+    tracker.flushSession(110, dayTwo);
+    assert.equal(tracker.getFullHistory()['2026-08-21'], 10);
+    assert.equal(tracker.startSprint(110, dayOne), true);
+    const sprint = tracker.stopSprint(120, dayTwo);
+    assert.equal(sprint?.date, '2026-08-20');
+    assert.equal(sprint?.endDate, '2026-08-21');
+});
+
+test('running sprint survives project ledger save and restore', () => {
+    const tracker = new WritingTracker();
+    tracker.startSession(1000, true, 1000);
+    tracker.startSprint(1000, 2000);
+    const saved = tracker.exportData(5000);
+    const restored = new WritingTracker();
+    restored.importData(saved);
+    assert.equal(restored.isSprintRunning(), true);
+    restored.startSession(1010, true, 10000);
+    assert.equal(restored.getSprintElapsed(11000), 4000);
+    assert.equal(restored.stopSprint(1015, 11000)?.words, 15);
+});
+
+test('vault totals reconcile every project and tracker deltas autosave safely', () => {
+    assert.match(globalTracker, /reconcileProjectLedgers/);
+    assert.match(globalTracker, /for \(const project of this\.plugin\.sceneManager\.getProjects\(\)\)/);
+    assert.match(globalTracker, /tempPath/);
+    assert.match(mainTs, /scheduleWritingTrackerSave/);
+    assert.match(mainTs, /this\.writingTracker\.recordRevisionWords/);
 });

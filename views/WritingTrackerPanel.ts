@@ -226,13 +226,14 @@ export class WritingTrackerPanel extends ItemView {
             this.clearSprintTimer();
             this.sprintTimerId = window.setInterval(updateTimerDisplay, 1000);
             updateTimerDisplay(totalNow);
+            this.plugin.scheduleWritingTrackerSave();
         });
         stopBtn.addEventListener('click', () => {
             const totalNow = this.currentTotalWords();
             const entry = tracker.stopSprint(totalNow);
             this.clearSprintTimer();
             updateTimerDisplay(totalNow);
-            void this.plugin.saveProjectSystemData();
+            this.plugin.scheduleWritingTrackerSave();
             if (entry) {
                 new Notice(t('Sprint complete: {words} words in {mins} min ({wpm} wpm)', {
                     words: entry.words,
@@ -245,6 +246,7 @@ export class WritingTrackerPanel extends ItemView {
             tracker.resetSprint();
             this.clearSprintTimer();
             updateTimerDisplay();
+            this.plugin.scheduleWritingTrackerSave();
         });
 
         if (tracker.isSprintRunning() && tracker.isProjectFilesOpen()) {
