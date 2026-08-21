@@ -1,5 +1,10 @@
 # NarrativeLab — Changelog
 
+## 1.3.7
+
+- Manual row heights and column widths now persist after autosave, tab switches, and reopen, including delta-resize commands and otherwise empty worksheets.
+- Windows production builds now apply the ExcelJS UUID bounds guard consistently.
+
 ## 1.3.6
 
 - Spreadsheet tabs now commit the active Univer editor and wait for pending mutations before switching views or closing.

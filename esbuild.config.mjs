@@ -111,7 +111,7 @@ function secureExcelJsBrowserBundle() {
   return {
     name: "secure-exceljs-browser-uuid",
     setup(build) {
-      build.onLoad({ filter: /exceljs\/dist\/exceljs\.min\.js$/ }, (args) => {
+      build.onLoad({ filter: /exceljs[\\/]dist[\\/]exceljs\.min\.js$/ }, (args) => {
         const source = readFileSync(args.path, "utf8");
         const matches = source.split(unsafeUuidV35).length - 1;
         if (matches !== 1) {

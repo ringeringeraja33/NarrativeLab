@@ -1341,6 +1341,11 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.doesNotMatch(host, /schedulePull\(\{ clearMissing: true, mergeDimensions: true \}\)/);
     assert.match(host, /mergeDimensions:\s*true/);
     assert.match(host, /mergeDimensions === true/);
+    assert.match(host, /sheet\.command\.set-row-height/);
+    assert.match(host, /sheet\.cellData \|\| \{\}/);
+    assert.match(host, /applyLiveDeltaDimension/);
+    assert.match(host, /getRowHeight/);
+    assert.match(host, /getColumnWidth/);
     assert.match(host, /preserveConceptGridAxisSizes/);
     assert.match(host, /flushPendingDimensionNotify/);
     assert.match(host, /scheduleDimensionPull/);

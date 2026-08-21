@@ -237,6 +237,8 @@ type UniverAPI = {
         }>;
         getSheetBySheetId: (id: string) => {
             getSheetId: () => string;
+            getRowHeight?: (row: number) => number;
+            getColumnWidth?: (column: number) => number;
             activate?: () => void;
             zoom?: (ratio: number) => unknown;
             setName?: (name: string) => unknown;
@@ -762,6 +764,9 @@ type DimensionMutation = {
         ranges?: Array<{ startRow?: number; endRow?: number; startColumn?: number; endColumn?: number }>;
         rowHeight?: number | Record<number, number>;
         colWidth?: number | Record<number, number>;
+        value?: number;
+        anchorRow?: number;
+        anchorCol?: number;
     };
 };
 
@@ -787,14 +792,23 @@ function dimensionAt(value: number | Record<number, number> | undefined, index: 
 }
 
 /** Apply resize mutations directly; workbook.save() can lag behind drag completion. */
-function applyDimensionMutation(doc: ConceptGridDocument, command: unknown): ConceptGridDocument | null {
+function applyDimensionMutation(
+    doc: ConceptGridDocument,
+    command: unknown,
+    fallbackSheetId?: string | null,
+): ConceptGridDocument | null {
     const { id, params } = command as DimensionMutation;
-    if (!params?.subUnitId || !Array.isArray(params.ranges)) return null;
-    const isRow = id === 'sheet.mutation.set-worksheet-row-height';
-    const isColumn = id === 'sheet.mutation.set-worksheet-col-width';
+    if (!params || !Array.isArray(params.ranges)) return null;
+    const sheetId = params.subUnitId || fallbackSheetId;
+    if (!sheetId) return null;
+    const isRow = id === 'sheet.mutation.set-worksheet-row-height'
+        || id === 'sheet.command.set-row-height'
+        || id === 'sheet.command.set-worksheet-row-height';
+    const isColumn = id === 'sheet.mutation.set-worksheet-col-width'
+        || id === 'sheet.command.set-worksheet-col-width';
     if (!isRow && !isColumn) return null;
     const next = structuredClone(doc);
-    const page = next.pages.find(item => item.id === params.subUnitId);
+    const page = next.pages.find(item => item.id === sheetId);
     if (!page) return null;
     let changed = false;
     for (const range of params.ranges) {
@@ -802,7 +816,7 @@ function applyDimensionMutation(doc: ConceptGridDocument, command: unknown): Con
             const start = range.startRow ?? 0;
             const end = range.endRow ?? start;
             for (let worksheetRow = start; worksheetRow <= end; worksheetRow += 1) {
-                const height = dimensionAt(params.rowHeight, worksheetRow);
+                const height = dimensionAt(params.rowHeight, worksheetRow) ?? params.value;
                 if (height == null || height <= 0) continue;
                 const nextHeight = Math.round(height);
                 if (worksheetRow === 0) {
@@ -822,7 +836,7 @@ function applyDimensionMutation(doc: ConceptGridDocument, command: unknown): Con
             const start = range.startColumn ?? 0;
             const end = range.endColumn ?? start;
             for (let worksheetColumn = start; worksheetColumn <= end; worksheetColumn += 1) {
-                const width = dimensionAt(params.colWidth, worksheetColumn);
+                const width = dimensionAt(params.colWidth, worksheetColumn) ?? params.value;
                 if (width == null || width <= 0) continue;
                 const nextWidth = Math.round(width);
                 if (worksheetColumn === 0) {
@@ -1414,11 +1428,11 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             );
             for (const sheet of Object.values(saved.sheets)) {
                 const id = sheet.id;
-                if (!id || !sheet.cellData) continue;
+                if (!id) continue;
                 next = mergeUniverCellDataIntoDocument(
                     next,
                     id,
-                    sheet.cellData,
+                    sheet.cellData || {},
                     saved.styles,
                     mergeDimensions ? sheet.rowData : undefined,
                     mergeDimensions ? sheet.columnData : undefined,
@@ -1744,8 +1758,46 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         || id === 'sheet.mutation.set-worksheet-col-width'
         || id === 'sheet.command.delta-row-height'
         || id === 'sheet.command.delta-column-width'
+        || id === 'sheet.command.set-row-height'
         || id === 'sheet.command.set-worksheet-row-height'
         || id === 'sheet.command.set-worksheet-col-width';
+
+    /** Delta resize commands omit the final size; read it from the live facade. */
+    const applyLiveDeltaDimension = (
+        doc: ConceptGridDocument,
+        command: unknown,
+        sheetId: string | null,
+    ): ConceptGridDocument | null => {
+        if (!sheetId) return null;
+        const { id, params } = command as DimensionMutation;
+        const sheet = univerAPI.getActiveWorkbook?.()?.getSheetBySheetId?.(sheetId);
+        if (!sheet || !params) return null;
+        if (id === 'sheet.command.delta-row-height' && typeof params.anchorRow === 'number') {
+            const value = sheet.getRowHeight?.(params.anchorRow);
+            if (typeof value !== 'number' || value <= 0) return null;
+            return applyDimensionMutation(doc, {
+                id: 'sheet.command.set-row-height',
+                params: {
+                    subUnitId: sheetId,
+                    ranges: [{ startRow: params.anchorRow, endRow: params.anchorRow }],
+                    value,
+                },
+            });
+        }
+        if (id === 'sheet.command.delta-column-width' && typeof params.anchorCol === 'number') {
+            const value = sheet.getColumnWidth?.(params.anchorCol);
+            if (typeof value !== 'number' || value <= 0) return null;
+            return applyDimensionMutation(doc, {
+                id: 'sheet.command.set-worksheet-col-width',
+                params: {
+                    subUnitId: sheetId,
+                    ranges: [{ startColumn: params.anchorCol, endColumn: params.anchorCol }],
+                    value,
+                },
+            });
+        }
+        return null;
+    };
 
     try {
         const api = univerAPI as UniverAPI & {
@@ -1792,7 +1844,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 if (isDimensionCommand(id) || id === 'sheet.mutation.move-rows' || id === 'sheet.mutation.move-columns') {
                     // Apply onto liveDoc (not stale this.document) so successive
                     // resizes keep earlier width/height changes in the same gesture.
-                    const mutated = applyDimensionMutation(liveDoc, command)
+                    const activeSheetId = univerAPI.getActiveWorkbook?.()?.getActiveSheet?.()?.getSheetId?.() ?? null;
+                    const mutated = applyDimensionMutation(liveDoc, command, activeSheetId)
+                        ?? applyLiveDeltaDimension(liveDoc, command, activeSheetId)
                         ?? applyAxisMoveMutation(liveDoc, command);
                     if (mutated) {
                         liveDoc = mutated;
