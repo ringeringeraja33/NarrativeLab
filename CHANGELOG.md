@@ -2,6 +2,7 @@
 
 ## 1.3.7
 
+- Writing tracking now records true signed net words, exact inserted/deleted word-token churn, zero-output days, cross-midnight dates, recoverable active sprints, and complete vault totals merged from every project; tracker edits are also autosaved safely.
 - Manual row heights and column widths now persist after autosave, tab switches, and reopen, including delta-resize commands and otherwise empty worksheets.
 - Windows production builds now apply the ExcelJS UUID bounds guard consistently.
 

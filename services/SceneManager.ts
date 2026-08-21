@@ -851,6 +851,7 @@ export class SceneManager implements ISceneStore {
             : '';
         // Flush and save the previous project's tracker before swapping ledgers.
         if (previousFile) {
+            await this.plugin.settleWritingTrackerChanges();
             try { this.plugin.flushWritingTrackers(); } catch { /* scenes may be empty */ }
         }
         await this.plugin.saveProjectSystemData();

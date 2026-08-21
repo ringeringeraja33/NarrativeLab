@@ -354,6 +354,7 @@ export class StatsView extends ProjectBoundItemView {
             if (this.sprintTimerId) window.clearInterval(this.sprintTimerId);
             this.sprintTimerId = window.setInterval(updateTimerDisplay, 1000);
             updateTimerDisplay(totalNow);
+            this.plugin.scheduleWritingTrackerSave();
         });
 
         stopBtn.addEventListener('click', () => {
@@ -364,7 +365,7 @@ export class StatsView extends ProjectBoundItemView {
             if (this.sprintTimerId) { window.clearInterval(this.sprintTimerId); this.sprintTimerId = null; }
             updateTimerDisplay(totalNow);
             // Persist and re-render to show updated log
-            this.plugin.saveProjectSystemData();
+            this.plugin.scheduleWritingTrackerSave();
             this.renderSprintLog(logSection, tracker);
             if (entry) {
                 new obsidian.Notice(t('Sprint complete: {words} words in {mins} min ({wpm} wpm)', {
@@ -379,6 +380,7 @@ export class StatsView extends ProjectBoundItemView {
             tracker.resetSprint();
             if (this.sprintTimerId) { window.clearInterval(this.sprintTimerId); this.sprintTimerId = null; }
             updateTimerDisplay();
+            this.plugin.scheduleWritingTrackerSave();
         });
 
         // Restore timer tick if sprint is still running (view re-opened)
@@ -406,7 +408,7 @@ export class StatsView extends ProjectBoundItemView {
                 : t('{count} day', { count: streak }));
         }
 
-        // Revision volume (absolute changes — adds + deletes)
+        // Revision volume (inserted + deleted readable word tokens)
         const todayRevisions = tracker.getTodayRevisions();
         if (todayRevisions > 0) {
             this.createStatCard(sessionRow, 'rotate-cw', t('Revisions'), t('{words} words', { words: todayRevisions.toLocaleString() }));
@@ -524,9 +526,12 @@ export class StatsView extends ProjectBoundItemView {
             const list = container.createEl('ul', { cls: 'stats-sprint-log-list' });
             for (const entry of recent) {
                 const mins = Math.round(entry.durationMs / 60_000);
+                const dateLabel = entry.endDate && entry.endDate !== entry.date
+                    ? `${entry.date} → ${entry.endDate}`
+                    : entry.date;
                 list.createEl('li', {
                     text: t('{date} — {words} words in {mins} min ({wpm} wpm)', {
-                        date: entry.date,
+                        date: dateLabel,
                         words: entry.words,
                         mins,
                         wpm: entry.wpm,
