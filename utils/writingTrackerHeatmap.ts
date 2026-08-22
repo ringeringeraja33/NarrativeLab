@@ -104,7 +104,7 @@ export function buildVerticalHeatmapWeeks(
 }
 
 /**
- * Weeks as columns (newest on the left), Monday–Sunday as rows.
+ * Weeks as columns (oldest on the left), Monday–Sunday as rows.
  */
 export function buildYearHeatmapWeeks(
     history: Record<string, number>,
@@ -117,7 +117,7 @@ export function buildYearHeatmapWeeks(
     const firstMonday = startOfWeekMonday(start);
     const lastMonday = startOfWeekMonday(end);
     const out: HeatmapWeek[] = [];
-    for (let monday = lastMonday; monday.getTime() >= firstMonday.getTime(); monday = addCalendarDays(monday, -7)) {
+    for (let monday = firstMonday; monday.getTime() <= lastMonday.getTime(); monday = addCalendarDays(monday, 7)) {
         const days: HeatmapCell[] = [];
         for (let d = 0; d < 7; d++) {
             const day = addCalendarDays(monday, d);
@@ -179,8 +179,9 @@ export function reconcileDerivedTrackerHistory(
     const history = { ...canonical };
     const unattributedHistory = { ...previousUnattributed };
     for (const [date, words] of Object.entries(existing)) {
-        if (!(date in history)) unattributedHistory[date] = words;
+        if (date in unattributedHistory) continue;
+        const residual = date in history ? words - history[date] : words;
+        if (residual !== 0) unattributedHistory[date] = residual;
     }
-    for (const date of Object.keys(history)) delete unattributedHistory[date];
     return { history, unattributedHistory };
 }

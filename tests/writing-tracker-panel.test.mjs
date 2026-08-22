@@ -77,14 +77,17 @@ test('vertical heatmap is weeks-as-rows Monday through Sunday', () => {
     assert.equal(weeks[3].start, '2026-07-20');
 });
 
-test('year heatmap stays inside the requested calendar year', () => {
+test('year heatmap runs chronologically from left to right and stays inside the requested year', () => {
     const weeks = buildYearHeatmapWeeks({ '2026-01-01': 50 }, 2026, 100, new Date(2026, 0, 2));
     assert.ok(weeks.length >= 52);
     const jan1 = weeks.flatMap(week => week.days).find(day => day.date === '2026-01-01');
     assert.equal(jan1?.words, 50);
     assert.equal(jan1?.inRange, true);
-    assert.ok(weeks[weeks.length - 1].days.some(day => day.date === '2026-01-01'));
-    assert.ok(weeks[0].start >= '2026-12-21');
+    assert.ok(weeks[0].days.some(day => day.date === '2026-01-01'));
+    assert.ok(weeks[weeks.length - 1].start >= '2026-12-21');
+    for (let i = 1; i < weeks.length; i++) {
+        assert.ok(weeks[i - 1].start < weeks[i].start);
+    }
 });
 
 test('parseWritingTrackerFile keeps dated totals only', () => {
@@ -115,7 +118,11 @@ test('project-derived totals quarantine legacy-only dates without deleting them'
         {},
     );
     assert.deepEqual(first.history, { '2026-08-14': 20 });
-    assert.deepEqual(first.unattributedHistory, { '2026-08-07': 5, '2026-08-13': 5382 });
+    assert.deepEqual(first.unattributedHistory, {
+        '2026-08-07': 5,
+        '2026-08-13': 5382,
+        '2026-08-14': 979,
+    });
 
     const repeated = reconcileDerivedTrackerHistory(first.history, first.history, first.unattributedHistory);
     assert.deepEqual(repeated, first);
@@ -126,7 +133,22 @@ test('project-derived totals quarantine legacy-only dates without deleting them'
         first.unattributedHistory,
     );
     assert.deepEqual(laterAttributed.history, { '2026-08-13': 30, '2026-08-14': 20 });
-    assert.deepEqual(laterAttributed.unattributedHistory, { '2026-08-07': 5 });
+    assert.deepEqual(laterAttributed.unattributedHistory, first.unattributedHistory);
+});
+
+test('recovered history merges without resetting a live session or sprint', () => {
+    const tracker = new WritingTracker();
+    tracker.importData({ history: { '2026-08-10': 10 }, revisionHistory: { '2026-08-10': 4 } });
+    tracker.startSession(100, true, 1000);
+    assert.equal(tracker.startSprint(100, 2000), true);
+    tracker.mergePersistedHistory(
+        { '2026-08-10': 5, '2026-08-11': 20 },
+        { '2026-08-10': 3, '2026-08-11': 7 },
+    );
+    assert.deepEqual(tracker.getFullHistory(), { '2026-08-10': 15, '2026-08-11': 20 });
+    assert.deepEqual(tracker.getFullRevisionHistory(), { '2026-08-10': 7, '2026-08-11': 7 });
+    assert.equal(tracker.isSprintRunning(), true);
+    assert.equal(tracker.getSessionWords(120), 20);
 });
 
 test('sidebar panel splits vault/project and pins a vertical heatmap for the active scope', async () => {
@@ -303,8 +325,42 @@ test('vault totals reconcile every project and tracker deltas autosave safely', 
     assert.match(globalTracker, /for \(const project of this\.plugin\.sceneManager\.getProjects\(\)\)/);
     assert.match(globalTracker, /tempPath/);
     assert.match(globalTracker, /unattributedHistory/);
-    assert.match(panel, /getUnattributedWordTotal/);
-    assert.match(globalTracker, /if \(!found \|\| !complete\) return/);
+    assert.doesNotMatch(panel, /getUnattributedWordTotal|nl-tracker-ledger-warning/);
+    assert.match(globalTracker, /if \(!complete\) return false/);
+    assert.match(settings, /renderWordCountCorrections/);
+    assert.match(settings, /assignUnattributedToProject/);
+    assert.match(settings, /Assign to project/);
+    assert.match(settings, /Delete records/);
+    assert.match(settings, /applyProjectWordCorrection/);
+    assert.match(globalTracker, /applyWritingTrackerHistoryDelta/);
+    assert.match(mainTs, /Do not change the live tracker until the safe project write succeeds/);
     assert.match(mainTs, /scheduleWritingTrackerSave/);
     assert.match(mainTs, /this\.writingTracker\.recordRevisionWords/);
+});
+
+test('settings assignment writes the project before clearing preserved legacy records', () => {
+    const recovery = globalTracker.slice(globalTracker.indexOf('async assignUnattributedToProject'));
+    assert.ok(recovery.indexOf('reconcileProjectLedgers()') < recovery.indexOf('const history ='));
+    assert.ok(recovery.indexOf('applyWritingTrackerHistoryDelta(') < recovery.indexOf('delete this.unattributedHistory'));
+    assert.ok(recovery.indexOf('delete this.unattributedHistory') < recovery.indexOf('await this.save()'));
+    const projectWrite = mainTs.slice(mainTs.indexOf('async applyWritingTrackerHistoryDelta'));
+    assert.ok(projectWrite.indexOf("writeSystemJson('stats.json'") < projectWrite.indexOf('this.writingTracker.mergePersistedHistory'));
+    assert.match(projectWrite, /\.\.\.existingStats/);
+});
+
+test('manual corrections are project-first and unattributed records can be deleted', () => {
+    const correction = globalTracker.slice(
+        globalTracker.indexOf('async applyProjectWordCorrection'),
+        globalTracker.indexOf('async deleteUnattributedHistory'),
+    );
+    assert.ok(correction.indexOf('reconcileProjectLedgers()') < correction.indexOf('loadProjectTracker'));
+    assert.ok(correction.indexOf('applyWritingTrackerHistoryDelta(') < correction.indexOf('this.tracker.mergePersistedHistory'));
+    assert.ok(correction.indexOf('this.tracker.mergePersistedHistory') < correction.indexOf('this.save()'));
+    const deletion = globalTracker.slice(globalTracker.indexOf('async deleteUnattributedHistory'));
+    assert.match(deletion, /previousHistory/);
+    assert.match(deletion, /this\.unattributedHistory = \{\}/);
+    assert.match(deletion, /this\.unattributedHistory = previousHistory/);
+    assert.match(settings, /never edit, create, restore, or delete manuscript files/);
+    assert.doesNotMatch(settings, /Restore writing history|Restore to project/);
+    assert.match(globalTracker, /prefer it over the older canonical ledger/);
 });

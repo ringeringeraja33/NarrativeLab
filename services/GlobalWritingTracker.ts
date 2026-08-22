@@ -4,9 +4,25 @@ import { WritingTracker } from './WritingTracker';
 import { deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 import {
     parseWritingTrackerFile,
+    parseWritingTrackerDate,
     reconcileDerivedTrackerHistory,
     WRITING_TRACKER_FILENAME,
 } from '../utils/writingTrackerHeatmap';
+import type { WritingTrackerData } from './WritingTracker';
+import { t } from '../utils/i18n';
+
+export interface WritingHistoryAssignmentResult {
+    dates: number;
+    words: number;
+    revisions: number;
+    projectTitle: string;
+}
+
+export interface WritingWordCorrectionResult {
+    date: string;
+    words: number;
+    projectTitle: string;
+}
 
 /**
  * Vault-wide net-word ledger, stored beside the plugin (not in a project
@@ -19,6 +35,7 @@ export class GlobalWritingTracker {
     private loaded = false;
     private unattributedHistory: Record<string, number> = {};
     private unattributedRevisionHistory: Record<string, number> = {};
+    private mutatingLedger = false;
 
     constructor(private plugin: SceneCardsPlugin) {}
 
@@ -29,24 +46,28 @@ export class GlobalWritingTracker {
     }
 
     async load(): Promise<void> {
-        try {
-            const adapter = this.plugin.app.vault.adapter;
-            const path = this.getFilePath();
-            if (await adapter.exists(path)) {
-                const parsed = parseWritingTrackerFile(JSON.parse(await adapter.read(path)) as unknown);
+        const adapter = this.plugin.app.vault.adapter;
+        const path = this.getFilePath();
+        // A leftover temp file is the fully staged payload from an interrupted
+        // safe write, so prefer it over the older canonical ledger.
+        for (const candidate of [`${path}.tmp`, path]) {
+            try {
+                if (!await adapter.exists(candidate)) continue;
+                const parsed = parseWritingTrackerFile(JSON.parse(await adapter.read(candidate)) as unknown);
                 this.tracker.importData(parsed);
                 this.unattributedHistory = parsed.unattributedHistory;
                 this.unattributedRevisionHistory = parsed.unattributedRevisionHistory;
+                break;
+            } catch (error) {
+                console.error(`[NarrativeLab] Failed to load writing tracker from ${candidate}:`, error);
             }
-        } catch (error) {
-            console.error('[NarrativeLab] Failed to load writing tracker:', error);
         }
         this.loaded = true;
     }
 
     /** Rebuild vault totals from project ledgers and quarantine legacy-only dates. */
-    async reconcileProjectLedgers(): Promise<void> {
-        if (!this.loaded) return;
+    async reconcileProjectLedgers(): Promise<boolean> {
+        if (!this.loaded) return false;
         const history: Record<string, number> = {};
         const revisionHistory: Record<string, number> = {};
         let found = false;
@@ -57,7 +78,17 @@ export class GlobalWritingTracker {
                 const path = normalizePath(`${base}/System/stats.json`);
                 const adapter = this.plugin.app.vault.adapter;
                 if (!await adapter.exists(path)) continue;
-                const raw = JSON.parse(await adapter.read(path)) as Record<string, unknown>;
+                const rawValue = JSON.parse(await adapter.read(path)) as unknown;
+                if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
+                    throw new Error('invalid stats object');
+                }
+                const raw = rawValue as Record<string, unknown>;
+                if (raw.writingTrackerData !== undefined
+                    && (!raw.writingTrackerData
+                        || typeof raw.writingTrackerData !== 'object'
+                        || Array.isArray(raw.writingTrackerData))) {
+                    throw new Error('invalid writing tracker data');
+                }
                 const parsed = parseWritingTrackerFile(
                     raw?.writingTrackerData && typeof raw.writingTrackerData === 'object'
                         ? raw.writingTrackerData
@@ -76,7 +107,8 @@ export class GlobalWritingTracker {
             }
         }
         // Never replace the current ledger with a partial project scan.
-        if (!found || !complete) return;
+        if (!complete) return false;
+        if (!found) return true;
         const existingHistory = this.tracker.getFullHistory();
         const existingRevisions = this.tracker.getFullRevisionHistory();
         const words = reconcileDerivedTrackerHistory(history, existingHistory, this.unattributedHistory);
@@ -88,7 +120,7 @@ export class GlobalWritingTracker {
         this.unattributedHistory = words.unattributedHistory;
         this.unattributedRevisionHistory = revisions.unattributedHistory;
         this.tracker.importData({ history: words.history, revisionHistory: revisions.history });
-        await this.save();
+        return this.save();
     }
 
     getUnattributedWordTotal(): number {
@@ -96,7 +128,155 @@ export class GlobalWritingTracker {
     }
 
     getUnattributedEntryCount(): number {
-        return Object.keys(this.unattributedHistory).length;
+        return new Set([
+            ...Object.keys(this.unattributedHistory),
+            ...Object.keys(this.unattributedRevisionHistory),
+        ]).size;
+    }
+
+    getUnattributedRevisionTotal(): number {
+        return Object.values(this.unattributedRevisionHistory).reduce((sum, words) => sum + words, 0);
+    }
+
+    async assignUnattributedToProject(projectFilePath: string): Promise<WritingHistoryAssignmentResult> {
+        return this.runLedgerMutation(async () => {
+            if (!await this.reconcileProjectLedgers()) {
+                throw new Error(t('One or more project stats files could not be read. Assignment was cancelled.'));
+            }
+            const history = { ...this.unattributedHistory };
+            const revisionHistory = { ...this.unattributedRevisionHistory };
+            const dates = new Set([...Object.keys(history), ...Object.keys(revisionHistory)]).size;
+            if (dates === 0) throw new Error(t('There are no unattributed statistics to assign.'));
+            const { target, project, statsPayload, storedTracker } = await this.loadProjectTracker(projectFilePath);
+            storedTracker.mergePersistedHistory(history, revisionHistory);
+
+            await this.plugin.applyWritingTrackerHistoryDelta(
+                target,
+                history,
+                revisionHistory,
+                statsPayload,
+                storedTracker.exportData(),
+            );
+
+            // The project write completed. Update the live vault ledger and remove
+            // the recovery copies; a later project reconciliation remains idempotent.
+            this.tracker.mergePersistedHistory(history, revisionHistory);
+            for (const date of Object.keys(history)) delete this.unattributedHistory[date];
+            for (const date of Object.keys(revisionHistory)) delete this.unattributedRevisionHistory[date];
+            if (!await this.save()) {
+                throw new Error(t('Statistics were assigned to the project, but the vault ledger update failed. Reload NarrativeLab before trying again.'));
+            }
+
+            return {
+                dates,
+                words: Object.values(history).reduce((sum, words) => sum + words, 0),
+                revisions: Object.values(revisionHistory).reduce((sum, words) => sum + words, 0),
+                projectTitle: project.title,
+            };
+        });
+    }
+
+    async applyProjectWordCorrection(
+        projectFilePath: string,
+        date: string,
+        words: number,
+    ): Promise<WritingWordCorrectionResult> {
+        return this.runLedgerMutation(async () => {
+            if (!parseWritingTrackerDate(date)) throw new Error(t('Choose a valid correction date.'));
+            const amount = Math.round(words);
+            if (!Number.isFinite(amount) || amount === 0) {
+                throw new Error(t('Enter a non-zero whole-word correction.'));
+            }
+            if (!await this.reconcileProjectLedgers()) {
+                throw new Error(t('One or more project stats files could not be read. Correction was cancelled.'));
+            }
+            const { target, project, statsPayload, storedTracker } = await this.loadProjectTracker(projectFilePath);
+            const history = { [date]: amount };
+            storedTracker.mergePersistedHistory(history);
+            await this.plugin.applyWritingTrackerHistoryDelta(
+                target,
+                history,
+                {},
+                statsPayload,
+                storedTracker.exportData(),
+            );
+            this.tracker.mergePersistedHistory(history);
+            if (!await this.save()) {
+                throw new Error(t('The project correction was written, but the vault ledger update failed. Reload NarrativeLab before trying again.'));
+            }
+            return { date, words: amount, projectTitle: project.title };
+        });
+    }
+
+    async deleteUnattributedHistory(): Promise<{ dates: number; words: number; revisions: number }> {
+        return this.runLedgerMutation(async () => {
+            const dates = this.getUnattributedEntryCount();
+            if (dates === 0) throw new Error(t('There is no excluded writing history to delete.'));
+            const words = this.getUnattributedWordTotal();
+            const revisions = this.getUnattributedRevisionTotal();
+            const previousHistory = this.unattributedHistory;
+            const previousRevisions = this.unattributedRevisionHistory;
+            this.unattributedHistory = {};
+            this.unattributedRevisionHistory = {};
+            if (!await this.save()) {
+                this.unattributedHistory = previousHistory;
+                this.unattributedRevisionHistory = previousRevisions;
+                throw new Error(t('The unattributed statistics could not be saved as deleted. Nothing was changed.'));
+            }
+            return { dates, words, revisions };
+        });
+    }
+
+    private async runLedgerMutation<T>(operation: () => Promise<T>): Promise<T> {
+        if (this.mutatingLedger) throw new Error(t('A word count correction is already running.'));
+        this.mutatingLedger = true;
+        try {
+            return await operation();
+        } finally {
+            this.mutatingLedger = false;
+        }
+    }
+
+    private async loadProjectTracker(projectFilePath: string): Promise<{
+        target: string;
+        project: ReturnType<SceneCardsPlugin['sceneManager']['getProjects']>[number];
+        statsPayload: Record<string, unknown>;
+        storedTracker: WritingTracker;
+    }> {
+        const target = normalizePath(projectFilePath);
+        const project = this.plugin.sceneManager.getProjects()
+            .find(candidate => normalizePath(candidate.filePath) === target);
+        if (!project) throw new Error(t('The selected project is no longer available.'));
+        const adapter = this.plugin.app.vault.adapter;
+        if (!await adapter.exists(target)) throw new Error(t('The selected project is no longer available.'));
+
+        const base = deriveProjectFoldersFromFilePath(target).baseFolder;
+        const statsPath = normalizePath(`${base}/System/stats.json`);
+        let statsPayload: Record<string, unknown> = {};
+        if (await adapter.exists(statsPath)) {
+            try {
+                const parsed = JSON.parse(await adapter.read(statsPath)) as unknown;
+                if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid object');
+                statsPayload = parsed as Record<string, unknown>;
+                if (statsPayload.writingTrackerData !== undefined
+                    && (!statsPayload.writingTrackerData
+                        || typeof statsPayload.writingTrackerData !== 'object'
+                        || Array.isArray(statsPayload.writingTrackerData))) {
+                    throw new Error('invalid writing tracker data');
+                }
+            } catch {
+                throw new Error(t('The project stats file could not be read. Nothing was changed.'));
+            }
+        }
+
+        const storedTracker = new WritingTracker();
+        const rawTracker = statsPayload.writingTrackerData;
+        storedTracker.importData(
+            rawTracker && typeof rawTracker === 'object' && !Array.isArray(rawTracker)
+                ? rawTracker as WritingTrackerData
+                : { history: {} },
+        );
+        return { target, project, statsPayload, storedTracker };
     }
 
     recordFlush(delta: { words: number; revisions: number }, now = Date.now()): void {
@@ -113,7 +293,7 @@ export class GlobalWritingTracker {
         }, 800);
     }
 
-    async save(): Promise<void> {
+    async save(): Promise<boolean> {
         const payload = JSON.stringify({
             ...this.tracker.exportData(),
             unattributedHistory: this.unattributedHistory,
@@ -135,8 +315,10 @@ export class GlobalWritingTracker {
             });
         try {
             await this.writeQueue;
+            return true;
         } catch (error) {
             console.error('[NarrativeLab] Failed to save writing tracker:', error);
+            return false;
         }
     }
 }

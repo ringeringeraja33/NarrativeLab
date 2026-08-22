@@ -158,7 +158,7 @@ import {
     SAMPLE_NCANVAS_FILENAMES,
     type SampleNcanvasLanguage,
 } from './components/NCanvasManagerModal';
-import { WritingTracker } from './services/WritingTracker';
+import { WritingTracker, type WritingTrackerData } from './services/WritingTracker';
 import { GlobalWritingTracker } from './services/GlobalWritingTracker';
 import { SnapshotManager } from './services/SnapshotManager';
 import { PlotlineManager } from './services/PlotlineManager';
@@ -3479,6 +3479,42 @@ export default class SceneCardsPlugin extends Plugin {
         await this.writeSystemJson('stats.json', {
             writingTrackerData: trackerData,
         }, target);
+    }
+
+    /** Safely apply a dated statistical delta to one selected project ledger. */
+    async applyWritingTrackerHistoryDelta(
+        projectFilePath: string,
+        history: Record<string, number>,
+        revisionHistory: Record<string, number>,
+        existingStats: Record<string, unknown>,
+        storedTrackerData: WritingTrackerData,
+    ): Promise<void> {
+        const target = normalizePath(projectFilePath);
+        const activeTarget = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : '';
+        if (activeTarget === target && this._writingTrackerSaveTimer !== null) {
+            window.clearTimeout(this._writingTrackerSaveTimer);
+            this._writingTrackerSaveTimer = null;
+        }
+
+        let payload = storedTrackerData;
+        if (activeTarget === target) {
+            const adjusted = new WritingTracker();
+            adjusted.importData(this.writingTracker.exportData());
+            adjusted.mergePersistedHistory(history, revisionHistory);
+            payload = adjusted.exportData();
+        }
+
+        await this.writeSystemJson('stats.json', {
+            ...existingStats,
+            writingTrackerData: payload,
+        }, target);
+
+        // Do not change the live tracker until the safe project write succeeds.
+        if (activeTarget === target) {
+            this.writingTracker.mergePersistedHistory(history, revisionHistory);
+        }
     }
 
     scheduleWritingTrackerSave(): void {

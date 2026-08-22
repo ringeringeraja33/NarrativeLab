@@ -13,6 +13,8 @@ import type { CustomSection } from './components/CustomSectionsRenderer';
 import { BeatSheetApplyModal } from './components/BeatSheetApplyModal';
 import { applyLibraryCategorySettings, reconcileLibraryCategoriesForActiveProject } from './services/LibraryCategorySync';
 import { syncAllNativeLibraryBases } from './components/NativeLibraryBase';
+import { openConfirmModal } from './components/ConfirmModal';
+import { writingTrackerDateKey } from './utils/writingTrackerHeatmap';
 
 // ═══════════════════════════════════════════════════════
 //  COLOR PALETTES — Catppuccin + Mood-based
@@ -2572,6 +2574,8 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        this.renderWordCountCorrections(panel);
+
         new Setting(panel).setName(t('Writing Goals')).setHeading();
 
         new Setting(panel)
@@ -2628,6 +2632,174 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+    }
+
+    private renderWordCountCorrections(panel: HTMLElement): void {
+        new Setting(panel)
+            .setName(t('Word count corrections'))
+            .setDesc(t('These tools only change writing statistics. They never edit, create, restore, or delete manuscript files.'))
+            .setHeading();
+        const tracker = this.plugin.globalWritingTracker;
+        const projects = this.plugin.sceneManager.getProjects();
+        const defaultProject = this.plugin.sceneManager.activeProject?.filePath
+            ?? projects[0]?.filePath
+            ?? '';
+        let correctionProject = defaultProject;
+        let correctionDate = writingTrackerDateKey(new Date());
+        let correctionWords = '';
+        const manualSetting = new Setting(panel)
+            .setName(t('Manual statistical correction'))
+            .setDesc(t('Choose a project and date, then enter a signed whole-word adjustment. Positive adds words; negative subtracts them.'))
+            .addDropdown(dropdown => {
+                if (projects.length === 0) dropdown.addOption('', t('No NarrativeLab projects are available.'));
+                for (const project of projects) {
+                    dropdown.addOption(project.filePath, `${project.title} — ${project.filePath}`);
+                }
+                dropdown.setValue(correctionProject).onChange(value => { correctionProject = value; });
+            })
+            .addText(text => {
+                text.inputEl.type = 'date';
+                text.inputEl.setAttribute('aria-label', t('Correction date'));
+                text.setValue(correctionDate).onChange(value => { correctionDate = value; });
+            })
+            .addText(text => {
+                text.inputEl.type = 'number';
+                text.inputEl.step = '1';
+                text.inputEl.setAttribute('aria-label', t('Word adjustment'));
+                text.setPlaceholder(t('+500 or -200')).onChange(value => { correctionWords = value; });
+            })
+            .addButton(button => button
+                .setButtonText(t('Apply correction…'))
+                .setCta()
+                .setDisabled(projects.length === 0)
+                .onClick(() => {
+                    const project = projects.find(candidate => candidate.filePath === correctionProject);
+                    if (!project) return;
+                    const amount = Number(correctionWords);
+                    if (!correctionDate || !Number.isInteger(amount) || amount === 0) {
+                        new Notice(t('Enter a valid date and a non-zero whole-word correction.'));
+                        return;
+                    }
+                    openConfirmModal(this.app, {
+                        title: t('Apply word count correction'),
+                        message: t('Apply a {words}-word statistical correction to "{project}" on {date}? This will not change any manuscript files.', {
+                            words: amount > 0 ? `+${amount.toLocaleString()}` : amount.toLocaleString(),
+                            project: project.title,
+                            date: correctionDate,
+                        }),
+                        confirmLabel: t('Apply correction'),
+                        confirmClass: 'mod-cta',
+                        onConfirm: async () => {
+                            try {
+                                const result = await tracker.applyProjectWordCorrection(
+                                    project.filePath,
+                                    correctionDate,
+                                    amount,
+                                );
+                                new Notice(t('Applied a {words}-word correction to "{project}" on {date}.', {
+                                    words: result.words > 0
+                                        ? `+${result.words.toLocaleString()}`
+                                        : result.words.toLocaleString(),
+                                    project: result.projectTitle,
+                                    date: result.date,
+                                }));
+                                await this.plugin.refreshOpenViews();
+                                this.display();
+                            } catch (error) {
+                                new Notice(t('Could not apply word count correction: {error}', {
+                                    error: error instanceof Error ? error.message : String(error),
+                                }));
+                            }
+                        },
+                    });
+                }));
+        manualSetting.settingEl.addClass('nl-word-count-correction');
+
+        const count = tracker.getUnattributedEntryCount();
+        if (count === 0) {
+            new Setting(panel)
+                .setName(t('Unattributed statistics'))
+                .setDesc(t('There are no unattributed word-count records to review.'));
+            return;
+        }
+
+        let assignmentProject = defaultProject;
+        const unattributedSetting = new Setting(panel)
+            .setName(t('Unattributed statistics'))
+            .setDesc(t('{count} dates and {words} net words are not assigned to a project. Assigning or deleting them changes statistics only, never manuscript files.', {
+                count,
+                words: tracker.getUnattributedWordTotal().toLocaleString(),
+            }))
+            .addDropdown(dropdown => {
+                if (projects.length === 0) dropdown.addOption('', t('No NarrativeLab projects are available.'));
+                for (const project of projects) {
+                    dropdown.addOption(project.filePath, `${project.title} — ${project.filePath}`);
+                }
+                dropdown.setValue(assignmentProject).onChange(value => { assignmentProject = value; });
+            })
+            .addButton(button => button
+                .setButtonText(t('Assign to project…'))
+                .setCta()
+                .setDisabled(projects.length === 0)
+                .onClick(() => {
+                    const project = projects.find(candidate => candidate.filePath === assignmentProject);
+                    if (!project) return;
+                    openConfirmModal(this.app, {
+                        title: t('Assign unattributed statistics'),
+                        message: t('Assign {words} net words from {count} dates to "{project}"? This only changes writing statistics and will not restore or edit manuscript files.', {
+                            words: tracker.getUnattributedWordTotal().toLocaleString(),
+                            count,
+                            project: project.title,
+                        }),
+                        confirmLabel: t('Assign to project'),
+                        confirmClass: 'mod-cta',
+                        onConfirm: async () => {
+                            try {
+                                const result = await tracker.assignUnattributedToProject(project.filePath);
+                                new Notice(t('Assigned {words} net words from {count} dates to "{project}". No manuscript files were changed.', {
+                                    words: result.words.toLocaleString(),
+                                    count: result.dates,
+                                    project: result.projectTitle,
+                                }));
+                                await this.plugin.refreshOpenViews();
+                                this.display();
+                            } catch (error) {
+                                new Notice(t('Could not assign unattributed statistics: {error}', {
+                                    error: error instanceof Error ? error.message : String(error),
+                                }));
+                            }
+                        },
+                    });
+                }))
+            .addButton(button => button
+                .setButtonText(t('Delete records…'))
+                .setWarning()
+                .onClick(() => {
+                    openConfirmModal(this.app, {
+                        title: t('Delete unattributed statistics'),
+                        message: t('Delete {words} net words from {count} unattributed dates? This deletes statistical records only; manuscript files are not affected.', {
+                            words: tracker.getUnattributedWordTotal().toLocaleString(),
+                            count,
+                        }),
+                        confirmLabel: t('Delete records'),
+                        confirmClass: 'mod-warning',
+                        onConfirm: async () => {
+                            try {
+                                const result = await tracker.deleteUnattributedHistory();
+                                new Notice(t('Deleted {words} net words from {count} unattributed dates. No manuscript files were changed.', {
+                                    words: result.words.toLocaleString(),
+                                    count: result.dates,
+                                }));
+                                this.display();
+                            } catch (error) {
+                                new Notice(t('Could not delete unattributed statistics: {error}', {
+                                    error: error instanceof Error ? error.message : String(error),
+                                }));
+                            }
+                        },
+                    });
+                }));
+        unattributedSetting.settingEl.addClass('nl-word-count-correction');
     }
 
     private renderExportAdvancedSettingsTab(panel: HTMLElement): void {

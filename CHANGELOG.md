@@ -1,5 +1,12 @@
 # NarrativeLab — Changelog
 
+## 1.3.9
+
+- Tracker settings now provide explicit statistical correction tools: apply a dated signed word-count adjustment, assign unattributed history to a project, or permanently delete unattributed records without touching manuscript files.
+- Project and vault tracker ledger updates are serialized and use recoverable staged writes; unreadable or incomplete project statistics cancel corrections instead of risking partial replacement.
+- Residual legacy totals remain available as unattributed history, and the tracker sidebar no longer presents statistical records as recoverable manuscript content.
+- The yearly word-count heatmap now runs chronologically from January on the left to December on the right, including correct month labels for weeks that cross year boundaries.
+
 ## 1.3.8
 
 - Vault-wide writing totals are now rebuilt only from project `System/stats.json` ledgers, preventing old global-only entries from inflating totals, daily averages, and heatmaps.

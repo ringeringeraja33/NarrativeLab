@@ -288,6 +288,19 @@ export class WritingTracker {
         if (Number.isFinite(absChange) && absChange > 0) this.recordRevisionToday(absChange, now);
     }
 
+    /** Merge persisted statistical adjustments without resetting the live session or sprint. */
+    mergePersistedHistory(
+        history: Record<string, number>,
+        revisionHistory: Record<string, number> = {},
+    ): void {
+        for (const [date, words] of Object.entries(this.sanitiseDailyRecord(history, true))) {
+            this.history[date] = (this.history[date] || 0) + words;
+        }
+        for (const [date, words] of Object.entries(this.sanitiseDailyRecord(revisionHistory, false))) {
+            this.revisionHistory[date] = (this.revisionHistory[date] || 0) + words;
+        }
+    }
+
     /** Sum of words written across the last N days (inclusive of today). */
     getWordsInLastDays(days: number): number {
         if (days <= 0) return 0;

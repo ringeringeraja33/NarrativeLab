@@ -178,13 +178,13 @@ export function renderYearWordHeatmap(
         labels.createSpan({ text: label });
     }
     const cols = grid.createDiv('nl-tracker-heatmap-year-cols');
-    let lastMonth = -1;
     for (const week of weeks) {
         const col = cols.createDiv('nl-tracker-heatmap-year-col');
-        const month = Number(week.start.slice(5, 7));
-        if (month !== lastMonth) {
-            col.createSpan({ cls: 'nl-tracker-heatmap-month', text: week.start.slice(5, 7) });
-            lastMonth = month;
+        const monthStart = week.days.find(cell => (
+            cell.date.startsWith(`${year}-`) && cell.date.endsWith('-01')
+        ));
+        if (monthStart) {
+            col.createSpan({ cls: 'nl-tracker-heatmap-month', text: monthStart.date.slice(5, 7) });
         } else {
             col.createSpan({ cls: 'nl-tracker-heatmap-month is-empty', text: '' });
         }
