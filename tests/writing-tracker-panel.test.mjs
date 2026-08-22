@@ -16,6 +16,7 @@ const {
     buildVerticalHeatmapWeeks,
     buildYearHeatmapWeeks,
     parseWritingTrackerFile,
+    reconcileDerivedTrackerHistory,
     writingTrackerDateKey,
     startOfWeekMonday,
     WRITING_TRACKER_FILENAME,
@@ -90,6 +91,8 @@ test('parseWritingTrackerFile keeps dated totals only', () => {
     const parsed = parseWritingTrackerFile({
         history: { '2026-08-16': 12, nope: 3, '2026-08-17': '8', '2026-08-18': 0, '2026-02-31': 99 },
         revisionHistory: { '2026-08-16': 4, '2026-08-17': -3 },
+        unattributedHistory: { '2026-08-13': '5382', invalid: 7 },
+        unattributedRevisionHistory: { '2026-08-13': 12, '2026-08-14': -1 },
     });
     assert.equal(parsed.history['2026-08-16'], 12);
     assert.equal(parsed.history['2026-08-17'], 8);
@@ -98,7 +101,32 @@ test('parseWritingTrackerFile keeps dated totals only', () => {
     assert.equal(parsed.history['2026-02-31'], undefined);
     assert.equal(parsed.revisionHistory['2026-08-16'], 4);
     assert.equal(parsed.revisionHistory['2026-08-17'], undefined);
+    assert.equal(parsed.unattributedHistory['2026-08-13'], 5382);
+    assert.equal(parsed.unattributedHistory.invalid, undefined);
+    assert.equal(parsed.unattributedRevisionHistory['2026-08-13'], 12);
+    assert.equal(parsed.unattributedRevisionHistory['2026-08-14'], undefined);
     assert.equal(WRITING_TRACKER_FILENAME, 'writing-tracker.json');
+});
+
+test('project-derived totals quarantine legacy-only dates without deleting them', () => {
+    const first = reconcileDerivedTrackerHistory(
+        { '2026-08-14': 20 },
+        { '2026-08-07': 5, '2026-08-13': 5382, '2026-08-14': 999 },
+        {},
+    );
+    assert.deepEqual(first.history, { '2026-08-14': 20 });
+    assert.deepEqual(first.unattributedHistory, { '2026-08-07': 5, '2026-08-13': 5382 });
+
+    const repeated = reconcileDerivedTrackerHistory(first.history, first.history, first.unattributedHistory);
+    assert.deepEqual(repeated, first);
+
+    const laterAttributed = reconcileDerivedTrackerHistory(
+        { '2026-08-13': 30, '2026-08-14': 20 },
+        first.history,
+        first.unattributedHistory,
+    );
+    assert.deepEqual(laterAttributed.history, { '2026-08-13': 30, '2026-08-14': 20 });
+    assert.deepEqual(laterAttributed.unattributedHistory, { '2026-08-07': 5 });
 });
 
 test('sidebar panel splits vault/project and pins a vertical heatmap for the active scope', async () => {
@@ -274,6 +302,9 @@ test('vault totals reconcile every project and tracker deltas autosave safely', 
     assert.match(globalTracker, /reconcileProjectLedgers/);
     assert.match(globalTracker, /for \(const project of this\.plugin\.sceneManager\.getProjects\(\)\)/);
     assert.match(globalTracker, /tempPath/);
+    assert.match(globalTracker, /unattributedHistory/);
+    assert.match(panel, /getUnattributedWordTotal/);
+    assert.match(globalTracker, /if \(!found \|\| !complete\) return/);
     assert.match(mainTs, /scheduleWritingTrackerSave/);
     assert.match(mainTs, /this\.writingTracker\.recordRevisionWords/);
 });

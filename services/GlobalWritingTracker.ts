@@ -4,6 +4,7 @@ import { WritingTracker } from './WritingTracker';
 import { deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 import {
     parseWritingTrackerFile,
+    reconcileDerivedTrackerHistory,
     WRITING_TRACKER_FILENAME,
 } from '../utils/writingTrackerHeatmap';
 
@@ -16,6 +17,8 @@ export class GlobalWritingTracker {
     private writeQueue: Promise<void> = Promise.resolve();
     private saveTimer: number | null = null;
     private loaded = false;
+    private unattributedHistory: Record<string, number> = {};
+    private unattributedRevisionHistory: Record<string, number> = {};
 
     constructor(private plugin: SceneCardsPlugin) {}
 
@@ -32,6 +35,8 @@ export class GlobalWritingTracker {
             if (await adapter.exists(path)) {
                 const parsed = parseWritingTrackerFile(JSON.parse(await adapter.read(path)) as unknown);
                 this.tracker.importData(parsed);
+                this.unattributedHistory = parsed.unattributedHistory;
+                this.unattributedRevisionHistory = parsed.unattributedRevisionHistory;
             }
         } catch (error) {
             console.error('[NarrativeLab] Failed to load writing tracker:', error);
@@ -39,12 +44,13 @@ export class GlobalWritingTracker {
         this.loaded = true;
     }
 
-    /** Rebuild vault totals from every discovered project ledger, retaining legacy-only dates. */
+    /** Rebuild vault totals from project ledgers and quarantine legacy-only dates. */
     async reconcileProjectLedgers(): Promise<void> {
         if (!this.loaded) return;
         const history: Record<string, number> = {};
         const revisionHistory: Record<string, number> = {};
         let found = false;
+        let complete = true;
         for (const project of this.plugin.sceneManager.getProjects()) {
             try {
                 const base = deriveProjectFoldersFromFilePath(project.filePath).baseFolder;
@@ -65,20 +71,32 @@ export class GlobalWritingTracker {
                     revisionHistory[date] = (revisionHistory[date] || 0) + words;
                 }
             } catch (error) {
+                complete = false;
                 console.warn('[NarrativeLab] Could not merge project writing tracker:', project.filePath, error);
             }
         }
-        if (!found) return;
+        // Never replace the current ledger with a partial project scan.
+        if (!found || !complete) return;
         const existingHistory = this.tracker.getFullHistory();
         const existingRevisions = this.tracker.getFullRevisionHistory();
-        for (const [date, words] of Object.entries(existingHistory)) {
-            if (!(date in history)) history[date] = words;
-        }
-        for (const [date, words] of Object.entries(existingRevisions)) {
-            if (!(date in revisionHistory)) revisionHistory[date] = words;
-        }
-        this.tracker.importData({ history, revisionHistory });
+        const words = reconcileDerivedTrackerHistory(history, existingHistory, this.unattributedHistory);
+        const revisions = reconcileDerivedTrackerHistory(
+            revisionHistory,
+            existingRevisions,
+            this.unattributedRevisionHistory,
+        );
+        this.unattributedHistory = words.unattributedHistory;
+        this.unattributedRevisionHistory = revisions.unattributedHistory;
+        this.tracker.importData({ history: words.history, revisionHistory: revisions.history });
         await this.save();
+    }
+
+    getUnattributedWordTotal(): number {
+        return Object.values(this.unattributedHistory).reduce((sum, words) => sum + words, 0);
+    }
+
+    getUnattributedEntryCount(): number {
+        return Object.keys(this.unattributedHistory).length;
     }
 
     recordFlush(delta: { words: number; revisions: number }, now = Date.now()): void {
@@ -96,7 +114,11 @@ export class GlobalWritingTracker {
     }
 
     async save(): Promise<void> {
-        const payload = JSON.stringify(this.tracker.exportData(), null, 2);
+        const payload = JSON.stringify({
+            ...this.tracker.exportData(),
+            unattributedHistory: this.unattributedHistory,
+            unattributedRevisionHistory: this.unattributedRevisionHistory,
+        }, null, 2);
         const path = this.getFilePath();
         this.writeQueue = this.writeQueue
             .catch(() => undefined)

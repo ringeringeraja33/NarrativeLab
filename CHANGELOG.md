@@ -1,5 +1,11 @@
 # NarrativeLab — Changelog
 
+## 1.3.8
+
+- Vault-wide writing totals are now rebuilt only from project `System/stats.json` ledgers, preventing old global-only entries from inflating totals, daily averages, and heatmaps.
+- Unattributed legacy entries are retained outside active totals and reported in the tracker panel, so the correction does not discard recovery data.
+- Vault reconciliation aborts when any readable project ledger scan is incomplete, preventing partial project data from replacing the current ledger.
+
 ## 1.3.7
 
 - Writing tracking now records true signed net words, exact inserted/deleted word-token churn, zero-output days, cross-midnight dates, recoverable active sprints, and complete vault totals merged from every project; tracker edits are also autosaved safely.

@@ -116,6 +116,7 @@ export class WritingTrackerPanel extends ItemView {
             }
             this.renderSprint(body, totalWords);
             this.renderSession(body, totalWords);
+            if (this.trackerScope === 'global') this.renderUnattributedHistoryNotice(body);
             renderGoalRings(
                 body,
                 this.source(),
@@ -289,6 +290,18 @@ export class WritingTrackerPanel extends ItemView {
                 words: revisions.toLocaleString(),
             }));
         }
+    }
+
+    private renderUnattributedHistoryNotice(parent: HTMLElement): void {
+        const count = this.plugin.globalWritingTracker.getUnattributedEntryCount();
+        if (count === 0) return;
+        parent.createDiv({
+            cls: 'nl-tracker-ledger-warning',
+            text: t('Excluded {words} unattributed legacy words from vault totals. The original {count} records are preserved for recovery.', {
+                words: this.plugin.globalWritingTracker.getUnattributedWordTotal().toLocaleString(),
+                count,
+            }),
+        });
     }
 
     private playSprintEndChime(): void {

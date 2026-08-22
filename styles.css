@@ -15127,6 +15127,20 @@ body .nl-floating-sticky-save-location input[type="text"] {
     color: var(--text-warning);
 }
 
+.nl-tracker-ledger-warning {
+    width: 100%;
+    box-sizing: border-box;
+    margin-top: -8px;
+    padding: 8px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.45;
+    text-align: left;
+}
+
 .nl-tracker-section,
 .nl-tracker-goal,
 .nl-tracker-sparkline,

@@ -132,27 +132,55 @@ export function buildYearHeatmapWeeks(
 
 export const WRITING_TRACKER_FILENAME = 'writing-tracker.json';
 
-export function parseWritingTrackerFile(raw: unknown): {
+export interface ParsedWritingTrackerFile {
     history: Record<string, number>;
     revisionHistory: Record<string, number>;
-} {
-    const history: Record<string, number> = {};
-    const revisionHistory: Record<string, number> = {};
-    if (!raw || typeof raw !== 'object') return { history, revisionHistory };
+    unattributedHistory: Record<string, number>;
+    unattributedRevisionHistory: Record<string, number>;
+}
+
+function parseDatedValues(raw: unknown, positiveOnly = false): Record<string, number> {
+    const values: Record<string, number> = {};
+    if (!raw || typeof raw !== 'object') return values;
+    for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        if (!parseWritingTrackerDate(key)) continue;
+        const number = Number(value);
+        if (Number.isFinite(number) && (!positiveOnly || number > 0)) values[key] = number;
+    }
+    return values;
+}
+
+export function parseWritingTrackerFile(raw: unknown): ParsedWritingTrackerFile {
+    const empty: ParsedWritingTrackerFile = {
+        history: {},
+        revisionHistory: {},
+        unattributedHistory: {},
+        unattributedRevisionHistory: {},
+    };
+    if (!raw || typeof raw !== 'object') return empty;
     const obj = raw as Record<string, unknown>;
-    if (obj.history && typeof obj.history === 'object') {
-        for (const [key, value] of Object.entries(obj.history as Record<string, unknown>)) {
-            if (!parseWritingTrackerDate(key)) continue;
-            const words = Number(value);
-            if (Number.isFinite(words)) history[key] = words;
-        }
+    return {
+        history: parseDatedValues(obj.history),
+        revisionHistory: parseDatedValues(obj.revisionHistory, true),
+        unattributedHistory: parseDatedValues(obj.unattributedHistory),
+        unattributedRevisionHistory: parseDatedValues(obj.unattributedRevisionHistory, true),
+    };
+}
+
+/**
+ * Keep the project-derived ledger authoritative while retaining legacy-only
+ * dates outside the totals so they can be inspected or recovered later.
+ */
+export function reconcileDerivedTrackerHistory(
+    canonical: Record<string, number>,
+    existing: Record<string, number>,
+    previousUnattributed: Record<string, number>,
+): { history: Record<string, number>; unattributedHistory: Record<string, number> } {
+    const history = { ...canonical };
+    const unattributedHistory = { ...previousUnattributed };
+    for (const [date, words] of Object.entries(existing)) {
+        if (!(date in history)) unattributedHistory[date] = words;
     }
-    if (obj.revisionHistory && typeof obj.revisionHistory === 'object') {
-        for (const [key, value] of Object.entries(obj.revisionHistory as Record<string, unknown>)) {
-            if (!parseWritingTrackerDate(key)) continue;
-            const words = Number(value);
-            if (Number.isFinite(words) && words > 0) revisionHistory[key] = words;
-        }
-    }
-    return { history, revisionHistory };
+    for (const date of Object.keys(history)) delete unattributedHistory[date];
+    return { history, unattributedHistory };
 }

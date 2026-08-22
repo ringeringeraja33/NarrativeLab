@@ -269,6 +269,7 @@ export const EXTRA_ZH: Record<string, string> = {
     'Vault totals': '库合计',
     'Net words': '净增字数',
     'Daily average': '日均',
+    'Excluded {words} unattributed legacy words from vault totals. The original {count} records are preserved for recovery.': '已从库合计中排除无法归属项目的旧记录：{words} 字（{count} 条）。原记录已保留，可供恢复。',
     'Today: {words}': '今日：{words}',
     'Mon': '一',
     'Tue': '二',
