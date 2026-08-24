@@ -1,5 +1,11 @@
 # NarrativeLab — Changelog
 
+## 1.4.0
+
+- English weekday headings in both writing-tracker heatmaps now use single-letter labels (`M T W T F S S`), preventing overlap while preserving the existing Chinese single-character labels.
+- Moving a project into or out of a series now temporarily flushes and unloads its open NarrativeLab tabs, releases Windows file handles, and restores the same tabs with updated project bindings after the move.
+- Project-folder moves retry transient Windows, sync-provider, antivirus, and external-editor locks, and verify the actual source/destination state before deciding whether a move failed.
+
 ## 1.3.9
 
 - Tracker settings now provide explicit statistical correction tools: apply a dated signed word-count adjustment, assign unattributed history to a project, or permanently delete unattributed records without touching manuscript files.

@@ -207,6 +207,9 @@ export class SeriesManager {
         const originalProjectFile = normalizePath(project.filePath);
         const targetBookFolder = normalizePath(`${seriesFolder}/${bookBaseName}`);
         const libraryJournal = createLibraryTransferJournal();
+        const resumeProjectLeaves = originalBookFolder !== targetBookFolder
+            ? await this.plugin.quiesceProjectLeavesForFolderMove(originalBookFolder, targetBookFolder)
+            : async () => undefined;
         let movedProject = false;
         try {
             await this.ensureFolder(seriesFolder);
@@ -277,6 +280,10 @@ export class SeriesManager {
                 await this.plugin.sceneManager.setActiveProject(restored).catch(() => undefined);
             }
             throw error;
+        } finally {
+            const moveStuck = await adapter.exists(targetBookFolder)
+                && !await adapter.exists(originalBookFolder);
+            await resumeProjectLeaves(moveStuck);
         }
     }
 
@@ -382,6 +389,9 @@ export class SeriesManager {
         const originalProjectFile = normalizePath(project.filePath);
         const metadataSnapshot: SeriesMetadata = { ...meta, bookOrder: [...meta.bookOrder] };
         const libraryJournal = createLibraryTransferJournal();
+        const resumeProjectLeaves = originalBookFolder !== targetBookFolder
+            ? await this.plugin.quiesceProjectLeavesForFolderMove(originalBookFolder, targetBookFolder)
+            : async () => undefined;
         let movedProject = false;
         try {
             if (originalBookFolder !== targetBookFolder) {
@@ -436,6 +446,10 @@ export class SeriesManager {
                 await this.plugin.sceneManager.setActiveProject(restored).catch(() => undefined);
             }
             throw error;
+        } finally {
+            const moveStuck = await adapter.exists(targetBookFolder)
+                && !await adapter.exists(originalBookFolder);
+            await resumeProjectLeaves(moveStuck);
         }
     }
 
@@ -468,6 +482,9 @@ export class SeriesManager {
         const copyJournal = createLibraryTransferJournal();
         const seriesCodexFolder = this.resolveExistingLibraryFolder(seriesFolder);
         const localCodexFolder = normalizePath(`${bookFolders.baseFolder}/Library`);
+        const resumeProjectLeaves = sourceBookFolder !== targetBookFolder
+            ? await this.plugin.quiesceProjectLeavesForFolderMove(sourceBookFolder, targetBookFolder)
+            : async () => undefined;
         let movedProject = false;
         try {
             await this.ensureFolder(localCodexFolder);
@@ -514,6 +531,10 @@ export class SeriesManager {
                 await this.plugin.sceneManager.setActiveProject(restored).catch(() => undefined);
             }
             throw error;
+        } finally {
+            const moveStuck = await this.app.vault.adapter.exists(targetBookFolder)
+                && !await this.app.vault.adapter.exists(sourceBookFolder);
+            await resumeProjectLeaves(moveStuck);
         }
     }
 

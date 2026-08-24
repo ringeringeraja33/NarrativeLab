@@ -133,6 +133,12 @@ function paintHeatmapCell(parent: HTMLElement, cell: HeatmapCell): void {
     el.setAttribute('title', heatmapTitle(cell));
 }
 
+const HEATMAP_WEEKDAY_KEYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const;
+
+export function heatmapWeekdayLabels(): string[] {
+    return HEATMAP_WEEKDAY_KEYS.map(key => Array.from(t(key).trim())[0] ?? '');
+}
+
 export function renderVerticalWordHeatmap(
     parent: HTMLElement,
     history: Record<string, number>,
@@ -150,7 +156,7 @@ export function renderVerticalWordHeatmap(
     });
 
     const dow = section.createDiv('nl-tracker-heatmap-dow');
-    for (const label of [t('Mon'), t('Tue'), t('Wed'), t('Thu'), t('Fri'), t('Sat'), t('Sun')]) {
+    for (const label of heatmapWeekdayLabels()) {
         dow.createSpan({ text: label });
     }
 
@@ -174,7 +180,7 @@ export function renderYearWordHeatmap(
     const weeks = buildYearHeatmapWeeks(history, year, dailyGoal);
     const grid = section.createDiv('nl-tracker-heatmap-year-grid');
     const labels = grid.createDiv('nl-tracker-heatmap-year-dow');
-    for (const label of [t('Mon'), t('Tue'), t('Wed'), t('Thu'), t('Fri'), t('Sat'), t('Sun')]) {
+    for (const label of heatmapWeekdayLabels()) {
         labels.createSpan({ text: label });
     }
     const cols = grid.createDiv('nl-tracker-heatmap-year-cols');

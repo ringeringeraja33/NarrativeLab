@@ -252,6 +252,16 @@ test('series project-folder moves retry transient Windows locks without duplicat
     assert.match(seriesManager, /close Excel or another external editor/);
 });
 
+test('series moves quiesce project-bound tabs before rename and restore their rebased bindings', () => {
+    assert.match(mainTs, /async quiesceProjectLeavesForFolderMove/);
+    assert.match(mainTs, /await leaf\.setViewState\(\{ type: 'empty'/);
+    assert.match(mainTs, /pending[\s\S]*saves finish before rename begins/);
+    assert.match(mainTs, /state: narrativeLabLeafState\(nextBinding, previousState\)/);
+    assert.match(seriesManager, /await this\.plugin\.quiesceProjectLeavesForFolderMove\(originalBookFolder, targetBookFolder\)/);
+    assert.match(seriesManager, /await this\.plugin\.quiesceProjectLeavesForFolderMove\(sourceBookFolder, targetBookFolder\)/);
+    assert.match(seriesManager, /finally \{[\s\S]*await resumeProjectLeaves\(moveStuck\)/);
+});
+
 test('adding a book to a series can create a new project in place', () => {
     const addFn = mainTs.slice(
         mainTs.indexOf('private async addBookToSeries'),

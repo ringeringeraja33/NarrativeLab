@@ -4394,6 +4394,86 @@ export default class SceneCardsPlugin extends Plugin {
         NARRATIVE_CANVAS_VIEW_TYPE,
     ];
 
+    /**
+     * Flush and temporarily unload every NarrativeLab tab bound to a project
+     * folder before Windows renames that folder. Board's embedded Canvas and
+     * Plot Grid autosave can otherwise keep reacquiring child-file handles for
+     * the whole retry window. The returned callback restores the same leaves in
+     * place, rebasing their persisted project binding only when the move stuck.
+     */
+    async quiesceProjectLeavesForFolderMove(
+        sourceFolder: string,
+        destinationFolder: string,
+    ): Promise<(moved: boolean) => Promise<void>> {
+        const source = normalizePath(sourceFolder);
+        const destination = normalizePath(destinationFolder);
+        const sourcePrefix = `${source}/`;
+        const suspended: Array<{
+            leaf: WorkspaceLeaf;
+            viewState: ReturnType<WorkspaceLeaf['getViewState']>;
+            boundProjectFile: string;
+            wasActive: boolean;
+        }> = [];
+        const activeLeaf = (this.app.workspace as unknown as { activeLeaf?: WorkspaceLeaf | null }).activeLeaf;
+
+        for (const viewType of SceneCardsPlugin.PROJECT_SCOPED_VIEW_TYPES) {
+            for (const leaf of this.app.workspace.getLeavesOfType(viewType)) {
+                const boundProjectFile = getLeafNarrativeLabProjectFile(leaf);
+                if (!boundProjectFile) continue;
+                const boundFolder = normalizePath(
+                    deriveProjectFoldersFromFilePath(boundProjectFile).baseFolder,
+                );
+                if (boundFolder !== source) continue;
+
+                const viewState = leaf.getViewState();
+                suspended.push({
+                    leaf,
+                    viewState,
+                    boundProjectFile,
+                    wasActive: leaf === activeLeaf,
+                });
+                try {
+                    // setViewState waits for each view's onClose(): pending
+                    // workbook/Canvas/Markdown saves finish before rename begins.
+                    await leaf.setViewState({ type: 'empty', state: {}, active: false });
+                } catch (error) {
+                    console.warn('[NarrativeLab] Could not fully quiesce a project tab before moving it:', error);
+                }
+            }
+        }
+
+        let restored = false;
+        return async (moved: boolean): Promise<void> => {
+            if (restored) return;
+            restored = true;
+            let activeToReveal: WorkspaceLeaf | null = null;
+            for (const item of suspended) {
+                const previousState = (item.viewState.state || {}) as Record<string, unknown>;
+                const previousBinding = previousState.narrativeLabProjectFile;
+                let nextBinding = typeof previousBinding === 'string'
+                    ? normalizePath(previousBinding)
+                    : item.boundProjectFile;
+                if (moved && nextBinding) {
+                    if (nextBinding === source) nextBinding = destination;
+                    else if (nextBinding.startsWith(sourcePrefix)) {
+                        nextBinding = normalizePath(`${destination}/${nextBinding.slice(sourcePrefix.length)}`);
+                    }
+                }
+                try {
+                    await item.leaf.setViewState({
+                        ...item.viewState,
+                        active: false,
+                        state: narrativeLabLeafState(nextBinding, previousState),
+                    });
+                    if (item.wasActive) activeToReveal = item.leaf;
+                } catch (error) {
+                    console.warn('[NarrativeLab] Could not restore a project tab after moving it:', error);
+                }
+            }
+            if (activeToReveal) this.app.workspace.revealLeaf(activeToReveal);
+        };
+    }
+
     private countProjectScopedLeaves(): number {
         let n = 0;
         for (const viewType of SceneCardsPlugin.PROJECT_SCOPED_VIEW_TYPES) {

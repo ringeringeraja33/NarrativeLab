@@ -164,6 +164,12 @@ test('sidebar panel splits vault/project and pins a vertical heatmap for the act
     assert.match(styles, /\.nl-tracker-cards,\s*\n\.nl-tracker-page-cards \{[^}]*justify-content:\s*center/s);
 });
 
+test('both heatmaps render localized weekday labels as one Unicode character', () => {
+    assert.match(widgets, /const HEATMAP_WEEKDAY_KEYS = \['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'\] as const/);
+    assert.match(widgets, /Array\.from\(t\(key\)\.trim\(\)\)\[0\]/);
+    assert.equal((widgets.match(/for \(const label of heatmapWeekdayLabels\(\)\)/g) || []).length, 2);
+});
+
 test('project tracker names its project and follows open project files', () => {
     assert.match(panel, /Project: \{title\}/);
     assert.match(panel, /Paused — no project files are open\./);
