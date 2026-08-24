@@ -773,7 +773,22 @@ export class SeriesManager {
 
     // ── File operations ────────────────────────────────
 
-    /** Move one project folder as a single vault operation. */
+    private isTransientFilesystemError(error: unknown): boolean {
+        const message = error instanceof Error
+            ? `${error.name} ${error.message}`
+            : String(error);
+        return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied|sharing violation/i.test(message);
+    }
+
+    /**
+     * Move one project folder as a single vault operation.
+     *
+     * Windows can briefly reject a directory rename while Canvas autosave,
+     * Univer persistence, OneDrive, antivirus, or an external editor still has
+     * a child file open. File writes already tolerate those sharing violations;
+     * project moves need the same treatment. Each retry re-reads both paths so
+     * a rename that completed on disk before its caller threw is not repeated.
+     */
     private async moveProjectFolder(source: string, destination: string): Promise<void> {
         const src = normalizePath(source);
         const dest = normalizePath(destination);
@@ -784,29 +799,59 @@ export class SeriesManager {
                 destination: dest,
             }));
         }
-        if (await this.app.vault.adapter.exists(dest)) {
-            throw new Error(t('A project folder named "{name}" already exists in this series.', {
-                name: dest.split('/').pop() || dest,
-            }));
+        const adapter = this.app.vault.adapter;
+        const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms));
+        let lastError: unknown;
+
+        for (let attempt = 0; attempt < 8; attempt++) {
+            const [sourceExists, destinationExists] = await Promise.all([
+                adapter.exists(src),
+                adapter.exists(dest),
+            ]);
+
+            // A provider can finish the physical rename and then report a
+            // sharing/index error. Treat the actual on-disk state as truth.
+            if (!sourceExists && destinationExists) return;
+            if (destinationExists) {
+                throw new Error(t('A project folder named "{name}" already exists in this series.', {
+                    name: dest.split('/').pop() || dest,
+                }));
+            }
+            if (!sourceExists) {
+                throw new Error(t('Could not find the indexed project folder: {path}. Wait for Obsidian to finish indexing and try again.', {
+                    path: src,
+                }));
+            }
+
+            try {
+                // Re-resolve on every attempt: Obsidian may refresh its folder
+                // object while a sync provider releases the underlying handle.
+                const sourceFolder = this.app.vault.getAbstractFileByPath(src);
+                if (sourceFolder instanceof TFolder) {
+                    await this.app.fileManager.renameFile(sourceFolder, dest);
+                } else {
+                    // Folder is on disk but not in the vault index yet
+                    // (OneDrive / cold start).
+                    const parent = dest.includes('/') ? dest.slice(0, dest.lastIndexOf('/')) : '';
+                    if (parent) await this.ensureFolder(parent);
+                    await adapter.rename(src, dest);
+                }
+                return;
+            } catch (error) {
+                lastError = error;
+                if (!this.isTransientFilesystemError(error) || attempt === 7) break;
+                if (attempt === 0) {
+                    new Notice(t('Project files are temporarily busy. Retrying the move…'), 5000);
+                }
+                await sleep(Math.min(1200, 60 * (attempt + 1) * (attempt + 1)));
+            }
         }
 
-        const sourceFolder = this.app.vault.getAbstractFileByPath(src);
-        if (sourceFolder instanceof TFolder) {
-            await this.app.fileManager.renameFile(sourceFolder, dest);
-            return;
-        }
-
-        // Folder is on disk but not in the vault index yet (OneDrive / cold start).
-        if (await this.app.vault.adapter.exists(src)) {
-            const parent = dest.includes('/') ? dest.slice(0, dest.lastIndexOf('/')) : '';
-            if (parent) await this.ensureFolder(parent);
-            await this.app.vault.adapter.rename(src, dest);
-            return;
-        }
-
-        throw new Error(t('Could not find the indexed project folder: {path}. Wait for Obsidian to finish indexing and try again.', {
-            path: src,
-        }));
+        const message = lastError instanceof Error ? lastError.message : String(lastError);
+        throw new Error(t(
+            'Could not move the project because Windows is still using one of its files. Wait for autosave to finish, then close Excel or another external editor if the problem continues. Original error: {message}',
+            { message },
+        ));
     }
 
     /** Prefer the current Library name while continuing to open legacy Codex folders. */

@@ -148,6 +148,8 @@ export const EXTRA_ZH: Record<string, string> = {
     'Combined word count: ~{n}': '合并后约 {n} 字',
     'Could not demote: {err}': '无法降级：{err}',
     'Could not move: {err}': '无法移动：{err}',
+    'Project files are temporarily busy. Retrying the move…': '项目文件暂时被占用，正在重试移动……',
+    'Could not move the project because Windows is still using one of its files. Wait for autosave to finish, then close Excel or another external editor if the problem continues. Original error: {message}': '无法移动项目，因为 Windows 仍在占用其中的文件。请等待自动保存完成；如果问题持续，请关闭 Excel 或其他外部编辑器后重试。原始错误：{message}',
     'Could not promote: {err}': '无法提升：{err}',
     'Could not update project membership: {err}': '无法更新项目归属：{err}',
     'Create first {kind}': '创建第一个{kind}',

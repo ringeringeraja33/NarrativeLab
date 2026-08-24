@@ -243,6 +243,15 @@ test('series migrations journal transfers and roll back every move path', async 
     assert.match(sceneManager, /async loadProjectFromPath/);
 });
 
+test('series project-folder moves retry transient Windows locks without duplicating a completed rename', () => {
+    assert.match(seriesManager, /private isTransientFilesystemError/);
+    assert.match(seriesManager, /UNKNOWN\|EBUSY\|EPERM\|EACCES\|EAGAIN/);
+    assert.match(seriesManager, /for \(let attempt = 0; attempt < 8; attempt\+\+\)/);
+    assert.match(seriesManager, /if \(!sourceExists && destinationExists\) return/);
+    assert.match(seriesManager, /Project files are temporarily busy\. Retrying the move…/);
+    assert.match(seriesManager, /close Excel or another external editor/);
+});
+
 test('adding a book to a series can create a new project in place', () => {
     const addFn = mainTs.slice(
         mainTs.indexOf('private async addBookToSeries'),
