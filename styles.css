@@ -15424,7 +15424,7 @@ body .nl-floating-sticky-save-location input[type="text"] {
 
 .nl-tracker-heatmap-vertical .nl-tracker-heatmap-dow,
 .nl-tracker-heatmap-vertical .nl-tracker-heatmap-week {
-    grid-template-columns: repeat(7, 11px);
+    grid-template-columns: repeat(7, 18px);
     justify-content: center;
     column-gap: 4px;
     row-gap: 4px;
@@ -15432,9 +15432,13 @@ body .nl-floating-sticky-save-location input[type="text"] {
 
 .nl-tracker-heatmap-dow {
     margin-bottom: 4px;
-    font-size: 10px;
+    font-size: 9px;
     color: var(--text-muted);
     text-align: center;
+}
+
+.nl-tracker-heatmap-vertical .nl-tracker-heatmap-dow > span {
+    white-space: nowrap;
 }
 
 .nl-tracker-heatmap-grid {
@@ -15460,6 +15464,7 @@ body .nl-floating-sticky-save-location input[type="text"] {
     height: 11px;
     min-width: 11px;
     min-height: 11px;
+    justify-self: center;
     border-radius: 3px;
 }
 
