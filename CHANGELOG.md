@@ -1,5 +1,11 @@
 # NarrativeLab — Changelog
 
+## 1.4.1
+
+- Series operations now freeze project-scoped background writes, drain pending save queues, and temporarily unload every open project file before moving its folder.
+- When Windows keeps the directory handle locked, NarrativeLab falls back to a transactional file-by-file move through Obsidian, moving the project manifest last and rolling completed files back if any child still cannot move.
+- Ordinary Markdown, Base, and Canvas tabs are restored at their rebased paths after a successful move, while failed moves restore the original paths without leaving a partial project behind.
+
 ## 1.4.0
 
 - English weekday headings in both writing-tracker heatmaps now use single-letter labels (`M T W T F S S`), preventing overlap while preserving the existing Chinese single-character labels.
