@@ -425,6 +425,8 @@ export default class SceneCardsPlugin extends Plugin {
     private _writingRevisionQueues = new Map<string, Promise<void>>();
     /** Serialize writes to each System JSON file and protect unreadable originals. */
     private _systemJsonWriteQueues = new Map<string, Promise<void>>();
+    /** Project roots temporarily frozen while a series operation moves them. */
+    private _projectMoveWriteGuards = new Set<string>();
     private _invalidSystemJsonPaths = new Set<string>();
     private _reportedInvalidSystemJsonPaths = new Set<string>();
     /** Unreadable Library/datasheet.xlsx paths — block empty overwrite until explicit reset. */
@@ -2849,6 +2851,9 @@ export default class SceneCardsPlugin extends Plugin {
         if (!projectFilePath) return false;
         const normalized = normalizePath(projectFilePath);
         if (this.sceneManager.isDeletedProjectPath(normalized)) return false;
+        for (const root of this._projectMoveWriteGuards) {
+            if (normalized === root || normalized.startsWith(`${root}/`)) return false;
+        }
         return this.app.vault.adapter.exists(normalized);
     }
 
@@ -4411,10 +4416,29 @@ export default class SceneCardsPlugin extends Plugin {
         const suspended: Array<{
             leaf: WorkspaceLeaf;
             viewState: ReturnType<WorkspaceLeaf['getViewState']>;
-            boundProjectFile: string;
+            boundProjectFile: string | null;
             wasActive: boolean;
         }> = [];
+        const capturedLeaves = new Set<WorkspaceLeaf>();
         const activeLeaf = (this.app.workspace as unknown as { activeLeaf?: WorkspaceLeaf | null }).activeLeaf;
+
+        const suspendLeaf = async (leaf: WorkspaceLeaf, boundProjectFile: string | null): Promise<void> => {
+            if (capturedLeaves.has(leaf)) return;
+            capturedLeaves.add(leaf);
+            suspended.push({
+                leaf,
+                viewState: leaf.getViewState(),
+                boundProjectFile,
+                wasActive: leaf === activeLeaf,
+            });
+            try {
+                // setViewState waits for onClose(): workbook, Canvas, Base and
+                // Markdown editor buffers finish before the write freeze begins.
+                await leaf.setViewState({ type: 'empty', state: {}, active: false });
+            } catch (error) {
+                console.warn('[NarrativeLab] Could not fully quiesce a project tab before moving it:', error);
+            }
+        };
 
         for (const viewType of SceneCardsPlugin.PROJECT_SCOPED_VIEW_TYPES) {
             for (const leaf of this.app.workspace.getLeavesOfType(viewType)) {
@@ -4424,46 +4448,75 @@ export default class SceneCardsPlugin extends Plugin {
                     deriveProjectFoldersFromFilePath(boundProjectFile).baseFolder,
                 );
                 if (boundFolder !== source) continue;
-
-                const viewState = leaf.getViewState();
-                suspended.push({
-                    leaf,
-                    viewState,
-                    boundProjectFile,
-                    wasActive: leaf === activeLeaf,
-                });
-                try {
-                    // setViewState waits for each view's onClose(): pending
-                    // workbook/Canvas/Markdown saves finish before rename begins.
-                    await leaf.setViewState({ type: 'empty', state: {}, active: false });
-                } catch (error) {
-                    console.warn('[NarrativeLab] Could not fully quiesce a project tab before moving it:', error);
-                }
+                await suspendLeaf(leaf, boundProjectFile);
             }
         }
+
+        // Ordinary Obsidian Markdown/Base/Canvas leaves are not project-bound
+        // NarrativeLab views, but their file buffers can still race a Windows
+        // directory rename. Preserve and temporarily unload those leaves too.
+        const fileLeaves: WorkspaceLeaf[] = [];
+        this.app.workspace.iterateAllLeaves((leaf) => {
+            if (!(leaf.view instanceof FileView)) return;
+            const filePath = normalizePath(leaf.view.file?.path || '');
+            if (filePath === source || filePath.startsWith(sourcePrefix)) fileLeaves.push(leaf);
+        });
+        for (const leaf of fileLeaves) await suspendLeaf(leaf, null);
+
+        const activeProjectFile = this.sceneManager.activeProject?.filePath
+            ? normalizePath(this.sceneManager.activeProject.filePath)
+            : '';
+        const activeProjectRoot = activeProjectFile
+            ? normalizePath(deriveProjectFoldersFromFilePath(activeProjectFile).baseFolder)
+            : '';
+        if (activeProjectRoot === source) {
+            this.flushWritingTrackers();
+            await this.settleWritingTrackerChanges();
+            await this.saveProjectSystemData().catch(error => {
+                console.warn('[NarrativeLab] Could not complete the final project save before moving it:', error);
+            });
+        }
+
+        // Block delayed layout/refresh timers from starting new writes against
+        // the old root, then drain everything that was already queued.
+        this._projectMoveWriteGuards.add(source);
+        await this.settleProjectWritesForFolderMove(source);
+        await new Promise<void>(resolve => window.setTimeout(resolve, 120));
+        await this.settleProjectWritesForFolderMove(source);
 
         let restored = false;
         return async (moved: boolean): Promise<void> => {
             if (restored) return;
             restored = true;
+            this._projectMoveWriteGuards.delete(source);
             let activeToReveal: WorkspaceLeaf | null = null;
             for (const item of suspended) {
                 const previousState = (item.viewState.state || {}) as Record<string, unknown>;
                 const previousBinding = previousState.narrativeLabProjectFile;
                 let nextBinding = typeof previousBinding === 'string'
                     ? normalizePath(previousBinding)
-                    : item.boundProjectFile;
-                if (moved && nextBinding) {
-                    if (nextBinding === source) nextBinding = destination;
-                    else if (nextBinding.startsWith(sourcePrefix)) {
-                        nextBinding = normalizePath(`${destination}/${nextBinding.slice(sourcePrefix.length)}`);
+                    : (item.boundProjectFile || '');
+                const rebaseMovedPath = (value: string): string => {
+                    const normalized = normalizePath(value);
+                    if (!moved) return normalized;
+                    if (normalized === source) return destination;
+                    if (normalized.startsWith(sourcePrefix)) {
+                        return normalizePath(`${destination}/${normalized.slice(sourcePrefix.length)}`);
                     }
+                    return normalized;
+                };
+                if (nextBinding) nextBinding = rebaseMovedPath(nextBinding);
+                const nextState: Record<string, unknown> = { ...previousState };
+                if (typeof nextState.file === 'string') {
+                    nextState.file = rebaseMovedPath(nextState.file);
                 }
                 try {
                     await item.leaf.setViewState({
                         ...item.viewState,
                         active: false,
-                        state: narrativeLabLeafState(nextBinding, previousState),
+                        state: nextBinding
+                            ? narrativeLabLeafState(nextBinding, nextState)
+                            : nextState,
                     });
                     if (item.wasActive) activeToReveal = item.leaf;
                 } catch (error) {
@@ -4472,6 +4525,20 @@ export default class SceneCardsPlugin extends Plugin {
             }
             if (activeToReveal) this.app.workspace.revealLeaf(activeToReveal);
         };
+    }
+
+    private async settleProjectWritesForFolderMove(sourceFolder: string): Promise<void> {
+        const source = normalizePath(sourceFolder);
+        const prefix = `${source}/`;
+        await this.settleWritingTrackerChanges();
+        await this.sceneManager.settleProjectFrontmatterWrites();
+        for (let pass = 0; pass < 4; pass++) {
+            const pending = [...this._systemJsonWriteQueues.entries()]
+                .filter(([path]) => path === source || path.startsWith(prefix))
+                .map(([, promise]) => promise);
+            if (pending.length === 0) break;
+            await Promise.allSettled(pending);
+        }
     }
 
     private countProjectScopedLeaves(): number {

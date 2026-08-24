@@ -255,11 +255,23 @@ test('series project-folder moves retry transient Windows locks without duplicat
 test('series moves quiesce project-bound tabs before rename and restore their rebased bindings', () => {
     assert.match(mainTs, /async quiesceProjectLeavesForFolderMove/);
     assert.match(mainTs, /await leaf\.setViewState\(\{ type: 'empty'/);
-    assert.match(mainTs, /pending[\s\S]*saves finish before rename begins/);
-    assert.match(mainTs, /state: narrativeLabLeafState\(nextBinding, previousState\)/);
+    assert.match(mainTs, /leaf\.view instanceof FileView/);
+    assert.match(mainTs, /this\._projectMoveWriteGuards\.add\(source\)/);
+    assert.match(mainTs, /await this\.settleProjectWritesForFolderMove\(source\)/);
+    assert.match(mainTs, /nextState\.file = rebaseMovedPath\(nextState\.file\)/);
+    assert.match(mainTs, /narrativeLabLeafState\(nextBinding, nextState\)/);
     assert.match(seriesManager, /await this\.plugin\.quiesceProjectLeavesForFolderMove\(originalBookFolder, targetBookFolder\)/);
     assert.match(seriesManager, /await this\.plugin\.quiesceProjectLeavesForFolderMove\(sourceBookFolder, targetBookFolder\)/);
     assert.match(seriesManager, /finally \{[\s\S]*await resumeProjectLeaves\(moveStuck\)/);
+});
+
+test('series folder moves fall back to a rollback-safe file-by-file transaction', () => {
+    assert.match(seriesManager, /async moveProjectFolderByEntries/);
+    assert.match(seriesManager, /project manifest moves last/);
+    assert.match(seriesManager, /files\.sort\(\(a, b\)/);
+    assert.match(seriesManager, /for \(const moved of \[\.\.\.movedFiles\]\.reverse\(\)\)/);
+    assert.match(seriesManager, /handleProjectTreeFolderRename\(src, dest\)/);
+    assert.match(seriesManager, /await this\.moveProjectFolderByEntries\(src, dest\)/);
 });
 
 test('adding a book to a series can create a new project in place', () => {

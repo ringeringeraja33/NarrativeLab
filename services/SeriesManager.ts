@@ -801,6 +801,99 @@ export class SeriesManager {
         return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied|sharing violation/i.test(message);
     }
 
+    private async moveProjectFileWithRetry(source: string, destination: string): Promise<void> {
+        const src = normalizePath(source);
+        const dest = normalizePath(destination);
+        const adapter = this.app.vault.adapter;
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 8; attempt++) {
+            const [sourceExists, destinationExists] = await Promise.all([
+                adapter.exists(src),
+                adapter.exists(dest),
+            ]);
+            if (!sourceExists && destinationExists) return;
+            if (destinationExists) throw new Error(`Destination already exists: ${dest}`);
+            if (!sourceExists) throw new Error(`Source file disappeared during project move: ${src}`);
+            try {
+                const file = this.app.vault.getAbstractFileByPath(src);
+                if (file instanceof TFile) await this.app.fileManager.renameFile(file, dest);
+                else await adapter.rename(src, dest);
+                return;
+            } catch (error) {
+                lastError = error;
+                if (!this.isTransientFilesystemError(error) || attempt === 7) break;
+                await new Promise<void>(resolve => window.setTimeout(
+                    resolve,
+                    Math.min(1200, 50 * (attempt + 1) * (attempt + 1)),
+                ));
+            }
+        }
+        throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    }
+
+    /**
+     * Windows may lock the directory handle itself even after every child file
+     * is closed. Fall back to moving the contents through Obsidian one file at
+     * a time, keeping link updates and rolling every completed file back if a
+     * genuinely locked child still cannot move. The project manifest moves last
+     * so a half-finished destination is never discovered as another project.
+     */
+    private async moveProjectFolderByEntries(source: string, destination: string): Promise<void> {
+        const src = normalizePath(source);
+        const dest = normalizePath(destination);
+        const adapter = this.app.vault.adapter;
+        const folders = [src];
+        const files: string[] = [];
+        for (let index = 0; index < folders.length; index++) {
+            const listing = await adapter.list(folders[index]);
+            files.push(...listing.files.map(path => normalizePath(path)));
+            folders.push(...listing.folders.map(path => normalizePath(path)));
+        }
+
+        const likelyManifest = normalizePath(`${src}/${src.split('/').pop() || ''}.md`);
+        files.sort((a, b) => {
+            if (a === likelyManifest) return 1;
+            if (b === likelyManifest) return -1;
+            return a.localeCompare(b);
+        });
+
+        const destinationFor = (path: string): string => normalizePath(
+            path === src ? dest : `${dest}/${path.slice(src.length + 1)}`,
+        );
+        const destinationFolders = folders
+            .map(destinationFor)
+            .sort((a, b) => a.length - b.length);
+        const movedFiles: Array<{ from: string; to: string }> = [];
+
+        try {
+            for (const folder of destinationFolders) await this.ensureFolder(folder);
+            for (const file of files) {
+                const target = destinationFor(file);
+                await this.moveProjectFileWithRetry(file, target);
+                movedFiles.push({ from: file, to: target });
+            }
+        } catch (error) {
+            for (const moved of [...movedFiles].reverse()) {
+                await this.moveProjectFileWithRetry(moved.to, moved.from).catch(rollbackError => {
+                    console.error('[NarrativeLab] Failed to roll back a file from a staged project move:', rollbackError);
+                });
+            }
+            for (const folder of [...destinationFolders].reverse()) {
+                await adapter.rmdir(folder, false).catch(() => undefined);
+            }
+            throw error;
+        }
+
+        // A content-wise move has no folder rename event, so rebase project and
+        // scene paths explicitly before the old empty directory is removed.
+        await this.plugin.sceneManager.handleProjectTreeFolderRename(src, dest).catch(error => {
+            console.warn('[NarrativeLab] Could not eagerly rebase the staged project move:', error);
+        });
+        for (const folder of [...folders].sort((a, b) => b.length - a.length)) {
+            await adapter.rmdir(folder, false).catch(() => undefined);
+        }
+    }
+
     /**
      * Move one project folder as a single vault operation.
      *
@@ -865,6 +958,15 @@ export class SeriesManager {
                     new Notice(t('Project files are temporarily busy. Retrying the move…'), 5000);
                 }
                 await sleep(Math.min(1200, 60 * (attempt + 1) * (attempt + 1)));
+            }
+        }
+
+        if (lastError && this.isTransientFilesystemError(lastError)) {
+            try {
+                await this.moveProjectFolderByEntries(src, dest);
+                return;
+            } catch (fallbackError) {
+                lastError = fallbackError;
             }
         }
 

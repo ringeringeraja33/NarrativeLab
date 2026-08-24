@@ -3690,6 +3690,11 @@ export class SceneManager implements ISceneStore {
         return run;
     }
 
+    /** Wait until every queued project-manifest write has released its file. */
+    async settleProjectFrontmatterWrites(): Promise<void> {
+        await this._projectFrontmatterWrite;
+    }
+
     private async saveProjectFrontmatterUnqueued(project: StoryLineProject): Promise<void> {
         const file = this.app.vault.getAbstractFileByPath(project.filePath);
         if (!file || !(file instanceof TFile)) return;
