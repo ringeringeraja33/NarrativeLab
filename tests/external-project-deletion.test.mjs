@@ -39,7 +39,7 @@ test('late System and datasheet saves verify the original project manifest', () 
     assert.match(mainTs, /writeSystemJsonSafely\(filename, filePath, data, projectFilePath!/);
     assert.match(mainTs, /if \(!await this\.projectExistsForWrite\(projectFilePath\)\) return;/);
     assert.match(mainTs, /savePlotGridSafely\([\s\S]*projectFilePath\)/);
-    assert.match(mainTs, /savePlotGridSafely\([\s\S]*if \(!await this\.projectExistsForWrite\(projectFilePath\)\) return;/);
+    assert.match(mainTs, /savePlotGridSafely\([\s\S]*if \(!await this\.projectExistsForWrite\(projectFilePath\)\) return false;/);
 });
 
 test('moving a project folder tombstones the old root so empty folders are not recreated', async () => {

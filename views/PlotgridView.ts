@@ -20,7 +20,10 @@ import {
     type PlotGridUniverContextAction,
     type PlotGridUniverHost,
 } from '../utils/loadPlotGridUniver';
-import { conceptGridContentFingerprint } from '../services/PlotGridXlsxCodec';
+import {
+    conceptGridContentFingerprint,
+    serializePlotGridNlMeta,
+} from '../services/PlotGridXlsxCodec';
 import {
     AXIS_CORNER_CELL_ID,
     axisColumnCellId,
@@ -72,6 +75,8 @@ export class PlotgridView extends ProjectBoundItemView {
     document: ConceptGridDocument = createEmptyConceptGridDocument();
     /** False until loadData finishes — persist must not write the default empty grid. */
     private hasHydratedDocument = false;
+    /** Full persisted-state fingerprint from the last successful load/save. */
+    private lastPersistedDocumentFingerprint: string | null = null;
     /** Active page working set (same object reference as the page in `document`). */
     data: PlotGridData = getActiveConceptGridPage(this.document);
     saveDebounce: number | null = null;
@@ -227,43 +232,26 @@ export class PlotgridView extends ProjectBoundItemView {
 
     /** Flush Univer into memory and write datasheet.xlsx for the bound System folder. */
     private async persistBoundPlotGrid(): Promise<void> {
-        if (!this.hasHydratedDocument) return;
         const projectFile = this.loadedProjectFile;
         this.closeAllCellEditors();
+        if (!this.hasHydratedDocument) {
+            this.cancelPendingSave();
+            return;
+        }
         await this.flushUniverIntoDocumentSettled();
         this.cancelPendingSave();
-        if (!projectFile || !this.plugin || typeof this.plugin.savePlotGrid !== 'function') return;
+        if (!projectFile) return;
         try {
-            await this.plugin.savePlotGrid(this.document, {
-                projectFilePath: projectFile,
-                fromLiveEditor: true,
-            });
+            await this.saveBoundDocumentIfChanged(projectFile);
         } catch (error) {
             console.error('[NarrativeLab] Plot Grid persist failed:', error);
         }
     }
 
     async onClose(): Promise<void> {
-        // Floating Markdown drafts must enter the model before Univer's final pull.
-        const projectFile = this.loadedProjectFile;
-        this.closeAllCellEditors();
-        await this.flushUniverIntoDocumentSettled();
-        this.cancelPendingSave();
-        if (
-            this.hasHydratedDocument
-            && projectFile
-            && this.plugin
-            && typeof this.plugin.savePlotGrid === 'function'
-        ) {
-            try {
-                await this.plugin.savePlotGrid(this.document, {
-                    projectFilePath: projectFile,
-                    fromLiveEditor: true,
-                });
-            } catch (error) {
-                console.error('[NarrativeLab] Final Plot Grid save failed:', error);
-            }
-        }
+        // Floating Markdown drafts and the final Univer edit are flushed, but an
+        // unchanged workbook must not be rewritten merely because its tab closes.
+        await this.persistBoundPlotGrid();
         this.disposeUniverHost({ persist: false });
         this.hideSpreadsheetLoading();
         // disposeUniverHost performs one last pull; the explicit save above is
@@ -271,6 +259,7 @@ export class PlotgridView extends ProjectBoundItemView {
         this.cancelPendingSave();
         this.loadedSystemFolder = null;
         this.loadedProjectFile = null;
+        this.lastPersistedDocumentFingerprint = null;
     }
 
     onResize(): void {
@@ -426,6 +415,33 @@ export class PlotgridView extends ProjectBoundItemView {
         }
     }
 
+    /** Stable full-state fingerprint; unlike the UI fingerprint it includes zoom/sidebar metadata. */
+    private persistedDocumentFingerprint(): string {
+        return serializePlotGridNlMeta(this.document);
+    }
+
+    /**
+     * Write only a changed document. A rejected safety/conflict save returns
+     * false and deliberately leaves the old baseline in place so later edits
+     * can retry instead of being mistaken for persisted data.
+     */
+    private async saveBoundDocumentIfChanged(
+        projectFile: string,
+        options: { allowEmptyOverwrite?: boolean; force?: boolean } = {},
+    ): Promise<boolean> {
+        const plugin = this.plugin;
+        if (!plugin || !this.hasHydratedDocument || !projectFile) return false;
+        const fingerprint = this.persistedDocumentFingerprint();
+        if (!options.force && fingerprint === this.lastPersistedDocumentFingerprint) return true;
+        const saved = await plugin.savePlotGrid(this.document, {
+            projectFilePath: projectFile,
+            fromLiveEditor: true,
+            allowEmptyOverwrite: options.allowEmptyOverwrite,
+        });
+        if (saved) this.lastPersistedDocumentFingerprint = fingerprint;
+        return saved;
+    }
+
     private async loadData() {
         try {
             const projectFile = this.getTargetProjectFile();
@@ -463,6 +479,9 @@ export class PlotgridView extends ProjectBoundItemView {
                     : false;
                 this.hasHydratedDocument = existed !== true;
             }
+            this.lastPersistedDocumentFingerprint = this.hasHydratedDocument
+                ? this.persistedDocumentFingerprint()
+                : null;
             this.bindActivePage();
             this.loadedProjectFile = projectFile || this.loadedProjectFile;
             this.loadedSystemFolder = folder || this.loadedSystemFolder;
@@ -479,6 +498,7 @@ export class PlotgridView extends ProjectBoundItemView {
             this.document = createEmptyConceptGridDocument();
             this.bindActivePage();
             this.hasHydratedDocument = false;
+            this.lastPersistedDocumentFingerprint = null;
         }
     }
 
@@ -572,6 +592,10 @@ export class PlotgridView extends ProjectBoundItemView {
     private scheduleSave() {
         const plugin = this.plugin;
         if (!plugin || !this.hasHydratedDocument) return;
+        if (
+            this.persistedDocumentFingerprint() === this.lastPersistedDocumentFingerprint
+            && !this.univerHost?.hasPendingSync()
+        ) return;
         // Never autosave while Univer's in-cell editor / IME is live — writing the
         // vault triggers refreshPlotGridViews and remounts the workbook mid-keystroke.
         // Closing/switching the view performs an explicit final flush, so autosave
@@ -602,10 +626,7 @@ export class PlotgridView extends ProjectBoundItemView {
                     this.flushUniverIntoDocument({ acceptCleared: true });
                 }
                 if (typeof plugin.savePlotGrid === 'function') {
-                    await plugin.savePlotGrid(this.document, {
-                        projectFilePath: projectAtSchedule,
-                        fromLiveEditor: true,
-                    });
+                    await this.saveBoundDocumentIfChanged(projectAtSchedule);
                 }
             } catch (error) {
                 // The plugin-level writer already retries transient file locks.
@@ -1292,9 +1313,10 @@ export class PlotgridView extends ProjectBoundItemView {
                     page.zoom = 1;
                     this.data = page;
                     this.univerStructureSig = '';
-                    void this.plugin?.savePlotGrid?.(this.document, {
+                    const projectFile = this.loadedProjectFile || this.getTargetProjectFile();
+                    void this.saveBoundDocumentIfChanged(projectFile, {
                         allowEmptyOverwrite: true,
-                        projectFilePath: this.loadedProjectFile || this.getTargetProjectFile(),
+                        force: true,
                     });
                     this.renderGrid({ forcePush: true });
                 },

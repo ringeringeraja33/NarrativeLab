@@ -832,18 +832,16 @@ test('empty in-memory grid cannot overwrite an existing workbook', async () => {
                 cells: {},
             }],
         };
-        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, existingFilledCells: 12 }), true);
-        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, existingFilledCells: 0 }), true);
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true }), true);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: false }), false);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, allowEmptyOverwrite: true }), false);
-        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, fromLiveEditor: true, existingFilledCells: 12 }), true);
-        assert.equal(model.shouldRefuseEmptyPlotGridWrite(rich, { existed: true, existingFilledCells: 12 }), false);
-        assert.equal(model.shouldRefuseEmptyPlotGridWrite(headerOnly, { existed: true, existingFilledCells: 0 }), false);
-        assert.equal(model.shouldRefuseEmptyPlotGridWrite(headerOnly, { existed: true, existingFilledCells: 12 }), false);
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(empty, { existed: true, fromLiveEditor: true }), true);
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(rich, { existed: true }), false);
+        assert.equal(model.shouldRefuseEmptyPlotGridWrite(headerOnly, { existed: true }), false);
         assert.equal(model.shouldRefuseEmptyPlotGridWrite({
             ...empty,
             univerResources: [{ name: 'SHEET_DRAWING_PLUGIN', data: '{"images":1}' }],
-        }, { existed: true, existingFilledCells: 12 }), true);
+        }, { existed: true }), true);
         assert.deepEqual(model.normalizeUniverWorkbookResources([
             { name: 'NARRATIVELAB_PLOTGRID_META', data: '{}' },
             { name: 'SHEET_DRAWING_PLUGIN', data: '{"images":1}' },
@@ -855,7 +853,7 @@ test('empty in-memory grid cannot overwrite an existing workbook', async () => {
                 ...empty.pages[0],
                 univerExtras: { mergeData: [{ startRow: 0, endRow: 1, startColumn: 0, endColumn: 1 }] },
             }],
-        }, { existed: true, existingFilledCells: 12 }), true);
+        }, { existed: true }), true);
         assert.equal(model.isConceptGridDocumentEmpty(empty), true);
         assert.equal(model.isConceptGridDocumentEmpty(headerOnly), true);
         assert.equal(model.isConceptGridDocumentEmpty(rich), false);
@@ -959,16 +957,19 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /backupCorruptPlotGridXlsx|_invalidPlotGridXlsxPaths/);
     assert.match(mainTs, /Never clobber an existing workbook with an empty in-memory model/);
     assert.match(mainTs, /shouldRefuseEmptyPlotGridWrite/);
-    assert.match(mainTs, /existingPlotGridFilledCount/);
+    assert.doesNotMatch(mainTs, /existingPlotGridFilledCount/);
     assert.match(mainTs, /plotGridXlsxExists/);
-    assert.match(mainTs, /Empty spreadsheet save blocked/);
+    assert.doesNotMatch(mainTs, /Empty spreadsheet save blocked/);
+    assert.doesNotMatch(mainTs, /stat\?\.size.*8000|size.*>\s*8000/);
+    assert.match(mainTs, /Keep the canonical workbook completely silently/);
     assert.match(mainTs, /fromLiveEditor\?: boolean/);
     assert.match(mainTs, /deriveProjectFoldersFromFilePath\(projectFilePath\)\.baseFolder/);
     assert.match(mainTs, /loadPlotGrid\(projectFilePath\?: string\)/);
     assert.match(mainTs, /pendingWrite = this\._systemJsonWriteQueues\.get\(xlsxPath\)/);
     assert.match(mainTs, /migratePlotGridToLibraryIfNeeded\(targetProjectFile\)/);
     assert.match(mainTs, /const documentSnapshot = normalizeConceptGridDocument\(data\)/);
-    assert.match(mainTs, /savePlotGridSafely\(documentSnapshot/);
+    assert.match(mainTs, /savePlotGridSafely\(\s*documentSnapshot/);
+    assert.match(mainTs, /saved = await this\.savePlotGridSafely/);
     assert.match(mainTs, /delete documentToPersist\.explicitlyRemovedRowIds/);
     assert.match(mainTs, /delete documentToPersist\.explicitlyRemovedColumnIds/);
     assert.match(mainTs, /promoteVaultTempFile/);
@@ -1100,14 +1101,19 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.doesNotMatch(view, /folderAtSchedule !== currentFolder/);
     assert.match(view, /hasHydratedDocument = false;\s*this\.disposeUniverHost\(\{\s*persist:\s*false\s*\}\)/);
     assert.match(view, /projectChanged/);
-    assert.match(view, /projectFilePath: projectAtSchedule/);
+    assert.match(view, /saveBoundDocumentIfChanged\(projectAtSchedule\)/);
     assert.match(view, /loadPlotGrid\(projectFile\)/);
     // Every destructive/structural navigation commits native edits first.
     assert.match(view, /private switchPage[\s\S]*?this\.flushUniverIntoDocument\(\{ acceptCleared: true \}\)/);
     assert.doesNotMatch(view, /private duplicatePage/);
     assert.doesNotMatch(view, /private createPage/);
-    // Floating Markdown drafts must flush before the final close save.
-    assert.match(view, /async onClose[\s\S]*?this\.closeAllCellEditors\(\);\s*await this\.flushUniverIntoDocumentSettled\(\);[\s\S]*?savePlotGrid/);
+    // Floating Markdown drafts flush before a final dirty-only close save.
+    assert.match(view, /private async persistBoundPlotGrid[\s\S]*?this\.closeAllCellEditors\(\);[\s\S]*?await this\.flushUniverIntoDocumentSettled\(\);[\s\S]*?saveBoundDocumentIfChanged/);
+    assert.match(view, /async onClose[\s\S]*?await this\.persistBoundPlotGrid\(\)/);
+    assert.match(view, /lastPersistedDocumentFingerprint/);
+    assert.match(view, /serializePlotGridNlMeta\(this\.document\)/);
+    assert.match(view, /if \(!options\.force && fingerprint === this\.lastPersistedDocumentFingerprint\) return true/);
+    assert.match(view, /if \(saved\) this\.lastPersistedDocumentFingerprint = fingerprint/);
 });
 
 test('cell editor undo stays in the textarea instead of the workspace stack', async () => {

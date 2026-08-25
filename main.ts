@@ -2697,34 +2697,6 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
-    /**
-     * How much real body text the on-disk workbook already has.
-     * Unreadable or oversized files count as non-empty so we never overwrite them
-     * with a default grid.
-     */
-    private async existingPlotGridFilledCount(path: string): Promise<number> {
-        const normalized = normalizePath(path);
-        const cached = this.lookupPlotGridDocCache({ xlsxPath: normalized });
-        if (cached) {
-            const cachedFilled = countConceptGridFilledCells(cached.doc);
-            if (cachedFilled > 0) return cachedFilled;
-        }
-        try {
-            const adapter = this.app.vault.adapter;
-            if (!await adapter.exists(normalized)) return 0;
-            const stat = await adapter.stat(normalized);
-            const bin = await adapter.readBinary(normalized);
-            const filled = await countPlotGridXlsxFilledCells(bin);
-            if (filled > 0) return filled;
-            // Empty exceljs workbooks are ~6–7KB. Anything larger is real data
-            // even when decode/count cannot see cell text.
-            if ((stat?.size ?? 0) > 8000) return 1;
-            return 0;
-        } catch {
-            return 1;
-        }
-    }
-
     /** In-memory datasheet for the current project — skip the xlsx wait on reopen. */
     peekPlotGridDoc(projectFile?: string | null): ConceptGridDocument | null {
         const target = normalizePath(projectFile || this.sceneManager.activeProject?.filePath || '');
@@ -3611,14 +3583,14 @@ export default class SceneCardsPlugin extends Plugin {
             fromLiveEditor?: boolean;
             projectFilePath?: string;
         } = {},
-    ): Promise<void> {
+    ): Promise<boolean> {
         // Snapshot before the first await. Views keep mutating their live model;
         // queued saves must never drift into a later project or partial edit.
         const documentSnapshot = normalizeConceptGridDocument(data);
         const projectFilePath = normalizePath(
             options.projectFilePath || this.sceneManager.activeProject?.filePath || '',
         );
-        if (!await this.projectExistsForWrite(projectFilePath)) return;
+        if (!await this.projectExistsForWrite(projectFilePath)) return false;
         const baseFolder = normalizePath(deriveProjectFoldersFromFilePath(projectFilePath).baseFolder);
         const libraryFolder = normalizePath(`${baseFolder}/Library`);
         const systemFolder = normalizePath(`${baseFolder}/System`);
@@ -3628,9 +3600,20 @@ export default class SceneCardsPlugin extends Plugin {
             fromLiveEditor: options.fromLiveEditor,
         };
         const previous = this._systemJsonWriteQueues.get(filePath) ?? Promise.resolve();
+        let saved = false;
         const pending = previous
             .catch(() => undefined)
-            .then(() => this.savePlotGridSafely(documentSnapshot, writeOptions, baseFolder, libraryFolder, systemFolder, filePath, projectFilePath));
+            .then(async () => {
+                saved = await this.savePlotGridSafely(
+                    documentSnapshot,
+                    writeOptions,
+                    baseFolder,
+                    libraryFolder,
+                    systemFolder,
+                    filePath,
+                    projectFilePath,
+                );
+            });
         this._systemJsonWriteQueues.set(filePath, pending);
         try {
             await pending;
@@ -3642,6 +3625,7 @@ export default class SceneCardsPlugin extends Plugin {
                 this._systemJsonWriteQueues.delete(filePath);
             }
         }
+        return saved;
     }
 
     private async writePlotGridPairResilient(
@@ -3733,8 +3717,8 @@ export default class SceneCardsPlugin extends Plugin {
         systemFolder: string,
         filePath: string,
         projectFilePath: string,
-    ): Promise<void> {
-        if (!await this.projectExistsForWrite(projectFilePath)) return;
+    ): Promise<boolean> {
+        if (!await this.projectExistsForWrite(projectFilePath)) return false;
         const adapter = this.app.vault.adapter;
         const document = normalizeConceptGridDocument(data);
         const path = normalizePath(filePath);
@@ -3758,27 +3742,22 @@ export default class SceneCardsPlugin extends Plugin {
             );
             console.warn('[NarrativeLab] Skipping datasheet write — canonical files could not be checked safely.', error);
             this.reportRejectedPlotGridSave('canonical-unavailable', projectFilePath, recoveryPath);
-            return;
+            return false;
         }
 
         // Never clobber an existing workbook with an empty in-memory model.
         // Autosave / tab-close / project-switch persist used to write a default
         // empty grid over a real datasheet (Evomon 1.2.0). Reset Grid is the
         // only explicit empty overwrite.
-        const existingFilled = existed
-            ? await this.existingPlotGridFilledCount(path)
-            : 0;
         if (shouldRefuseEmptyPlotGridWrite(document, {
             allowEmptyOverwrite: options.allowEmptyOverwrite || explicitPageRemoval.size > 0,
             fromLiveEditor: options.fromLiveEditor,
             existed,
-            existingFilledCells: existingFilled,
         })) {
-            if (existingFilled > 0 && !this._reportedInvalidPlotGridXlsxPaths.has(path)) {
-                this._reportedInvalidPlotGridXlsxPaths.add(path);
-                new Notice(t('Empty spreadsheet save blocked — existing datasheet.xlsx was kept.'));
-            }
-            return;
+            // A rejected placeholder is an expected lifecycle race, not a user
+            // action item. Keep the canonical workbook completely silently;
+            // genuine read/conflict failures have actionable recovery notices.
+            return false;
         }
         const cached = this.lookupPlotGridDocCache({ projectFile: projectFilePath, xlsxPath: path });
         const canonicalChangedExternally = Boolean(
@@ -3800,7 +3779,7 @@ export default class SceneCardsPlugin extends Plugin {
             );
             console.warn('[NarrativeLab] Skipping datasheet write — canonical files changed outside this editor.', recoveryPath);
             this.reportRejectedPlotGridSave('external-change', projectFilePath, recoveryPath);
-            return;
+            return false;
         }
         if (
             cached
@@ -3816,7 +3795,7 @@ export default class SceneCardsPlugin extends Plugin {
             );
             console.warn('[NarrativeLab] Skipping datasheet write — snapshot is missing persisted sheets or axes.', recoveryPath);
             this.reportRejectedPlotGridSave('incomplete-snapshot', projectFilePath, recoveryPath);
-            return;
+            return false;
         }
         const documentToPersist = structuredClone(document);
         delete documentToPersist.explicitlyRemovedPageIds;
@@ -3849,7 +3828,7 @@ export default class SceneCardsPlugin extends Plugin {
         const previousXlsxDigest = currentBinary
             ? plotGridBinaryDigest(currentBinary)
             : null;
-        if (!await this.projectExistsForWrite(projectFilePath)) return;
+        if (!await this.projectExistsForWrite(projectFilePath)) return false;
         await this.ensureVaultFolder(libraryFolder);
         await this.ensureVaultFolder(systemFolder);
         let latestBinary: ArrayBuffer | null;
@@ -3866,7 +3845,7 @@ export default class SceneCardsPlugin extends Plugin {
             );
             console.warn('[NarrativeLab] Skipping datasheet write — canonical files became unavailable before commit.', error);
             this.reportRejectedPlotGridSave('canonical-unavailable', projectFilePath, recoveryPath);
-            return;
+            return false;
         }
         const canonicalChangedBeforeCommit = (
             Boolean(latestBinary) !== Boolean(currentBinary)
@@ -3883,7 +3862,7 @@ export default class SceneCardsPlugin extends Plugin {
             );
             console.warn('[NarrativeLab] Skipping datasheet write — canonical files changed before commit.', recoveryPath);
             this.reportRejectedPlotGridSave('external-change', projectFilePath, recoveryPath);
-            return;
+            return false;
         }
         const endSuppressXlsx = this.beginSuppressVaultRefresh(path, 2500);
         const endSuppressMeta = this.beginSuppressVaultRefresh(metaPath, 2500);
@@ -3910,6 +3889,7 @@ export default class SceneCardsPlugin extends Plugin {
         );
         this.invalidatePlotGridScanCache();
         void this.cleanupLegacyPlotGridArtifacts(baseFolder, systemFolder).catch(() => undefined);
+        return true;
     }
 
     /**

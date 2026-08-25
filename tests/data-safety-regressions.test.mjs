@@ -467,15 +467,15 @@ test('plotgrid saves are queued, retried, and do not toast on every failure', ()
     assert.match(save, /encodePlotGridXlsx/);
     assert.match(save, /ensureVaultFolder/);
     assert.match(save, /projectFilePath\?:/);
-    assert.match(save, /_reportedInvalidPlotGridXlsxPaths\.has\(path\)/);
+    assert.doesNotMatch(save, /Empty spreadsheet save blocked|_reportedInvalidPlotGridXlsxPaths\.has\(path\)/);
     assert.match(save, /shouldRefuseEmptyPlotGridWrite/);
     assert.match(save, /isIncompleteConceptGridPull\(cached\.doc, document\)/);
-    assert.match(mainTs, /existingPlotGridFilledCount/);
+    assert.doesNotMatch(mainTs, /existingPlotGridFilledCount/);
     assert.match(mainTs, /plotGridXlsxExists/);
     assert.match(save, /_reportedPlotGridRecoveryNotices/);
     assert.ok(
-        (save.match(/new Notice\(/g) || []).length <= 3,
-        'save path only reports deduplicated empty-write, journal-conflict, and recovery warnings',
+        (save.match(/new Notice\(/g) || []).length <= 2,
+        'save path only reports actionable journal-conflict and recovery warnings',
     );
     assert.match(mainTs, /getBasePath\?\./);
 });

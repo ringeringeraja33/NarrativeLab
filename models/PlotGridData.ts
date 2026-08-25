@@ -536,7 +536,6 @@ export function shouldRefuseEmptyPlotGridWrite(
         allowEmptyOverwrite?: boolean;
         fromLiveEditor?: boolean;
         existed: boolean;
-        existingFilledCells?: number;
     },
 ): boolean {
     if (options.allowEmptyOverwrite || !options.existed) return false;

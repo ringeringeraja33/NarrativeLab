@@ -330,8 +330,6 @@ export const VIEWS_ZH: Record<string, string> = {
     'Reset Grid': '重置网格',
     'Could not read datasheet.xlsx — empty save blocked. Reset Grid or fix the file to continue.':
         '无法读取 datasheet.xlsx — 已阻止空表覆盖。请重置网格或修复文件后继续。',
-    'Empty spreadsheet save blocked — existing datasheet.xlsx was kept.':
-        '已阻止用空表覆盖现有的 datasheet.xlsx，原文件已保留。',
     'Could not read datasheet.xlsx — opened empty grid; empty autosave is blocked until Reset Grid.':
         '无法读取 datasheet.xlsx — 已打开空表；在重置网格前不会用空数据自动覆盖。',
     'Spreadsheet recovery snapshot was preserved because datasheet.xlsx changed externally.':
