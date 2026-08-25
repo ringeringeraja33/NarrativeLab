@@ -976,7 +976,15 @@ function applyClearSelectionMutation(
         }
     }
     const next = structuredClone(doc);
-    return mergeUniverCellDataIntoDocument(next, sheetId, cellData);
+    return mergeUniverCellDataIntoDocument(
+        next,
+        sheetId,
+        cellData,
+        undefined,
+        undefined,
+        undefined,
+        { clearStyles: id === 'sheet.command.clear-selection-all' },
+    );
 }
 
 /** Keep stable row/column ids aligned with Univer native insert/delete actions. */

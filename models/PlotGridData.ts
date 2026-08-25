@@ -18,6 +18,10 @@ export interface CellData {
     manualContent?: boolean;
     /** Full Univer IStyleData (borders, wrap, nfmt, font…) so remounts keep formatting. */
     univerStyle?: Record<string, unknown>;
+    /** Native non-text Univer value (number / boolean / forced string). */
+    univerValue?: string | number | boolean;
+    /** Univer CellValueType: 1=string, 2=number, 3=boolean, 4=forced string. */
+    univerValueType?: 1 | 2 | 3 | 4;
 }
 
 export interface ColumnMeta {
@@ -296,6 +300,17 @@ function normalizeCells(value: unknown): Record<string, CellData> {
         if (!rawCell || typeof rawCell !== 'object' || Array.isArray(rawCell)) continue;
         const cell = rawCell as Partial<CellData>;
         const align = cell.align === 'center' || cell.align === 'right' ? cell.align : 'left';
+        const nativeValue = typeof cell.univerValue === 'string'
+            || typeof cell.univerValue === 'number'
+            || typeof cell.univerValue === 'boolean'
+            ? cell.univerValue
+            : undefined;
+        const nativeType = cell.univerValueType === 1
+            || cell.univerValueType === 2
+            || cell.univerValueType === 3
+            || cell.univerValueType === 4
+            ? cell.univerValueType
+            : undefined;
         cells[key] = {
             id: key,
             content: typeof cell.content === 'string' ? cell.content : '',
@@ -309,6 +324,8 @@ function normalizeCells(value: unknown): Record<string, CellData> {
             formula: typeof cell.formula === 'string' ? cell.formula : undefined,
             manualContent: cell.manualContent === true ? true : undefined,
             univerStyle: normalizeJsonObject(cell.univerStyle),
+            univerValue: nativeValue,
+            univerValueType: nativeValue === undefined ? undefined : nativeType,
         };
     }
     return cells;

@@ -110,7 +110,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
             { startRow: 3, endRow: 4, startColumn: 3, endColumn: 4 },
         ]);
         assert.deepEqual(sidecarMeta.pages['page-1'].cells['r1-c1'].univerStyle, { n: { pattern: '0.0' }, tb: 3 });
-        assert.equal(sidecarMeta.schema, 2);
+        assert.equal(sidecarMeta.schema, 3);
         assert.equal(sidecarMeta.pages['page-1'].cells['r1-c1'].content, 'meets mentor');
         assert.equal(sidecarMeta.pages['page-1'].hidden, true);
         assert.equal(sidecarMeta.pages['page-1'].tabColor, '#c45c26');
@@ -181,7 +181,7 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         const metaSheet = legacyBook.getWorksheet('_nl_meta');
         assert.ok(metaSheet);
         const embeddedMeta = JSON.parse(codec.readChunkedMetaText(metaSheet));
-        assert.equal(embeddedMeta.schema, 2);
+        assert.equal(embeddedMeta.schema, 3);
 
         // Simulate Univer opening datasheet.xlsx and leaving only meta JSON in a
         // sheet named "datasheet" (real page sheets gone).
@@ -220,6 +220,45 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(sheet.showGridlines, 0);
         assert.equal(sheet.cellData[1][1].s.n.pattern, '0.0');
         assert.equal(sheet.cellData[1][1].s.tb, 3);
+
+        // Univer stores dates as an Excel serial plus a number-format pattern.
+        // Both parts must survive close → xlsx → reopen, including axis cells.
+        const dateInput = structuredClone(decoded);
+        dateInput.pages[0].cells['r1-c1'].formula = undefined;
+        dateInput.pages[0].cells['r1-c1'].linkedSceneId = undefined;
+        dateInput.pages[0].cells['r1-c1'].linkedViaWikilink = undefined;
+        const dateEdited = codec.mergeUniverCellDataIntoDocument(
+            dateInput,
+            'page-1',
+            {
+                0: { 0: { v: 46259, t: 2, s: { n: { pattern: 'yyyy/m/d' } } } },
+                1: { 1: { v: 46259, t: 2, s: { n: { pattern: 'yyyy/m/d' } } } },
+            },
+        );
+        assert.equal(dateEdited.pages[0].cornerLabel, '46259');
+        assert.equal(dateEdited.pages[0].cells['__nl-axis-corner'].univerValue, 46259);
+        assert.equal(dateEdited.pages[0].cells['__nl-axis-corner'].univerValueType, 2);
+        assert.equal(dateEdited.pages[0].cells['__nl-axis-corner'].univerStyle.n.pattern, 'yyyy/m/d');
+        assert.equal(dateEdited.pages[0].cells['r1-c1'].univerValue, 46259);
+
+        const dateBinary = await codec.encodePlotGridXlsx(dateEdited);
+        const dateBook = new ExcelJS.Workbook();
+        await dateBook.xlsx.load(dateBinary);
+        assert.ok(dateBook.getWorksheet('Act I').getCell('A1').value instanceof Date);
+        assert.equal(dateBook.getWorksheet('Act I').getCell('A1').numFmt, 'yyyy/m/d');
+        assert.ok(dateBook.getWorksheet('Act I').getCell('B2').value instanceof Date);
+        assert.equal(dateBook.getWorksheet('Act I').getCell('B2').numFmt, 'yyyy/m/d');
+
+        const dateMeta = codec.buildNlMetaForDocument(dateEdited);
+        assert.equal(dateMeta.pages['page-1'].cells['__nl-axis-corner'].univerValue, 46259);
+        const dateDecoded = await codec.decodePlotGridXlsx(dateBinary, { meta: dateMeta });
+        const dateReopened = codec.documentToUniverWorkbookData(dateDecoded);
+        assert.equal(dateReopened.sheets['page-1'].cellData[0][0].v, 46259);
+        assert.equal(dateReopened.sheets['page-1'].cellData[0][0].t, 2);
+        assert.equal(dateReopened.sheets['page-1'].cellData[0][0].s.n.pattern, 'yyyy/m/d');
+        assert.equal(dateReopened.sheets['page-1'].cellData[1][1].v, 46259);
+        assert.equal(dateReopened.sheets['page-1'].cellData[1][1].t, 2);
+        assert.equal(dateReopened.sheets['page-1'].cellData[1][1].s.n.pattern, 'yyyy/m/d');
 
         const reconciled = codec.reconcileUniverSheetsIntoDocument(decoded, {
             'page-1': { id: 'page-1', name: 'Act I', hidden: 1, tabColor: '#c45c26' },
@@ -467,6 +506,20 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(headerCleared.pages[0].cells['__nl-axis-corner'].content, '');
         assert.equal(headerCleared.pages[0].cells['__nl-axis-col-c1'].content, '');
         assert.equal(headerCleared.pages[0].cells['__nl-axis-row-r1'].content, '');
+        const headerClearedAll = codec.mergeUniverCellDataIntoDocument(
+            structuredClone(headerRich),
+            'page-1',
+            { 0: { 0: null, 1: null }, 1: { 0: null, 1: null } },
+            undefined,
+            undefined,
+            undefined,
+            { clearStyles: true },
+        );
+        assert.equal(headerClearedAll.pages[0].columns[0].headerBgColor, '');
+        assert.equal(headerClearedAll.pages[0].columns[0].bold, false);
+        assert.equal(headerClearedAll.pages[0].rows[0].textColor, '');
+        assert.equal(headerClearedAll.pages[0].rows[0].italic, false);
+        assert.equal(headerClearedAll.pages[0].cells['__nl-axis-col-c1'].univerStyle, undefined);
         const headerStale = codec.mergeUniverCellDataIntoDocument(structuredClone(headerRich), 'page-1', {
             0: {
                 0: { v: '', p: { body: { dataStream: 'Corner\r\n' } } },
@@ -536,17 +589,32 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(clearedContents.pages[0].cells['r1-c1'].content, '');
         assert.equal(clearedContents.pages[0].cells['r1-c1'].formula, undefined);
         assert.equal(clearedContents.pages[0].cells['r1-c1'].linkedSceneId, undefined);
+        assert.equal(clearedContents.pages[0].cells['r1-c1'].bgColor, '#abcdef');
+        assert.equal(clearedContents.pages[0].cells['r1-c1'].univerStyle.bg.rgb, '#abcdef');
 
         // Univer "Clear all" writes an explicit null into the matrix.
-        const clearedAll = codec.mergeUniverCellDataIntoDocument(structuredClone(merged), 'page-1', {
-            0: { 0: { v: '' }, 1: { v: 'Hero' } },
-            1: {
-                0: { v: 'Scene 1' },
-                1: null,
+        const clearedAll = codec.mergeUniverCellDataIntoDocument(
+            structuredClone(merged),
+            'page-1',
+            {
+                0: { 0: { v: '' }, 1: { v: 'Hero' } },
+                1: {
+                    0: { v: 'Scene 1' },
+                    1: null,
+                },
             },
-        });
+            undefined,
+            undefined,
+            undefined,
+            { clearStyles: true },
+        );
         assert.equal(clearedAll.pages[0].cells['r1-c1'].content, '');
         assert.equal(clearedAll.pages[0].cells['r1-c1'].linkedSceneId, undefined);
+        assert.equal(clearedAll.pages[0].cells['r1-c1'].bgColor, '');
+        assert.equal(clearedAll.pages[0].cells['r1-c1'].textColor, '');
+        assert.equal(clearedAll.pages[0].cells['r1-c1'].bold, false);
+        assert.equal(clearedAll.pages[0].cells['r1-c1'].italic, false);
+        assert.equal(clearedAll.pages[0].cells['r1-c1'].univerStyle, undefined);
 
         // Empty reserved matrix must not expand row/col extents
         const same = codec.mergeUniverCellDataIntoDocument(decoded, 'page-1', {
@@ -1286,6 +1354,7 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.doesNotMatch(host, /active\.closest\('\[class\*="univer"\]'\)/);
     assert.match(host, /sheet\.mutation\.set-range-values/);
     assert.match(host, /applyRangeValuesMutation/);
+    assert.match(host, /clearStyles: id === 'sheet\.command\.clear-selection-all'/);
     assert.match(host, /createPlotGridWorkbookUnitId/);
     assert.match(host, /commandWorkbookUnitId/);
     assert.match(host, /recentlyClearedCells/);
