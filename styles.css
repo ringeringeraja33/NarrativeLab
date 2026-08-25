@@ -2432,6 +2432,12 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     }
 }
 
+/* Display-only cleanup for Obsidian's Files view. The underlying vault items
+   remain untouched and available to NarrativeLab. */
+.workspace-leaf-content[data-type="file-explorer"] .sl-narrative-lab-hidden-file-tree-item {
+    display: none !important;
+}
+
 .workspace-leaf-content[data-type="narrative-lab-canvas-view"] > .view-content,
 .workspace-leaf-content[data-type="narrative-lab-canvas-view"] .view-content.narrative-canvas-plugin-host {
     padding: 0 !important;

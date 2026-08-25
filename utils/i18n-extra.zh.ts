@@ -331,4 +331,6 @@ export const EXTRA_ZH: Record<string, string> = {
     'This year': '今年',
     'Recent writing': '近期写作',
     '{n}d': '{n}天',
+    'Hide project internals in Obsidian Files': '在 Obsidian 文件列表中隐藏项目内部文件',
+    'Hides System folders, series.json, and file types that Obsidian has no view for. Files stay on disk and remain available to NarrativeLab.': '隐藏 System 文件夹、series.json，以及 Obsidian 无法直接打开的文件类型。文件仍保留在磁盘上，NarrativeLab 可继续正常使用。',
 };

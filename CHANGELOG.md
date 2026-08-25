@@ -1,5 +1,11 @@
 # NarrativeLab — Changelog
 
+## 1.4.2
+
+- Obsidian's Files view now hides every `System` folder, `series.json`, and file types for which Obsidian has no registered view; the underlying vault contents remain untouched and available to NarrativeLab.
+- The cleanup is enabled by default, updates as the file tree changes, and can be disabled from NarrativeLab settings.
+- Removed the incomplete JSON/DOCX extension registration that made files appear openable without providing a valid Obsidian view.
+
 ## 1.4.1
 
 - Series operations now freeze project-scoped background writes, drain pending save queues, and temporarily unload every open project file before moving its folder.

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-narrative-lab",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "Plan, draft, and manage narrative projects in Obsidian",
   "main": "main.js",
   "scripts": {
@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "lint:obsidian": "eslint \"**/*.ts\"",
     "audit:i18n": "node scripts/audit-i18n-duplicates.mjs && node scripts/audit-i18n-coverage.mjs",
-    "test:unit": "node --test tests/project-bundle-validation.test.mjs tests/library-category-transactions.test.mjs tests/project-library-defaults.test.mjs tests/canvas-ui-mode.test.mjs tests/ncanvas-library-sync.test.mjs tests/native-canvas-projection.test.mjs tests/data-safety-regressions.test.mjs tests/library-entity-name.test.mjs tests/story-graph-edges.test.mjs tests/obsidian-graph-query.test.mjs tests/scene-locations.test.mjs tests/library-base-consolidation.test.mjs tests/binder-note-scene-convert.test.mjs tests/plotgrid-xlsx-codec.test.mjs tests/concept-grid-sheet-name.test.mjs tests/library-archive-filters.test.mjs tests/library-profile-layout.test.mjs tests/navigator-collapse-persistence.test.mjs tests/navigator-filter-sort.test.mjs tests/library-tab-persistence.test.mjs tests/i18n-ui-wiring.test.mjs tests/multi-project-leaves.test.mjs tests/external-project-deletion.test.mjs tests/obsidian-menu.test.mjs tests/floating-sticky-notes.test.mjs tests/plotline-project-isolation.test.mjs tests/writing-tracker-panel.test.mjs tests/univer-context-menu.test.mjs tests/univer-sheet-list-reorder.test.mjs tests/wordcount-text.test.mjs tests/project-isolation.test.mjs",
+    "test:unit": "node --test tests/project-bundle-validation.test.mjs tests/library-category-transactions.test.mjs tests/project-library-defaults.test.mjs tests/canvas-ui-mode.test.mjs tests/ncanvas-library-sync.test.mjs tests/native-canvas-projection.test.mjs tests/data-safety-regressions.test.mjs tests/file-explorer-visibility.test.mjs tests/library-entity-name.test.mjs tests/story-graph-edges.test.mjs tests/obsidian-graph-query.test.mjs tests/scene-locations.test.mjs tests/library-base-consolidation.test.mjs tests/binder-note-scene-convert.test.mjs tests/plotgrid-xlsx-codec.test.mjs tests/concept-grid-sheet-name.test.mjs tests/library-archive-filters.test.mjs tests/library-profile-layout.test.mjs tests/navigator-collapse-persistence.test.mjs tests/navigator-filter-sort.test.mjs tests/library-tab-persistence.test.mjs tests/i18n-ui-wiring.test.mjs tests/multi-project-leaves.test.mjs tests/external-project-deletion.test.mjs tests/obsidian-menu.test.mjs tests/floating-sticky-notes.test.mjs tests/plotline-project-isolation.test.mjs tests/writing-tracker-panel.test.mjs tests/univer-context-menu.test.mjs tests/univer-sheet-list-reorder.test.mjs tests/wordcount-text.test.mjs tests/project-isolation.test.mjs",
     "test": "npm run typecheck && npm run audit:i18n && npm run test:unit && node scripts/check-release.mjs",
     "check": "npm test && npm run build",
     "version": "node version-bump.mjs && git add manifest.json versions.json"

@@ -802,6 +802,9 @@ export interface SceneCardsSettings {
      */
     autoHideViewLabels?: boolean;
 
+    /** Hide System, series.json, and files Obsidian has no registered view for. */
+    hideUnsupportedFilesInExplorer: boolean;
+
     // DOCX export settings (adapted from ToWord plugin)
     docxSettings: SLDocxSettings;
 
@@ -1090,6 +1093,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
 
     frontmatterDisplay: 'collapse',
     autoHideViewLabels: true,
+    hideUnsupportedFilesInExplorer: true,
 
     docxSettings: { ...SL_DEFAULT_DOCX_SETTINGS },
 
@@ -1295,6 +1299,17 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                         this.plugin.updateFrontmatterVisibility({ collapseOpenFiles: mode === 'collapse' });
                     });
             });
+
+        new Setting(panel)
+            .setName(t('Hide project internals in Obsidian Files'))
+            .setDesc(t('Hides System folders, series.json, and file types that Obsidian has no view for. Files stay on disk and remain available to NarrativeLab.'))
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.hideUnsupportedFilesInExplorer !== false)
+                .onChange(async (value) => {
+                    this.plugin.settings.hideUnsupportedFilesInExplorer = value;
+                    await this.plugin.saveSettings();
+                    this.plugin.updateFileExplorerVisibility();
+                }));
 
         new Setting(panel)
             .setName(t('Collapse view-tab labels when toolbar is narrow'))

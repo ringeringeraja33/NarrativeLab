@@ -5,6 +5,11 @@ import { asRecord, isRecord } from './utils/narrow';
 import { countWordRevisionChurn } from './utils/wordcountText';
 import { consumeTextareaUndoKey, isLocalTextUndoTarget, isRedoKey, isUndoKey } from './utils/textareaHistory';
 import {
+    OBSIDIAN_OPENABLE_EXTENSION_FALLBACK,
+    shouldHideFileExplorerFile,
+    shouldHideFileExplorerFolder,
+} from './utils/fileExplorerVisibility';
+import {
     getLeafNarrativeLabProjectFile,
     narrativeLabLeafState,
 } from './utils/narrativeLabLeafState';
@@ -452,6 +457,9 @@ export default class SceneCardsPlugin extends Plugin {
     /** Keeps Narrative Canvas in sync when Obsidian appearance changes (uiTheme = auto). */
     private uiThemeObserver: MutationObserver | null = null;
     private lastObservedObsidianTheme: 'light' | 'dark' | null = null;
+    /** Keeps Obsidian's Files view free of NarrativeLab internals and unreadable files. */
+    private fileExplorerVisibilityObserver: MutationObserver | null = null;
+    private fileExplorerVisibilityFrame: number | null = null;
 
     /**
      * Resolve the Board that owns an undo shortcut. Corkboard Canvas runs in a
@@ -501,6 +509,7 @@ export default class SceneCardsPlugin extends Plugin {
         // catches fields added dynamically (Inspector, modals, toolbar, etc.).
         this.disableSpellCheckInPluginUI();
         this.observePluginUiLanguage();
+        this.app.workspace.onLayoutReady(() => this.observeFileExplorerVisibility());
 
         // Issue #190 — on mobile the soft keyboard can cover the focused
         // field in the Codex, Inspector, Corkboard note editor, etc. Install
@@ -553,37 +562,6 @@ export default class SceneCardsPlugin extends Plugin {
             await this.sceneManager.initialize();
             this.refreshOpenViews();
         };
-
-        // Best-effort: register file extensions so exported files are visible in the Vault.
-        // We check several possible locations for an existing registration and safely
-        // call a registration API if available. This uses `any` casts because the
-        // API surface varies between Obsidian versions.
-        for (const ext of ['json', 'docx']) {
-            try {
-
-                const pluginAny = this as unknown as Record<string, unknown>;
-                let alreadyRegistered = false;
-
-                const regOnPlugin = pluginAny.registeredExtensions;
-                const regOnVault = (this.app.vault as unknown as Record<string, unknown>)?.registeredExtensions;
-                if (Array.isArray(regOnPlugin)) alreadyRegistered = regOnPlugin.includes(ext);
-                if (!alreadyRegistered && Array.isArray(regOnVault)) alreadyRegistered = regOnVault.includes(ext);
-
-                if (!alreadyRegistered) {
-                    if (typeof pluginAny.registerExtensions === 'function') {
-                        (pluginAny.registerExtensions as (e: string[]) => void)([ext]);
-                    } else {
-                        const appReg = (this.app as unknown as Record<string, unknown>).registerExtensions;
-                        if (typeof appReg === 'function') {
-                            (appReg as (e: string[]) => void)([ext]);
-                        }
-                    }
-                }
-            } catch (e) {
-                // non-fatal: extension registration may fail if already registered by another plugin
-                console.error(`NarrativeLab: failed to register .${ext} extension`, e);
-            }
-        }
 
         // Register views
         this.registerView(BOARD_VIEW_TYPE, (leaf) =>
@@ -1523,6 +1501,7 @@ export default class SceneCardsPlugin extends Plugin {
             this.app.workspace.on('layout-change', () => {
                 // CSS hide/show only — do not re-fold (would fight user expanding Properties).
                 this.updateFrontmatterVisibility();
+                this.observeFileExplorerVisibility();
                 this.syncWritingTrackerActivity();
             })
         );
@@ -1960,6 +1939,16 @@ export default class SceneCardsPlugin extends Plugin {
             this.uiThemeObserver.disconnect();
             this.uiThemeObserver = null;
         }
+        if (this.fileExplorerVisibilityObserver) {
+            this.fileExplorerVisibilityObserver.disconnect();
+            this.fileExplorerVisibilityObserver = null;
+        }
+        if (this.fileExplorerVisibilityFrame !== null) {
+            window.cancelAnimationFrame(this.fileExplorerVisibilityFrame);
+            this.fileExplorerVisibilityFrame = null;
+        }
+        activeDocument.querySelectorAll('.sl-narrative-lab-hidden-file-tree-item')
+            .forEach(el => el.classList.remove('sl-narrative-lab-hidden-file-tree-item'));
 
         // Clean up any floating lightbox windows left on activeDocument.body
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(el => el.remove());
@@ -2027,6 +2016,81 @@ export default class SceneCardsPlugin extends Plugin {
         const toolbar = createDiv({ cls: 'sl-fmt-toolbar sl-injected-fmt-toolbar' });
         buildFormattingToolbar(toolbar, () => cm);
         viewContent.insertBefore(toolbar, viewContent.firstChild);
+    }
+
+    private canObsidianOpenExtension(extension: string): boolean {
+        const normalized = extension.trim().replace(/^\./, '').toLowerCase();
+        if (!normalized) return false;
+
+        const viewRegistry = (this.app as unknown as {
+            viewRegistry?: {
+                getTypeByExtension?: (extension: string) => string | null | undefined;
+            };
+        }).viewRegistry;
+        if (typeof viewRegistry?.getTypeByExtension === 'function') {
+            try {
+                return Boolean(viewRegistry.getTypeByExtension(normalized));
+            } catch {
+                // Fall back to Obsidian's standard formats on older builds.
+            }
+        }
+        return OBSIDIAN_OPENABLE_EXTENSION_FALLBACK.has(normalized);
+    }
+
+    /**
+     * Hide only file-tree rows. Nothing is deleted, moved, excluded from search,
+     * or made unavailable to NarrativeLab's own readers.
+     */
+    public updateFileExplorerVisibility(): void {
+        const hiddenClass = 'sl-narrative-lab-hidden-file-tree-item';
+        const enabled = this.settings.hideUnsupportedFilesInExplorer !== false;
+        const explorers = activeDocument.querySelectorAll<HTMLElement>(
+            '.workspace-leaf-content[data-type="file-explorer"]',
+        );
+
+        for (const explorer of Array.from(explorers)) {
+            for (const title of Array.from(explorer.querySelectorAll<HTMLElement>('.nav-folder-title[data-path]'))) {
+                const row = title.closest<HTMLElement>('.nav-folder');
+                if (!row) continue;
+                const path = title.dataset.path ?? '';
+                row.classList.toggle(hiddenClass, enabled && shouldHideFileExplorerFolder(path));
+            }
+
+            for (const title of Array.from(explorer.querySelectorAll<HTMLElement>('.nav-file-title[data-path]'))) {
+                const row = title.closest<HTMLElement>('.nav-file');
+                if (!row) continue;
+                const path = title.dataset.path ?? '';
+                const hidden = enabled && shouldHideFileExplorerFile(
+                    path,
+                    extension => this.canObsidianOpenExtension(extension),
+                );
+                row.classList.toggle(hiddenClass, hidden);
+            }
+        }
+    }
+
+    private observeFileExplorerVisibility(): void {
+        const scheduleRefresh = (): void => {
+            if (this.fileExplorerVisibilityFrame !== null) return;
+            this.fileExplorerVisibilityFrame = window.requestAnimationFrame(() => {
+                this.fileExplorerVisibilityFrame = null;
+                this.updateFileExplorerVisibility();
+            });
+        };
+
+        this.fileExplorerVisibilityObserver?.disconnect();
+        this.updateFileExplorerVisibility();
+        this.fileExplorerVisibilityObserver = new MutationObserver(mutations => {
+            if (mutations.some(mutation => mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
+                scheduleRefresh();
+            }
+        });
+        const explorers = activeDocument.querySelectorAll<HTMLElement>(
+            '.workspace-leaf-content[data-type="file-explorer"]',
+        );
+        for (const explorer of Array.from(explorers)) {
+            this.fileExplorerVisibilityObserver.observe(explorer, { childList: true, subtree: true });
+        }
     }
 
     private enableNativeTooltipSuppression(): void {
