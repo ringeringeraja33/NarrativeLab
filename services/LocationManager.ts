@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
-import { coerceString } from '../utils/narrow';
+import { coerceString, coerceStringList, coerceText } from '../utils/narrow';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 import { ensureVaultFolder } from '../utils/vaultFolders';
 import {
@@ -9,7 +9,11 @@ import {
 } from '../models/Location';
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
-import { orderLibraryEntityFrontmatter } from '../utils/libraryProfilePropertyOrder';
+import {
+    hydrateCustomFieldsFromTopLevel,
+    mirrorCustomFieldsToTopLevel,
+    orderLibraryEntityFrontmatter,
+} from '../utils/libraryProfilePropertyOrder';
 
 /**
  * Manages world & location .md files — loading, saving, creating, deleting.
@@ -111,35 +115,40 @@ export class LocationManager {
 
         const body = this.extractBody(content);
         const displayName = resolveLibraryEntityName(fmEff.name, filePath, fmEff.title);
+        const text = (value: unknown): string | undefined => coerceText(value).trim() || undefined;
 
         if (effectiveType === 'world') {
             const world: StoryWorld = {
                 filePath,
                 type: 'world',
                 name: displayName,
-                image: fmEff.image,
+                image: text(fmEff.image),
                 gallery: this.parseGallery(fmEff.gallery),
-                nickname: fmEff.nickname,
-                description: fmEff.description,
-                geography: fmEff.geography,
-                culture: fmEff.culture,
-                politics: fmEff.politics,
-                magicTechnology: fmEff.magicTechnology,
-                beliefs: fmEff.beliefs,
-                economy: fmEff.economy,
-                history: fmEff.history,
+                nickname: text(fmEff.nickname),
+                description: text(fmEff.description),
+                geography: text(fmEff.geography),
+                culture: text(fmEff.culture),
+                politics: text(fmEff.politics),
+                magicTechnology: text(fmEff.magicTechnology),
+                beliefs: text(fmEff.beliefs),
+                economy: text(fmEff.economy),
+                history: text(fmEff.history),
                 books: this.parseStringList(fmEff.books),
-                custom: fmEff.custom && typeof fmEff.custom === 'object'
-                    ? (fmEff.custom as Record<string, string>)
-                    : undefined,
+                custom: hydrateCustomFieldsFromTopLevel(
+                    fmEff,
+                    fmEff.custom && typeof fmEff.custom === 'object' && !Array.isArray(fmEff.custom)
+                        ? (fmEff.custom as Record<string, string>)
+                        : undefined,
+                    'world',
+                ),
                 universalFields: hydrateUniversalFieldsFromTopLevel(
                     fmEff,
                     fmEff.universalFields && typeof fmEff.universalFields === 'object'
                         ? (fmEff.universalFields as Record<string, string | string[]>)
                         : undefined,
                 ) as Record<string, string | string[]> | undefined,
-                created: fmEff.created,
-                modified: fmEff.modified,
+                created: text(fmEff.created),
+                modified: text(fmEff.modified),
                 notes: body || coerceString(fmEff.notes) || undefined,
             };
             return world;
@@ -149,30 +158,34 @@ export class LocationManager {
             filePath,
             type: 'location',
             name: displayName,
-            image: fmEff.image,
+            image: text(fmEff.image),
             gallery: this.parseGallery(fmEff.gallery),
-            nickname: fmEff.nickname,
-            locationType: fmEff.locationType,
-            world: fmEff.world,
-            parent: fmEff.parent,
-            description: fmEff.description,
-            atmosphere: fmEff.atmosphere,
-            significance: fmEff.significance,
-            inhabitants: fmEff.inhabitants,
-            connectedLocations: fmEff.connectedLocations,
-            mapNotes: fmEff.mapNotes,
+            nickname: text(fmEff.nickname),
+            locationType: text(fmEff.locationType),
+            world: text(fmEff.world),
+            parent: text(fmEff.parent),
+            description: text(fmEff.description),
+            atmosphere: text(fmEff.atmosphere),
+            significance: text(fmEff.significance),
+            inhabitants: text(fmEff.inhabitants),
+            connectedLocations: text(fmEff.connectedLocations),
+            mapNotes: text(fmEff.mapNotes),
             books: this.parseStringList(fmEff.books),
-            custom: fmEff.custom && typeof fmEff.custom === 'object'
-                ? (fmEff.custom as Record<string, string>)
-                : undefined,
+            custom: hydrateCustomFieldsFromTopLevel(
+                fmEff,
+                fmEff.custom && typeof fmEff.custom === 'object' && !Array.isArray(fmEff.custom)
+                    ? (fmEff.custom as Record<string, string>)
+                    : undefined,
+                'location',
+            ),
             universalFields: hydrateUniversalFieldsFromTopLevel(
                 fmEff,
                 fmEff.universalFields && typeof fmEff.universalFields === 'object'
                     ? (fmEff.universalFields as Record<string, string | string[]>)
                     : undefined,
             ) as Record<string, string | string[]> | undefined,
-            created: fmEff.created,
-            modified: fmEff.modified,
+            created: text(fmEff.created),
+            modified: text(fmEff.modified),
             notes: body || coerceString(fmEff.notes) || undefined,
         };
         return loc;
@@ -359,25 +372,46 @@ export class LocationManager {
             }
         }
 
-        if (item.custom && Object.keys(item.custom).length > 0) {
-            fm.custom = item.custom;
+        const previousCustom = existingFm.custom && typeof existingFm.custom === 'object' && !Array.isArray(existingFm.custom)
+            ? existingFm.custom as Record<string, string>
+            : undefined;
+        const resolvedCustom = hydrateCustomFieldsFromTopLevel(
+            existingFm,
+            item.custom,
+            item.type,
+        );
+        if (resolvedCustom && Object.keys(resolvedCustom).length > 0) {
+            fm.custom = resolvedCustom;
         } else {
             delete fm.custom;
         }
+        mirrorCustomFieldsToTopLevel(fm, resolvedCustom, item.type, previousCustom);
 
-        if (item.universalFields && Object.keys(item.universalFields).length > 0) {
-            fm.universalFields = item.universalFields;
+        const resolvedUniversal = hydrateUniversalFieldsFromTopLevel(existingFm, item.universalFields) as
+            Record<string, string | string[]> | undefined;
+        if (resolvedUniversal && Object.keys(resolvedUniversal).length > 0) {
+            fm.universalFields = resolvedUniversal;
         } else {
             delete fm.universalFields;
         }
         // Issue #71 — mirror to top-level YAML keys for templates that opt in
-        mirrorUniversalFieldsToTopLevel(fm, item.universalFields);
+        mirrorUniversalFieldsToTopLevel(fm, resolvedUniversal);
 
         const finalBody = item.notes ?? body;
         const orderedFm = orderLibraryEntityFrontmatter(fm, item.type);
         const newContent = `---\n${stringifyYaml(orderedFm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
-        rememberEntityAfterSave(this.app, 'location', normalizedFilePath, item);
+        item.custom = resolvedCustom;
+        item.universalFields = resolvedUniversal;
+        const saved = {
+            ...item,
+            filePath: normalizedFilePath,
+            custom: resolvedCustom,
+            universalFields: resolvedUniversal,
+        } as WorldOrLocation;
+        if (saved.type === 'world') this.worlds.set(normalizedFilePath, saved);
+        else this.locations.set(normalizedFilePath, saved);
+        rememberEntityAfterSave(this.app, 'location', normalizedFilePath, saved);
     }
 
     // ── Delete ─────────────────────────────────────────
@@ -459,14 +493,7 @@ export class LocationManager {
     }
 
     private parseStringList(value: unknown): string[] | undefined {
-        if (Array.isArray(value)) {
-            const parsed = value.map(v => coerceString(v).trim()).filter(Boolean);
-            return parsed.length ? parsed : undefined;
-        }
-        if (value == null || value === '') return undefined;
-        const str = coerceString(value);
-        if (!str) return undefined;
-        const parsed = str.split(',').map(s => s.trim()).filter(Boolean);
+        const parsed = coerceStringList(value, /,/);
         return parsed.length ? parsed : undefined;
     }
 

@@ -3,7 +3,7 @@
  * Character data model - represents a character profile stored as a markdown file
  * in the project's Characters/ folder.
  */
-import { coerceString } from '../utils/narrow';
+import { coerceString, coerceStringList, coerceText } from '../utils/narrow';
 
 export interface Character {
     /** Vault-relative path of the character .md file */
@@ -285,11 +285,12 @@ export function getRoleList(input: unknown): string[] {
     // Character object overload — prefer Tier 2 roles[] if present.
     if (input && typeof input === 'object' && !Array.isArray(input) && ('role' in input || 'roles' in input)) {
         const c = input as Pick<Character, 'role' | 'roles'>;
-        if (c.roles && c.roles.length) {
+        const roleEntries = normalizeRoleEntries(c.roles);
+        if (roleEntries.length) {
             const seen = new Set<string>();
             const out: string[] = [];
-            for (const e of c.roles) {
-                const r = String(e.role || '').trim();
+            for (const e of roleEntries) {
+                const r = coerceString(e.role).trim();
                 if (!r) continue;
                 const key = r.toLowerCase();
                 if (seen.has(key)) continue;
@@ -300,18 +301,25 @@ export function getRoleList(input: unknown): string[] {
         }
         return getRoleListFromRaw(c.role);
     }
-    return getRoleListFromRaw(input as string | string[] | undefined);
+    return getRoleListFromRaw(input);
 }
 
-function getRoleListFromRaw(role: string | string[] | undefined): string[] {
-    if (!role) return [];
-    if (Array.isArray(role)) {
-        return role.map(r => String(r).trim()).filter(Boolean);
+function getRoleListFromRaw(role: unknown): string[] {
+    return coerceStringList(role, /,/);
+}
+
+/**
+ * Keep the legacy `role:` property in its supported scalar/list shape.
+ * Plain objects can appear transiently in stale metadata caches; ignoring them
+ * prevents JavaScript's default "[object Object]" label from reaching the UI.
+ */
+export function normalizeCharacterRole(raw: unknown): string | string[] | undefined {
+    if (Array.isArray(raw)) {
+        const roles = getRoleListFromRaw(raw);
+        return roles.length ? roles : undefined;
     }
-    return String(role)
-        .split(',')
-        .map(r => r.trim())
-        .filter(Boolean);
+    const role = coerceString(raw).trim();
+    return role || undefined;
 }
 
 /** Render the role field as a human-readable comma-separated string. */
@@ -612,13 +620,7 @@ export const CHARACTER_TAGLINE_UNIVERSAL_PREFIX = 'universal:';
 export const CHARACTER_TAGLINE_CUSTOM_PREFIX = 'custom:';
 
 function characterSnippetValue(value: unknown): string {
-    if (Array.isArray(value)) {
-        return value
-            .map(item => coerceString(item).trim())
-            .filter(Boolean)
-            .join(', ');
-    }
-    return coerceString(value).trim();
+    return coerceText(value).trim();
 }
 
 /**

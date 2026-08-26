@@ -1,12 +1,16 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { Character, CharacterRelation, CharacterRelationCategory, CHARACTER_FIELD_KEYS, LEGACY_RELATION_FIELDS_TO_CLEAN, normalizeCharacterRelations, normalizeRoleEntries } from '../models/Character';
+import { Character, CharacterRelation, CharacterRelationCategory, CHARACTER_FIELD_KEYS, LEGACY_RELATION_FIELDS_TO_CLEAN, normalizeCharacterRelations, normalizeCharacterRole, normalizeRoleEntries } from '../models/Character';
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
-import { coerceString } from '../utils/narrow';
+import { coerceString, coerceText } from '../utils/narrow';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 import { ensureVaultFolder } from '../utils/vaultFolders';
 import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
-import { orderLibraryEntityFrontmatter } from '../utils/libraryProfilePropertyOrder';
+import {
+    hydrateCustomFieldsFromTopLevel,
+    mirrorCustomFieldsToTopLevel,
+    orderLibraryEntityFrontmatter,
+} from '../utils/libraryProfilePropertyOrder';
 
 /**
  * Manages character .md files — loading, saving, creating, and deleting
@@ -228,9 +232,15 @@ export class CharacterManager {
         if (character.created) fm.created = character.created;
 
         // Write all standard fields
+        const normalizedRole = normalizeCharacterRole(character.role);
+        const normalizedRoleEntries = normalizeRoleEntries(character.roles);
         for (const key of CHARACTER_FIELD_KEYS) {
             if (key === 'name') continue; // already set above
-            const val = character[key];
+            const val = key === 'role'
+                ? normalizedRole
+                : key === 'roles'
+                    ? normalizedRoleEntries
+                    : character[key];
             if (val !== undefined && val !== null && val !== '' && !(Array.isArray(val) && val.length === 0)) {
                 fm[key] = val;
             } else {
@@ -249,32 +259,52 @@ export class CharacterManager {
             delete fm[key];
         }
 
+        const previousCustom = existingFm.custom && typeof existingFm.custom === 'object' && !Array.isArray(existingFm.custom)
+            ? existingFm.custom as Record<string, string>
+            : undefined;
+        const resolvedCustom = hydrateCustomFieldsFromTopLevel(
+            existingFm,
+            character.custom,
+            'character',
+        );
         // Custom fields
-        if (character.custom && Object.keys(character.custom).length > 0) {
-            fm.custom = character.custom;
+        if (resolvedCustom && Object.keys(resolvedCustom).length > 0) {
+            fm.custom = resolvedCustom;
         } else {
             delete fm.custom;
         }
+        mirrorCustomFieldsToTopLevel(fm, resolvedCustom, 'character', previousCustom);
 
         // Universal fields (values from field-templates)
-        if (character.universalFields && Object.keys(character.universalFields).length > 0) {
-            fm.universalFields = character.universalFields;
+        const resolvedUniversal = hydrateUniversalFieldsFromTopLevel(existingFm, character.universalFields) as
+            Record<string, string | string[]> | undefined;
+        if (resolvedUniversal && Object.keys(resolvedUniversal).length > 0) {
+            fm.universalFields = resolvedUniversal;
         } else {
             delete fm.universalFields;
         }
         // Issue #71 — mirror to top-level YAML keys for templates that opt in
-        mirrorUniversalFieldsToTopLevel(fm, character.universalFields);
+        mirrorUniversalFieldsToTopLevel(fm, resolvedUniversal);
 
         // Write notes to body
         const finalBody = character.notes ?? body;
         const orderedFm = orderLibraryEntityFrontmatter(fm, 'character');
         const newContent = `---\n${stringifyYaml(orderedFm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
+        character.custom = resolvedCustom;
+        character.universalFields = resolvedUniversal;
 
         // Update in-memory + stamp caches together. If only `characters` is
         // updated, the next reloadEntities() can revive a pre-save stamp-cache
         // parse and drop fields the user just edited (e.g. tagline).
-        const saved: Character = { ...character, filePath: normalizedFilePath };
+        const saved: Character = {
+            ...character,
+            filePath: normalizedFilePath,
+            role: normalizedRole,
+            roles: normalizedRoleEntries.length ? normalizedRoleEntries : undefined,
+            custom: resolvedCustom,
+            universalFields: resolvedUniversal,
+        };
         this.characters.set(normalizedFilePath, saved);
         rememberEntityAfterSave(this.app, 'character', normalizedFilePath, saved);
     }
@@ -356,6 +386,7 @@ export class CharacterManager {
 
         const body = this.extractBody(content);
         const relations = normalizeCharacterRelations(this.parseRelations(safeFm.relations) || this.buildLegacyRelations(safeFm));
+        const text = (value: unknown): string | undefined => coerceText(value).trim() || undefined;
 
         const character: Character = {
             filePath,
@@ -365,50 +396,54 @@ export class CharacterManager {
                 const raw = coerceString(safeFm.tagline).trim();
                 return raw || undefined;
             })(),
-            image: safeFm.image,
+            image: text(safeFm.image),
             gallery: this.parseGallery(safeFm.gallery),
-            nickname: safeFm.nickname,
-            age: safeFm.age != null ? String(safeFm.age) : undefined,
-            role: safeFm.role,
+            nickname: text(safeFm.nickname),
+            age: text(safeFm.age),
+            role: normalizeCharacterRole(safeFm.role),
             roles: normalizeRoleEntries(safeFm.roles),
-            occupation: safeFm.occupation,
-            residency: safeFm.residency,
+            occupation: text(safeFm.occupation),
+            residency: text(safeFm.residency),
             locations: this.parseStringList(safeFm.locations),
-            family: safeFm.family,
-            earlylife: safeFm.earlylife ?? (safeFm.earlyLife as string | undefined),
-            appearance: safeFm.appearance,
-            distinguishingFeatures: safeFm.distinguishingFeatures,
-            style: safeFm.style,
-            quirks: safeFm.quirks,
-            personality: safeFm.personality,
-            internalMotivation: safeFm.internalMotivation,
-            externalMotivation: safeFm.externalMotivation,
-            strengths: safeFm.strengths,
-            flaws: safeFm.flaws,
-            fears: safeFm.fears,
-            belief: safeFm.belief || (safeFm.coreBeliefs as string | undefined),
-            misbelief: safeFm.misbelief,
-            formativeMemories: safeFm.formativeMemories,
-            accomplishments: safeFm.accomplishments,
-            secrets: safeFm.secrets,
+            family: text(safeFm.family),
+            earlylife: text(safeFm.earlylife) || text(safeFm.earlyLife),
+            appearance: text(safeFm.appearance),
+            distinguishingFeatures: text(safeFm.distinguishingFeatures),
+            style: text(safeFm.style),
+            quirks: text(safeFm.quirks),
+            personality: text(safeFm.personality),
+            internalMotivation: text(safeFm.internalMotivation),
+            externalMotivation: text(safeFm.externalMotivation),
+            strengths: text(safeFm.strengths),
+            flaws: text(safeFm.flaws),
+            fears: text(safeFm.fears),
+            belief: text(safeFm.belief) || text(safeFm.coreBeliefs),
+            misbelief: text(safeFm.misbelief),
+            formativeMemories: text(safeFm.formativeMemories),
+            accomplishments: text(safeFm.accomplishments),
+            secrets: text(safeFm.secrets),
             relations: relations.length ? relations : undefined,
-            startingPoint: safeFm.startingPoint,
-            goal: safeFm.goal,
-            expectedChange: safeFm.expectedChange,
-            habits: safeFm.habits,
-            props: safeFm.props,
+            startingPoint: text(safeFm.startingPoint),
+            goal: text(safeFm.goal),
+            expectedChange: text(safeFm.expectedChange),
+            habits: text(safeFm.habits),
+            props: text(safeFm.props),
             books: this.parseStringList(safeFm.books),
-            custom: safeFm.custom && typeof safeFm.custom === 'object'
-                ? (safeFm.custom as Record<string, string>)
-                : undefined,
+            custom: hydrateCustomFieldsFromTopLevel(
+                safeFm,
+                safeFm.custom && typeof safeFm.custom === 'object' && !Array.isArray(safeFm.custom)
+                    ? (safeFm.custom as Record<string, string>)
+                    : undefined,
+                'character',
+            ),
             universalFields: hydrateUniversalFieldsFromTopLevel(
                 safeFm,
                 safeFm.universalFields && typeof safeFm.universalFields === 'object'
                     ? (safeFm.universalFields as Record<string, string | string[]>)
                     : undefined,
             ) as Record<string, string | string[]> | undefined,
-            created: safeFm.created,
-            modified: safeFm.modified,
+            created: text(safeFm.created),
+            modified: text(safeFm.modified),
             notes: body || coerceString(safeFm.notes) || undefined,
         };
 

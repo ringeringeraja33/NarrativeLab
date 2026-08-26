@@ -18,9 +18,10 @@ import { openConfirmModal } from './ConfirmModal';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
 import { getProfileSectionActions } from '../utils/libraryProfileLayout';
+import { CUSTOM_SECTION_KEY_SEP } from '../utils/libraryProfilePropertyOrder';
 
 /** Composite-key separator used to namespace fields inside custom sections. */
-export const CUSTOM_SECTION_KEY_SEP = ' :: ';
+export { CUSTOM_SECTION_KEY_SEP } from '../utils/libraryProfilePropertyOrder';
 
 /**
  * Supported input types for a custom-section field. Mirrors the universal
@@ -518,8 +519,11 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
             const def = normalizeField(entry);
             const fname = def.name;
             const key = compositeKey(sec.title, fname);
-            const row = body.createDiv(`${fieldRowLabel} ${customRowLabel}`);
-            row.createEl('label', { cls: fieldLabelLabel, text: fname });
+            const row = body.createDiv(`${fieldRowLabel} ${customRowLabel} profile-custom-field-row`);
+            const heading = row.createDiv('profile-custom-field-heading');
+            heading.createEl('label', { cls: fieldLabelLabel, text: fname });
+            const actions = heading.createDiv('profile-custom-field-actions');
+            const control = row.createDiv('profile-custom-field-control');
 
             // Render the input element appropriate for the field's type.
             // Mirrors the universal field renderers so users get the same
@@ -531,7 +535,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                 || t('Value for {field}', { field: fname });
             switch (def.type) {
                 case 'textarea': {
-                    const ta = row.createEl('textarea', {
+                    const ta = control.createEl('textarea', {
                         cls: fieldInputLabel,
                         attr: { placeholder: placeholderHint, rows: '3' },
                     });
@@ -545,7 +549,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                     break;
                 }
                 case 'dropdown': {
-                    const sel = row.createEl('select', { cls: `${fieldInputLabel} dropdown` });
+                    const sel = control.createEl('select', { cls: `${fieldInputLabel} dropdown` });
                     sel.createEl('option', { text: placeholderHint, value: '' });
                     const opts = selectableOptions(app, def);
                     for (const opt of opts) {
@@ -566,7 +570,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                 case 'multi-select': {
                     // Lightweight tag-pill UI: pills container + free-form input
                     // with autocomplete suggestions when options are defined.
-                    const wrap = row.createDiv('codex-custom-multi-wrap');
+                    const wrap = control.createDiv('codex-custom-multi-wrap');
                     const pills = wrap.createDiv('codex-custom-multi-pills');
                     const inp = wrap.createEl('input', {
                         cls: fieldInputLabel,
@@ -682,7 +686,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                     break;
                 }
                 case 'checkbox': {
-                    const cb = row.createEl('input', {
+                    const cb = control.createEl('input', {
                         cls: `${fieldInputLabel} codex-custom-checkbox`,
                         attr: { type: 'checkbox' },
                     });
@@ -696,7 +700,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                 }
                 case 'text':
                 default: {
-                    const input = row.createEl('textarea', {
+                    const input = control.createEl('textarea', {
                         cls: fieldInputLabel,
                         attr: { placeholder: placeholderHint, rows: '1' },
                     });
@@ -713,7 +717,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
 
             // Edit field — opens the Add modal pre-filled so users can
             // tweak type, placeholder, options without removing/re-adding.
-            const editBtn = row.createSpan({
+            const editBtn = actions.createSpan({
                 cls: customRemoveLabel,
                 attr: { 'aria-label': t('Edit field'), role: 'button' },
             });
@@ -752,7 +756,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
             });
 
             // Move field up — icon-only span
-            const fUpBtn = row.createSpan({
+            const fUpBtn = actions.createSpan({
                 cls: customRemoveLabel,
                 attr: { 'aria-label': t('Move field up'), role: 'button' },
             });
@@ -768,7 +772,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
             });
 
             // Move field down — icon-only span
-            const fDownBtn = row.createSpan({
+            const fDownBtn = actions.createSpan({
                 cls: customRemoveLabel,
                 attr: { 'aria-label': t('Move field down'), role: 'button' },
             });
@@ -783,7 +787,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                 host.requestRerender();
             });
 
-            const moveSectionBtn = row.createSpan({
+            const moveSectionBtn = actions.createSpan({
                 cls: customRemoveLabel,
                 attr: { 'aria-label': t('Move field to another section'), role: 'button' },
             });
@@ -819,7 +823,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                 showMenuSafely(menu, e);
             });
 
-            const removeBtn = row.createSpan({
+            const removeBtn = actions.createSpan({
                 cls: customRemoveLabel,
                 attr: { 'aria-label': t('Remove field'), role: 'button' },
             });

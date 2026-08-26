@@ -12138,18 +12138,44 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
     color: var(--text-normal);
 }
 
-/* Custom fields row */
-.codex-custom-field-row {
+/* Custom-section fields use a two-line layout: the field name and all five
+   actions share the heading row, while the editor gets the full row below. */
+.profile-custom-field-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+}
+.profile-custom-field-heading {
     display: flex;
     align-items: center;
-    gap: 6px;
+    min-width: 0;
 }
-.codex-custom-field-row .codex-field-label {
-    flex-shrink: 0; min-width: 0; max-width: 140px;
-    display: inline-block;
+.profile-custom-field-heading > label {
+    flex: 1 1 auto;
+    min-width: 0;
     margin-bottom: 0;
 }
-.codex-custom-field-row .codex-field-input { flex: 1; min-width: 0; }
+.profile-custom-field-actions {
+    display: inline-flex;
+    align-items: center;
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+.profile-custom-field-control {
+    width: 100%;
+    min-width: 0;
+}
+.profile-custom-field-control > .codex-field-input,
+.profile-custom-field-control > .character-field-input,
+.profile-custom-field-control > .location-field-input,
+.profile-custom-field-control > .codex-custom-multi-wrap {
+    width: 100%;
+    min-width: 0;
+}
+.profile-custom-field-control > .codex-custom-checkbox {
+    width: auto;
+}
 
 /* User-created text fields use a textarea so their editing area can be
    enlarged. The exact height is remembered per project in profile layout. */

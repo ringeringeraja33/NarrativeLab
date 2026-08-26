@@ -11,9 +11,13 @@ import {
 } from '../models/Codex';
 import { collectMarkdownFiles, isExcalidrawFilePath, isLibraryEntityMarkdownFile, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
-import { coerceString } from '../utils/narrow';
+import { coerceString, coerceStringList, coerceText } from '../utils/narrow';
 import { ensureVaultFolder } from '../utils/vaultFolders';
-import { orderLibraryEntityFrontmatter } from '../utils/libraryProfilePropertyOrder';
+import {
+    hydrateCustomFieldsFromTopLevel,
+    mirrorCustomFieldsToTopLevel,
+    orderLibraryEntityFrontmatter,
+} from '../utils/libraryProfilePropertyOrder';
 
 /**
  * Manages generic Codex entries — loading, saving, creating, and deleting
@@ -427,29 +431,43 @@ export class CodexManager {
             delete fm.books;
         }
 
+        const previousCustom = existingFm.custom && typeof existingFm.custom === 'object' && !Array.isArray(existingFm.custom)
+            ? existingFm.custom as Record<string, string>
+            : undefined;
+        const resolvedCustom = hydrateCustomFieldsFromTopLevel(existingFm, entry.custom, entry.type);
         // Custom fields
-        if (entry.custom && Object.keys(entry.custom).length > 0) {
-            fm.custom = entry.custom;
+        if (resolvedCustom && Object.keys(resolvedCustom).length > 0) {
+            fm.custom = resolvedCustom;
         } else {
             delete fm.custom;
         }
+        mirrorCustomFieldsToTopLevel(fm, resolvedCustom, entry.type, previousCustom);
 
         // Universal field template values
-        if (entry.universalFields && Object.keys(entry.universalFields).length > 0) {
-            fm.universalFields = entry.universalFields;
+        const resolvedUniversal = hydrateUniversalFieldsFromTopLevel(existingFm, entry.universalFields) as
+            Record<string, string | string[]> | undefined;
+        if (resolvedUniversal && Object.keys(resolvedUniversal).length > 0) {
+            fm.universalFields = resolvedUniversal;
         } else {
             delete fm.universalFields;
         }
         // Issue #71 — mirror to top-level YAML keys for templates that opt in
-        mirrorUniversalFieldsToTopLevel(fm, entry.universalFields);
+        mirrorUniversalFieldsToTopLevel(fm, resolvedUniversal);
 
         const finalBody = entry.notes ?? body;
         const orderedFm = orderLibraryEntityFrontmatter(fm, entry.type);
         const newContent = `---\n${stringifyYaml(orderedFm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
+        entry.custom = resolvedCustom;
+        entry.universalFields = resolvedUniversal;
 
         // Update in-memory + stamp caches together (see CharacterManager.saveCharacter).
-        const saved: CodexEntry = { ...entry, filePath: normalizedPath };
+        const saved: CodexEntry = {
+            ...entry,
+            filePath: normalizedPath,
+            custom: resolvedCustom,
+            universalFields: resolvedUniversal,
+        };
         for (const [catId, catMap] of this.entriesByCategory.entries()) {
             if (!catMap.has(normalizedPath)) continue;
             catMap.set(normalizedPath, saved);
@@ -536,25 +554,46 @@ export class CodexManager {
             filePath,
             type: catDef.id,
             name: resolveLibraryEntityName(safeFm.name, filePath, safeFm.title),
-            image: safeFm.image,
+            image: coerceString(safeFm.image).trim() || undefined,
             gallery: this.parseGallery(safeFm.gallery),
-            created: safeFm.created,
-            modified: safeFm.modified,
+            created: coerceString(safeFm.created).trim() || undefined,
+            modified: coerceString(safeFm.modified).trim() || undefined,
             notes: body || coerceString(safeFm.notes) || undefined,
-            custom: safeFm.custom && typeof safeFm.custom === 'object' ? safeFm.custom as Record<string, string> : undefined,
+            custom: hydrateCustomFieldsFromTopLevel(
+                safeFm,
+                safeFm.custom && typeof safeFm.custom === 'object' && !Array.isArray(safeFm.custom)
+                    ? safeFm.custom as Record<string, string>
+                    : undefined,
+                catDef.id,
+            ),
             universalFields: hydrateUniversalFieldsFromTopLevel(
                 safeFm,
                 safeFm.universalFields && typeof safeFm.universalFields === 'object' ? safeFm.universalFields as Record<string, unknown> : undefined,
             ) as Record<string, string | string[]> | undefined,
-            books: Array.isArray(safeFm.books) ? safeFm.books.map(String) : undefined,
+            books: (() => {
+                const books = coerceStringList(safeFm.books);
+                return books.length ? books : undefined;
+            })(),
         };
 
         // Load all standard field values
         for (const key of catDef.fieldKeys) {
             if (key === 'name' || key === 'image' || key === 'gallery') continue;
-            if (safeFm[key] !== undefined && safeFm[key] !== null) {
-                entry[key] = safeFm[key];
+            const value = safeFm[key];
+            if (value === undefined || value === null) continue;
+            const field = catDef.categories.flatMap(category => category.fields)
+                .find(candidate => candidate.key === key);
+            if (field?.toggle) {
+                entry[key] = value === true || ['true', 'yes', '1'].includes(coerceString(value).trim().toLowerCase());
+                continue;
             }
+            if (Array.isArray(value)) {
+                const values = coerceStringList(value);
+                if (values.length) entry[key] = values;
+                continue;
+            }
+            const text = coerceText(value);
+            if (text) entry[key] = text;
         }
 
         // Library-root notes may have originated in any deleted category.

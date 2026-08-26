@@ -2773,7 +2773,12 @@ export class CharacterView extends ProjectBoundItemView {
             collapseKeyPrefix: 'character',
             cssPrefix: 'character',
             scheduleSave: (d) => this.scheduleSave(d),
-            persistSections: () => { void this.plugin.saveSettings(); },
+            persistSections: () => {
+                void (async () => {
+                    await this.plugin.saveSettings();
+                    await this.plugin.syncCustomFieldFrontmatter('character', true);
+                })();
+            },
             bindCustomTextArea: (textarea, fieldKey, minHeight) => {
                 bindResizableCustomFieldInput(
                     textarea,

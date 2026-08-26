@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { build } from 'esbuild';
+import { fileURLToPath } from 'node:url';
 
 const result = await build({
     stdin: {
@@ -59,11 +60,28 @@ const propertyOrderResult = await build({
 const propertyOrderSource = propertyOrderResult.outputFiles[0].text;
 const propertyOrderMod = await import(`data:text/javascript;base64,${Buffer.from(propertyOrderSource).toString('base64')}`);
 const characterResult = await build({
-    entryPoints: ['models/Character.ts'],
+    stdin: {
+        contents: await readFile(new URL('../models/Character.ts', import.meta.url), 'utf8'),
+        loader: 'ts',
+        resolveDir: fileURLToPath(new URL('../models/', import.meta.url)),
+    },
     bundle: true,
     format: 'esm',
     platform: 'node',
     write: false,
+    plugins: [{
+        name: 'load-character-dependencies',
+        setup(b) {
+            b.onResolve({ filter: /^\.\.\/utils\/narrow$/ }, () => ({
+                path: 'narrow',
+                namespace: 'source',
+            }));
+            b.onLoad({ filter: /^narrow$/, namespace: 'source' }, async () => ({
+                contents: await readFile(new URL('../utils/narrow.ts', import.meta.url), 'utf8'),
+                loader: 'ts',
+            }));
+        },
+    }],
 });
 const characterSource = characterResult.outputFiles[0].text;
 const characterMod = await import(`data:text/javascript;base64,${Buffer.from(characterSource).toString('base64')}`);
@@ -152,6 +170,41 @@ test('character tagline can read built-in, universal, and custom fields', () => 
     assert.equal(characterMod.resolveCharacterCardSnippet({ ...base, tagline: 'custom:missing' }), 'calm');
 });
 
+test('character cards never render object-shaped cache values as text', () => {
+    const invalid = { nested: 'metadata cache value' };
+    const corrupted = {
+        filePath: 'Library/Characters/Batu.md',
+        type: 'character',
+        name: 'Batu',
+        tagline: invalid,
+        personality: invalid,
+        occupation: invalid,
+        role: invalid,
+        roles: [{ role: invalid }],
+    };
+    assert.equal(characterMod.getRoleDisplay(corrupted), '');
+    assert.equal(characterMod.getPrimaryRole(corrupted), '');
+    assert.equal(characterMod.resolveCharacterCardSnippet(corrupted), '');
+    assert.equal(characterMod.normalizeCharacterRole(invalid), undefined);
+
+    const partlyValid = {
+        ...corrupted,
+        role: [invalid, 'Mentor', '', 'Guide, Ally'],
+        roles: [],
+    };
+    assert.deepEqual(characterMod.getRoleList(partlyValid), ['Mentor', 'Guide', 'Ally']);
+    assert.equal(characterMod.getRoleDisplay(partlyValid), 'Mentor, Guide, Ally');
+    assert.deepEqual(characterMod.normalizeCharacterRole(partlyValid.role), ['Mentor', 'Guide', 'Ally']);
+});
+
+test('character persistence normalizes stale role cache values before writing', async () => {
+    const managerSource = await readFile('services/CharacterManager.ts', 'utf8');
+    assert.match(managerSource, /const normalizedRole = normalizeCharacterRole\(character\.role\)/);
+    assert.match(managerSource, /const normalizedRoleEntries = normalizeRoleEntries\(character\.roles\)/);
+    assert.match(managerSource, /key === 'role'[\s\S]*?normalizedRole/);
+    assert.match(managerSource, /role: normalizedRole/);
+});
+
 test('character defaults split family and early life into distinct ordered fields', async () => {
     const basic = characterMod.CHARACTER_CATEGORIES.find(category => category.title === 'Basic Information');
     assert.ok(basic);
@@ -166,11 +219,14 @@ test('character defaults split family and early life into distinct ordered field
     assert.equal(characterMod.CHARACTER_FIELD_KEYS[keyFamilyIndex + 1], 'earlylife');
 
     const managerSource = await readFile('services/CharacterManager.ts', 'utf8');
-    assert.match(managerSource, /earlylife:\s*safeFm\.earlylife\s*\?\?\s*\(safeFm\.earlyLife/);
+    assert.match(managerSource, /earlylife:\s*text\(safeFm\.earlylife\)\s*\|\|\s*text\(safeFm\.earlyLife\)/);
     assert.match(managerSource, /delete fm\['earlyLife'\]/);
 
-    const templatesSource = await readFile('services/FieldTemplateService.ts', 'utf8');
-    assert.match(templatesSource, /'family',\s*'earlylife'/);
+    const [templatesSource, propertyOrderSourceFile] = await Promise.all([
+        readFile('services/FieldTemplateService.ts', 'utf8'),
+        readFile('utils/libraryProfilePropertyOrder.ts', 'utf8'),
+    ]);
+    assert.match(propertyOrderSourceFile, /'family',\s*'earlylife'/);
     assert.match(templatesSource, /newly shipped fields[\s\S]*`earlylife` after `family`/);
 });
 
@@ -321,6 +377,95 @@ test('frontmatter ordering preserves values and unknown keys while ordering nest
     assert.equal(result.unknown, 42);
 });
 
+test('every custom field mirrors to a safe top-level YAML property', () => {
+    const {
+        buildCustomFieldTopLevelKeyMap,
+        hydrateCustomFieldsFromTopLevel,
+        mirrorCustomFieldsToTopLevel,
+        setLibraryProfilePropertyOrderProvider,
+    } = propertyOrderMod;
+    const keys = [
+        '自定义字段 :: 英雄介绍',
+        '技能1',
+        '另一分栏 :: 英雄介绍',
+        '自定义字段 :: name',
+    ];
+    setLibraryProfilePropertyOrderProvider(() => ({
+        orderedKeys: [], visibleKeys: [], customKeys: keys, universalFieldIds: [],
+    }));
+    const mapping = buildCustomFieldTopLevelKeyMap(keys);
+    assert.equal(mapping.get('技能1'), '技能1');
+    assert.equal(mapping.get('自定义字段 :: 英雄介绍'), '自定义字段 :: 英雄介绍');
+    assert.equal(mapping.get('另一分栏 :: 英雄介绍'), '另一分栏 :: 英雄介绍');
+    assert.equal(mapping.get('自定义字段 :: name'), '自定义字段 :: name');
+
+    const custom = {
+        '自定义字段 :: 英雄介绍': '一名以翻滚、走位取胜的英雄',
+        技能1: '次数技',
+        '另一分栏 :: 英雄介绍': '备用介绍',
+        '自定义字段 :: name': '不能覆盖角色名',
+    };
+    const fm = { type: 'character', name: '英雄', custom: { ...custom } };
+    mirrorCustomFieldsToTopLevel(fm, custom, 'character');
+    assert.equal(fm['自定义字段 :: 英雄介绍'], custom['自定义字段 :: 英雄介绍']);
+    assert.equal(fm['技能1'], '次数技');
+    assert.equal(fm['另一分栏 :: 英雄介绍'], '备用介绍');
+    assert.equal(fm['自定义字段 :: name'], '不能覆盖角色名');
+    assert.equal(fm.name, '英雄');
+
+    const hydrated = hydrateCustomFieldsFromTopLevel(
+        fm,
+        { ...fm.custom },
+        'character',
+    );
+    assert.equal(hydrated['自定义字段 :: 英雄介绍'], custom['自定义字段 :: 英雄介绍']);
+    assert.equal(hydrated['技能1'], '次数技');
+    setLibraryProfilePropertyOrderProvider(null);
+});
+
+test('custom field mirrors merge Base and profile edits without duplicate fallback keys', () => {
+    const {
+        buildCustomFieldTopLevelKeyMap,
+        hydrateCustomFieldsFromTopLevel,
+        mirrorCustomFieldsToTopLevel,
+        setLibraryProfilePropertyOrderProvider,
+    } = propertyOrderMod;
+    setLibraryProfilePropertyOrderProvider(() => ({
+        orderedKeys: [],
+        visibleKeys: [],
+        customKeys: ['技能', 'description'],
+        universalFieldIds: [],
+        reservedKeys: ['description'],
+    }));
+
+    const mapping = buildCustomFieldTopLevelKeyMap(['技能', 'description'], ['description']);
+    assert.equal(mapping.get('技能'), '技能');
+    assert.equal(mapping.get('description'), 'Custom :: description');
+
+    const baseEdited = { custom: { 技能: '旧值' }, 技能: 'Base 新值' };
+    const fromBase = hydrateCustomFieldsFromTopLevel(baseEdited, { 技能: '旧值' }, 'items');
+    assert.equal(fromBase.技能, 'Base 新值');
+    baseEdited.custom = fromBase;
+    mirrorCustomFieldsToTopLevel(baseEdited, fromBase, 'items', { 技能: '旧值' });
+    assert.equal(baseEdited.技能, 'Base 新值');
+    assert.equal(baseEdited['Custom :: 技能'], undefined);
+
+    const profileEdited = { custom: { 技能: '旧值' }, 技能: '旧值' };
+    const fromProfile = hydrateCustomFieldsFromTopLevel(profileEdited, { 技能: '档案页新值' }, 'items');
+    assert.equal(fromProfile.技能, '档案页新值');
+    profileEdited.custom = fromProfile;
+    mirrorCustomFieldsToTopLevel(profileEdited, fromProfile, 'items', { 技能: '旧值' });
+    assert.equal(profileEdited.技能, '档案页新值');
+
+    const collision = { description: '内置说明', custom: { description: '自定义说明' } };
+    mirrorCustomFieldsToTopLevel(collision, collision.custom, 'items', collision.custom);
+    mirrorCustomFieldsToTopLevel(collision, collision.custom, 'items', collision.custom);
+    assert.equal(collision.description, '内置说明');
+    assert.equal(collision['Custom :: description'], '自定义说明');
+    assert.equal(collision['Custom :: description (2)'], undefined);
+    setLibraryProfilePropertyOrderProvider(null);
+});
+
 test('flat custom fields can move without disturbing custom-section slots', () => {
     const source = {
         Alpha: 'a',
@@ -429,4 +574,38 @@ test('built-in and universal profile fields share the five-action toolbar', asyn
     assert.match(layout, /field-hide-btn/);
     assert.match(layout, /field-remove-btn/);
     assert.match(css, /Unified five-action field toolbar/);
+});
+
+test('custom-section field actions share the label row and inputs use a full row below', async () => {
+    const [customSections, css] = await Promise.all([
+        readFile('components/CustomSectionsRenderer.ts', 'utf8'),
+        readFile('styles.css', 'utf8'),
+    ]);
+    assert.match(customSections, /createDiv\('profile-custom-field-heading'\)/);
+    assert.match(customSections, /heading\.createEl\('label'/);
+    assert.match(customSections, /createDiv\('profile-custom-field-actions'\)/);
+    assert.match(customSections, /createDiv\('profile-custom-field-control'\)/);
+    assert.match(customSections, /const editBtn = actions\.createSpan/);
+    assert.match(customSections, /const removeBtn = actions\.createSpan/);
+    assert.match(customSections, /const ta = control\.createEl\('textarea'/);
+    assert.match(customSections, /const input = control\.createEl\('textarea'/);
+    assert.match(css, /\.profile-custom-field-row\s*\{[\s\S]*?flex-direction:\s*column/);
+    assert.match(css, /\.profile-custom-field-actions\s*\{[\s\S]*?display:\s*inline-flex/);
+    assert.match(css, /\.profile-custom-field-control\s*\{[\s\S]*?width:\s*100%/);
+});
+
+test('all Library entity writers mirror custom fields and startup reconciles existing notes', async () => {
+    const [character, location, codex, main] = await Promise.all([
+        readFile('services/CharacterManager.ts', 'utf8'),
+        readFile('services/LocationManager.ts', 'utf8'),
+        readFile('services/CodexManager.ts', 'utf8'),
+        readFile('main.ts', 'utf8'),
+    ]);
+    for (const source of [character, location, codex]) {
+        assert.match(source, /hydrateCustomFieldsFromTopLevel/);
+        assert.match(source, /mirrorCustomFieldsToTopLevel/);
+    }
+    assert.match(main, /async syncCustomFieldFrontmatter/);
+    assert.match(main, /void this\.syncCustomFieldFrontmatter\(\)/);
+    assert.match(main, /pushVisible\(topLevelKey\)/);
 });

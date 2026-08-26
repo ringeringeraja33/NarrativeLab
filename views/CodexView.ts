@@ -74,7 +74,7 @@ import {
     renderRemovedBuiltinSectionsToggle,
     universalProfileFieldKey,
 } from '../utils/libraryProfileLayout';
-import { coerceString } from '../utils/narrow';
+import { coerceString, coerceText } from '../utils/narrow';
 import {
     applyCategoryFolderLabels,
     ensureSeededLibraryCategoryLabels,
@@ -216,6 +216,11 @@ export class CodexView extends ProjectBoundItemView {
     private _saveTimer: number | null = null;
     private _lastSaveTime = 0;
     private _pendingDraft: CodexEntry | null = null;
+    /** Stable working copy reused across internal detail re-renders. */
+    private _editingDraft: CodexEntry | null = null;
+    private _saveRevision = 0;
+    private _saveQueue: Promise<void> = Promise.resolve();
+    private _saveInFlight = false;
     /** Last seen plugin.libraryCategoriesStructureEpoch (forces tab rebuild). */
     private _libraryCategoriesEpoch = 0;
     private static SAVE_DEBOUNCE_MS = 600;
@@ -295,6 +300,7 @@ export class CodexView extends ProjectBoundItemView {
         }
         this.destroyListScroller();
         await this.flushPendingSave();
+        this._editingDraft = null;
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(w => w.remove());
         this.clearPortaledDropdowns();
     }
@@ -342,6 +348,7 @@ export class CodexView extends ProjectBoundItemView {
 
     async unmountEmbeddedDetail(): Promise<void> {
         await this.flushPendingSave();
+        this._editingDraft = null;
         this.selectedEntry = null;
         this.clearPortaledDropdowns();
         this.embedOptions = null;
@@ -447,9 +454,14 @@ export class CodexView extends ProjectBoundItemView {
     async refresh(): Promise<void> {
         if (!this.isBoundToActiveProject(this.sceneManager)) return;
         // Grace period — skip re-render if we just saved ourselves
-        if (this.selectedEntry && (Date.now() - this._lastSaveTime) < CodexView.SAVE_REFRESH_GRACE_MS) {
+        if (this.selectedEntry && (
+            this._pendingDraft !== null
+            || this._saveInFlight
+            || (Date.now() - this._lastSaveTime) < CodexView.SAVE_REFRESH_GRACE_MS
+        )) {
             return;
         }
+        if (this.selectedEntry) this._editingDraft = null;
         const categoriesEpoch = this.plugin.libraryCategoriesStructureEpoch;
         const categoriesChanged = categoriesEpoch !== this._libraryCategoriesEpoch;
         this._libraryCategoriesEpoch = categoriesEpoch;
@@ -1270,8 +1282,18 @@ export class CodexView extends ProjectBoundItemView {
             return;
         }
 
-        const draft: CodexEntry = { ...entry };
-        this._pendingDraft = draft;
+        const sameDraft = this._editingDraft?.filePath === entry.filePath
+            && this._editingDraft.type === entry.type;
+        const draft: CodexEntry = sameDraft
+            ? this._editingDraft!
+            : {
+                ...entry,
+                gallery: entry.gallery?.map(image => ({ ...image })),
+                books: entry.books ? [...entry.books] : undefined,
+                custom: { ...(entry.custom || {}) },
+                universalFields: { ...(entry.universalFields || {}) },
+            };
+        if (!sameDraft) this._editingDraft = draft;
         const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, catDef.id);
         const horizontalProfile = profileOrientation === 'horizontal';
 
@@ -1296,6 +1318,7 @@ export class CodexView extends ProjectBoundItemView {
         backBtn.createSpan({ text: this.embedOptions ? t('Back to library') : t('All {kind}', { kind: t(catDef.label) }) });
         backBtn.addEventListener('click', async () => {
             await this.flushPendingSave();
+            this._editingDraft = null;
             this.selectedEntry = null;
             if (this.embedOptions) {
                 this.embedOptions.onBack();
@@ -1683,7 +1706,7 @@ export class CodexView extends ProjectBoundItemView {
             },
         });
 
-        const currentValue = draft[key] != null ? String(draft[key]) : '';
+        const currentValue = coerceText(draft[key]);
 
         if (toggle) {
             // Issue #223 — render an on/off toggle for boolean fields
@@ -2278,7 +2301,10 @@ export class CodexView extends ProjectBoundItemView {
             persistSections: () => {
                 allSections[draft.type] = sections;
                 if (sections.length === 0) delete allSections[draft.type];
-                void this.plugin.saveSettings();
+                void (async () => {
+                    await this.plugin.saveSettings();
+                    await this.plugin.syncCustomFieldFrontmatter(draft.type, true);
+                })();
             },
             bindCustomTextArea: (textarea, fieldKey, minHeight) => {
                 bindResizableCustomFieldInput(
@@ -3772,7 +3798,10 @@ export class CodexView extends ProjectBoundItemView {
         }
         // Look for fields ending in 'Type' (itemType, creatureType, etc.)
         for (const key of catDef.fieldKeys) {
-            if (key.endsWith('Type') && entry[key]) return String(entry[key]);
+            if (key.endsWith('Type')) {
+                const value = coerceText(entry[key]).trim();
+                if (value) return value;
+            }
         }
         return '';
     }
@@ -3793,21 +3822,37 @@ export class CodexView extends ProjectBoundItemView {
 
     private scheduleSave(draft: CodexEntry): void {
         this._pendingDraft = draft;
+        const revision = ++this._saveRevision;
         if (this._saveTimer) window.clearTimeout(this._saveTimer);
-        this._saveTimer = window.setTimeout(async () => {
+        this._saveTimer = window.setTimeout(() => {
             this._saveTimer = null;
-            await this.executeSave(draft);
+            void this.persistCodexDraft(draft, revision);
         }, CodexView.SAVE_DEBOUNCE_MS);
     }
 
-    private async executeSave(draft: CodexEntry): Promise<void> {
-        try {
-            await this.codexManager.saveEntry(draft);
-            this._lastSaveTime = Date.now();
-            this._pendingDraft = null;
-        } catch (err) {
-            console.error('NarrativeLab Codex: save failed', err);
-        }
+    private async persistCodexDraft(draft: CodexEntry, revision: number): Promise<void> {
+        const operation = this._saveQueue
+            .catch(() => undefined)
+            .then(async () => {
+                this._saveInFlight = true;
+                try {
+                    await this.codexManager.saveEntry(draft);
+                    this._lastSaveTime = Date.now();
+                    if (this._pendingDraft === draft && this._saveRevision === revision) {
+                        this._pendingDraft = null;
+                    }
+                } catch (error) {
+                    console.error('NarrativeLab Codex: save failed', error);
+                    new Notice(t('Failed to save entry: {message}', {
+                        message: error instanceof Error ? error.message : String(error),
+                    }));
+                    throw error;
+                } finally {
+                    this._saveInFlight = false;
+                }
+            });
+        this._saveQueue = operation;
+        await operation;
     }
 
     private async flushPendingSave(): Promise<void> {
@@ -3816,7 +3861,13 @@ export class CodexView extends ProjectBoundItemView {
             this._saveTimer = null;
         }
         if (this._pendingDraft) {
-            await this.executeSave(this._pendingDraft);
+            const draft = this._pendingDraft;
+            const revision = this._saveRevision;
+            try {
+                await this.persistCodexDraft(draft, revision);
+            } catch { /* persistCodexDraft already reports the error */ }
+        } else {
+            await this._saveQueue.catch(() => undefined);
         }
     }
 

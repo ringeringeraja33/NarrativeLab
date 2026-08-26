@@ -14,6 +14,7 @@ import { parseActChapterInput, actChapterHasIllegalPathChars, isPrologueAct, isE
 import { Scene, SceneStatus, TIMELINE_MODES, TIMELINE_MODE_LABELS, TimelineMode, getStatusOrder, resolveStatusCfg, sceneHasLocation, sceneLocationNames } from '../models/Scene';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
+import { coerceText } from '../utils/narrow';
 
 /**
  * Scene inspector sidebar component
@@ -847,7 +848,7 @@ export class InspectorComponent {
                 cls: 'inspector-universal-textarea',
                 attr: { placeholder: tpl.placeholder || '', rows: '4' },
             });
-            ta.value = String(value);
+            ta.value = coerceText(value);
             ta.addEventListener('change', async () => {
                 scene.universalFields![tpl.id] = ta.value.trim() || '';
                 await this.sceneManager.updateScene(scene.filePath, { universalFields: { ...scene.universalFields } });
@@ -926,7 +927,7 @@ export class InspectorComponent {
                 type: 'text',
                 attr: { placeholder: tpl.placeholder || '' },
             });
-            input.value = String(value);
+            input.value = coerceText(value);
             input.addEventListener('change', async () => {
                 scene.universalFields![tpl.id] = input.value.trim();
                 await this.sceneManager.updateScene(scene.filePath, { universalFields: { ...scene.universalFields } });

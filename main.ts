@@ -161,6 +161,10 @@ import { QuickAddModal } from './components/QuickAddModal';
 import { ConverterModal, type ConverterTab } from './components/ConverterModal';
 import { syncAllNativeLibraryBases } from './components/NativeLibraryBase';
 import {
+    buildCustomFieldTopLevelKeyMap,
+    hydrateCustomFieldsFromTopLevel,
+    mirrorCustomFieldsToTopLevel,
+    orderLibraryEntityFrontmatter,
     setLibraryProfilePropertyOrderProvider,
     type LibraryProfilePropertyOrder,
 } from './utils/libraryProfilePropertyOrder';
@@ -205,6 +209,16 @@ function plotGridTextDigest(text: string): string {
         hash = Math.imul(hash, 16777619);
     }
     return `${text.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function isTransientVaultIoError(error: unknown): boolean {
+    const message = error instanceof Error ? `${error.message} ${error.name}` : String(error);
+    return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied|sharing violation/i
+        .test(message);
+}
+
+function waitForVaultRetry(ms: number): Promise<void> {
+    return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
 interface PlotGridWriteJournal {
@@ -468,6 +482,8 @@ export default class SceneCardsPlugin extends Plugin {
     /** Keeps Obsidian's Files view free of NarrativeLab internals and unreadable files. */
     private fileExplorerVisibilityObserver: MutationObserver | null = null;
     private fileExplorerVisibilityRibbonEl: HTMLElement | null = null;
+    /** Avoid rewriting every Library note more than once per project session. */
+    private customFieldFrontmatterSyncedProjects = new Set<string>();
 
     /**
      * Resolve the Board that owns an undo shortcut. Corkboard Canvas runs in a
@@ -2623,6 +2639,51 @@ export default class SceneCardsPlugin extends Plugin {
             : categoryKey === 'world' || categoryKey === 'location'
                 ? this.settings.locationCustomSections
                 : this.settings.codexCategoryCustomSections?.[categoryKey]) as CustomSection[] | undefined;
+        const knownCustomKeys: string[] = [];
+        const addKnownCustomKey = (key: string): void => {
+            const normalized = String(key || '').trim();
+            if (normalized && !knownCustomKeys.includes(normalized)) knownCustomKeys.push(normalized);
+        };
+        for (const section of customSections ?? []) {
+            for (const field of section.fields ?? []) {
+                const name = typeof field === 'string' ? field : field.name;
+                if (name) addKnownCustomKey(`${section.title}${CUSTOM_SECTION_KEY_SEP}${name}`);
+            }
+        }
+        for (const name of this.settings.codexCategoryFieldTemplates?.[categoryKey] ?? []) {
+            addKnownCustomKey(name);
+        }
+        const collectEntityCustomKeys = (entities: Array<{ custom?: Record<string, string> }>): void => {
+            for (const entity of entities) {
+                for (const key of Object.keys(entity.custom ?? {})) addKnownCustomKey(key);
+            }
+        };
+        try {
+            if (categoryKey === 'character') collectEntityCustomKeys(this.characterManager?.getAllCharacters() ?? []);
+            else if (categoryKey === 'world') collectEntityCustomKeys(this.locationManager?.getAllWorlds() ?? []);
+            else if (categoryKey === 'location') collectEntityCustomKeys(this.locationManager?.getAllLocations() ?? []);
+            else collectEntityCustomKeys(this.codexManager?.getEntries(categoryKey) ?? []);
+        } catch { /* managers may still be initialising during startup */ }
+        const reservedProfileKeys = new Set<string>();
+        for (const section of sections) {
+            for (const field of section.fields) reservedProfileKeys.add(field.key);
+        }
+        for (const template of this.fieldTemplates.getAll()) {
+            const templateCategory = template.category || 'character';
+            const matchesCategory = templateCategory === categoryKey
+                || ((categoryKey === 'world' || categoryKey === 'location') && templateCategory === 'location');
+            const topLevelKey = template.topLevelKey?.trim();
+            if (matchesCategory && topLevelKey) reservedProfileKeys.add(topLevelKey);
+        }
+        const customTopLevelKeys = buildCustomFieldTopLevelKeyMap(knownCustomKeys, reservedProfileKeys);
+        const registerCustomKey = (key: string): void => {
+            if (!key || customKeys.includes(key)) return;
+            customKeys.push(key);
+            const topLevelKey = customTopLevelKeys.get(key);
+            if (!topLevelKey) return;
+            pushOrdered(topLevelKey);
+            pushVisible(topLevelKey);
+        };
         const buckets: CustomSection[][] = Array.from(
             { length: orderedSectionIds.length + 1 },
             () => [],
@@ -2640,7 +2701,7 @@ export default class SceneCardsPlugin extends Plugin {
                 for (const field of section.fields ?? []) {
                     const name = typeof field === 'string' ? field : field.name;
                     const key = `${section.title}${CUSTOM_SECTION_KEY_SEP}${name}`;
-                    if (name && !customKeys.includes(key)) customKeys.push(key);
+                    if (name) registerCustomKey(key);
                 }
             }
         };
@@ -2650,9 +2711,8 @@ export default class SceneCardsPlugin extends Plugin {
             const sectionId = orderedSectionIds[index];
             if (sectionId === 'Custom Fields') {
                 pushOrdered('custom');
-                pushVisible('custom');
-                for (const name of this.settings.codexCategoryFieldTemplates?.[categoryKey] ?? []) {
-                    if (name && !customKeys.includes(name)) customKeys.push(name);
+                for (const key of knownCustomKeys) {
+                    if (!key.includes(CUSTOM_SECTION_KEY_SEP)) registerCustomKey(key);
                 }
                 continue;
             }
@@ -2686,8 +2746,17 @@ export default class SceneCardsPlugin extends Plugin {
             }
         }
         appendCustomSections(orderedSectionIds.length);
+        // Preserve and expose custom keys whose section definition was removed
+        // but whose values still exist in an entity file.
+        for (const key of knownCustomKeys) registerCustomKey(key);
 
-        return { orderedKeys, visibleKeys, customKeys, universalFieldIds };
+        return {
+            orderedKeys,
+            visibleKeys,
+            customKeys,
+            universalFieldIds,
+            reservedKeys: [...reservedProfileKeys],
+        };
     }
 
     private applyImageSizingVariables(): void {
@@ -3165,8 +3234,12 @@ export default class SceneCardsPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const filePath = normalizePath(`${this.getProjectSystemFolder()}/${filename}`);
         try {
-            if (!await adapter.exists(filePath)) return {};
-            const txt = await adapter.read(filePath);
+            if (!await adapter.exists(filePath)) {
+                this._invalidSystemJsonPaths.delete(filePath);
+                this._reportedInvalidSystemJsonPaths.delete(filePath);
+                return {};
+            }
+            const txt = await this.readVaultTextResilient(filePath);
             const parsed: unknown = JSON.parse(txt);
             if (!isRecord(parsed)) throw new Error(t('Expected a JSON object.'));
             this._invalidSystemJsonPaths.delete(filePath);
@@ -3265,10 +3338,12 @@ export default class SceneCardsPlugin extends Plugin {
         let previousContent: string | null = null;
         if (existed) {
             try {
-                previousContent = await adapter.read(filePath);
+                previousContent = await this.readVaultTextResilient(filePath);
             } catch (error) {
-                // Don't block the save if the previous file is briefly locked.
-                console.warn(`[NarrativeLab] Could not read ${filename} before backup:`, error);
+                throw new Error(t('Could not safely read {name} before saving: {message}', {
+                    name: filename,
+                    message: error instanceof Error ? error.message : String(error),
+                }));
             }
         }
 
@@ -3320,11 +3395,6 @@ export default class SceneCardsPlugin extends Plugin {
     private async writeVaultTextOnceResilient(filePath: string, contents: string): Promise<void> {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(filePath);
-        const isTransient = (error: unknown): boolean => {
-            const msg = error instanceof Error ? `${error.message} ${error.name}` : String(error);
-            return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied|sharing violation/i.test(msg);
-        };
-        const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms));
 
         let lastError: unknown;
         for (let attempt = 0; attempt < 8; attempt++) {
@@ -3333,8 +3403,24 @@ export default class SceneCardsPlugin extends Plugin {
                 return;
             } catch (error) {
                 lastError = error;
-                if (!isTransient(error) || attempt === 7) break;
-                await sleep(Math.min(1200, 50 * (attempt + 1) * (attempt + 1)));
+                if (!isTransientVaultIoError(error) || attempt === 7) break;
+                await waitForVaultRetry(Math.min(1200, 50 * (attempt + 1) * (attempt + 1)));
+            }
+        }
+        throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    }
+
+    private async readVaultTextResilient(filePath: string): Promise<string> {
+        const adapter = this.app.vault.adapter;
+        const path = normalizePath(filePath);
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 8; attempt++) {
+            try {
+                return await adapter.read(path);
+            } catch (error) {
+                lastError = error;
+                if (!isTransientVaultIoError(error) || attempt === 7) break;
+                await waitForVaultRetry(Math.min(1200, 50 * (attempt + 1) * (attempt + 1)));
             }
         }
         throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -4066,6 +4152,68 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /**
+     * Ensure every Library custom field also exists as an individual top-level
+     * YAML property. Nested `custom` data remains in place for compatibility.
+     */
+    async syncCustomFieldFrontmatter(categoryFilter?: string, force = false): Promise<number> {
+        const projectPath = normalizePath(this.sceneManager?.activeProject?.filePath || '');
+        if (!projectPath) return 0;
+        if (!categoryFilter && !force && this.customFieldFrontmatterSyncedProjects.has(projectPath)) return 0;
+
+        const targets = new Map<string, { file: TFile; categoryKey: string; custom?: Record<string, string> }>();
+        const add = (filePath: string, categoryKey: string, custom?: Record<string, string>): void => {
+            const matches = !categoryFilter
+                || categoryFilter === categoryKey
+                || (categoryFilter === 'location' && (categoryKey === 'world' || categoryKey === 'location'));
+            if (!matches) return;
+            const normalized = normalizePath(filePath);
+            const file = this.app.vault.getAbstractFileByPath(normalized);
+            if (!(file instanceof TFile) || file.extension !== 'md') return;
+            const configured = this.resolveLibraryProfilePropertyOrder(categoryKey)?.customKeys ?? [];
+            if (configured.length === 0 && Object.keys(custom ?? {}).length === 0) return;
+            targets.set(normalized, { file, categoryKey, custom });
+        };
+        for (const character of this.characterManager?.getAllCharacters() ?? []) {
+            add(character.filePath, 'character', character.custom);
+        }
+        for (const world of this.locationManager?.getAllWorlds() ?? []) {
+            add(world.filePath, 'world', world.custom);
+        }
+        for (const location of this.locationManager?.getAllLocations() ?? []) {
+            add(location.filePath, 'location', location.custom);
+        }
+        for (const entry of this.codexManager?.getAllEntries() ?? []) {
+            add(entry.filePath, entry.type, entry.custom);
+        }
+
+        let touched = 0;
+        for (const { file, categoryKey, custom } of targets.values()) {
+            try {
+                await this.app.fileManager.processFrontMatter(file, fm => {
+                    const before = JSON.stringify(fm);
+                    const previous = fm.custom && typeof fm.custom === 'object' && !Array.isArray(fm.custom)
+                        ? fm.custom as Record<string, string>
+                        : undefined;
+                    const hydrated = hydrateCustomFieldsFromTopLevel(fm, custom ?? previous, categoryKey);
+                    if (hydrated && Object.keys(hydrated).length > 0) fm.custom = hydrated;
+                    mirrorCustomFieldsToTopLevel(fm, hydrated, categoryKey, previous);
+                    const ordered = orderLibraryEntityFrontmatter(fm, categoryKey);
+                    if (JSON.stringify(ordered) !== before) {
+                        for (const key of Object.keys(fm)) delete fm[key];
+                        Object.assign(fm, ordered);
+                        touched++;
+                    }
+                });
+            } catch (error) {
+                console.error('[NarrativeLab] syncCustomFieldFrontmatter:', file.path, error);
+            }
+        }
+        if (!categoryFilter) this.customFieldFrontmatterSyncedProjects.add(projectPath);
+        if (touched > 0 || categoryFilter) await syncAllNativeLibraryBases(this).catch(() => undefined);
+        return touched;
+    }
+
+    /**
      * Preserve an editor snapshot that is unsafe to promote to the canonical workbook.
      * The recovery pair lives outside Library so it cannot be mistaken for the live
      * datasheet by NarrativeLab or another spreadsheet plugin.
@@ -4211,12 +4359,6 @@ export default class SceneCardsPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(filePath);
         const tempPath = `${path}.tmp`;
-        const isTransient = (error: unknown): boolean => {
-            const msg = error instanceof Error ? `${error.message} ${error.name}` : String(error);
-            return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied/i.test(msg);
-        };
-        const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms));
-
         let lastError: unknown;
         for (let attempt = 0; attempt < 5; attempt++) {
             try {
@@ -4226,8 +4368,8 @@ export default class SceneCardsPlugin extends Plugin {
             } catch (error) {
                 lastError = error;
                 await adapter.remove(tempPath).catch(() => undefined);
-                if (!isTransient(error) || attempt === 4) break;
-                await sleep(40 * (attempt + 1) * (attempt + 1));
+                if (!isTransientVaultIoError(error) || attempt === 4) break;
+                await waitForVaultRetry(40 * (attempt + 1) * (attempt + 1));
             }
         }
         throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -4238,12 +4380,6 @@ export default class SceneCardsPlugin extends Plugin {
         const adapter = this.app.vault.adapter;
         const path = normalizePath(filePath);
         const tempPath = `${path}.tmp`;
-        const isTransient = (error: unknown): boolean => {
-            const msg = error instanceof Error ? `${error.message} ${error.name}` : String(error);
-            return /UNKNOWN|EBUSY|EPERM|EACCES|EAGAIN|resource busy|locked|busy|access denied/i.test(msg);
-        };
-        const sleep = (ms: number) => new Promise<void>(resolve => window.setTimeout(resolve, ms));
-
         let lastError: unknown;
         for (let attempt = 0; attempt < 5; attempt++) {
             try {
@@ -4253,8 +4389,8 @@ export default class SceneCardsPlugin extends Plugin {
             } catch (error) {
                 lastError = error;
                 await adapter.remove(tempPath).catch(() => undefined);
-                if (!isTransient(error) || attempt === 4) break;
-                await sleep(40 * (attempt + 1) * (attempt + 1));
+                if (!isTransientVaultIoError(error) || attempt === 4) break;
+                await waitForVaultRetry(40 * (attempt + 1) * (attempt + 1));
             }
         }
         throw lastError instanceof Error ? lastError : new Error(String(lastError));
@@ -5405,6 +5541,9 @@ export default class SceneCardsPlugin extends Plugin {
             }
         }
         await this.scanExtraFolders();
+        void this.syncCustomFieldFrontmatter().catch(error => {
+            console.error('[NarrativeLab] Initial custom-field frontmatter sync failed:', error);
+        });
         return categoriesChanged;
     }
 
@@ -6481,6 +6620,20 @@ export default class SceneCardsPlugin extends Plugin {
             } catch (e) {
                 console.error('[NarrativeLab] Migration: failed to create System folder:', e);
             }
+            const readExistingMigrationJson = async (
+                path: string,
+                label: string,
+            ): Promise<{ data: Record<string, unknown>; writable: boolean }> => {
+                if (!await adapter.exists(path)) return { data: {}, writable: true };
+                try {
+                    const parsed: unknown = JSON.parse(await this.readVaultTextResilient(path));
+                    if (!isRecord(parsed)) throw new Error('Expected a JSON object');
+                    return { data: parsed, writable: true };
+                } catch (error) {
+                    console.warn(`[NarrativeLab] Migration kept unreadable ${label}:`, error);
+                    return { data: {}, writable: false };
+                }
+            };
 
             // ── plotgrid.json (rows/columns/cells/zoom/stickyHeaders) ──
             // Only write legacy plotgrid data if System/plotgrid.json is empty.
@@ -6502,7 +6655,7 @@ export default class SceneCardsPlugin extends Plugin {
                         if (raw.cells && typeof raw.cells === 'object') pgData.cells = raw.cells;
                         if (raw.zoom !== undefined) pgData.zoom = raw.zoom;
                         if (raw.stickyHeaders !== undefined) pgData.stickyHeaders = raw.stickyHeaders;
-                        await adapter.write(pgPath, JSON.stringify(pgData, null, 2));
+                        await this.writeVaultTextResilient(pgPath, JSON.stringify(pgData, null, 2));
                     }
                 } catch (e) {
                     console.error('[NarrativeLab] Migration: plotgrid write failed:', e);
@@ -6515,10 +6668,7 @@ export default class SceneCardsPlugin extends Plugin {
             {
                 try {
                     const path = `${sysFolder}/plotlines.json`;
-                    let existing: Record<string, unknown> = {};
-                    if (await adapter.exists(path)) {
-                        try { existing = JSON.parse(await adapter.read(path)); } catch { /* */ }
-                    }
+                    const { data: existing, writable } = await readExistingMigrationJson(path, 'plotlines.json');
                     // Merge: use raw (data.json) values if present, else keep existing System file values,
                     // else fall back to in-memory settings (which have defaults).
                     const merged: Record<string, unknown> = {
@@ -6526,7 +6676,9 @@ export default class SceneCardsPlugin extends Plugin {
                         tagTypeOverrides: raw.tagTypeOverrides ?? existing.tagTypeOverrides ?? this.settings.tagTypeOverrides ?? {},
                         definitions: existing.definitions ?? [],
                     };
-                    await adapter.write(path, JSON.stringify(merged, null, 2));
+                    if (writable) {
+                        await this.writeVaultTextResilient(path, JSON.stringify(merged, null, 2));
+                    }
                 } catch (e) {
                     console.error('[NarrativeLab] Migration: plotlines write failed:', e);
                 }
@@ -6536,15 +6688,14 @@ export default class SceneCardsPlugin extends Plugin {
             {
                 try {
                     const path = `${sysFolder}/characters.json`;
-                    let existing: Record<string, unknown> = {};
-                    if (await adapter.exists(path)) {
-                        try { existing = JSON.parse(await adapter.read(path)); } catch { /* */ }
-                    }
+                    const { data: existing, writable } = await readExistingMigrationJson(path, 'characters.json');
                     const merged: Record<string, unknown> = {
                         characterAliases: raw.characterAliases ?? existing.characterAliases ?? this.settings.characterAliases ?? {},
                         ignoredCharacters: raw.ignoredCharacters ?? existing.ignoredCharacters ?? this.settings.ignoredCharacters ?? [],
                     };
-                    await adapter.write(path, JSON.stringify(merged, null, 2));
+                    if (writable) {
+                        await this.writeVaultTextResilient(path, JSON.stringify(merged, null, 2));
+                    }
                 } catch (e) {
                     console.error('[NarrativeLab] Migration: characters write failed:', e);
                 }
@@ -6554,25 +6705,21 @@ export default class SceneCardsPlugin extends Plugin {
             {
                 try {
                     const path = `${sysFolder}/stats.json`;
-                    let existing: Record<string, unknown> = {};
-                    if (await adapter.exists(path)) {
-                        try { existing = JSON.parse(await adapter.read(path)); } catch { /* */ }
-                    }
+                    const { data: existing, writable } = await readExistingMigrationJson(path, 'stats.json');
                     const merged: Record<string, unknown> = {
                         writingTrackerData: raw.writingTrackerData ?? existing.writingTrackerData ?? null,
                     };
-                    if (merged.writingTrackerData) {
-                        await adapter.write(path, JSON.stringify(merged, null, 2));
+                    if (writable && merged.writingTrackerData) {
+                        await this.writeVaultTextResilient(path, JSON.stringify(merged, null, 2));
                     }
                 } catch (e) {
                     console.error('[NarrativeLab] Migration: stats write failed:', e);
                 }
             }
 
-            // ── Strip migrated keys from raw and save ──
-            for (const key of SceneCardsPlugin.PROJECT_DATA_KEYS) {
-                if (key in raw) { delete raw[key]; dirty = true; }
-            }
+            // Keep the legacy payload until loadProjectSystemData() has read
+            // and validated every destination. A later normal saveSettings()
+            // removes these keys only after System files are authoritative.
             // Do NOT set _systemMigrationDone here — that happens in
             // loadProjectSystemData() which runs next and loads the System
             // file contents into this.settings. Setting the flag here would

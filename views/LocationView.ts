@@ -3,7 +3,7 @@ import { ButtonComponent, Menu, Modal, Notice, Setting, TFile, TextComponent, Wo
 import * as obsidian from 'obsidian';
 import { LOCATION_VIEW_TYPE } from '../constants';
 import { Scene, resolveStatusCfg } from '../models/Scene';
-import { coerceString } from '../utils/narrow';
+import { coerceString, coerceStringList } from '../utils/narrow';
 import {
     StoryWorld, StoryLocation, WorldOrLocation,
     WORLD_CATEGORIES, LOCATION_CATEGORIES, LOCATION_TYPES,
@@ -93,6 +93,11 @@ export class LocationView extends ProjectBoundItemView {
     private autoSaveTimer: number | null = null;
     /** The draft waiting to be saved (if any) */
     private pendingSaveDraft: WorldOrLocation | null = null;
+    /** Stable working copy reused across internal detail re-renders. */
+    private editingDraft: WorldOrLocation | null = null;
+    private pendingSaveRevision = 0;
+    private saveQueue: Promise<void> = Promise.resolve();
+    private saveInFlight = false;
     /** Snapshot of the item before any edits — used for undo recording */
     private undoSnapshot: WorldOrLocation | null = null;
     private _lastSaveTime = 0;
@@ -182,6 +187,7 @@ export class LocationView extends ProjectBoundItemView {
     async onClose(): Promise<void> {
         // Flush any pending auto-save so edits are not lost
         await this.flushPendingSave();
+        this.editingDraft = null;
         // Remove any orphaned gallery lightbox windows
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(el => el.remove());
         this.clearPortaledDropdowns(); // issue #102 — clean up portaled popups
@@ -564,7 +570,7 @@ export class LocationView extends ProjectBoundItemView {
             badge.textContent = t('World');
             badge.addClass('role-supporting');
         } else if (item.locationType) {
-            for (const part of String(item.locationType).split(',').map(s => s.trim()).filter(Boolean)) {
+            for (const part of coerceStringList(item.locationType, /,/)) {
                 const badge = badges.createDiv('character-role-badge');
                 badge.textContent = part;
                 badge.addClass('role-supporting');
@@ -753,16 +759,35 @@ export class LocationView extends ProjectBoundItemView {
             return;
         }
 
-        const isWorld = item.type === 'world';
+        const sameDraft = this.editingDraft?.filePath === item.filePath
+            && this.editingDraft.type === item.type;
+        const draft: WorldOrLocation = sameDraft
+            ? this.editingDraft!
+            : {
+                ...item,
+                gallery: item.gallery?.map(image => ({ ...image })),
+                books: item.books ? [...item.books] : undefined,
+                custom: { ...(item.custom || {}) },
+                universalFields: { ...(item.universalFields || {}) },
+            };
+        if (!sameDraft) {
+            this.editingDraft = draft;
+            // Snapshot and rename anchors belong to the editing session, not
+            // to each cosmetic re-render of the same profile.
+            this.undoSnapshot = {
+                ...item,
+                gallery: item.gallery?.map(image => ({ ...image })),
+                books: item.books ? [...item.books] : undefined,
+                custom: { ...(item.custom || {}) },
+                universalFields: { ...(item.universalFields || {}) },
+            };
+            this.originalItemName = item.name;
+            this.originalItemType = item.type;
+        }
+        const isWorld = draft.type === 'world';
         const layoutKey = isWorld ? 'world' : 'location';
         const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, layoutKey);
         const horizontalProfile = profileOrientation === 'horizontal';
-        const draft: WorldOrLocation = { ...item, custom: { ...(item.custom || {}) }, universalFields: { ...(item.universalFields || {}) } };
-        // Snapshot for undo — taken once when the detail view opens
-        this.undoSnapshot = { ...item, custom: { ...(item.custom || {}) } };
-        // Track original name for cascade rename detection
-        this.originalItemName = item.name;
-        this.originalItemType = item.type;
 
         const categories = isWorld ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
         if (horizontalProfile) {
@@ -782,6 +807,7 @@ export class LocationView extends ProjectBoundItemView {
         backBtn.createSpan({ text: this.embedOptions ? t('Back to library') : t(' All Locations') });
         backBtn.addEventListener('click', async () => {
             await this.flushPendingSave();
+            this.editingDraft = null;
             this.selectedItem = null;
             if (this.embedOptions) {
                 this.embedOptions.onBack();
@@ -1180,7 +1206,7 @@ export class LocationView extends ProjectBoundItemView {
                             await this.plugin.saveSettings();
                         }
                         (draft as unknown as Record<string, unknown>)[field.key] = name.toLowerCase();
-                        await this.flushSave();
+                        await this.flushPendingSave();
                         if (this.rootContainer) this.renderDetail(this.rootContainer);
                     } else {
                         // Re-select the previous value
@@ -1725,7 +1751,12 @@ export class LocationView extends ProjectBoundItemView {
             collapseKeyPrefix: 'location',
             cssPrefix: 'location',
             scheduleSave: (d) => this.scheduleSave(d),
-            persistSections: () => { void this.plugin.saveSettings(); },
+            persistSections: () => {
+                void (async () => {
+                    await this.plugin.saveSettings();
+                    await this.plugin.syncCustomFieldFrontmatter('location', true);
+                })();
+            },
             bindCustomTextArea: (textarea, fieldKey, minHeight) => {
                 bindResizableCustomFieldInput(
                     textarea,
@@ -2010,47 +2041,31 @@ export class LocationView extends ProjectBoundItemView {
     private scheduleSave(draft: WorldOrLocation): void {
         if (this.autoSaveTimer) window.clearTimeout(this.autoSaveTimer);
         this.pendingSaveDraft = draft;
-        this.autoSaveTimer = window.setTimeout(async () => {
-            try {
-                const undoMgr = this.plugin.sceneManager?.undoManager;
-                const undoToken = undoMgr && this.undoSnapshot
-                    ? await undoMgr.beginUpdate(draft.filePath, t('Update "{name}"', { name: draft.name }), 'location')
-                    : null;
-                this._lastSaveTime = Date.now();
-                try {
-                    if (draft.type === 'world') {
-                        await this.locationManager.saveWorld(draft as StoryWorld);
-                    } else {
-                        await this.locationManager.saveLocation(draft as StoryLocation);
-                    }
-                    await undoMgr?.commitUpdate(undoToken);
-                } catch (error) {
-                    await undoMgr?.commitUpdate(undoToken);
-                    throw error;
-                }
-                this.undoSnapshot = { ...draft, custom: { ...(draft.custom || {}) } };
-                this.pendingSaveDraft = null;
-            } catch (e) {
-                console.error('NarrativeLab: failed to save location/world', e);
-            }
+        const revision = ++this.pendingSaveRevision;
+        this.autoSaveTimer = window.setTimeout(() => {
+            this.autoSaveTimer = null;
+            void this.persistLocationDraft(draft, revision);
         }, 600);
     }
 
-    /** Immediately flush any pending debounced save so the manager's data is
-     *  up-to-date before a full re-render. */
-    private async flushSave(): Promise<void> {
-        if (this.autoSaveTimer !== null) {
-            window.clearTimeout(this.autoSaveTimer);
-            this.autoSaveTimer = null;
-        }
-        if (this.pendingSaveDraft) {
-            const draft = this.pendingSaveDraft;
-            this.pendingSaveDraft = null;
-            try {
+    private async persistLocationDraft(draft: WorldOrLocation, revision: number): Promise<void> {
+        const operation = this.saveQueue
+            .catch(() => undefined)
+            .then(async () => {
+                this.saveInFlight = true;
                 const undoMgr = this.plugin.sceneManager?.undoManager;
-                const undoToken = undoMgr && this.undoSnapshot
-                    ? await undoMgr.beginUpdate(draft.filePath, t('Update "{name}"', { name: draft.name }), 'location')
-                    : null;
+                let undoToken: Awaited<ReturnType<typeof undoMgr.beginUpdate>> | null = null;
+                if (undoMgr && this.undoSnapshot) {
+                    try {
+                        undoToken = await undoMgr.beginUpdate(
+                            draft.filePath,
+                            t('Update "{name}"', { name: draft.name }),
+                            'location',
+                        );
+                    } catch (error) {
+                        console.warn('NarrativeLab: could not create location undo snapshot', error);
+                    }
+                }
                 this._lastSaveTime = Date.now();
                 try {
                     if (draft.type === 'world') {
@@ -2058,16 +2073,36 @@ export class LocationView extends ProjectBoundItemView {
                     } else {
                         await this.locationManager.saveLocation(draft as StoryLocation);
                     }
-                    await undoMgr?.commitUpdate(undoToken);
+                    if (undoToken && undoMgr) {
+                        try {
+                            await undoMgr.commitUpdate(undoToken);
+                        } catch (error) {
+                            console.warn('NarrativeLab: location saved, but undo history could not be committed', error);
+                        }
+                    }
+                    this.undoSnapshot = {
+                        ...draft,
+                        gallery: draft.gallery?.map(image => ({ ...image })),
+                        books: draft.books ? [...draft.books] : undefined,
+                        custom: { ...(draft.custom || {}) },
+                        universalFields: { ...(draft.universalFields || {}) },
+                    };
+                    if (this.pendingSaveDraft === draft && this.pendingSaveRevision === revision) {
+                        this.pendingSaveDraft = null;
+                    }
                 } catch (error) {
-                    await undoMgr?.commitUpdate(undoToken);
+                    undoMgr?.cancelUpdate(undoToken);
+                    console.error('NarrativeLab: failed to save location/world', error);
+                    new Notice(t('Failed to save location: {message}', {
+                        message: error instanceof Error ? error.message : String(error),
+                    }));
                     throw error;
+                } finally {
+                    this.saveInFlight = false;
                 }
-                this.undoSnapshot = { ...draft, custom: { ...(draft.custom || {}) } };
-            } catch (e) {
-                console.error('NarrativeLab: failed to flush-save location/world', e);
-            }
-        }
+            });
+        this.saveQueue = operation;
+        await operation;
     }
 
     /**
@@ -2125,18 +2160,13 @@ export class LocationView extends ProjectBoundItemView {
             this.autoSaveTimer = null;
         }
         if (this.pendingSaveDraft) {
+            const draft = this.pendingSaveDraft;
+            const revision = this.pendingSaveRevision;
             try {
-                this._lastSaveTime = Date.now();
-                const draft = this.pendingSaveDraft;
-                if (draft.type === 'world') {
-                    await this.locationManager.saveWorld(draft as StoryWorld);
-                } else {
-                    await this.locationManager.saveLocation(draft as StoryLocation);
-                }
-            } catch (e) {
-                console.error('NarrativeLab: failed to flush location/world save on close', e);
-            }
-            this.pendingSaveDraft = null;
+                await this.persistLocationDraft(draft, revision);
+            } catch { /* persistLocationDraft already reports the error */ }
+        } else {
+            await this.saveQueue.catch(() => undefined);
         }
     }
 
@@ -2346,10 +2376,13 @@ export class LocationView extends ProjectBoundItemView {
         // refreshOpenViews already reloaded entities — only re-render here.
         if (
             this.selectedItem &&
-            Date.now() - this._lastSaveTime < LocationView.SAVE_REFRESH_GRACE_MS
+            (this.pendingSaveDraft !== null
+                || this.saveInFlight
+                || Date.now() - this._lastSaveTime < LocationView.SAVE_REFRESH_GRACE_MS)
         ) {
             return;
         }
+        if (this.selectedItem) this.editingDraft = null;
         const categoriesEpoch = this.plugin.libraryCategoriesStructureEpoch;
         const categoriesChanged = categoriesEpoch !== this._libraryCategoriesEpoch;
         this._libraryCategoriesEpoch = categoriesEpoch;

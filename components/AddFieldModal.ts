@@ -14,8 +14,8 @@ import { t } from '../utils/i18n';
  */
 export class AddFieldModal extends Modal {
     private existing: UniversalFieldTemplate | null;
-    private onSubmit: (template: UniversalFieldTemplate, positionAfterId?: string | null) => void;
-    private onDelete?: () => void;
+    private onSubmit: (template: UniversalFieldTemplate, positionAfterId?: string | null) => void | Promise<void>;
+    private onDelete?: () => void | Promise<void>;
     private customSectionNames?: string[];
     /** Issue #92 — siblings (same section + category) used to populate the Position dropdown */
     private siblings: Array<{ id: string; label: string }> = [];
@@ -46,8 +46,8 @@ export class AddFieldModal extends Modal {
         app: App,
         defaultSection: string,
         existing: UniversalFieldTemplate | null,
-        onSubmit: (template: UniversalFieldTemplate, positionAfterId?: string | null) => void,
-        onDelete?: () => void,
+        onSubmit: (template: UniversalFieldTemplate, positionAfterId?: string | null) => void | Promise<void>,
+        onDelete?: () => void | Promise<void>,
         sectionNames?: string[],
         siblings?: Array<{ id: string; label: string }>,
     ) {
@@ -273,8 +273,17 @@ export class AddFieldModal extends Modal {
                 text: t('Delete field'),
             });
             deleteBtn.addEventListener('click', () => {
-                this.onDelete!();
-                this.close();
+                void (async () => {
+                    deleteBtn.disabled = true;
+                    try {
+                        await this.onDelete!();
+                        this.close();
+                    } catch (error) {
+                        console.error('[NarrativeLab] Delete field:', error);
+                        new Notice(t('Could not save the field change. Your existing data was kept.'));
+                        deleteBtn.disabled = false;
+                    }
+                })();
             });
         }
 
@@ -287,53 +296,64 @@ export class AddFieldModal extends Modal {
             text: this.existing ? t('Save') : t('Add field'),
         });
         confirmBtn.addEventListener('click', () => {
-            // Read input value directly in case onChange hasn't fired yet (issue #115)
-            if (this.labelInput) {
-                const raw = this.labelInput.value.trim();
-                if (raw) this.label = raw;
+            void this.submit(confirmBtn, contentEl);
+        });
+    }
+
+    private async submit(confirmBtn: HTMLButtonElement, contentEl: HTMLElement): Promise<void> {
+        // Read input value directly in case onChange hasn't fired yet (issue #115)
+        if (this.labelInput) {
+            const raw = this.labelInput.value.trim();
+            if (raw) this.label = raw;
+        }
+        if (!this.label) {
+            // Highlight label field
+            const labelInput = contentEl.querySelector('.setting-item:first-child input') as HTMLInputElement;
+            if (labelInput) {
+                labelInput.addClass('is-invalid');
+                labelInput.focus();
             }
-            if (!this.label) {
-                // Highlight label field
-                const labelInput = contentEl.querySelector('.setting-item:first-child input') as HTMLInputElement;
-                if (labelInput) {
-                    labelInput.addClass('is-invalid');
-                    labelInput.focus();
-                }
+            return;
+        }
+
+        // Filter empty options
+        const cleanOptions = this.options.map(o => o.trim()).filter(Boolean);
+
+        const tlk = this.topLevelKey.trim();
+        if (tlk) {
+            if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(tlk)) {
+                new Notice(t('Top-level YAML key must start with a letter and use only letters, numbers, or underscores.'));
                 return;
             }
-
-            // Filter empty options
-            const cleanOptions = this.options.map(o => o.trim()).filter(Boolean);
-
-            const tlk = this.topLevelKey.trim();
-            if (tlk) {
-                if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(tlk)) {
-                    new Notice(t('Top-level YAML key must start with a letter and use only letters, numbers, or underscores.'));
-                    return;
-                }
-                if (isReservedTopLevelKey(tlk)) {
-                    new Notice(t('"{key}" is reserved by NarrativeLab. Choose a different key.', { key: tlk }));
-                    return;
-                }
+            if (isReservedTopLevelKey(tlk)) {
+                new Notice(t('"{key}" is reserved by NarrativeLab. Choose a different key.', { key: tlk }));
+                return;
             }
+        }
 
-            const template: UniversalFieldTemplate = {
-                id: this.existing?.id ?? generateId(),
-                label: this.label,
-                section: this.section || CHARACTER_CATEGORIES[0].title,
-                category: this.existing?.category,
-                type: this.type,
-                options: (this.type === 'dropdown' || this.type === 'multi-select') ? cleanOptions : [],
-                folderSource: (this.type === 'multi-select' || this.type === 'dropdown') && this.folderSource ? this.folderSource : undefined,
-                placeholder: this.placeholder,
-                topLevelKey: tlk || undefined,
-                defaultValue: this.defaultValue.trim() ? this.defaultValue.trim() : undefined,
-                order: this.existing?.order ?? Date.now(),
-            };
+        const template: UniversalFieldTemplate = {
+            id: this.existing?.id ?? generateId(),
+            label: this.label,
+            section: this.section || CHARACTER_CATEGORIES[0].title,
+            category: this.existing?.category,
+            type: this.type,
+            options: (this.type === 'dropdown' || this.type === 'multi-select') ? cleanOptions : [],
+            folderSource: (this.type === 'multi-select' || this.type === 'dropdown') && this.folderSource ? this.folderSource : undefined,
+            placeholder: this.placeholder,
+            topLevelKey: tlk || undefined,
+            defaultValue: this.defaultValue.trim() ? this.defaultValue.trim() : undefined,
+            order: this.existing?.order ?? Date.now(),
+        };
 
-            this.onSubmit(template, this.positionAfterId);
+        confirmBtn.disabled = true;
+        try {
+            await this.onSubmit(template, this.positionAfterId);
             this.close();
-        });
+        } catch (error) {
+            console.error('[NarrativeLab] Save field:', error);
+            new Notice(t('Could not save the field change. Your existing data was kept.'));
+            confirmBtn.disabled = false;
+        }
     }
 
     onClose(): void {

@@ -108,7 +108,7 @@ test('unreadable field-templates.json cannot be overwritten by a later save', as
     const save = fieldTemplates.slice(fieldTemplates.indexOf('async save()'));
     assert.match(load, /this\._invalidFile = true/);
     assert.doesNotMatch(load, /this\.templates = \[\];\s*this\.sectionOrders = \{\};\s*\}/);
-    assert.match(save, /if \(this\._invalidFile\) return/);
+    assert.match(save, /if \(this\._invalidFile\)[\s\S]*?throw new Error/);
     assert.match(save, /isTombstonedProjectPath\(systemFolder\)/);
 });
 
@@ -253,6 +253,38 @@ test('series project-folder moves retry transient Windows locks without duplicat
     assert.match(seriesManager, /close Excel or another external editor/);
 });
 
+test('field-template edits roll back in memory when persistence fails', async () => {
+    const source = await readFile('services/FieldTemplateService.ts', 'utf8');
+    assert.match(source, /private async mutateAndSave\(mutate: \(\) => void\)/);
+    assert.match(source, /this\.templates = previousTemplates/);
+    assert.match(source, /this\.sectionOrders = previousSectionOrders/);
+    assert.match(source, /Cannot save field templates because the existing file is unreadable/);
+    assert.match(source, /catch \(error\) \{[\s\S]*?this\.templates = previousTemplates[\s\S]*?throw error/);
+});
+
+test('System JSON writes require a readable original and share resilient I/O classification', () => {
+    assert.match(mainTs, /function isTransientVaultIoError/);
+    assert.match(mainTs, /private async readVaultTextResilient/);
+    assert.match(mainTs, /previousContent = await this\.readVaultTextResilient\(filePath\)/);
+    assert.match(mainTs, /Could not safely read \{name\} before saving/);
+    assert.match(mainTs, /this\._invalidSystemJsonPaths\.delete\(filePath\)[\s\S]*?return \{\}/);
+});
+
+test('startup migration never overwrites unreadable System JSON or eagerly deletes its fallback', () => {
+    const migration = mainTs.slice(
+        mainTs.indexOf('private async migrateProjectDataFromSettings'),
+        mainTs.indexOf('private async migrateJsonFilesToSystem'),
+    );
+    assert.match(migration, /readExistingMigrationJson/);
+    assert.match(migration, /return \{ data: \{\}, writable: false \}/);
+    for (const fileName of ['plotlines.json', 'characters.json', 'stats.json']) {
+        assert.ok(migration.includes(`readExistingMigrationJson(path, '${fileName}')`));
+    }
+    assert.match(migration, /writeVaultTextResilient/);
+    assert.match(migration, /Keep the legacy payload until loadProjectSystemData/);
+    assert.doesNotMatch(migration, /for \(const key of SceneCardsPlugin\.PROJECT_DATA_KEYS\)[\s\S]*?delete raw\[key\]/);
+});
+
 test('series moves quiesce project-bound tabs before rename and restore their rebased bindings', () => {
     assert.match(mainTs, /async quiesceProjectLeavesForFolderMove/);
     assert.match(mainTs, /await leaf\.setViewState\(\{ type: 'empty'/);
@@ -394,6 +426,44 @@ test('character field drafts survive re-renders and undo failures cannot block s
     assert.match(characterView, /await this\.characterManager\.saveCharacter\(draft\)/);
     assert.match(characterView, /this\.pendingSaveDraft !== null/);
     assert.match(characterView, /layout\.addEventListener\('focusout', commitFocusedField\)/);
+});
+
+test('all Library profile editors keep stable drafts and serialize autosaves', () => {
+    assert.match(locationView, /Stable working copy reused across internal detail re-renders/);
+    assert.match(locationView, /private saveQueue: Promise<void> = Promise\.resolve\(\)/);
+    assert.match(locationView, /this\.saveQueue\s*\.catch\(\(\) => undefined\)\s*\.then/);
+    assert.match(locationView, /undoMgr\?\.cancelUpdate\(undoToken\)/);
+    assert.match(locationView, /this\.pendingSaveRevision === revision/);
+    assert.match(locationView, /this\.pendingSaveDraft !== null/);
+
+    assert.match(codexView, /Stable working copy reused across internal detail re-renders/);
+    assert.match(codexView, /private _saveQueue: Promise<void> = Promise\.resolve\(\)/);
+    assert.match(codexView, /this\._saveQueue\s*\.catch\(\(\) => undefined\)\s*\.then/);
+    assert.match(codexView, /this\._saveRevision === revision/);
+    assert.match(codexView, /this\._pendingDraft !== null/);
+    const codexDetail = codexView.slice(
+        codexView.indexOf('private renderDetail(container: HTMLElement)'),
+        codexView.indexOf('// ── Header', codexView.indexOf('private renderDetail(container: HTMLElement)')),
+    );
+    assert.doesNotMatch(codexDetail, /this\._pendingDraft\s*=\s*draft/);
+});
+
+test('Library text boundaries reject object-shaped YAML across every entity type', async () => {
+    const [narrow, characterManager, locationManager, codexManager, inspector, sceneCard] = await Promise.all([
+        readFile(new URL('../utils/narrow.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/CharacterManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/LocationManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/CodexManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/Inspector.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/SceneCard.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(narrow, /export function coerceText/);
+    assert.match(narrow, /export function coerceStringList/);
+    assert.match(characterManager, /const text = \(value: unknown\)/);
+    assert.match(locationManager, /const text = \(value: unknown\)/);
+    assert.match(codexManager, /const text = coerceText\(value\)/);
+    assert.match(inspector, /coerceText\(value\)/);
+    assert.match(sceneCard, /const display = coerceText\(raw\)/);
 });
 
 test('library entity saves refresh stamp cache so reload cannot resurrect pre-save parses', async () => {

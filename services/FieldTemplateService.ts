@@ -1,6 +1,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, normalizePath } from 'obsidian';
 import { ensureVaultFolder, isTombstonedProjectPath } from '../utils/vaultFolders';
+import { RESERVED_TOP_LEVEL_KEYS } from '../utils/libraryProfilePropertyOrder';
+import { coerceString, coerceStringList } from '../utils/narrow';
 
 // ═══════════════════════════════════════════════════════
 //  Universal Field Template Service
@@ -167,10 +169,35 @@ export class FieldTemplateService {
 
     // ── CRUD ───────────────────────────────────────────
 
+    /**
+     * Apply an in-memory edit only if its on-disk representation can be
+     * persisted.  Without this transaction a failed write left the UI using
+     * template state that disappeared after the next reload.
+     */
+    private async mutateAndSave(mutate: () => void): Promise<void> {
+        const previousTemplates = this.templates.map(template => ({
+            ...template,
+            options: [...template.options],
+        }));
+        const previousSectionOrders = Object.fromEntries(
+            Object.entries(this.sectionOrders).map(([key, entries]) => [
+                key,
+                entries.map(entry => ({ ...entry })),
+            ]),
+        );
+        try {
+            mutate();
+            await this.save();
+        } catch (error) {
+            this.templates = previousTemplates;
+            this.sectionOrders = previousSectionOrders;
+            throw error;
+        }
+    }
+
     /** Add a new template and persist */
     async add(template: UniversalFieldTemplate): Promise<void> {
-        this.templates.push(template);
-        await this.save();
+        await this.mutateAndSave(() => this.templates.push(template));
         try {
             await this.onChange?.({
                 type: 'add',
@@ -188,16 +215,16 @@ export class FieldTemplateService {
         if (!t) return;
         const oldTopLevelKey = t.topLevelKey;
         const oldFolderSource = t.folderSource;
-        Object.assign(t, patch);
-        await this.save();
+        await this.mutateAndSave(() => Object.assign(t, patch));
+        const updated = this.templates.find(field => field.id === id);
         try {
             await this.onChange?.({
                 type: 'update',
                 id,
-                template: { ...t },
+                template: updated ? { ...updated, options: [...updated.options] } : undefined,
                 oldTopLevelKey,
-                topLevelKeyChanged: oldTopLevelKey !== t.topLevelKey,
-                folderSourceChanged: oldFolderSource !== t.folderSource,
+                topLevelKeyChanged: oldTopLevelKey !== updated?.topLevelKey,
+                folderSourceChanged: oldFolderSource !== updated?.folderSource,
             });
         } catch (e) { console.error('[NarrativeLab] FieldTemplate onChange (update):', e); }
     }
@@ -205,8 +232,10 @@ export class FieldTemplateService {
     /** Remove a template by ID and persist */
     async remove(id: string): Promise<void> {
         const removed = this.templates.find(t => t.id === id);
-        this.templates = this.templates.filter(t => t.id !== id);
-        await this.save();
+        if (!removed) return;
+        await this.mutateAndSave(() => {
+            this.templates = this.templates.filter(t => t.id !== id);
+        });
         try {
             await this.onChange?.({
                 type: 'remove',
@@ -221,8 +250,7 @@ export class FieldTemplateService {
     async reorder(id: string, newOrder: number): Promise<void> {
         const t = this.templates.find(f => f.id === id);
         if (!t) return;
-        t.order = newOrder;
-        await this.save();
+        await this.mutateAndSave(() => { t.order = newOrder; });
     }
 
     /**
@@ -236,12 +264,13 @@ export class FieldTemplateService {
         const idx = siblings.findIndex(s => s.id === id);
         if (idx <= 0) return;
         // Normalize all sibling orders to 0..n then swap
-        siblings.forEach((s, i) => { s.order = i; });
-        const prev = siblings[idx - 1];
-        const tmp = prev.order;
-        prev.order = t.order;
-        t.order = tmp;
-        await this.save();
+        await this.mutateAndSave(() => {
+            siblings.forEach((s, i) => { s.order = i; });
+            const prev = siblings[idx - 1];
+            const tmp = prev.order;
+            prev.order = t.order;
+            t.order = tmp;
+        });
     }
 
     /**
@@ -253,12 +282,13 @@ export class FieldTemplateService {
         const siblings = this.getBySection(t.section, t.category);
         const idx = siblings.findIndex(s => s.id === id);
         if (idx < 0 || idx >= siblings.length - 1) return;
-        siblings.forEach((s, i) => { s.order = i; });
-        const next = siblings[idx + 1];
-        const tmp = next.order;
-        next.order = t.order;
-        t.order = tmp;
-        await this.save();
+        await this.mutateAndSave(() => {
+            siblings.forEach((s, i) => { s.order = i; });
+            const next = siblings[idx + 1];
+            const tmp = next.order;
+            next.order = t.order;
+            t.order = tmp;
+        });
     }
 
     /**
@@ -373,8 +403,9 @@ export class FieldTemplateService {
 
     /** Persist a fully-resolved order for a section. */
     private async setSectionOrder(section: string, category: string | undefined, order: SectionOrderEntry[]): Promise<void> {
-        this.sectionOrders[this.sectionKey(section, category)] = order.map(e => ({ kind: e.kind, key: e.key }));
-        await this.save();
+        await this.mutateAndSave(() => {
+            this.sectionOrders[this.sectionKey(section, category)] = order.map(e => ({ kind: e.kind, key: e.key }));
+        });
     }
 
     /** Move an entry (built-in or universal) one slot up within its section. */
@@ -481,11 +512,15 @@ export class FieldTemplateService {
 
     /** Save templates to System/field-templates.json */
     async save(): Promise<void> {
-        if (this._invalidFile) return;
+        if (this._invalidFile) {
+            throw new Error('Cannot save field templates because the existing file is unreadable.');
+        }
         try {
             const adapter = this.app.vault.adapter;
             const systemFolder = normalizePath(this.getSystemFolder());
-            if (isTombstonedProjectPath(systemFolder)) return;
+            if (isTombstonedProjectPath(systemFolder)) {
+                throw new Error('Cannot save field templates for a project being removed.');
+            }
             if (!await adapter.exists(systemFolder)) {
                 await ensureVaultFolder(this.app, systemFolder);
             }
@@ -500,6 +535,7 @@ export class FieldTemplateService {
             );
         } catch (e) {
             console.error('[NarrativeLab] FieldTemplateService.save():', e);
+            throw e;
         }
     }
 }
@@ -518,26 +554,6 @@ export function generateId(): string {
  * never collide with. Editing these from a custom field would corrupt
  * core NarrativeLab data.
  */
-export const RESERVED_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
-    'type', 'name', 'title', 'created', 'modified',
-    'act', 'chapter', 'sequence', 'chronologicalOrder', 'chronological_order',
-    'pov', 'characters', 'location', 'tags', 'status',
-    'storyDate', 'story_date', 'storyTime', 'story_time', 'timeline',
-    'conflict', 'emotion', 'intensity', 'wordcount', 'target_wordcount',
-    'setup_scenes', 'payoff_scenes', 'codexLinks', 'beatsheet',
-    'corkboardNote', 'corkboardNoteColor', 'corkboardNoteImage',
-    'corkboardNoteCaption', 'plotgridOrigin', 'subtitle', 'color',
-    'timeline_mode', 'timeline_strand',
-    'image', 'gallery', 'tagline', 'role', 'occupation', 'residency',
-    'family', 'earlylife', 'appearance', 'personality', 'goal', 'belief', 'misbelief',
-    'fears', 'flaws', 'strengths', 'relations', 'books',
-    'world', 'parent', 'description', 'geography', 'culture', 'politics',
-    'magicTechnology', 'beliefs', 'economy', 'history', 'locationType',
-    'atmosphere', 'significance', 'inhabitants', 'connectedLocations',
-    'mapNotes',
-    'custom', 'universalFields', 'notes',
-]);
-
 /** Slugify a label into a YAML-safe top-level key. */
 export function suggestTopLevelKey(label: string): string {
     return String(label || '')
@@ -589,6 +605,30 @@ export function stripWikilinks(value: unknown): unknown {
     return value;
 }
 
+function normalizeUniversalValue(value: unknown): string | string[] | undefined {
+    if (Array.isArray(value)) {
+        const values = coerceStringList(value);
+        return values.length ? values : undefined;
+    }
+    const text = coerceString(value);
+    return text || undefined;
+}
+
+function normalizeUniversalMap(value: unknown): Record<string, string | string[]> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const result: Record<string, string | string[]> = {};
+    for (const [id, raw] of Object.entries(value as Record<string, unknown>)) {
+        const normalized = normalizeUniversalValue(raw);
+        if (normalized !== undefined) result[id] = normalized;
+    }
+    return result;
+}
+
+function sameUniversalValue(left: unknown, right: unknown): boolean {
+    if (left === right) return true;
+    try { return JSON.stringify(left) === JSON.stringify(right); } catch { return false; }
+}
+
 /**
  * Wrap a folder-sourced field value as Obsidian wikilink(s) for top-level
  * YAML mirroring, so the property becomes clickable in Properties / Bases /
@@ -626,19 +666,27 @@ export function hydrateUniversalFieldsFromTopLevel(
 ): Record<string, unknown> | undefined {
     const templates = getActiveTemplates();
     if (!templates.length) return universalFields;
-    let result = universalFields ? { ...universalFields } : undefined;
+    const diskValues = normalizeUniversalMap(fm.universalFields);
+    const result: Record<string, unknown> = normalizeUniversalMap(universalFields);
     for (const t of templates) {
         const k = t.topLevelKey;
         if (!k || isReservedTopLevelKey(k)) continue;
-        const top = fm[k];
-        if (top === undefined || top === null || top === '') continue;
-        if (!result) result = {};
-        if (result[t.id] === undefined || result[t.id] === '' || result[t.id] === null) {
-            const isFolderSourced = !!t.folderSource && (t.type === 'dropdown' || t.type === 'multi-select');
-            result[t.id] = isFolderSourced ? stripWikilinks(top) : top;
+        if (!Object.prototype.hasOwnProperty.call(fm, k)) continue;
+        const top = normalizeUniversalValue(fm[k]);
+        const current = result[t.id];
+        const disk = diskValues[t.id];
+        if (current === undefined || sameUniversalValue(current, disk)) {
+            if (top === undefined) {
+                delete result[t.id];
+            } else {
+                const isFolderSourced = !!t.folderSource && (t.type === 'dropdown' || t.type === 'multi-select');
+                result[t.id] = isFolderSourced ? stripWikilinks(top) : top;
+            }
+        } else if (sameUniversalValue(top, disk)) {
+            result[t.id] = current;
         }
     }
-    return result;
+    return Object.keys(result).length ? result : undefined;
 }
 
 /**
@@ -660,8 +708,9 @@ export function mirrorUniversalFieldsToTopLevel(
     for (const t of templates) {
         const k = t.topLevelKey;
         if (!k || isReservedTopLevelKey(k)) continue;
-        const v = universalFields ? universalFields[t.id] : undefined;
-        if (v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0)) {
+        const rawValue = universalFields ? universalFields[t.id] : undefined;
+        const v = normalizeUniversalValue(rawValue);
+        if (v === undefined) {
             delete fm[k];
         } else {
             const isFolderSourced = !!t.folderSource && (t.type === 'dropdown' || t.type === 'multi-select');

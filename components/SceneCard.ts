@@ -7,6 +7,7 @@ import type { SceneManager } from '../services/SceneManager';
 import { formatActChapterPrefix } from '../utils/actChapter';
 import { ColorCodingMode, Scene, SceneStatus, TIMELINE_MODE_ICONS, TIMELINE_MODE_LABELS, formatSceneLength, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import { t } from '../utils/i18n';
+import { coerceText } from '../utils/narrow';
 
 /**
  * Renders a single scene card element
@@ -274,7 +275,7 @@ export class SceneCardComponent {
         for (const tpl of tpls) {
             const raw = scene.universalFields[tpl.id];
             if (raw === undefined || raw === null) continue;
-            const display = Array.isArray(raw) ? raw.join(', ') : String(raw);
+            const display = coerceText(raw);
             if (!display.trim()) continue;
             summary.push(`${tpl.label}: ${display}`);
 
