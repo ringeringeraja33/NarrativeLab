@@ -1,5 +1,12 @@
 # NarrativeLab — Changelog
 
+## 1.4.3
+
+- Character, Location, and Codex profile sections and fields can now be reordered in both horizontal and vertical layouts. The same visible-field order is reflected in entity YAML frontmatter and the native Library Base view.
+- Built-in, universal, legacy custom, and custom-section controls now share consistent section/field actions. Text inputs can be resized vertically and remember their chosen height.
+- Character card summaries can use built-in fields, universal fields, ordinary custom fields, or fields inside custom sections; missing selections safely fall back to the automatic personality/occupation/role summary.
+- Spreadsheet row heights now survive drag resize, auto-height, immediate tab close, and reopen. Fresh resize mutations cannot be overwritten by a lagging Univer snapshot, and explicit dimensions stored in `datasheet.xlsx` win over stale sidecar metadata.
+
 ## 1.4.2
 
 - Obsidian's Files view now hides every `System` folder, `series.json`, and file types for which Obsidian has no registered view; the underlying vault contents remain untouched and available to NarrativeLab.

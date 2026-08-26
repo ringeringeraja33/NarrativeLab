@@ -16,6 +16,7 @@ import type { StoryGraph } from '../components/StoryGraph';
 import { RenameConfirmModal } from '../components/RenameConfirmModal';
 import { AddFieldModal } from '../components/AddFieldModal';
 import {
+    CUSTOM_SECTION_KEY_SEP,
     isCustomSectionKey,
     renderCustomSectionsAtSlot,
     renderAddCustomSectionButton,
@@ -24,6 +25,8 @@ import {
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
+import { bindResizableCustomFieldInput, customFieldInputHeightKey } from '../utils/customFieldInputHeight';
+import { moveMappingEntry } from '../utils/libraryProfilePropertyOrder';
 
 import type SceneCardsPlugin from '../main';
 import type { LibraryProfileEmbedOptions } from './CanvasLibraryProfileHost';
@@ -33,13 +36,13 @@ import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardA
 import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { renderLibraryArchiveFilterBar, collectEntityFilterKeys, collectArchiveFilterLabels, ARCHIVE_FILTER_HASHTAGS_KEY, buildArchiveFilterFieldOptions } from '../components/LibraryFilterChips';
-import { disposeNativeLibraryBase, renderNativeLibraryBase } from '../components/NativeLibraryBase';
+import { disposeNativeLibraryBase, renderNativeLibraryBase, syncAllNativeLibraryBases } from '../components/NativeLibraryBase';
 import {
     renderLibraryBrowseToolbar,
     renderLibraryModeToolbar,
 } from '../components/LibraryBrowseLayout';
 import { Modal, Notice, Setting, TFile, WorkspaceLeaf, normalizePath } from 'obsidian';
-import { CHARACTER_CATEGORIES, CHARACTER_ROLES, CHARACTER_TAGLINE_FIELD_KEYS, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractAllCharacterTags, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations, resolveCharacterCardSnippet } from '../models/Character';
+import { CHARACTER_CATEGORIES, CHARACTER_ROLES, CHARACTER_TAGLINE_CUSTOM_PREFIX, CHARACTER_TAGLINE_FIELD_KEYS, CHARACTER_TAGLINE_UNIVERSAL_PREFIX, Character, CharacterFieldDef, CharacterRelation, CharacterRelationCategory, RELATION_CATEGORIES, RELATION_TYPES_BY_CATEGORY, RoleEntry, TagType, computeReciprocalUpdates, extractAllCharacterTags, extractCharacterLocationTags, extractCharacterProps, getPrimaryRole, getRoleDisplay, getRoleList, normalizeCharacterRelations, resolveCharacterCardSnippet } from '../models/Character';
 import { CHARACTER_VIEW_TYPE } from '../constants';
 import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
@@ -47,14 +50,21 @@ import { seedUiLanguage, t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
+    attachBuiltinFieldEditControl,
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
+    attachProfileSectionOrderControls,
+    attachUniversalProfileFieldControls,
+    createProfileSectionAction,
     filterRemovedBuiltinFields,
+    getBuiltinProfileFieldOverride,
     getHiddenFieldKeys,
     getLibraryProfileOrientation,
+    getOrderedProfileSectionIds,
     isBuiltinSectionRemoved,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
+    universalProfileFieldKey,
 } from '../utils/libraryProfileLayout';
 import {
     ensureSeededCharacterRelationTypes,
@@ -1388,10 +1398,19 @@ export class CharacterView extends ProjectBoundItemView {
         // ── Form sections as board columns (+ interleaved custom sections) ──
         // Eagerly fill only the first columns; remaining column fields load when
         // scrolled into view so open-detail stays responsive.
-        const customHost = this.buildCustomSectionsHost(draft);
+        const sectionIds = [...CHARACTER_CATEGORIES.map(category => category.title), 'Custom Fields'];
+        const orderedSectionIds = getOrderedProfileSectionIds(this.plugin.settings, 'character', sectionIds);
+        const customHost = this.buildCustomSectionsHost(draft, orderedSectionIds.length);
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
-        for (let i = 0; i < CHARACTER_CATEGORIES.length; i++) {
-            const category = CHARACTER_CATEGORIES[i];
+        for (let i = 0; i < orderedSectionIds.length; i++) {
+            const sectionId = orderedSectionIds[i];
+            if (sectionId === 'Custom Fields') {
+                this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
+                renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
+                continue;
+            }
+            const category = CHARACTER_CATEGORIES.find(item => item.title === sectionId);
+            if (!category) continue;
             if (isBuiltinSectionRemoved(this.plugin.settings, 'character', category.title)) {
                 renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
                 continue;
@@ -1403,7 +1422,6 @@ export class CharacterView extends ProjectBoundItemView {
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
-        this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
         renderAddCustomSectionButton(formPanel, customHost);
         renderRemovedBuiltinSectionsToggle(formPanel, {
             settings: this.plugin.settings,
@@ -1460,6 +1478,21 @@ export class CharacterView extends ProjectBoundItemView {
         obsidian.setIcon(icon, category.icon);
         sectionHeader.createSpan({ text: t(category.title) });
 
+        attachProfileSectionOrderControls(sectionHeader, {
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            sectionId: category.title,
+            defaultIds: [...CHARACTER_CATEGORIES.map(item => item.title), 'Custom Fields'],
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                this.rerenderCharacterDetail();
+            },
+        });
+
         attachBuiltinSectionRemoveControl(sectionHeader, {
             app: this.app,
             settings: this.plugin.settings,
@@ -1473,11 +1506,12 @@ export class CharacterView extends ProjectBoundItemView {
         });
 
         // ── '+' button to add a universal field to this section ──
-        const addFieldBtn = sectionHeader.createEl('button', {
-            cls: 'character-section-add-field-btn',
-            attr: { title: t('Add universal field to this section'), 'aria-label': t('Add universal field') },
+        const addFieldBtn = createProfileSectionAction(sectionHeader, {
+            icon: 'plus',
+            title: 'Add universal field to this section',
+            ariaLabel: 'Add universal field',
+            className: 'character-section-add-field-btn profile-section-add-field-btn',
         });
-        obsidian.setIcon(addFieldBtn, 'plus');
         addFieldBtn.addEventListener('click', (e) => {
             e.stopPropagation(); // Don't toggle collapse
             const existingSiblings = this.plugin.fieldTemplates
@@ -1532,8 +1566,10 @@ export class CharacterView extends ProjectBoundItemView {
 
             // Render fields in user-defined merged order (built-in + universal).
             const universalFields = this.plugin.fieldTemplates.getBySection(category.title, 'character');
+            const visibleUniversalFields = universalFields.filter(tpl => !hiddenKeys.includes(universalProfileFieldKey(tpl.id)));
+            const hiddenUniversalFields = universalFields.filter(tpl => hiddenKeys.includes(universalProfileFieldKey(tpl.id)));
             const fieldMap = new Map<string, CharacterFieldDef>(visibleFields.map(f => [String(f.key), f]));
-            const tplMap = new Map(universalFields.map(tpl => [tpl.id, tpl]));
+            const tplMap = new Map(visibleUniversalFields.map(tpl => [tpl.id, tpl]));
             const builtInKeys = visibleFields.map(f => String(f.key));
             const merged = this.plugin.fieldTemplates.getMergedOrder(category.title, 'character', builtInKeys);
             for (const entry of merged) {
@@ -1547,12 +1583,13 @@ export class CharacterView extends ProjectBoundItemView {
             }
 
             // Show toggle for hidden fields
-            if (hiddenFieldsInCat.length > 0) {
+            const hiddenFieldCount = hiddenFieldsInCat.length + hiddenUniversalFields.length;
+            if (hiddenFieldCount > 0) {
                 const toggleEl = sectionBody.createDiv('hidden-fields-toggle');
                 toggleEl.createEl('a', {
-                    text: hiddenFieldsInCat.length > 1
-                        ? t('Show {count} hidden fields', { count: hiddenFieldsInCat.length })
-                        : t('Show {count} hidden field', { count: hiddenFieldsInCat.length }),
+                    text: hiddenFieldCount > 1
+                        ? t('Show {count} hidden fields', { count: hiddenFieldCount })
+                        : t('Show {count} hidden field', { count: hiddenFieldCount }),
                     cls: 'hidden-fields-toggle-link',
                 });
                 const hiddenContainer = sectionBody.createDiv('hidden-fields-container');
@@ -1560,17 +1597,20 @@ export class CharacterView extends ProjectBoundItemView {
                 for (const field of hiddenFieldsInCat) {
                     this.renderField(hiddenContainer, field, draft);
                 }
+                for (const template of hiddenUniversalFields) {
+                    this.renderUniversalField(hiddenContainer, template, draft);
+                }
                 let showing = false;
                 toggleEl.addEventListener('click', () => {
                     showing = !showing;
                     hiddenContainer.setCssStyles({ display: showing ? '' : 'none' });
                     toggleEl.querySelector('a')!.textContent = showing
-                        ? (hiddenFieldsInCat.length > 1
-                            ? t('Hide {count} hidden fields', { count: hiddenFieldsInCat.length })
-                            : t('Hide {count} hidden field', { count: hiddenFieldsInCat.length }))
-                        : (hiddenFieldsInCat.length > 1
-                            ? t('Show {count} hidden fields', { count: hiddenFieldsInCat.length })
-                            : t('Show {count} hidden field', { count: hiddenFieldsInCat.length }));
+                        ? (hiddenFieldCount > 1
+                            ? t('Hide {count} hidden fields', { count: hiddenFieldCount })
+                            : t('Hide {count} hidden field', { count: hiddenFieldCount }))
+                        : (hiddenFieldCount > 1
+                            ? t('Show {count} hidden fields', { count: hiddenFieldCount })
+                            : t('Show {count} hidden field', { count: hiddenFieldCount }));
                 });
             }
 
@@ -1649,7 +1689,27 @@ export class CharacterView extends ProjectBoundItemView {
 
     private renderField(parent: HTMLElement, field: CharacterFieldDef, draft: Character, sectionTitle?: string, builtInKeys?: string[]): void {
         const row = parent.createDiv('character-field-row');
-        const labelEl = row.createEl('label', { cls: 'character-field-label', text: t(field.label) });
+        const fieldOverride = getBuiltinProfileFieldOverride(this.plugin.settings, 'character', field.key);
+        const displayLabel = fieldOverride?.label || t(field.label);
+        const displayPlaceholder = fieldOverride?.placeholder || (field.placeholder ? t(field.placeholder) : '');
+        const labelEl = row.createEl('label', { cls: 'character-field-label', text: displayLabel });
+
+        attachBuiltinFieldEditControl(labelEl, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            fieldKey: field.key,
+            defaultLabel: field.label,
+            defaultPlaceholder: field.placeholder || '',
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                this.rerenderCharacterDetail();
+            },
+        });
 
         // Up/down chevrons — reorder this built-in field within the section.
         if (sectionTitle && builtInKeys) {
@@ -1662,7 +1722,7 @@ export class CharacterView extends ProjectBoundItemView {
             settings: this.plugin.settings,
             categoryKey: 'character',
             fieldKey: field.key,
-            fieldLabel: field.label,
+            fieldLabel: displayLabel,
             save: () => this.plugin.saveSettings(),
             onChanged: () => {
                 if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
@@ -1697,8 +1757,29 @@ export class CharacterView extends ProjectBoundItemView {
             for (const opt of taglineOptions) {
                 select.createEl('option', { text: t(opt.label), attr: { value: opt.key } });
             }
+            const customGroupLabel = t('Custom Fields');
+            const universalOptions = this.plugin.fieldTemplates.getAll()
+                .filter(tpl => (tpl.category || 'character') === 'character')
+                .sort((a, b) => a.section.localeCompare(b.section) || a.order - b.order || a.label.localeCompare(b.label));
+            for (const tpl of universalOptions) {
+                select.createEl('option', {
+                    text: `${customGroupLabel} · ${tpl.label}`,
+                    attr: { value: `${CHARACTER_TAGLINE_UNIVERSAL_PREFIX}${tpl.id}` },
+                });
+            }
+            for (const key of Object.keys(draft.custom || {})) {
+                const label = key.includes(CUSTOM_SECTION_KEY_SEP)
+                    ? key.split(CUSTOM_SECTION_KEY_SEP).filter(Boolean).join(' · ')
+                    : key;
+                select.createEl('option', {
+                    text: `${customGroupLabel} · ${label}`,
+                    attr: { value: `${CHARACTER_TAGLINE_CUSTOM_PREFIX}${key}` },
+                });
+            }
             // Preserve legacy free-text taglines (Scrivener synopsis) so they stay selectable.
-            if (value && !CHARACTER_TAGLINE_FIELD_KEYS.has(value)) {
+            const namespacedCustom = value.startsWith(CHARACTER_TAGLINE_UNIVERSAL_PREFIX)
+                || value.startsWith(CHARACTER_TAGLINE_CUSTOM_PREFIX);
+            if (value && !CHARACTER_TAGLINE_FIELD_KEYS.has(value) && !namespacedCustom) {
                 select.createEl('option', {
                     text: t('Custom: {text}', { text: value.length > 40 ? `${value.slice(0, 40)}…` : value }),
                     attr: { value },
@@ -1709,6 +1790,7 @@ export class CharacterView extends ProjectBoundItemView {
                 const next = select.value;
                 draft.tagline = next || undefined;
                 this.scheduleSave(draft);
+                this.rerenderCharacterDetail();
             });
             return;
         }
@@ -1722,7 +1804,7 @@ export class CharacterView extends ProjectBoundItemView {
             const input = row.createEl('input', {
                 cls: 'character-field-input',
                 type: 'text',
-                attr: { placeholder: field.placeholder ? t(field.placeholder) : '', list: listId },
+                attr: { placeholder: displayPlaceholder, list: listId },
             });
             input.value = value;
             const datalist = row.createEl('datalist', { attr: { id: listId } });
@@ -1750,30 +1832,32 @@ export class CharacterView extends ProjectBoundItemView {
         } else if (field.multiline) {
             const textarea = row.createEl('textarea', {
                 cls: 'character-field-textarea',
-                attr: { placeholder: field.placeholder ? t(field.placeholder) : '', rows: '2' },
+                attr: { placeholder: displayPlaceholder, rows: '2' },
             });
             textarea.value = value;
-            // Auto-grow: fit content, shrink back when empty
-            const autoGrow = () => {
-                textarea.setCssStyles({ height: 'auto' });
-                const scrollH = textarea.scrollHeight;
-                const minH = 48; // ~2 rows
-                textarea.setCssStyles({ height: Math.max(scrollH, minH) + 'px' });
-            };
-            // Initial sizing after paint
-            window.setTimeout(autoGrow, 0);
+            bindResizableCustomFieldInput(
+                textarea,
+                this.plugin.settings,
+                customFieldInputHeightKey('character', 'builtin', field.key),
+                () => this.plugin.saveSettings(),
+                48,
+            );
             textarea.addEventListener('input', () => {
                 (draft as unknown as Record<string, unknown>)[field.key] = textarea.value;
                 this.scheduleSave(draft);
-                autoGrow();
             });
         } else {
-            const input = row.createEl('input', {
+            const input = row.createEl('textarea', {
                 cls: 'character-field-input',
-                type: 'text',
-                attr: { placeholder: field.placeholder ? t(field.placeholder) : '' },
+                attr: { placeholder: displayPlaceholder, rows: '1' },
             });
             input.value = value;
+            bindResizableCustomFieldInput(
+                input,
+                this.plugin.settings,
+                customFieldInputHeightKey('character', 'builtin', field.key),
+                () => this.plugin.saveSettings(),
+            );
             input.addEventListener('input', () => {
                 (draft as unknown as Record<string, unknown>)[field.key] = input.value;
                 this.scheduleSave(draft);
@@ -1781,6 +1865,12 @@ export class CharacterView extends ProjectBoundItemView {
 
             // ── Cascade rename: check when leaving the Name field ──
             if (field.key === 'name') {
+                input.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        input.blur();
+                    }
+                });
                 input.addEventListener('blur', () => {
                     this.checkCharacterRename(draft, input);
                 });
@@ -1798,7 +1888,7 @@ export class CharacterView extends ProjectBoundItemView {
         fieldKey: string,
     ): void {
         const upBtn = labelEl.createEl('span', {
-            cls: 'field-move-btn',
+            cls: 'profile-field-action-btn field-move-btn',
             attr: { title: t('Move field up'), 'aria-label': t('Move field up') },
         });
         obsidian.setIcon(upBtn, 'chevron-up');
@@ -1809,7 +1899,7 @@ export class CharacterView extends ProjectBoundItemView {
         });
 
         const downBtn = labelEl.createEl('span', {
-            cls: 'field-move-btn',
+            cls: 'profile-field-action-btn field-move-btn',
             attr: { title: t('Move field down'), 'aria-label': t('Move field down') },
         });
         obsidian.setIcon(downBtn, 'chevron-down');
@@ -1840,7 +1930,7 @@ export class CharacterView extends ProjectBoundItemView {
         labelWrap.createEl('label', { cls: 'character-field-label', text: tpl.label });
 
         const editBtn = labelWrap.createEl('span', {
-            cls: 'character-universal-edit-btn',
+            cls: 'profile-field-action-btn character-universal-edit-btn',
             attr: { title: t('Edit or remove this universal field'), 'aria-label': t('Edit field') },
         });
         obsidian.setIcon(editBtn, 'pencil');
@@ -1879,7 +1969,7 @@ export class CharacterView extends ProjectBoundItemView {
 
         // Issue #92 — up/down move buttons (revealed on hover)
         const moveUpBtn = labelWrap.createEl('span', {
-            cls: 'character-universal-move-btn',
+            cls: 'profile-field-action-btn character-universal-move-btn',
             attr: { title: t('Move field up'), 'aria-label': t('Move field up') },
         });
         obsidian.setIcon(moveUpBtn, 'chevron-up');
@@ -1892,7 +1982,7 @@ export class CharacterView extends ProjectBoundItemView {
         });
 
         const moveDownBtn = labelWrap.createEl('span', {
-            cls: 'character-universal-move-btn',
+            cls: 'profile-field-action-btn character-universal-move-btn',
             attr: { title: t('Move field down'), 'aria-label': t('Move field down') },
         });
         obsidian.setIcon(moveDownBtn, 'chevron-down');
@@ -1902,6 +1992,17 @@ export class CharacterView extends ProjectBoundItemView {
                 tpl.section, tpl.category, builtInKeys ?? [], 'universal', tpl.id,
             );
             if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
+        });
+
+        attachUniversalProfileFieldControls(labelWrap, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            templateId: tpl.id,
+            fieldLabel: tpl.label,
+            save: () => this.plugin.saveSettings(),
+            remove: () => this.plugin.fieldTemplates.remove(tpl.id),
+            onChanged: () => this.rerenderCharacterDetail(),
         });
 
         // Input control based on template type
@@ -2034,21 +2135,23 @@ export class CharacterView extends ProjectBoundItemView {
                 draft.universalFields![tpl.id] = select.value;
                 this.scheduleSave(draft);
             });
-        } else if (tpl.type === 'textarea') {
+        } else if (tpl.type === 'textarea' || tpl.type === 'text') {
+            const multiline = tpl.type === 'textarea';
             const textarea = row.createEl('textarea', {
-                cls: 'character-field-textarea',
-                attr: { placeholder: tpl.placeholder || '', rows: '2' },
+                cls: multiline ? 'character-field-textarea' : 'character-field-input',
+                attr: { placeholder: tpl.placeholder || '', rows: multiline ? '2' : '1' },
             });
             textarea.value = value;
-            const autoGrow = () => {
-                textarea.setCssStyles({ height: 'auto' });
-                textarea.setCssStyles({ height: Math.max(textarea.scrollHeight, 48) + 'px' });
-            };
-            window.setTimeout(autoGrow, 0);
+            bindResizableCustomFieldInput(
+                textarea,
+                this.plugin.settings,
+                customFieldInputHeightKey('universal', tpl.id),
+                () => this.plugin.saveSettings(),
+                multiline ? 48 : 34,
+            );
             textarea.addEventListener('input', () => {
                 draft.universalFields![tpl.id] = textarea.value;
                 this.scheduleSave(draft);
-                autoGrow();
             });
         } else if (tpl.type === 'checkbox') {
             const raw: unknown = draft.universalFields?.[tpl.id];
@@ -2061,18 +2164,6 @@ export class CharacterView extends ProjectBoundItemView {
             cb.checked = !!checked;
             cb.addEventListener('change', () => {
                 draft.universalFields![tpl.id] = cb.checked ? 'true' : 'false';
-                this.scheduleSave(draft);
-            });
-        } else {
-            // Default: single-line text
-            const input = row.createEl('input', {
-                cls: 'character-field-input',
-                type: 'text',
-                attr: { placeholder: tpl.placeholder || '' },
-            });
-            input.value = value;
-            input.addEventListener('input', () => {
-                draft.universalFields![tpl.id] = input.value;
                 this.scheduleSave(draft);
             });
         }
@@ -2518,6 +2609,37 @@ export class CharacterView extends ProjectBoundItemView {
         obsidian.setIcon(icon, 'plus-circle');
         sectionHeader.createSpan({ text: t(title) });
 
+        attachProfileSectionOrderControls(sectionHeader, {
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            sectionId: title,
+            defaultIds: [...CHARACTER_CATEGORIES.map(item => item.title), title],
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                this.rerenderCharacterDetail();
+            },
+        });
+
+        const addCustomFieldBtn = createProfileSectionAction(sectionHeader, {
+            icon: 'plus',
+            title: 'Add custom field',
+            className: 'profile-section-add-field-btn',
+        });
+        addCustomFieldBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            if (!draft.custom) draft.custom = {};
+            const n = Object.keys(draft.custom).length + 1;
+            let newKey = `field_${n}`;
+            while (draft.custom[newKey]) newKey = `field_${n}_${Date.now()}`;
+            draft.custom[newKey] = '';
+            this.scheduleSave(draft);
+            renderAllCustomFields();
+        });
+
         const sectionBody = section.createDiv('character-section-body');
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
@@ -2550,12 +2672,38 @@ export class CharacterView extends ProjectBoundItemView {
                 });
                 keyInput.value = key;
 
-                const valInput = row.createEl('input', {
+                const valInput = row.createEl('textarea', {
                     cls: 'character-field-input character-custom-value',
-                    type: 'text',
-                    attr: { placeholder: t('Value') },
+                    attr: { placeholder: t('Value'), rows: '1' },
                 });
                 valInput.value = val;
+                bindResizableCustomFieldInput(
+                    valInput,
+                    this.plugin.settings,
+                    customFieldInputHeightKey('character', 'custom', key),
+                    () => this.plugin.saveSettings(),
+                );
+
+                const customKeys = Object.keys(custom).filter(candidate => !isCustomSectionKey(candidate));
+                const customIndex = customKeys.indexOf(key);
+                const move = (direction: -1 | 1, icon: string, label: string, disabled: boolean): void => {
+                    const button = row.createEl('button', {
+                        cls: 'profile-field-action-btn character-custom-move',
+                        attr: { type: 'button', title: t(label), 'aria-label': t(label) },
+                    });
+                    button.disabled = disabled;
+                    obsidian.setIcon(button, icon);
+                    button.addEventListener('click', () => {
+                        draft.custom = moveMappingEntry(
+                            draft.custom || {}, key, direction,
+                            candidate => !isCustomSectionKey(candidate),
+                        );
+                        this.scheduleSave(draft);
+                        renderAllCustomFields();
+                    });
+                };
+                move(-1, 'chevron-up', 'Move field up', customIndex <= 0);
+                move(1, 'chevron-down', 'Move field down', customIndex < 0 || customIndex >= customKeys.length - 1);
 
                 const removeBtn = row.createEl('button', { cls: 'character-custom-remove', attr: { title: t('Remove field') } });
                 obsidian.setIcon(removeBtn, 'x');
@@ -2565,6 +2713,11 @@ export class CharacterView extends ProjectBoundItemView {
                     const newKey = keyInput.value.trim();
                     if (newKey) {
                         draft.custom![newKey] = valInput.value;
+                    }
+                    if (draft.tagline === `${CHARACTER_TAGLINE_CUSTOM_PREFIX}${key}`) {
+                        draft.tagline = newKey
+                            ? `${CHARACTER_TAGLINE_CUSTOM_PREFIX}${newKey}`
+                            : undefined;
                     }
                     this.scheduleSave(draft);
                 });
@@ -2579,22 +2732,14 @@ export class CharacterView extends ProjectBoundItemView {
 
                 removeBtn.addEventListener('click', () => {
                     delete draft.custom![key];
+                    if (draft.tagline === `${CHARACTER_TAGLINE_CUSTOM_PREFIX}${key}`) {
+                        draft.tagline = undefined;
+                    }
                     row.remove();
                     this.scheduleSave(draft);
                 });
             }
 
-            // Add button
-            const addRow = sectionBody.createDiv('character-custom-add-row');
-            const addBtn = addRow.createEl('button', { cls: 'character-custom-add-btn', text: t('+ Add Field') });
-            addBtn.addEventListener('click', () => {
-                if (!draft.custom) draft.custom = {};
-                const n = Object.keys(draft.custom).length + 1;
-                let newKey = `field_${n}`;
-                while (draft.custom[newKey]) newKey = `field_${n}_${Date.now()}`;
-                draft.custom[newKey] = '';
-                renderAllCustomFields();
-            });
         };
 
         renderAllCustomFields();
@@ -2608,7 +2753,7 @@ export class CharacterView extends ProjectBoundItemView {
      * form. The host is rebuilt per-render so it always reflects the latest
      * settings array reference.
      */
-    private buildCustomSectionsHost(draft: Character): CustomSectionsHost<Character> {
+    private buildCustomSectionsHost(draft: Character, builtinSectionCount: number): CustomSectionsHost<Character> {
         if (!this.plugin.settings.characterCustomSections) {
             this.plugin.settings.characterCustomSections = [];
         }
@@ -2617,12 +2762,21 @@ export class CharacterView extends ProjectBoundItemView {
             app: this.app,
             draft,
             sections,
-            builtinSectionCount: CHARACTER_CATEGORIES.length,
+            builtinSectionCount,
             collapsedSections: this.collapsedSections,
             collapseKeyPrefix: 'character',
             cssPrefix: 'character',
             scheduleSave: (d) => this.scheduleSave(d),
             persistSections: () => { void this.plugin.saveSettings(); },
+            bindCustomTextArea: (textarea, fieldKey, minHeight) => {
+                bindResizableCustomFieldInput(
+                    textarea,
+                    this.plugin.settings,
+                    customFieldInputHeightKey('character', fieldKey),
+                    () => this.plugin.saveSettings(),
+                    minHeight,
+                );
+            },
             requestRerender: () => {
                 this.rerenderCharacterDetail();
             },
@@ -3288,7 +3442,7 @@ export class CharacterView extends ProjectBoundItemView {
      * Check if the character name changed and offer to cascade-update all references.
      * Called on blur of the Name input field.
      */
-    private checkCharacterRename(draft: Character, inputEl: HTMLInputElement): void {
+    private checkCharacterRename(draft: Character, inputEl: HTMLInputElement | HTMLTextAreaElement): void {
         const oldName = this.originalCharacterName;
         const newName = draft.name?.trim();
         if (!oldName || !newName || oldName === newName) return;

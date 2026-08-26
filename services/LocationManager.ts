@@ -9,6 +9,7 @@ import {
 } from '../models/Location';
 import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
+import { orderLibraryEntityFrontmatter } from '../utils/libraryProfilePropertyOrder';
 
 /**
  * Manages world & location .md files — loading, saving, creating, deleting.
@@ -373,7 +374,8 @@ export class LocationManager {
         mirrorUniversalFieldsToTopLevel(fm, item.universalFields);
 
         const finalBody = item.notes ?? body;
-        const newContent = `---\n${stringifyYaml(fm)}---\n${finalBody ? '\n' + finalBody : ''}`;
+        const orderedFm = orderLibraryEntityFrontmatter(fm, item.type);
+        const newContent = `---\n${stringifyYaml(orderedFm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
         rememberEntityAfterSave(this.app, 'location', normalizedFilePath, item);
     }

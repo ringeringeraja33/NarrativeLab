@@ -767,6 +767,7 @@ type DimensionMutation = {
         value?: number;
         anchorRow?: number;
         anchorCol?: number;
+        rowsAutoHeightInfo?: Array<{ row?: number; autoHeight?: number }>;
     };
 };
 
@@ -798,20 +799,43 @@ function applyDimensionMutation(
     fallbackSheetId?: string | null,
 ): ConceptGridDocument | null {
     const { id, params } = command as DimensionMutation;
-    if (!params || !Array.isArray(params.ranges)) return null;
+    if (!params) return null;
     const sheetId = params.subUnitId || fallbackSheetId;
     if (!sheetId) return null;
     const isRow = id === 'sheet.mutation.set-worksheet-row-height'
         || id === 'sheet.command.set-row-height'
         || id === 'sheet.command.set-worksheet-row-height';
+    const isAutoRow = id === 'sheet.mutation.set-worksheet-row-auto-height';
     const isColumn = id === 'sheet.mutation.set-worksheet-col-width'
         || id === 'sheet.command.set-worksheet-col-width';
-    if (!isRow && !isColumn) return null;
+    if (!isRow && !isAutoRow && !isColumn) return null;
+    if (!isAutoRow && !Array.isArray(params.ranges)) return null;
     const next = structuredClone(doc);
     const page = next.pages.find(item => item.id === sheetId);
     if (!page) return null;
     let changed = false;
-    for (const range of params.ranges) {
+    if (isAutoRow) {
+        for (const info of params.rowsAutoHeightInfo || []) {
+            const worksheetRow = info.row;
+            const height = info.autoHeight;
+            if (worksheetRow == null || height == null || height <= 0) continue;
+            const nextHeight = Math.round(height);
+            if (worksheetRow === 0) {
+                if ((page.headerRowHeight || 0) !== nextHeight) {
+                    page.headerRowHeight = nextHeight;
+                    changed = true;
+                }
+                continue;
+            }
+            const row = page.rows[worksheetRow - 1];
+            if (row && row.height !== nextHeight) {
+                row.height = nextHeight;
+                changed = true;
+            }
+        }
+        return changed ? next : null;
+    }
+    for (const range of params.ranges || []) {
         if (isRow) {
             const start = range.startRow ?? 0;
             const end = range.endRow ?? start;
@@ -855,6 +879,78 @@ function applyDimensionMutation(
         }
     }
     return changed ? next : null;
+}
+
+type AxisSizeOverrides = {
+    headerRows: Map<string, number>;
+    labelColumns: Map<string, number>;
+    rows: Map<string, number>;
+    columns: Map<string, number>;
+};
+
+function createAxisSizeOverrides(): AxisSizeOverrides {
+    return {
+        headerRows: new Map(),
+        labelColumns: new Map(),
+        rows: new Map(),
+        columns: new Map(),
+    };
+}
+
+function clearAxisSizeOverrides(overrides: AxisSizeOverrides): void {
+    overrides.headerRows.clear();
+    overrides.labelColumns.clear();
+    overrides.rows.clear();
+    overrides.columns.clear();
+}
+
+const axisSizeKey = (pageId: string, axisId: string) => `${pageId}\u0000${axisId}`;
+
+/** Keep completed drag values authoritative over a lagging workbook.save() snapshot. */
+function rememberChangedAxisSizes(
+    overrides: AxisSizeOverrides,
+    before: ConceptGridDocument,
+    after: ConceptGridDocument,
+): void {
+    for (const page of after.pages) {
+        const previous = before.pages.find(item => item.id === page.id);
+        if (!previous) continue;
+        if ((page.headerRowHeight || 0) !== (previous.headerRowHeight || 0) && (page.headerRowHeight || 0) > 0) {
+            overrides.headerRows.set(page.id, page.headerRowHeight || 0);
+        }
+        if ((page.labelColumnWidth || 0) !== (previous.labelColumnWidth || 0) && (page.labelColumnWidth || 0) > 0) {
+            overrides.labelColumns.set(page.id, page.labelColumnWidth || 0);
+        }
+        for (const row of page.rows) {
+            const oldRow = previous.rows.find(item => item.id === row.id);
+            if (oldRow && row.height !== oldRow.height && row.height > 0) {
+                overrides.rows.set(axisSizeKey(page.id, row.id), row.height);
+            }
+        }
+        for (const column of page.columns) {
+            const oldColumn = previous.columns.find(item => item.id === column.id);
+            if (oldColumn && column.width !== oldColumn.width && column.width > 0) {
+                overrides.columns.set(axisSizeKey(page.id, column.id), column.width);
+            }
+        }
+    }
+}
+
+function applyRememberedAxisSizes(doc: ConceptGridDocument, overrides: AxisSizeOverrides): void {
+    for (const page of doc.pages) {
+        const headerHeight = overrides.headerRows.get(page.id);
+        if (headerHeight != null) page.headerRowHeight = headerHeight;
+        const labelWidth = overrides.labelColumns.get(page.id);
+        if (labelWidth != null) page.labelColumnWidth = labelWidth;
+        for (const row of page.rows) {
+            const height = overrides.rows.get(axisSizeKey(page.id, row.id));
+            if (height != null) row.height = height;
+        }
+        for (const column of page.columns) {
+            const width = overrides.columns.get(axisSizeKey(page.id, column.id));
+            if (width != null) column.width = width;
+        }
+    }
 }
 
 function applyAxisMoveMutation(doc: ConceptGridDocument, command: unknown): ConceptGridDocument | null {
@@ -1054,6 +1150,7 @@ function scheduleSiblingPlotGridRelayout(except?: () => void): void {
  */
 export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotGridUniverHost {
     let liveDoc = structuredClone(opts.initialDocument);
+    const axisSizeOverrides = createAxisSizeOverrides();
     let contentFp = conceptGridContentFingerprint(liveDoc);
     const workbookUnitId = createPlotGridWorkbookUnitId();
     const locale = opts.locale === 'zh' ? LocaleType.ZH_CN : LocaleType.EN_US;
@@ -1453,6 +1550,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 next.univerResources = normalizeUniverWorkbookResources(saved.resources);
                 next.univerStyles = normalizeUniverStyleMap(saved.styles);
             }
+            // A forced close/save pull can still expose the pre-drag rowData for
+            // one frame. Never let that snapshot overwrite a resize mutation we
+            // already observed in this host session.
+            applyRememberedAxisSizes(next, axisSizeOverrides);
             if (isIncompleteConceptGridPull(base, next)) return;
             const nextFp = conceptGridContentFingerprint(next);
             // Also detect meta drift (links) even when display text is unchanged.
@@ -1574,6 +1675,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         if (disposed || !pendingSetDoc || isEditorBusy() || opts.isExternalEditorBusy?.()) return;
         const next = pendingSetDoc;
         pendingSetDoc = null;
+        clearAxisSizeOverrides(axisSizeOverrides);
         liveDoc = next;
         contentFp = conceptGridContentFingerprint(liveDoc);
         // Let Univer finish compositionend / editor teardown before remounting.
@@ -1763,6 +1865,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     };
     const isDimensionCommand = (id: string) =>
         id === 'sheet.mutation.set-worksheet-row-height'
+        || id === 'sheet.mutation.set-worksheet-row-auto-height'
         || id === 'sheet.mutation.set-worksheet-col-width'
         || id === 'sheet.command.delta-row-height'
         || id === 'sheet.command.delta-column-width'
@@ -1857,6 +1960,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                         ?? applyLiveDeltaDimension(liveDoc, command, activeSheetId)
                         ?? applyAxisMoveMutation(liveDoc, command);
                     if (mutated) {
+                        rememberChangedAxisSizes(axisSizeOverrides, liveDoc, mutated);
                         liveDoc = mutated;
                         scheduleDimensionNotify();
                     } else if (isDimensionCommand(id)) {
@@ -2177,6 +2281,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 pendingSetDoc = next;
                 return;
             }
+            clearAxisSizeOverrides(axisSizeOverrides);
             liveDoc = next;
             contentFp = conceptGridContentFingerprint(liveDoc);
             replaceWorkbook(liveDoc);

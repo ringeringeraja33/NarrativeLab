@@ -13,6 +13,7 @@ import { collectMarkdownFiles, isExcalidrawFilePath, isLibraryEntityMarkdownFile
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 import { coerceString } from '../utils/narrow';
 import { ensureVaultFolder } from '../utils/vaultFolders';
+import { orderLibraryEntityFrontmatter } from '../utils/libraryProfilePropertyOrder';
 
 /**
  * Manages generic Codex entries — loading, saving, creating, and deleting
@@ -443,7 +444,8 @@ export class CodexManager {
         mirrorUniversalFieldsToTopLevel(fm, entry.universalFields);
 
         const finalBody = entry.notes ?? body;
-        const newContent = `---\n${stringifyYaml(fm)}---\n${finalBody ? '\n' + finalBody : ''}`;
+        const orderedFm = orderLibraryEntityFrontmatter(fm, entry.type);
+        const newContent = `---\n${stringifyYaml(orderedFm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
 
         // Update in-memory + stamp caches together (see CharacterManager.saveCharacter).

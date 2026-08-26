@@ -53,17 +53,26 @@ import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
 import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
+import { bindResizableCustomFieldInput, customFieldInputHeightKey } from '../utils/customFieldInputHeight';
+import { moveMappingEntry } from '../utils/libraryProfilePropertyOrder';
 import {
+    attachBuiltinFieldEditControl,
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
+    attachProfileSectionOrderControls,
+    attachUniversalProfileFieldControls,
+    createProfileSectionAction,
     canRemoveBuiltinSection,
     filterRemovedBuiltinFields,
+    getBuiltinProfileFieldOverride,
     getHiddenFieldKeys,
     getLibraryProfileOrientation,
+    getOrderedProfileSectionIds,
     isBuiltinSectionRemoved,
     isCoreProfileField,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
+    universalProfileFieldKey,
 } from '../utils/libraryProfileLayout';
 import { coerceString } from '../utils/narrow';
 import {
@@ -82,6 +91,7 @@ import {
     ALL_LIBRARY_CATEGORY_ID,
     disposeNativeLibraryBase,
     renderNativeLibraryBase,
+    syncAllNativeLibraryBases,
 } from '../components/NativeLibraryBase';
 import {
     LIBRARY_BROWSE_PAGE_SIZE,
@@ -1392,10 +1402,19 @@ export class CodexView extends ProjectBoundItemView {
         }
 
         // Render field categories interleaved with user-defined custom sections (#114)
-        const customHost = this.buildCustomSectionsHost(draft, catDef.categories.length);
+        const sectionIds = [...catDef.categories.map(category => category.title), 'Custom Fields'];
+        const orderedSectionIds = getOrderedProfileSectionIds(this.plugin.settings, catDef.id, sectionIds);
+        const customHost = this.buildCustomSectionsHost(draft, orderedSectionIds.length);
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
-        for (let i = 0; i < catDef.categories.length; i++) {
-            const category = catDef.categories[i];
+        for (let i = 0; i < orderedSectionIds.length; i++) {
+            const sectionId = orderedSectionIds[i];
+            if (sectionId === 'Custom Fields') {
+                this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
+                renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
+                continue;
+            }
+            const category = catDef.categories.find(item => item.title === sectionId);
+            if (!category) continue;
             if (isBuiltinSectionRemoved(this.plugin.settings, catDef.id, category.title)) {
                 renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
                 continue;
@@ -1403,9 +1422,6 @@ export class CodexView extends ProjectBoundItemView {
             this.renderFieldCategory(formPanel, category, draft, catDef, { board: horizontalProfile });
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
-
-        // Custom fields section
-        this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
 
         // "+ Add custom section" button at the bottom
         renderAddCustomSectionButton(formPanel, customHost);
@@ -1469,6 +1485,21 @@ export class CodexView extends ProjectBoundItemView {
 
         sectionHeader.createSpan({ cls: 'codex-section-title', text: t(cat.title) });
 
+        attachProfileSectionOrderControls(sectionHeader, {
+            settings: this.plugin.settings,
+            categoryKey: catDef.id,
+            sectionId: cat.title,
+            defaultIds: [...catDef.categories.map(item => item.title), 'Custom Fields'],
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                this.refreshEmbeddedOrView();
+            },
+        });
+
         attachBuiltinSectionRemoveControl(sectionHeader, {
             app: this.app,
             settings: this.plugin.settings,
@@ -1482,11 +1513,12 @@ export class CodexView extends ProjectBoundItemView {
         });
 
         // '+' button to add a universal field to this section
-        const addFieldBtn = sectionHeader.createEl('button', {
-            cls: 'character-section-add-field-btn',
-            attr: { title: t('Add universal field to this section'), 'aria-label': t('Add universal field') },
+        const addFieldBtn = createProfileSectionAction(sectionHeader, {
+            icon: 'plus',
+            title: 'Add universal field to this section',
+            ariaLabel: 'Add universal field',
+            className: 'character-section-add-field-btn profile-section-add-field-btn',
         });
-        obsidian.setIcon(addFieldBtn, 'plus');
         addFieldBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             const sectionNames = catDef.categories.map(c => c.title);
@@ -1538,8 +1570,10 @@ export class CodexView extends ProjectBoundItemView {
             // and built-ins themselves can be reordered via the up/down chevrons
             // that appear on hover.
             const universalFields = this.plugin.fieldTemplates.getBySection(cat.title, catDef.id);
+            const visibleUniversalFields = universalFields.filter(t => !hiddenKeys.includes(universalProfileFieldKey(t.id)));
+            const hiddenUniversalFields = universalFields.filter(t => hiddenKeys.includes(universalProfileFieldKey(t.id)));
             const fieldMap = new Map(visibleFields.map(f => [f.key, f]));
-            const tplMap = new Map(universalFields.map(t => [t.id, t]));
+            const tplMap = new Map(visibleUniversalFields.map(t => [t.id, t]));
             const builtInKeys = visibleFields.map(f => f.key);
             const merged = this.plugin.fieldTemplates.getMergedOrder(cat.title, catDef.id, builtInKeys);
             for (const entry of merged) {
@@ -1553,10 +1587,11 @@ export class CodexView extends ProjectBoundItemView {
             }
 
             // Hidden fields toggle
-            if (hiddenFieldsInCat.length > 0) {
+            const hiddenFieldCount = hiddenFieldsInCat.length + hiddenUniversalFields.length;
+            if (hiddenFieldCount > 0) {
                 const toggleEl = body.createDiv('hidden-fields-toggle');
                 toggleEl.createEl('a', {
-                    text: t('Show {n} hidden field(s)', { n: hiddenFieldsInCat.length }),
+                    text: t('Show {n} hidden field(s)', { n: hiddenFieldCount }),
                     cls: 'hidden-fields-toggle-link',
                 });
                 const hiddenContainer = body.createDiv('hidden-fields-container');
@@ -1564,13 +1599,16 @@ export class CodexView extends ProjectBoundItemView {
                 for (const field of hiddenFieldsInCat) {
                     this.renderField(hiddenContainer, field, draft, catDef);
                 }
+                for (const template of hiddenUniversalFields) {
+                    this.renderUniversalField(hiddenContainer, template, draft);
+                }
                 let showing = false;
                 toggleEl.addEventListener('click', () => {
                     showing = !showing;
                     hiddenContainer.setCssStyles({ display: showing ? '' : 'none' });
                     toggleEl.querySelector('a')!.textContent = showing
-                        ? t('Hide {n} hidden field(s)', { n: hiddenFieldsInCat.length })
-                        : t('Show {n} hidden field(s)', { n: hiddenFieldsInCat.length });
+                        ? t('Hide {n} hidden field(s)', { n: hiddenFieldCount })
+                        : t('Show {n} hidden field(s)', { n: hiddenFieldCount });
                 });
             }
 
@@ -1598,9 +1636,25 @@ export class CodexView extends ProjectBoundItemView {
         // Standard schema strings are translated; user-defined strings simply
         // fall through unchanged when they are not dictionary keys.
         const displayLabel = t(label);
-        const displayPlaceholder = t(placeholder);
+        const fieldOverride = getBuiltinProfileFieldOverride(this.plugin.settings, catDef.id, key);
+        const resolvedLabel = fieldOverride?.label || displayLabel;
+        const displayPlaceholder = fieldOverride?.placeholder || t(placeholder);
         const row = container.createDiv('codex-field-row');
-        const labelEl = row.createEl('label', { cls: 'codex-field-label', text: displayLabel });
+        const labelEl = row.createEl('label', { cls: 'codex-field-label', text: resolvedLabel });
+
+        attachBuiltinFieldEditControl(labelEl, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: catDef.id,
+            fieldKey: key,
+            defaultLabel: label,
+            defaultPlaceholder: placeholder,
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => { if (this.rootContainer) this.renderView(this.rootContainer); },
+        });
 
         // Up/down chevrons — reorder this built-in field within the section,
         // interleaved with universal fields. Only shown when we have the
@@ -1615,7 +1669,7 @@ export class CodexView extends ProjectBoundItemView {
             settings: this.plugin.settings,
             categoryKey: catDef.id,
             fieldKey: key,
-            fieldLabel: label,
+            fieldLabel: resolvedLabel,
             save: () => this.plugin.saveSettings(),
             onChanged: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
@@ -1666,26 +1720,29 @@ export class CodexView extends ProjectBoundItemView {
                 attr: { placeholder: displayPlaceholder, rows: '3' },
             });
             textarea.value = currentValue;
+            bindResizableCustomFieldInput(
+                textarea,
+                this.plugin.settings,
+                customFieldInputHeightKey(catDef.id, 'builtin', key),
+                () => this.plugin.saveSettings(),
+                48,
+            );
             textarea.addEventListener('input', () => {
                 draft[key] = textarea.value;
                 this.scheduleSave(draft);
-                // Auto-grow
-                textarea.setCssStyles({ height: "auto" });
-
-                textarea.setCssStyles({ height: textarea.scrollHeight + 'px' });
-            });
-            // Initial auto-grow
-            window.requestAnimationFrame(() => {
-                textarea.setCssStyles({ height: "auto" });
-
-                textarea.setCssStyles({ height: textarea.scrollHeight + 'px' });
             });
         } else {
-            const input = row.createEl('input', {
+            const input = row.createEl('textarea', {
                 cls: 'codex-field-input',
-                attr: { type: 'text', placeholder: displayPlaceholder },
+                attr: { placeholder: displayPlaceholder, rows: '1' },
             });
             input.value = currentValue;
+            bindResizableCustomFieldInput(
+                input,
+                this.plugin.settings,
+                customFieldInputHeightKey(catDef.id, 'builtin', key),
+                () => this.plugin.saveSettings(),
+            );
             input.addEventListener('input', () => {
                 draft[key] = input.value;
                 this.scheduleSave(draft);
@@ -1693,6 +1750,12 @@ export class CodexView extends ProjectBoundItemView {
 
             // Name field: cascade rename on blur
             if (key === 'name') {
+                input.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        input.blur();
+                    }
+                });
                 input.addEventListener('blur', async () => {
                     const newName = input.value.trim();
                     if (newName && newName !== draft.name) {
@@ -1722,7 +1785,7 @@ export class CodexView extends ProjectBoundItemView {
         fieldKey: string,
     ): void {
         const upBtn = labelEl.createEl('span', {
-            cls: 'field-move-btn',
+            cls: 'profile-field-action-btn field-move-btn',
             attr: { title: t('Move field up'), 'aria-label': t('Move field up') },
         });
         obsidian.setIcon(upBtn, 'chevron-up');
@@ -1733,7 +1796,7 @@ export class CodexView extends ProjectBoundItemView {
         });
 
         const downBtn = labelEl.createEl('span', {
-            cls: 'field-move-btn',
+            cls: 'profile-field-action-btn field-move-btn',
             attr: { title: t('Move field down'), 'aria-label': t('Move field down') },
         });
         obsidian.setIcon(downBtn, 'chevron-down');
@@ -1762,7 +1825,7 @@ export class CodexView extends ProjectBoundItemView {
         labelWrap.createEl('label', { cls: 'codex-field-label', text: tpl.label });
 
         const editBtn = labelWrap.createEl('span', {
-            cls: 'codex-universal-edit-btn',
+            cls: 'profile-field-action-btn codex-universal-edit-btn',
             attr: { title: t('Edit or remove this universal field'), 'aria-label': t('Edit field') },
         });
         obsidian.setIcon(editBtn, 'pencil');
@@ -1796,7 +1859,7 @@ export class CodexView extends ProjectBoundItemView {
 
         // Issue #92 — up/down move buttons (revealed on hover)
         const moveUpBtn = labelWrap.createEl('span', {
-            cls: 'codex-universal-move-btn',
+            cls: 'profile-field-action-btn codex-universal-move-btn',
             attr: { title: t('Move field up'), 'aria-label': t('Move field up') },
         });
         obsidian.setIcon(moveUpBtn, 'chevron-up');
@@ -1809,7 +1872,7 @@ export class CodexView extends ProjectBoundItemView {
         });
 
         const moveDownBtn = labelWrap.createEl('span', {
-            cls: 'codex-universal-move-btn',
+            cls: 'profile-field-action-btn codex-universal-move-btn',
             attr: { title: t('Move field down'), 'aria-label': t('Move field down') },
         });
         obsidian.setIcon(moveDownBtn, 'chevron-down');
@@ -1819,6 +1882,17 @@ export class CodexView extends ProjectBoundItemView {
                 tpl.section, tpl.category, builtInKeys ?? [], 'universal', tpl.id,
             );
             if (this.rootContainer) this.renderView(this.rootContainer);
+        });
+
+        attachUniversalProfileFieldControls(labelWrap, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: tpl.category || this.activeCategory,
+            templateId: tpl.id,
+            fieldLabel: tpl.label,
+            save: () => this.plugin.saveSettings(),
+            remove: () => this.plugin.fieldTemplates.remove(tpl.id),
+            onChanged: () => { if (this.rootContainer) this.renderView(this.rootContainer); },
         });
 
         // Input control based on template type
@@ -1952,21 +2026,23 @@ export class CodexView extends ProjectBoundItemView {
                 draft.universalFields![tpl.id] = select.value;
                 this.scheduleSave(draft);
             });
-        } else if (tpl.type === 'textarea') {
+        } else if (tpl.type === 'textarea' || tpl.type === 'text') {
+            const multiline = tpl.type === 'textarea';
             const textarea = row.createEl('textarea', {
-                cls: 'codex-field-textarea',
-                attr: { placeholder: tpl.placeholder || '', rows: '2' },
+                cls: multiline ? 'codex-field-textarea' : 'codex-field-input',
+                attr: { placeholder: tpl.placeholder || '', rows: multiline ? '2' : '1' },
             });
             textarea.value = value;
-            const autoGrow = () => {
-                textarea.setCssStyles({ height: 'auto' });
-                textarea.setCssStyles({ height: Math.max(textarea.scrollHeight, 48) + 'px' });
-            };
-            window.setTimeout(autoGrow, 0);
+            bindResizableCustomFieldInput(
+                textarea,
+                this.plugin.settings,
+                customFieldInputHeightKey('universal', tpl.id),
+                () => this.plugin.saveSettings(),
+                multiline ? 48 : 34,
+            );
             textarea.addEventListener('input', () => {
                 draft.universalFields![tpl.id] = textarea.value;
                 this.scheduleSave(draft);
-                autoGrow();
             });
         } else if (tpl.type === 'checkbox') {
             const raw: unknown = draft.universalFields?.[tpl.id];
@@ -1979,17 +2055,6 @@ export class CodexView extends ProjectBoundItemView {
             cb.checked = !!checked;
             cb.addEventListener('change', () => {
                 draft.universalFields![tpl.id] = cb.checked ? 'true' : 'false';
-                this.scheduleSave(draft);
-            });
-        } else {
-            const input = row.createEl('input', {
-                cls: 'codex-field-input',
-                type: 'text',
-                attr: { placeholder: tpl.placeholder || '' },
-            });
-            input.value = value;
-            input.addEventListener('input', () => {
-                draft.universalFields![tpl.id] = input.value;
                 this.scheduleSave(draft);
             });
         }
@@ -2032,6 +2097,49 @@ export class CodexView extends ProjectBoundItemView {
         obsidian.setIcon(icon, 'plus-circle');
         header.createSpan({ cls: 'codex-section-title', text: t('Custom Fields') });
 
+        const catDef = this.codexManager.getCategoryDef(draft.type);
+        attachProfileSectionOrderControls(header, {
+            settings: this.plugin.settings,
+            categoryKey: draft.type,
+            sectionId: 'Custom Fields',
+            defaultIds: [...(catDef?.categories ?? []).map(item => item.title), 'Custom Fields'],
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                this.refreshEmbeddedOrView();
+            },
+        });
+
+        const addCustomFieldBtn = createProfileSectionAction(header, {
+            icon: 'plus',
+            title: 'Add custom field',
+            className: 'profile-section-add-field-btn',
+        });
+        addCustomFieldBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            const modal = new AddCustomFieldModal(this.app, (name, applyToAll) => {
+                if (!draft.custom) draft.custom = {};
+                if (!(name in draft.custom)) draft.custom[name] = '';
+                if (applyToAll) {
+                    if (!this.plugin.settings.codexCategoryFieldTemplates) {
+                        this.plugin.settings.codexCategoryFieldTemplates = {};
+                    }
+                    const templateFields = this.plugin.settings.codexCategoryFieldTemplates[draft.type] || [];
+                    if (!templateFields.includes(name)) {
+                        templateFields.push(name);
+                        this.plugin.settings.codexCategoryFieldTemplates[draft.type] = templateFields;
+                        void this.plugin.saveSettings();
+                    }
+                }
+                this.scheduleSave(draft);
+                this.refreshEmbeddedOrView();
+            });
+            modal.open();
+        });
+
         if (!board) {
             header.addEventListener('click', () => {
                 if (this.collapsedSections.has(sectionKey)) {
@@ -2054,16 +2162,43 @@ export class CodexView extends ProjectBoundItemView {
             const row = body.createDiv('codex-field-row codex-custom-field-row');
             row.createEl('label', { cls: 'codex-field-label', text: fieldName });
 
-            const input = row.createEl('input', {
+            const input = row.createEl('textarea', {
                 cls: 'codex-field-input',
-                attr: { type: 'text', placeholder: t('Value for {field}', { field: fieldName }) },
+                attr: { placeholder: t('Value for {field}', { field: fieldName }), rows: '1' },
             });
             input.value = fieldValue;
+            bindResizableCustomFieldInput(
+                input,
+                this.plugin.settings,
+                customFieldInputHeightKey(draft.type, 'custom', fieldName),
+                () => this.plugin.saveSettings(),
+            );
             input.addEventListener('input', () => {
                 if (!draft.custom) draft.custom = {};
                 draft.custom[fieldName] = input.value;
                 this.scheduleSave(draft);
             });
+
+            const customKeys = Object.keys(custom).filter(candidate => !candidate.includes(CodexView.CUSTOM_SECTION_KEY_SEP));
+            const customIndex = customKeys.indexOf(fieldName);
+            const move = (direction: -1 | 1, icon: string, label: string, disabled: boolean): void => {
+                const button = row.createEl('button', {
+                    cls: 'profile-field-action-btn codex-custom-field-move',
+                    attr: { type: 'button', title: t(label), 'aria-label': t(label) },
+                });
+                button.disabled = disabled;
+                obsidian.setIcon(button, icon);
+                button.addEventListener('click', () => {
+                    draft.custom = moveMappingEntry(
+                        draft.custom || {}, fieldName, direction,
+                        candidate => !candidate.includes(CodexView.CUSTOM_SECTION_KEY_SEP),
+                    );
+                    this.scheduleSave(draft);
+                    this.refreshEmbeddedOrView();
+                });
+            };
+            move(-1, 'chevron-up', 'Move field up', customIndex <= 0);
+            move(1, 'chevron-down', 'Move field down', customIndex < 0 || customIndex >= customKeys.length - 1);
 
             const removeBtn = row.createEl('button', {
                 cls: 'codex-custom-field-remove',
@@ -2104,29 +2239,6 @@ export class CodexView extends ProjectBoundItemView {
             });
         }
 
-        // Add custom field button
-        const addRow = body.createDiv('codex-add-custom-field-row');
-        const addBtn = addRow.createEl('button', { cls: 'codex-add-custom-btn', text: t('+ Add custom field') });
-        addBtn.addEventListener('click', () => {
-            const modal = new AddCustomFieldModal(this.app, (name, applyToAll) => {
-                if (!draft.custom) draft.custom = {};
-                if (!(name in draft.custom)) draft.custom[name] = '';
-                if (applyToAll) {
-                    if (!this.plugin.settings.codexCategoryFieldTemplates) {
-                        this.plugin.settings.codexCategoryFieldTemplates = {};
-                    }
-                    const tpl = this.plugin.settings.codexCategoryFieldTemplates[draft.type] || [];
-                    if (!tpl.includes(name)) {
-                        tpl.push(name);
-                        this.plugin.settings.codexCategoryFieldTemplates[draft.type] = tpl;
-                        void this.plugin.saveSettings();
-                    }
-                }
-                this.scheduleSave(draft);
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            });
-            modal.open();
-        });
     }
 
     // ── User-defined custom sections (#114) ────────────
@@ -2160,6 +2272,15 @@ export class CodexView extends ProjectBoundItemView {
                 allSections[draft.type] = sections;
                 if (sections.length === 0) delete allSections[draft.type];
                 void this.plugin.saveSettings();
+            },
+            bindCustomTextArea: (textarea, fieldKey, minHeight) => {
+                bindResizableCustomFieldInput(
+                    textarea,
+                    this.plugin.settings,
+                    customFieldInputHeightKey(draft.type, fieldKey),
+                    () => this.plugin.saveSettings(),
+                    minHeight,
+                );
             },
             requestRerender: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);

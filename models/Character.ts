@@ -604,20 +604,42 @@ export const CHARACTER_TAGLINE_FIELD_KEYS: ReadonlySet<string> = new Set(
         .filter(key => !['name', 'tagline', 'relations', 'locations', 'image', 'gallery'].includes(key)),
 );
 
+/** Namespaced selectors keep custom-field IDs distinct from built-in YAML keys. */
+export const CHARACTER_TAGLINE_UNIVERSAL_PREFIX = 'universal:';
+export const CHARACTER_TAGLINE_CUSTOM_PREFIX = 'custom:';
+
+function characterSnippetValue(value: unknown): string {
+    if (Array.isArray(value)) {
+        return value
+            .map(item => coerceString(item).trim())
+            .filter(Boolean)
+            .join(', ');
+    }
+    return coerceString(value).trim();
+}
+
 /**
  * Resolve the short blurb shown on character cards.
  * `tagline` is normally a field key (personality, occupation, …). Legacy free-text
  * values (Scrivener synopsis imports) are shown as-is when they aren't a known key.
  */
 export function resolveCharacterCardSnippet(char: Character): string {
-    const auto = coerceString(char.personality)
-        || coerceString(char.occupation)
+    const auto = characterSnippetValue(char.personality)
+        || characterSnippetValue(char.occupation)
         || getRoleDisplay(char)
         || '';
     const tagline = coerceString(char.tagline).trim();
     if (!tagline) return auto;
+    if (tagline.startsWith(CHARACTER_TAGLINE_UNIVERSAL_PREFIX)) {
+        const id = tagline.slice(CHARACTER_TAGLINE_UNIVERSAL_PREFIX.length);
+        return characterSnippetValue(char.universalFields?.[id]) || auto;
+    }
+    if (tagline.startsWith(CHARACTER_TAGLINE_CUSTOM_PREFIX)) {
+        const key = tagline.slice(CHARACTER_TAGLINE_CUSTOM_PREFIX.length);
+        return characterSnippetValue(char.custom?.[key]) || auto;
+    }
     if (CHARACTER_TAGLINE_FIELD_KEYS.has(tagline)) {
-        const fromField = coerceString((char as unknown as Record<string, unknown>)[tagline]).trim();
+        const fromField = characterSnippetValue((char as unknown as Record<string, unknown>)[tagline]);
         return fromField || auto;
     }
     // Legacy free-text tagline

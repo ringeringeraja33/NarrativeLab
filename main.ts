@@ -118,6 +118,8 @@ import { LocationManager } from './services/LocationManager';
 import { CharacterManager } from './services/CharacterManager';
 import { CodexManager } from './services/CodexManager';
 import { makeProfileCodexCategory, UNCATEGORIZED_CATEGORY_ID } from './models/Codex';
+import { CHARACTER_CATEGORIES } from './models/Character';
+import { LOCATION_CATEGORIES, WORLD_CATEGORIES } from './models/Location';
 import {
     collectMarkdownFiles,
     invalidateAllEntityCaches,
@@ -149,6 +151,7 @@ import {
     applyLibraryProfileLayout,
     emptyLibraryProfileLayout,
     LIBRARY_PROFILE_LAYOUT_FILENAME,
+    getOrderedProfileSectionIds,
     libraryProfileLayoutFromUnknown,
     readLibraryProfileLayout,
 } from './utils/libraryProfileLayout';
@@ -157,6 +160,11 @@ import { clearPendingStoryGraphWikilinks } from './components/LibraryModeBar';
 import { QuickAddModal } from './components/QuickAddModal';
 import { ConverterModal, type ConverterTab } from './components/ConverterModal';
 import { syncAllNativeLibraryBases } from './components/NativeLibraryBase';
+import {
+    setLibraryProfilePropertyOrderProvider,
+    type LibraryProfilePropertyOrder,
+} from './utils/libraryProfilePropertyOrder';
+import { CUSTOM_SECTION_KEY_SEP, type CustomSection } from './components/CustomSectionsRenderer';
 import { migrateLibraryAttachmentsForAllProjects } from './services/LibraryAttachmentMigration';
 import {
     NCanvasManagerModal,
@@ -535,6 +543,8 @@ export default class SceneCardsPlugin extends Plugin {
         this.linkScanner.setCodexManager(this.codexManager);
         this.cascadeRename = new CascadeRenameService(this.sceneManager, this.characterManager, this.locationManager);
         this.fieldTemplates = new FieldTemplateService(this.app, () => this.getProjectSystemFolder());
+        setLibraryProfilePropertyOrderProvider(categoryKey => this.resolveLibraryProfilePropertyOrder(categoryKey));
+        this.register(() => setLibraryProfilePropertyOrderProvider(null));
         this.templateCenter = new TemplateCenterService(this.app, this);
         // Issue #71 — expose templates to parsers for top-level YAML mirroring
         setActiveTemplatesProvider(() => this.fieldTemplates.getAll());
@@ -2330,7 +2340,8 @@ export default class SceneCardsPlugin extends Plugin {
         // Archive profile field layout (System/library-profile-layout.json)
         'hiddenFields', 'removedBuiltinFields', 'removedBuiltinSections',
         'characterCustomSections', 'locationCustomSections', 'codexCategoryCustomSections',
-        'codexCategoryFieldTemplates', 'profileOrientations',
+        'codexCategoryFieldTemplates', 'profileOrientations', 'profileFieldInputHeights',
+        'profileFieldOverrides', 'profileSectionOrders',
     ];
 
     /** Obsidian appearance → NL/ncanvas light|dark. */
@@ -2476,6 +2487,9 @@ export default class SceneCardsPlugin extends Plugin {
             toSave.codexCategoryCustomSections = emptyProfile.codexCategoryCustomSections;
             toSave.codexCategoryFieldTemplates = emptyProfile.codexCategoryFieldTemplates;
             toSave.profileOrientations = emptyProfile.profileOrientations;
+            toSave.profileFieldInputHeights = emptyProfile.profileFieldInputHeights;
+            toSave.profileFieldOverrides = emptyProfile.profileFieldOverrides;
+            toSave.profileSectionOrders = emptyProfile.profileSectionOrders;
             // When using per-project colours, restore global defaults into
             // data.json so the global values are not overwritten by the
             // project-specific ones currently in memory.
@@ -2518,6 +2532,123 @@ export default class SceneCardsPlugin extends Plugin {
         if (this._systemMigrationDone) {
             await this.saveProjectSystemData();
         }
+    }
+
+    /** Canonical property order shared by profile editors, YAML writers, and Base views. */
+    private resolveLibraryProfilePropertyOrder(categoryKey: string): LibraryProfilePropertyOrder | null {
+        const codexDef = categoryKey === 'character' || categoryKey === 'world' || categoryKey === 'location'
+            ? null
+            : this.codexManager?.getCategoryDef(categoryKey);
+        const sections = categoryKey === 'character'
+            ? CHARACTER_CATEGORIES
+            : categoryKey === 'world'
+                ? WORLD_CATEGORIES
+                : categoryKey === 'location'
+                    ? LOCATION_CATEGORIES
+                    : codexDef?.categories;
+        if (!sections) return null;
+
+        const templateCategory = categoryKey === 'world' || categoryKey === 'location'
+            ? 'location'
+            : categoryKey;
+        const fieldSettingsKey = templateCategory;
+        const defaultSectionIds = [...sections.map(section => section.title), 'Custom Fields'];
+        const orderedSectionIds = getOrderedProfileSectionIds(
+            this.settings,
+            categoryKey,
+            defaultSectionIds,
+        );
+        const removedSections = new Set(this.settings.removedBuiltinSections?.[categoryKey] ?? []);
+        const removedFields = new Set(this.settings.removedBuiltinFields?.[fieldSettingsKey] ?? []);
+        const hiddenFields = new Set(this.settings.hiddenFields?.[fieldSettingsKey] ?? []);
+        const orderedKeys: string[] = [];
+        const visibleKeys: string[] = [];
+        const universalFieldIds: string[] = [];
+        const customKeys: string[] = [];
+        const seenOrdered = new Set<string>();
+        const seenVisible = new Set<string>();
+        const seenUniversal = new Set<string>();
+        const pushOrdered = (key: string): void => {
+            if (!key || seenOrdered.has(key)) return;
+            seenOrdered.add(key);
+            orderedKeys.push(key);
+        };
+        const pushVisible = (key: string): void => {
+            if (!key || seenVisible.has(key)) return;
+            seenVisible.add(key);
+            visibleKeys.push(key);
+        };
+
+        const customSections = (categoryKey === 'character'
+            ? this.settings.characterCustomSections
+            : categoryKey === 'world' || categoryKey === 'location'
+                ? this.settings.locationCustomSections
+                : this.settings.codexCategoryCustomSections?.[categoryKey]) as CustomSection[] | undefined;
+        const buckets: CustomSection[][] = Array.from(
+            { length: orderedSectionIds.length + 1 },
+            () => [],
+        );
+        for (const section of customSections ?? []) {
+            const raw = Number(section.position);
+            const slot = Number.isFinite(raw)
+                ? Math.max(0, Math.min(orderedSectionIds.length, Math.trunc(raw)))
+                : orderedSectionIds.length;
+            buckets[slot].push(section);
+        }
+        const appendCustomSections = (slot: number): void => {
+            if ((buckets[slot]?.length ?? 0) > 0) pushOrdered('custom');
+            for (const section of buckets[slot] ?? []) {
+                for (const field of section.fields ?? []) {
+                    const name = typeof field === 'string' ? field : field.name;
+                    const key = `${section.title}${CUSTOM_SECTION_KEY_SEP}${name}`;
+                    if (name && !customKeys.includes(key)) customKeys.push(key);
+                }
+            }
+        };
+
+        for (let index = 0; index < orderedSectionIds.length; index++) {
+            appendCustomSections(index);
+            const sectionId = orderedSectionIds[index];
+            if (sectionId === 'Custom Fields') {
+                pushOrdered('custom');
+                pushVisible('custom');
+                for (const name of this.settings.codexCategoryFieldTemplates?.[categoryKey] ?? []) {
+                    if (name && !customKeys.includes(name)) customKeys.push(name);
+                }
+                continue;
+            }
+            const section = sections.find(item => item.title === sectionId);
+            if (!section) continue;
+            const builtInKeys = section.fields.map(field => field.key);
+            const merged = this.fieldTemplates.getMergedOrder(section.title, templateCategory, builtInKeys);
+            for (const entry of merged) {
+                if (entry.kind === 'builtin') {
+                    pushOrdered(entry.key);
+                    if (!removedSections.has(section.title)
+                        && !removedFields.has(entry.key)
+                        && !hiddenFields.has(entry.key)) {
+                        pushVisible(entry.key);
+                    }
+                    continue;
+                }
+                if (!seenUniversal.has(entry.key)) {
+                    seenUniversal.add(entry.key);
+                    universalFieldIds.push(entry.key);
+                }
+                pushOrdered('universalFields');
+                const template = this.fieldTemplates.getById(entry.key);
+                const topLevelKey = template?.topLevelKey?.trim();
+                if (!topLevelKey) continue;
+                pushOrdered(topLevelKey);
+                if (!removedSections.has(section.title)
+                    && !hiddenFields.has(`universal:${entry.key}`)) {
+                    pushVisible(topLevelKey);
+                }
+            }
+        }
+        appendCustomSections(orderedSectionIds.length);
+
+        return { orderedKeys, visibleKeys, customKeys, universalFieldIds };
     }
 
     private applyImageSizingVariables(): void {
@@ -3236,6 +3367,9 @@ export default class SceneCardsPlugin extends Plugin {
                 codexCategoryCustomSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.codexCategoryCustomSections)) as Record<string, unknown[]>,
                 codexCategoryFieldTemplates: { ...this._legacyLibraryProfileLayoutDefaults.codexCategoryFieldTemplates },
                 profileOrientations: { ...this._legacyLibraryProfileLayoutDefaults.profileOrientations },
+                profileFieldInputHeights: { ...this._legacyLibraryProfileLayoutDefaults.profileFieldInputHeights },
+                profileFieldOverrides: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.profileFieldOverrides)),
+                profileSectionOrders: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.profileSectionOrders)),
             });
             profileLayoutDirty = true;
         }

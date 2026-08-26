@@ -11,6 +11,7 @@ export const MAIN_ZH: Record<string, string> = {
     " Snapshots": " 快照",
     "+ Add custom section": "+ 添加自定义分区",
     "+ Add field to this section": "+ 向此分区添加字段",
+    "Add field to this section": "向此分区添加字段",
     "+ Add option": "+ 添加选项",
     "+ Save current": "+ 保存当前筛选",
     "Active": "启用",

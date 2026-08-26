@@ -1568,6 +1568,23 @@ export async function decodePlotGridXlsx(
             }
         });
 
+        // The visible workbook is authoritative for explicitly stored axis
+        // dimensions. A sidecar can be one write behind after an interrupted
+        // close, so taking sizes only when row/column counts changed made a
+        // successfully written row height appear to reset on the next open.
+        columns.forEach((column, index) => {
+            const liveWidth = sheet.getColumn(index + 2).width;
+            if (typeof liveWidth === 'number' && liveWidth > 0) {
+                column.width = Math.round(liveWidth * 8);
+            }
+        });
+        rows.forEach((row, index) => {
+            const liveHeight = sheet.getRow(index + 2).height;
+            if (typeof liveHeight === 'number' && liveHeight > 0) {
+                row.height = Math.round(liveHeight / 0.75);
+            }
+        });
+
         const cells: Record<string, CellData> = {};
         rows.forEach((row, ri) => {
             columns.forEach((col, ci) => {
@@ -1702,15 +1719,15 @@ export async function decodePlotGridXlsx(
                 }
                 return visible || saved;
             })(),
-            headerRowHeight: typeof pageMeta?.headerRowHeight === 'number' && pageMeta.headerRowHeight > 0
-                ? Math.round(pageMeta.headerRowHeight)
-                : (typeof sheet.getRow(1).height === 'number' && (sheet.getRow(1).height || 0) > 0
-                    ? Math.round((sheet.getRow(1).height || 0) / 0.75)
+            headerRowHeight: typeof sheet.getRow(1).height === 'number' && (sheet.getRow(1).height || 0) > 0
+                ? Math.round((sheet.getRow(1).height || 0) / 0.75)
+                : (typeof pageMeta?.headerRowHeight === 'number' && pageMeta.headerRowHeight > 0
+                    ? Math.round(pageMeta.headerRowHeight)
                     : 0),
-            labelColumnWidth: typeof pageMeta?.labelColumnWidth === 'number' && pageMeta.labelColumnWidth > 0
-                ? Math.round(pageMeta.labelColumnWidth)
-                : (typeof sheet.getColumn(1).width === 'number' && (sheet.getColumn(1).width || 0) > 0
-                    ? Math.round((sheet.getColumn(1).width || 0) * 8)
+            labelColumnWidth: typeof sheet.getColumn(1).width === 'number' && (sheet.getColumn(1).width || 0) > 0
+                ? Math.round((sheet.getColumn(1).width || 0) * 8)
+                : (typeof pageMeta?.labelColumnWidth === 'number' && pageMeta.labelColumnWidth > 0
+                    ? Math.round(pageMeta.labelColumnWidth)
                     : 0),
             hidden: sheet.state === 'hidden' || sheet.state === 'veryHidden' || pageMeta?.hidden === true,
             tabColor: argbToCss(sheet.properties?.tabColor?.argb) || pageMeta?.tabColor || '',

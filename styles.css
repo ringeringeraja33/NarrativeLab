@@ -12135,6 +12135,16 @@ body.narrative-lab-theme-dark .location-field-input.dropdown {
 }
 .codex-custom-field-row .codex-field-input { flex: 1; min-width: 0; }
 
+/* User-created text fields use a textarea so their editing area can be
+   enlarged. The exact height is remembered per project in profile layout. */
+textarea.nl-resizable-custom-field {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical !important;
+    overflow-y: auto !important;
+    font-family: inherit;
+}
+
 /* Multi-select widget used inside custom-section fields (v1.10.17). Compact
    pills + a free-form text input. Comma-friendly storage on save. */
 .codex-custom-multi-wrap {
@@ -13771,6 +13781,50 @@ body.narrative-lab-theme-dark .codex-stale-header {
 .field-move-btn.field-move-btn:hover {
     opacity: 1;
     color: var(--text-accent);
+}
+
+/* Unified five-action field toolbar: edit, up, down, hide, remove. */
+.profile-field-action-btn {
+    display: inline-flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    padding: 0 !important;
+    margin: 0 0 0 4px !important;
+    border: 0 !important;
+    background: none !important;
+    color: var(--text-muted);
+    vertical-align: middle;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, color 0.15s;
+}
+
+.profile-field-action-btn svg {
+    width: 14px !important;
+    height: 14px !important;
+}
+
+.character-field-row:hover .profile-field-action-btn,
+.location-field-row:hover .profile-field-action-btn,
+.codex-field-row:hover .profile-field-action-btn {
+    opacity: 0.6;
+}
+
+.profile-field-action-btn:hover {
+    opacity: 1 !important;
+    color: var(--text-accent);
+}
+
+.profile-field-action-btn.field-remove-btn:hover {
+    color: var(--text-error, var(--color-red));
+}
+
+.profile-field-action-btn[aria-disabled='true'] {
+    cursor: not-allowed;
+    opacity: 0.2 !important;
+    color: var(--text-faint);
 }
 
 .hidden-fields-toggle {
@@ -15594,4 +15648,53 @@ body .nl-floating-sticky-save-location input[type="text"] {
         flex-basis: calc(50% - 10px);
         max-width: none;
     }
+}
+.profile-section-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-inline-start: auto;
+    flex: 0 0 auto;
+}
+
+.profile-section-actions .profile-section-action-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-s);
+    color: var(--text-muted);
+    background: transparent;
+    cursor: pointer;
+    opacity: 0.62;
+    transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+.profile-section-actions .profile-section-action-btn:hover:not([data-disabled="true"]) {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+    opacity: 1;
+}
+
+.profile-section-actions .profile-section-action-btn[data-disabled="true"] {
+    opacity: 0.22;
+    cursor: default;
+    pointer-events: none;
+}
+
+.profile-section-actions .profile-section-action-btn svg,
+.profile-section-actions .profile-section-action-btn .svg-icon {
+    width: 14px;
+    height: 14px;
+}
+
+.profile-section-actions .character-section-add-field-btn,
+.profile-section-actions .profile-section-add-field-btn {
+    margin-inline-start: 0;
+    padding: 0;
+    color: var(--text-muted);
+    opacity: 0.62;
 }

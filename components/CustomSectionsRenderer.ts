@@ -17,6 +17,7 @@ import { attachTooltip } from './Tooltip';
 import { openConfirmModal } from './ConfirmModal';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
+import { getProfileSectionActions } from '../utils/libraryProfileLayout';
 
 /** Composite-key separator used to namespace fields inside custom sections. */
 export const CUSTOM_SECTION_KEY_SEP = ' :: ';
@@ -117,6 +118,8 @@ export interface CustomSectionsHost<TDraft extends { custom?: Record<string, str
     persistSections: () => void;
     /** Trigger a full re-render of the host view. */
     requestRerender: () => void;
+    /** Enable and persist vertical resizing for a custom text field. */
+    bindCustomTextArea?: (textarea: HTMLTextAreaElement, fieldKey: string, minHeight?: number) => void;
 }
 
 /** Effective position for a section (clamped to [0, builtinCount]). */
@@ -359,13 +362,13 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
 
         // Move up / move down / rename / delete actions — icon-only spans
         // matching the rest of the app (no <button> elements).
-        const actions = header.createSpan({ cls: 'codex-section-actions' });
+        const actions = getProfileSectionActions(header);
         const stop = (e: Event) => e.stopPropagation();
         const disabledAttr = 'data-disabled';
 
         // Move section up — walks the interleaved order (across built-in slots)
         const moveUpBtn = actions.createSpan({
-            cls: 'codex-section-action-btn',
+            cls: 'codex-section-action-btn profile-section-action-btn',
             attr: { 'aria-label': t('Move section up'), role: 'button' },
         });
         setIcon(moveUpBtn, 'chevron-up');
@@ -382,7 +385,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
 
         // Move section down — walks the interleaved order
         const moveDownBtn = actions.createSpan({
-            cls: 'codex-section-action-btn',
+            cls: 'codex-section-action-btn profile-section-action-btn',
             attr: { 'aria-label': t('Move section down'), role: 'button' },
         });
         setIcon(moveDownBtn, 'chevron-down');
@@ -398,7 +401,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
         });
 
         const renameBtn = actions.createSpan({
-            cls: 'codex-section-action-btn',
+            cls: 'codex-section-action-btn profile-section-action-btn',
             attr: { 'aria-label': t('Rename section'), role: 'button' },
         });
         setIcon(renameBtn, 'pencil');
@@ -432,8 +435,45 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
             modal.open();
         });
 
+        // Add field uses the same header action and placement as built-in sections.
+        const addFieldBtn = actions.createSpan({
+            cls: 'codex-section-action-btn profile-section-action-btn profile-section-add-field-btn',
+            attr: {
+                'aria-label': t('Add field to this section'),
+                title: t('Add field to this section'),
+                role: 'button',
+            },
+        });
+        setIcon(addFieldBtn, 'plus');
+        attachTooltip(addFieldBtn, t('Add field to this section'));
+        addFieldBtn.addEventListener('click', (e) => {
+            stop(e);
+            const modal = new AddSectionFieldModal(app, (result) => {
+                if (!result || !result.name) return;
+                const trimmed = result.name.trim();
+                if (!trimmed) return;
+                if (sec.fields.some(f => fieldName(f) === trimmed)) {
+                    new Notice(t('Field "{name}" already exists in this section.', { name: trimmed }));
+                    return;
+                }
+                sec.fields.push({
+                    name: trimmed,
+                    type: result.type ?? 'text',
+                    placeholder: result.placeholder,
+                    options: result.options,
+                    folderSource: result.folderSource,
+                });
+                if (!draft.custom) draft.custom = {};
+                draft.custom[compositeKey(sec.title, trimmed)] = '';
+                host.persistSections();
+                host.scheduleSave(draft);
+                host.requestRerender();
+            });
+            modal.open();
+        });
+
         const deleteBtn = actions.createSpan({
-            cls: 'codex-section-action-btn',
+            cls: 'codex-section-action-btn profile-section-action-btn',
             attr: { 'aria-label': t('Remove section'), role: 'button' },
         });
         setIcon(deleteBtn, 'trash');
@@ -496,6 +536,7 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                         attr: { placeholder: placeholderHint, rows: '3' },
                     });
                     ta.value = currentValue;
+                    host.bindCustomTextArea?.(ta, `section:${sec.title}:${fname}`, 48);
                     ta.addEventListener('input', () => {
                         if (!draft.custom) draft.custom = {};
                         draft.custom[key] = ta.value;
@@ -655,11 +696,12 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
                 }
                 case 'text':
                 default: {
-                    const input = row.createEl('input', {
+                    const input = row.createEl('textarea', {
                         cls: fieldInputLabel,
-                        attr: { type: 'text', placeholder: placeholderHint },
+                        attr: { placeholder: placeholderHint, rows: '1' },
                     });
                     input.value = currentValue;
+                    host.bindCustomTextArea?.(input, `section:${sec.title}:${fname}`);
                     input.addEventListener('input', () => {
                         if (!draft.custom) draft.custom = {};
                         draft.custom[key] = input.value;
@@ -801,36 +843,6 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
             });
         }
 
-        // "+ Add field to this section"
-        const addRow = body.createDiv('codex-add-custom-field-row');
-        const addFieldBtn = addRow.createEl('button', {
-            cls: 'codex-add-custom-btn',
-            text: t('+ Add field to this section'),
-        });
-        addFieldBtn.addEventListener('click', () => {
-            const modal = new AddSectionFieldModal(app, (result) => {
-                if (!result || !result.name) return;
-                const trimmed = result.name.trim();
-                if (!trimmed) return;
-                if (sec.fields.some(f => fieldName(f) === trimmed)) {
-                    new Notice(t('Field "{name}" already exists in this section.', { name: trimmed }));
-                    return;
-                }
-                sec.fields.push({
-                    name: trimmed,
-                    type: result.type ?? 'text',
-                    placeholder: result.placeholder,
-                    options: result.options,
-                    folderSource: result.folderSource,
-                });
-                if (!draft.custom) draft.custom = {};
-                draft.custom[compositeKey(sec.title, trimmed)] = '';
-                host.persistSections();
-                host.scheduleSave(draft);
-                host.requestRerender();
-            });
-            modal.open();
-        });
     }
 }
 

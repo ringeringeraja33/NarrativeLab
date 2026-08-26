@@ -43,8 +43,8 @@ test('Character and Location profile tabs save profile mode, not browse', () => 
 
 test('Location profile labels go through i18n', () => {
     assert.match(locationView, /text:\s*t\(category\.title\)/);
-    assert.match(locationView, /text:\s*t\(field\.label\)/);
-    assert.match(locationView, /placeholder:\s*t\(field\.placeholder\)/);
+    assert.match(locationView, /fieldOverride\?\.label \|\| t\(field\.label\)/);
+    assert.match(locationView, /fieldOverride\?\.placeholder \|\| t\(field\.placeholder\)/);
     assert.match(locationView, /text:\s*t\(typeName\)/);
 });
 

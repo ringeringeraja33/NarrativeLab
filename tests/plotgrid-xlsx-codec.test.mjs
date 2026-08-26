@@ -129,6 +129,24 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(workbook.getWorksheet('Act I').properties.tabColor.argb, 'FFC45C26');
         assert.equal(decoded.pages[0].cells['r1-c1'].content, 'meets mentor');
 
+        // Explicit dimensions in the visible workbook must win over a stale
+        // sidecar even when the axis counts did not change.
+        const resizedBook = new ExcelJS.Workbook();
+        await resizedBook.xlsx.load(binary);
+        const resizedSheet = resizedBook.getWorksheet('Act I');
+        resizedSheet.getRow(1).height = 39;
+        resizedSheet.getRow(2).height = 66;
+        resizedSheet.getColumn(1).width = 17;
+        resizedSheet.getColumn(2).width = 25;
+        const resizedDecoded = await codec.decodePlotGridXlsx(
+            await resizedBook.xlsx.writeBuffer(),
+            { meta: sidecarMeta },
+        );
+        assert.equal(resizedDecoded.pages[0].headerRowHeight, 52);
+        assert.equal(resizedDecoded.pages[0].rows[0].height, 88);
+        assert.equal(resizedDecoded.pages[0].labelColumnWidth, 136);
+        assert.equal(resizedDecoded.pages[0].columns[0].width, 200);
+
         // Sidecar restores values that Excel must truncate, including original
         // page/axis labels whose sheet/cell representations have hard limits.
         const longText = '长正文'.repeat(14000);
@@ -1417,6 +1435,10 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /mergeDimensions:\s*true/);
     assert.match(host, /mergeDimensions === true/);
     assert.match(host, /sheet\.command\.set-row-height/);
+    assert.match(host, /sheet\.mutation\.set-worksheet-row-auto-height/);
+    assert.match(host, /rowsAutoHeightInfo/);
+    assert.match(host, /rememberChangedAxisSizes/);
+    assert.match(host, /applyRememberedAxisSizes/);
     assert.match(host, /sheet\.cellData \|\| \{\}/);
     assert.match(host, /applyLiveDeltaDimension/);
     assert.match(host, /getRowHeight/);

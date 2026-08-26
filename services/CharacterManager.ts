@@ -6,6 +6,7 @@ import { coerceString } from '../utils/narrow';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
 import { ensureVaultFolder } from '../utils/vaultFolders';
 import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
+import { orderLibraryEntityFrontmatter } from '../utils/libraryProfilePropertyOrder';
 
 /**
  * Manages character .md files — loading, saving, creating, and deleting
@@ -263,7 +264,8 @@ export class CharacterManager {
 
         // Write notes to body
         const finalBody = character.notes ?? body;
-        const newContent = `---\n${stringifyYaml(fm)}---\n${finalBody ? '\n' + finalBody : ''}`;
+        const orderedFm = orderLibraryEntityFrontmatter(fm, 'character');
+        const newContent = `---\n${stringifyYaml(orderedFm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
 
         // Update in-memory + stamp caches together. If only `characters` is

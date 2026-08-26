@@ -3,6 +3,7 @@ import type { App } from 'obsidian';
 import type { SceneCardsSettings } from '../settings';
 import { openConfirmModal } from '../components/ConfirmModal';
 import { t } from './i18n';
+import { normalizeCustomFieldInputHeight } from './customFieldInputHeight';
 
 /** Per-project System/ filename for archive profile field layout. */
 export const LIBRARY_PROFILE_LAYOUT_FILENAME = 'library-profile-layout.json';
@@ -26,6 +27,17 @@ export interface LibraryProfileLayoutSettings {
     codexCategoryFieldTemplates: Record<string, string[]>;
     /** Detail page direction, keyed by character/location/world/Codex category. */
     profileOrientations: Record<string, LibraryProfileOrientation>;
+    /** User-selected heights for resizable custom text fields. */
+    profileFieldInputHeights: Record<string, number>;
+    /** Display overrides for built-in fields, keyed by category then field key. */
+    profileFieldOverrides: Record<string, Record<string, ProfileFieldOverride>>;
+    /** Section/column order shared by horizontal and vertical profile layouts. */
+    profileSectionOrders: Record<string, string[]>;
+}
+
+export interface ProfileFieldOverride {
+    label?: string;
+    placeholder?: string;
 }
 
 /**
@@ -44,6 +56,9 @@ export function emptyLibraryProfileLayout(): LibraryProfileLayoutSettings {
         codexCategoryCustomSections: {},
         codexCategoryFieldTemplates: {},
         profileOrientations: {},
+        profileFieldInputHeights: {},
+        profileFieldOverrides: {},
+        profileSectionOrders: {},
     };
 }
 
@@ -61,6 +76,9 @@ export function readLibraryProfileLayout(settings: SceneCardsSettings): LibraryP
         codexCategoryCustomSections: JSON.parse(JSON.stringify(settings.codexCategoryCustomSections || {})) as Record<string, unknown[]>,
         codexCategoryFieldTemplates: { ...(settings.codexCategoryFieldTemplates || {}) },
         profileOrientations: { ...(settings.profileOrientations || {}) },
+        profileFieldInputHeights: sanitizeCustomFieldInputHeightMap(settings.profileFieldInputHeights || {}),
+        profileFieldOverrides: sanitizeProfileFieldOverrides(settings.profileFieldOverrides || {}),
+        profileSectionOrders: sanitizeStringListMap(settings.profileSectionOrders || {}),
     };
 }
 
@@ -80,6 +98,9 @@ export function applyLibraryProfileLayout(
     settings.codexCategoryCustomSections = { ...(layout.codexCategoryCustomSections || {}) } as SceneCardsSettings['codexCategoryCustomSections'];
     settings.codexCategoryFieldTemplates = { ...(layout.codexCategoryFieldTemplates || {}) };
     settings.profileOrientations = { ...(layout.profileOrientations || {}) };
+    settings.profileFieldInputHeights = { ...(layout.profileFieldInputHeights || {}) };
+    settings.profileFieldOverrides = JSON.parse(JSON.stringify(layout.profileFieldOverrides || {})) as SceneCardsSettings['profileFieldOverrides'];
+    settings.profileSectionOrders = sanitizeStringListMap(layout.profileSectionOrders || {});
 }
 
 export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLayoutSettings | null {
@@ -94,7 +115,10 @@ export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLay
         || Array.isArray(rec.locationCustomSections)
         || isRecord(rec.codexCategoryCustomSections)
         || isRecord(rec.codexCategoryFieldTemplates)
-        || isRecord(rec.profileOrientations);
+        || isRecord(rec.profileOrientations)
+        || isRecord(rec.profileFieldInputHeights)
+        || isRecord(rec.profileFieldOverrides)
+        || isRecord(rec.profileSectionOrders);
     if (!hasAny && !('version' in rec)) return null;
 
     return {
@@ -123,7 +147,44 @@ export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLay
         profileOrientations: isRecord(rec.profileOrientations)
             ? sanitizeOrientationMap(rec.profileOrientations)
             : {},
+        profileFieldInputHeights: isRecord(rec.profileFieldInputHeights)
+            ? sanitizeCustomFieldInputHeightMap(rec.profileFieldInputHeights)
+            : {},
+        profileFieldOverrides: isRecord(rec.profileFieldOverrides)
+            ? sanitizeProfileFieldOverrides(rec.profileFieldOverrides)
+            : {},
+        profileSectionOrders: isRecord(rec.profileSectionOrders)
+            ? sanitizeStringListMap(rec.profileSectionOrders)
+            : {},
     };
+}
+
+function sanitizeProfileFieldOverrides(raw: Record<string, unknown>): Record<string, Record<string, ProfileFieldOverride>> {
+    const out: Record<string, Record<string, ProfileFieldOverride>> = {};
+    for (const [category, fields] of Object.entries(raw)) {
+        if (!isRecord(fields)) continue;
+        const cleanFields: Record<string, ProfileFieldOverride> = {};
+        for (const [fieldKey, value] of Object.entries(fields)) {
+            if (!fieldKey || !isRecord(value)) continue;
+            const label = typeof value.label === 'string' ? value.label.trim() : '';
+            const placeholder = typeof value.placeholder === 'string' ? value.placeholder.trim() : '';
+            if (label || placeholder) cleanFields[fieldKey] = {
+                ...(label ? { label } : {}),
+                ...(placeholder ? { placeholder } : {}),
+            };
+        }
+        if (Object.keys(cleanFields).length > 0) out[category] = cleanFields;
+    }
+    return out;
+}
+
+export function sanitizeCustomFieldInputHeightMap(raw: Record<string, unknown>): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(raw)) {
+        const height = normalizeCustomFieldInputHeight(value);
+        if (key && height !== undefined) out[key] = height;
+    }
+    return out;
 }
 
 function sanitizeOrientationMap(raw: Record<string, unknown>): Record<string, LibraryProfileOrientation> {
@@ -180,6 +241,197 @@ export function isCoreProfileField(fieldKey: string): boolean {
 
 export function getHiddenFieldKeys(settings: SceneCardsSettings, categoryKey: string): string[] {
     return settings.hiddenFields?.[categoryKey] ?? [];
+}
+
+/** Resolve a stored section order without losing sections introduced by an update. */
+export function getOrderedProfileSectionIds(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    defaultIds: string[],
+): string[] {
+    const allowed = new Set(defaultIds);
+    const result: string[] = [];
+    const seen = new Set<string>();
+    for (const id of settings.profileSectionOrders?.[categoryKey] ?? []) {
+        if (!allowed.has(id) || seen.has(id)) continue;
+        result.push(id);
+        seen.add(id);
+    }
+    for (const id of defaultIds) {
+        if (seen.has(id)) continue;
+        result.push(id);
+        seen.add(id);
+    }
+    return result;
+}
+
+/** Return the one shared action group used by built-in and custom section headers. */
+export function getProfileSectionActions(header: HTMLElement): HTMLElement {
+    const existing = header.querySelector<HTMLElement>('.codex-section-actions');
+    const actions = existing ?? header.createSpan({ cls: 'codex-section-actions' });
+    actions.addClass('profile-section-actions');
+    return actions;
+}
+
+/** Create one icon action with the shared section-header chrome. */
+export function createProfileSectionAction(
+    header: HTMLElement,
+    opts: {
+        icon: string;
+        title: string;
+        ariaLabel?: string;
+        className?: string;
+    },
+): HTMLElement {
+    const action = getProfileSectionActions(header).createSpan({
+        cls: `codex-section-action-btn profile-section-action-btn${opts.className ? ` ${opts.className}` : ''}`,
+        attr: {
+            role: 'button',
+            title: t(opts.title),
+            'aria-label': t(opts.ariaLabel || opts.title),
+        },
+    });
+    obsidian.setIcon(action, opts.icon);
+    if (opts.className?.includes('profile-section-add-field-btn')) {
+        const destructive = getProfileSectionActions(header).querySelector('.builtin-section-remove-btn');
+        if (destructive) getProfileSectionActions(header).insertBefore(action, destructive);
+    }
+    return action;
+}
+
+/** Two compact controls shared by every built-in/custom-fields section header. */
+export function attachProfileSectionOrderControls(
+    header: HTMLElement,
+    opts: {
+        settings: SceneCardsSettings;
+        categoryKey: string;
+        sectionId: string;
+        defaultIds: string[];
+        save: () => Promise<void>;
+        onChanged: () => void;
+    },
+): void {
+    const order = getOrderedProfileSectionIds(opts.settings, opts.categoryKey, opts.defaultIds);
+    const index = order.indexOf(opts.sectionId);
+    const add = (direction: -1 | 1, icon: string, label: string, disabled: boolean): void => {
+        const button = createProfileSectionAction(header, {
+            icon,
+            title: label,
+            className: 'profile-section-order-btn',
+        });
+        if (disabled) {
+            button.setAttr('data-disabled', 'true');
+            button.setAttr('aria-disabled', 'true');
+        }
+        button.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (button.hasAttribute('data-disabled')) return;
+            const current = getOrderedProfileSectionIds(opts.settings, opts.categoryKey, opts.defaultIds);
+            const from = current.indexOf(opts.sectionId);
+            const to = from + direction;
+            if (from < 0 || to < 0 || to >= current.length) return;
+            [current[from], current[to]] = [current[to], current[from]];
+            const sectionOrders = opts.settings.profileSectionOrders ??= {};
+            const previous = sectionOrders[opts.categoryKey];
+            sectionOrders[opts.categoryKey] = current;
+            void (async () => {
+                try {
+                    await opts.save();
+                    opts.onChanged();
+                } catch (error) {
+                    if (previous) sectionOrders[opts.categoryKey] = previous;
+                    else delete sectionOrders[opts.categoryKey];
+                    console.error('[NarrativeLab] Failed to save profile section order:', error);
+                }
+            })();
+        });
+    };
+    add(-1, 'chevron-up', 'Move section up', index <= 0);
+    add(1, 'chevron-down', 'Move section down', index < 0 || index >= order.length - 1);
+}
+
+export function universalProfileFieldKey(templateId: string): string {
+    return `universal:${templateId}`;
+}
+
+export function getBuiltinProfileFieldOverride(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    fieldKey: string,
+): ProfileFieldOverride | undefined {
+    return settings.profileFieldOverrides?.[categoryKey]?.[fieldKey];
+}
+
+/** Pencil action shared by built-in fields so both field kinds expose the same toolbar. */
+export function attachBuiltinFieldEditControl(
+    labelEl: HTMLElement,
+    opts: {
+        app: App;
+        settings: SceneCardsSettings;
+        categoryKey: string;
+        fieldKey: string;
+        defaultLabel: string;
+        defaultPlaceholder: string;
+        save: () => Promise<void>;
+        onChanged: () => void;
+    },
+): void {
+    const editBtn = labelEl.createEl('span', {
+        cls: 'profile-field-action-btn profile-field-edit-btn',
+        attr: { 'aria-label': t('Edit field'), title: t('Edit field'), role: 'button' },
+    });
+    obsidian.setIcon(editBtn, 'pencil');
+    editBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const existing = getBuiltinProfileFieldOverride(opts.settings, opts.categoryKey, opts.fieldKey);
+        const translatedDefaultLabel = t(opts.defaultLabel);
+        const translatedDefaultPlaceholder = t(opts.defaultPlaceholder);
+        let label = existing?.label ?? translatedDefaultLabel;
+        let placeholder = existing?.placeholder ?? translatedDefaultPlaceholder;
+        const modal = new obsidian.Modal(opts.app);
+        modal.titleEl.setText(t('Edit field'));
+        new obsidian.Setting(modal.contentEl)
+            .setName(t('Field label'))
+            .addText(text => text.setValue(label).onChange(value => { label = value; }));
+        new obsidian.Setting(modal.contentEl)
+            .setName(t('Placeholder'))
+            .addText(text => text.setValue(placeholder).onChange(value => { placeholder = value; }));
+        new obsidian.Setting(modal.contentEl)
+            .addButton(button => button.setButtonText(t('Reset')).onClick(async () => {
+                const category = opts.settings.profileFieldOverrides?.[opts.categoryKey];
+                if (category) {
+                    delete category[opts.fieldKey];
+                    if (Object.keys(category).length === 0) delete opts.settings.profileFieldOverrides![opts.categoryKey];
+                }
+                await opts.save();
+                modal.close();
+                opts.onChanged();
+            }))
+            .addButton(button => button.setButtonText(t('Cancel')).onClick(() => modal.close()))
+            .addButton(button => button.setButtonText(t('Save')).setCta().onClick(async () => {
+                if (!opts.settings.profileFieldOverrides) opts.settings.profileFieldOverrides = {};
+                if (!opts.settings.profileFieldOverrides[opts.categoryKey]) {
+                    opts.settings.profileFieldOverrides[opts.categoryKey] = {};
+                }
+                const cleanLabel = label.trim();
+                const cleanPlaceholder = placeholder.trim();
+                const next: ProfileFieldOverride = {
+                    ...(cleanLabel && cleanLabel !== translatedDefaultLabel ? { label: cleanLabel } : {}),
+                    ...(cleanPlaceholder && cleanPlaceholder !== translatedDefaultPlaceholder ? { placeholder: cleanPlaceholder } : {}),
+                };
+                if (Object.keys(next).length > 0) {
+                    opts.settings.profileFieldOverrides[opts.categoryKey][opts.fieldKey] = next;
+                } else {
+                    delete opts.settings.profileFieldOverrides[opts.categoryKey][opts.fieldKey];
+                }
+                await opts.save();
+                modal.close();
+                opts.onChanged();
+            }));
+        modal.open();
+    });
 }
 
 export function getRemovedBuiltinFieldKeys(settings: SceneCardsSettings, categoryKey: string): string[] {
@@ -333,14 +585,19 @@ export function attachBuiltinFieldVisibilityControls(
     const canHide = fieldKey !== 'name';
     const canDelete = !isCoreProfileField(fieldKey);
 
+    const hiddenKeys = getHiddenFieldKeys(settings, categoryKey);
+    const isHidden = hiddenKeys.includes(fieldKey);
+    const hideBtn = labelEl.createEl('span', {
+        cls: 'profile-field-action-btn field-hide-btn',
+        attr: {
+            'aria-label': isHidden ? t('Show this field') : t('Hide this field'),
+            title: isHidden ? t('Show this field') : t('Hide this field'),
+            role: 'button',
+            ...(canHide ? {} : { 'aria-disabled': 'true' }),
+        },
+    });
+    obsidian.setIcon(hideBtn, isHidden ? 'eye' : 'eye-off');
     if (canHide) {
-        const hiddenKeys = getHiddenFieldKeys(settings, categoryKey);
-        const isHidden = hiddenKeys.includes(fieldKey);
-        const hideBtn = labelEl.createEl('span', {
-            cls: 'field-hide-btn',
-            attr: { 'aria-label': isHidden ? t('Show this field') : t('Hide this field') },
-        });
-        obsidian.setIcon(hideBtn, isHidden ? 'eye' : 'eye-off');
         hideBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             void toggleHiddenProfileField(settings, categoryKey, fieldKey, opts.save)
@@ -348,15 +605,17 @@ export function attachBuiltinFieldVisibilityControls(
         });
     }
 
+    const removeBtn = labelEl.createEl('span', {
+        cls: 'profile-field-action-btn field-remove-btn',
+        attr: {
+            'aria-label': t('Remove field'),
+            title: t('Remove this default field from this archive page'),
+            role: 'button',
+            ...(canDelete ? {} : { 'aria-disabled': 'true' }),
+        },
+    });
+    obsidian.setIcon(removeBtn, 'x');
     if (canDelete) {
-        const removeBtn = labelEl.createEl('span', {
-            cls: 'field-remove-btn',
-            attr: {
-                'aria-label': t('Remove field'),
-                title: t('Remove this default field from this archive page'),
-            },
-        });
-        obsidian.setIcon(removeBtn, 'x');
         removeBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             openConfirmModal(opts.app, {
@@ -374,6 +633,68 @@ export function attachBuiltinFieldVisibilityControls(
             });
         });
     }
+}
+
+/** Hide + delete actions for a universal field, matching built-in field chrome. */
+export function attachUniversalProfileFieldControls(
+    labelEl: HTMLElement,
+    opts: {
+        app: App;
+        settings: SceneCardsSettings;
+        categoryKey: string;
+        templateId: string;
+        fieldLabel: string;
+        save: () => Promise<void>;
+        remove: () => Promise<void>;
+        onChanged: () => void;
+    },
+): void {
+    const layoutKey = universalProfileFieldKey(opts.templateId);
+    const isHidden = getHiddenFieldKeys(opts.settings, opts.categoryKey).includes(layoutKey);
+    const hideBtn = labelEl.createEl('span', {
+        cls: 'profile-field-action-btn field-hide-btn',
+        attr: {
+            'aria-label': isHidden ? t('Show this field') : t('Hide this field'),
+            title: isHidden ? t('Show this field') : t('Hide this field'),
+            role: 'button',
+        },
+    });
+    obsidian.setIcon(hideBtn, isHidden ? 'eye' : 'eye-off');
+    hideBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void toggleHiddenProfileField(opts.settings, opts.categoryKey, layoutKey, opts.save)
+            .then(() => opts.onChanged());
+    });
+
+    const removeBtn = labelEl.createEl('span', {
+        cls: 'profile-field-action-btn field-remove-btn',
+        attr: { 'aria-label': t('Remove field'), title: t('Remove field'), role: 'button' },
+    });
+    obsidian.setIcon(removeBtn, 'x');
+    removeBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openConfirmModal(opts.app, {
+            title: t('Remove Field'),
+            message: t(
+                'Remove “{field}” from this archive page in the current project? Existing note data is kept; you can restore the field later.',
+                { field: opts.fieldLabel },
+            ),
+            confirmLabel: t('Remove field'),
+            confirmClass: 'mod-warning',
+            onConfirm: async () => {
+                await opts.remove();
+                const hidden = opts.settings.hiddenFields?.[opts.categoryKey];
+                if (hidden) {
+                    const index = hidden.indexOf(layoutKey);
+                    if (index >= 0) hidden.splice(index, 1);
+                    await opts.save();
+                }
+                opts.onChanged();
+            },
+        });
+    });
 }
 
 /** Collapsible list of removed default fields with Restore actions. */
@@ -450,17 +771,14 @@ export function attachBuiltinSectionRemoveControl(
 ): void {
     if (!canRemoveBuiltinSection(opts.sectionFields)) return;
 
-    const actions = headerEl.querySelector('.codex-section-actions') as HTMLElement
-        || headerEl.createSpan({ cls: 'codex-section-actions builtin-section-actions' });
-    const removeBtn = actions.createSpan({
-        cls: 'codex-section-action-btn builtin-section-remove-btn',
-        attr: {
-            'aria-label': t('Remove section'),
-            role: 'button',
-            title: t('Remove this section from this archive page'),
-        },
+    const actions = getProfileSectionActions(headerEl);
+    actions.addClass('builtin-section-actions');
+    const removeBtn = createProfileSectionAction(headerEl, {
+        icon: 'trash',
+        title: 'Remove this section from this archive page',
+        ariaLabel: 'Remove section',
+        className: 'builtin-section-remove-btn',
     });
-    obsidian.setIcon(removeBtn, 'x');
     removeBtn.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();

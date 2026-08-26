@@ -921,6 +921,12 @@ export interface SceneCardsSettings {
      * Horizontal = section columns left-to-right; vertical = stacked sections.
      */
     profileOrientations?: Record<string, 'horizontal' | 'vertical'>;
+    /** Remembered textarea heights for user-created fields, scoped to the active project. */
+    profileFieldInputHeights?: Record<string, number>;
+    /** Per-project label and placeholder customizations for built-in profile fields. */
+    profileFieldOverrides?: Record<string, Record<string, { label?: string; placeholder?: string }>>;
+    /** Shared section/column order for horizontal and vertical profile layouts. */
+    profileSectionOrders?: Record<string, string[]>;
     /** Series name — groups projects that share a common universe / codex */
     series: string;
     /** Extra vault-relative folder paths to scan for NarrativeLab entities */
@@ -1129,6 +1135,9 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     removedBuiltinFields: {},
     removedBuiltinSections: {},
     profileOrientations: {},
+    profileFieldInputHeights: {},
+    profileFieldOverrides: {},
+    profileSectionOrders: {},
     series: '',
     extraFolders: [],
 

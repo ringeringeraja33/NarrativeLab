@@ -23,18 +23,27 @@ import {
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
+import { bindResizableCustomFieldInput, customFieldInputHeightKey } from '../utils/customFieldInputHeight';
+import { moveMappingEntry } from '../utils/libraryProfilePropertyOrder';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
+    attachBuiltinFieldEditControl,
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
+    attachProfileSectionOrderControls,
+    attachUniversalProfileFieldControls,
+    createProfileSectionAction,
     filterRemovedBuiltinFields,
+    getBuiltinProfileFieldOverride,
     getHiddenFieldKeys,
     getLibraryProfileOrientation,
+    getOrderedProfileSectionIds,
     isBuiltinSectionRemoved,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
+    universalProfileFieldKey,
 } from '../utils/libraryProfileLayout';
 
 import type SceneCardsPlugin from '../main';
@@ -46,7 +55,7 @@ import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
-import { renderNativeLibraryBase, disposeNativeLibraryBase } from '../components/NativeLibraryBase';
+import { renderNativeLibraryBase, disposeNativeLibraryBase, syncAllNativeLibraryBases } from '../components/NativeLibraryBase';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import {
     ARCHIVE_FILTER_HASHTAGS_KEY,
@@ -851,11 +860,20 @@ export class LocationView extends ProjectBoundItemView {
         }
 
         // Categories interleaved with user-defined custom sections (#120)
-        const customHost = this.buildCustomSectionsHost(draft, categories.length);
+        const sectionIds = [...categories.map(category => category.title), 'Custom Fields'];
+        const orderedSectionIds = getOrderedProfileSectionIds(this.plugin.settings, layoutKey, sectionIds);
+        const customHost = this.buildCustomSectionsHost(draft, orderedSectionIds.length);
         // Slot 0: any custom sections positioned above the first built-in.
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
-        for (let i = 0; i < categories.length; i++) {
-            const category = categories[i];
+        for (let i = 0; i < orderedSectionIds.length; i++) {
+            const sectionId = orderedSectionIds[i];
+            if (sectionId === 'Custom Fields') {
+                this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
+                renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
+                continue;
+            }
+            const category = categories.find(item => item.title === sectionId);
+            if (!category) continue;
             if (isBuiltinSectionRemoved(this.plugin.settings, layoutKey, category.title)) {
                 renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
                 continue;
@@ -869,9 +887,6 @@ export class LocationView extends ProjectBoundItemView {
         if (!isWorld) {
             this.renderLocationHierarchy(formPanel, draft as StoryLocation, { board: horizontalProfile });
         }
-
-        // Custom fields
-        this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
 
         // "+ Add custom section" button at the bottom
         renderAddCustomSectionButton(formPanel, customHost);
@@ -922,6 +937,22 @@ export class LocationView extends ProjectBoundItemView {
         sectionHeader.createSpan({ text: t(category.title) });
 
         const layoutKey = draft.type === 'world' ? 'world' : 'location';
+        const categories = draft.type === 'world' ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
+        attachProfileSectionOrderControls(sectionHeader, {
+            settings: this.plugin.settings,
+            categoryKey: layoutKey,
+            sectionId: category.title,
+            defaultIds: [...categories.map(item => item.title), 'Custom Fields'],
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
+
         attachBuiltinSectionRemoveControl(sectionHeader, {
             app: this.app,
             settings: this.plugin.settings,
@@ -935,11 +966,12 @@ export class LocationView extends ProjectBoundItemView {
         });
 
         // '+' button to add a universal field to this section
-        const addFieldBtn = sectionHeader.createEl('button', {
-            cls: 'character-section-add-field-btn',
-            attr: { title: t('Add universal field to this section'), 'aria-label': t('Add universal field') },
+        const addFieldBtn = createProfileSectionAction(sectionHeader, {
+            icon: 'plus',
+            title: 'Add universal field to this section',
+            ariaLabel: 'Add universal field',
+            className: 'character-section-add-field-btn profile-section-add-field-btn',
         });
-        obsidian.setIcon(addFieldBtn, 'plus');
         addFieldBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             const isWorld = draft.type === 'world';
@@ -1007,8 +1039,10 @@ export class LocationView extends ProjectBoundItemView {
 
         // Render in user-defined merged order (built-in + universal).
         const universalFields = this.plugin.fieldTemplates.getBySection(category.title, 'location');
+        const visibleUniversalFields = universalFields.filter(t => !hiddenKeys.includes(universalProfileFieldKey(t.id)));
+        const hiddenUniversalFields = universalFields.filter(t => hiddenKeys.includes(universalProfileFieldKey(t.id)));
         const fieldMap = new Map(visibleFields.map(f => [f.key, f]));
-        const tplMap = new Map(universalFields.map(t => [t.id, t]));
+        const tplMap = new Map(visibleUniversalFields.map(t => [t.id, t]));
         const builtInKeys = visibleFields.map(f => f.key);
         const merged = this.plugin.fieldTemplates.getMergedOrder(category.title, 'location', builtInKeys);
         for (const entry of merged) {
@@ -1022,10 +1056,11 @@ export class LocationView extends ProjectBoundItemView {
         }
 
         // Hidden fields toggle
-        if (hiddenFieldsInCat.length > 0) {
+        const hiddenFieldCount = hiddenFieldsInCat.length + hiddenUniversalFields.length;
+        if (hiddenFieldCount > 0) {
             const toggleEl = sectionBody.createDiv('hidden-fields-toggle');
             toggleEl.createEl('a', {
-                text: t('Show {n} hidden field(s)', { n: hiddenFieldsInCat.length }),
+                text: t('Show {n} hidden field(s)', { n: hiddenFieldCount }),
                 cls: 'hidden-fields-toggle-link',
             });
             const hiddenContainer = sectionBody.createDiv('hidden-fields-container');
@@ -1033,13 +1068,16 @@ export class LocationView extends ProjectBoundItemView {
             for (const field of hiddenFieldsInCat) {
                 this.renderField(hiddenContainer, field, draft);
             }
+            for (const template of hiddenUniversalFields) {
+                this.renderUniversalField(hiddenContainer, template, draft);
+            }
             let showing = false;
             toggleEl.addEventListener('click', () => {
                 showing = !showing;
                 hiddenContainer.setCssStyles({ display: showing ? '' : 'none' });
                 toggleEl.querySelector('a')!.textContent = showing
-                    ? t('Hide {n} hidden field(s)', { n: hiddenFieldsInCat.length })
-                    : t('Show {n} hidden field(s)', { n: hiddenFieldsInCat.length });
+                    ? t('Hide {n} hidden field(s)', { n: hiddenFieldCount })
+                    : t('Show {n} hidden field(s)', { n: hiddenFieldCount });
             });
         }
 
@@ -1056,7 +1094,28 @@ export class LocationView extends ProjectBoundItemView {
 
     private renderField(parent: HTMLElement, field: LocationFieldDef, draft: WorldOrLocation, sectionTitle?: string, builtInKeys?: string[]): void {
         const row = parent.createDiv('location-field-row');
-        const labelEl = row.createEl('label', { cls: 'location-field-label', text: t(field.label) });
+        const categoryKey = 'location';
+        const fieldOverride = getBuiltinProfileFieldOverride(this.plugin.settings, categoryKey, field.key);
+        const displayLabel = fieldOverride?.label || t(field.label);
+        const displayPlaceholder = fieldOverride?.placeholder || t(field.placeholder);
+        const labelEl = row.createEl('label', { cls: 'location-field-label', text: displayLabel });
+
+        attachBuiltinFieldEditControl(labelEl, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey,
+            fieldKey: field.key,
+            defaultLabel: field.label,
+            defaultPlaceholder: field.placeholder,
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
 
         // Up/down chevrons — reorder this built-in field within the section.
         if (sectionTitle && builtInKeys) {
@@ -1067,9 +1126,9 @@ export class LocationView extends ProjectBoundItemView {
         attachBuiltinFieldVisibilityControls(labelEl, {
             app: this.app,
             settings: this.plugin.settings,
-            categoryKey: 'location',
+            categoryKey,
             fieldKey: field.key,
-            fieldLabel: field.label,
+            fieldLabel: displayLabel,
             save: () => this.plugin.saveSettings(),
             onChanged: () => {
                 if (this.rootContainer) this.renderDetail(this.rootContainer);
@@ -1080,7 +1139,7 @@ export class LocationView extends ProjectBoundItemView {
 
         if (field.key === 'locationType') {
             const select = row.createEl('select', { cls: 'location-field-input dropdown' });
-            select.createEl('option', { text: t(field.placeholder), value: '' });
+            select.createEl('option', { text: displayPlaceholder, value: '' });
             // Built-in types
             for (const typeName of LOCATION_TYPES) {
                 const opt = select.createEl('option', { text: t(typeName), value: typeName.toLowerCase() });
@@ -1134,20 +1193,32 @@ export class LocationView extends ProjectBoundItemView {
         } else if (field.multiline) {
             const textarea = row.createEl('textarea', {
                 cls: 'location-field-textarea',
-                attr: { placeholder: t(field.placeholder), rows: '3' },
+                attr: { placeholder: displayPlaceholder, rows: '3' },
             });
             textarea.value = value;
+            bindResizableCustomFieldInput(
+                textarea,
+                this.plugin.settings,
+                customFieldInputHeightKey(draft.type, 'builtin', field.key),
+                () => this.plugin.saveSettings(),
+                48,
+            );
             textarea.addEventListener('input', () => {
                 (draft as unknown as Record<string, unknown>)[field.key] = textarea.value;
                 this.scheduleSave(draft);
             });
         } else {
-            const input = row.createEl('input', {
+            const input = row.createEl('textarea', {
                 cls: 'location-field-input',
-                type: 'text',
-                attr: { placeholder: t(field.placeholder) },
+                attr: { placeholder: displayPlaceholder, rows: '1' },
             });
             input.value = value;
+            bindResizableCustomFieldInput(
+                input,
+                this.plugin.settings,
+                customFieldInputHeightKey(draft.type, 'builtin', field.key),
+                () => this.plugin.saveSettings(),
+            );
             input.addEventListener('input', () => {
                 (draft as unknown as Record<string, unknown>)[field.key] = input.value;
                 this.scheduleSave(draft);
@@ -1155,6 +1226,12 @@ export class LocationView extends ProjectBoundItemView {
 
             // ── Cascade rename: check when leaving the Name field ──
             if (field.key === 'name') {
+                input.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        input.blur();
+                    }
+                });
                 input.addEventListener('blur', () => {
                     this.checkLocationRename(draft, input);
                 });
@@ -1172,7 +1249,7 @@ export class LocationView extends ProjectBoundItemView {
         fieldKey: string,
     ): void {
         const upBtn = labelEl.createEl('span', {
-            cls: 'field-move-btn',
+            cls: 'profile-field-action-btn field-move-btn',
             attr: { title: t('Move field up'), 'aria-label': t('Move field up') },
         });
         obsidian.setIcon(upBtn, 'chevron-up');
@@ -1183,7 +1260,7 @@ export class LocationView extends ProjectBoundItemView {
         });
 
         const downBtn = labelEl.createEl('span', {
-            cls: 'field-move-btn',
+            cls: 'profile-field-action-btn field-move-btn',
             attr: { title: t('Move field down'), 'aria-label': t('Move field down') },
         });
         obsidian.setIcon(downBtn, 'chevron-down');
@@ -1209,7 +1286,7 @@ export class LocationView extends ProjectBoundItemView {
         labelWrap.createEl('label', { cls: 'location-field-label', text: tpl.label });
 
         const editBtn = labelWrap.createEl('span', {
-            cls: 'codex-universal-edit-btn',
+            cls: 'profile-field-action-btn codex-universal-edit-btn',
             attr: { title: t('Edit or remove this universal field'), 'aria-label': t('Edit field') },
         });
         obsidian.setIcon(editBtn, 'pencil');
@@ -1247,7 +1324,7 @@ export class LocationView extends ProjectBoundItemView {
 
         // Up/down move buttons — share field-move-btn styling for hover behavior.
         const moveUpBtn = labelWrap.createEl('span', {
-            cls: 'codex-universal-move-btn',
+            cls: 'profile-field-action-btn codex-universal-move-btn',
             attr: { title: t('Move field up'), 'aria-label': t('Move field up') },
         });
         obsidian.setIcon(moveUpBtn, 'chevron-up');
@@ -1260,7 +1337,7 @@ export class LocationView extends ProjectBoundItemView {
         });
 
         const moveDownBtn = labelWrap.createEl('span', {
-            cls: 'codex-universal-move-btn',
+            cls: 'profile-field-action-btn codex-universal-move-btn',
             attr: { title: t('Move field down'), 'aria-label': t('Move field down') },
         });
         obsidian.setIcon(moveDownBtn, 'chevron-down');
@@ -1270,6 +1347,17 @@ export class LocationView extends ProjectBoundItemView {
                 tpl.section, tpl.category, builtInKeys ?? [], 'universal', tpl.id,
             );
             if (this.rootContainer) this.renderDetail(this.rootContainer);
+        });
+
+        attachUniversalProfileFieldControls(labelWrap, {
+            app: this.app,
+            settings: this.plugin.settings,
+            categoryKey: 'location',
+            templateId: tpl.id,
+            fieldLabel: tpl.label,
+            save: () => this.plugin.saveSettings(),
+            remove: () => this.plugin.fieldTemplates.remove(tpl.id),
+            onChanged: () => { if (this.rootContainer) this.renderDetail(this.rootContainer); },
         });
 
         if (tpl.type === 'multi-select') {
@@ -1386,12 +1474,20 @@ export class LocationView extends ProjectBoundItemView {
                 draft.universalFields![tpl.id] = select.value;
                 this.scheduleSave(draft);
             });
-        } else if (tpl.type === 'textarea') {
+        } else if (tpl.type === 'textarea' || tpl.type === 'text') {
+            const multiline = tpl.type === 'textarea';
             const textarea = row.createEl('textarea', {
-                cls: 'location-field-textarea',
-                attr: { placeholder: tpl.placeholder || '', rows: '3' },
+                cls: multiline ? 'location-field-textarea' : 'location-field-input',
+                attr: { placeholder: tpl.placeholder || '', rows: multiline ? '3' : '1' },
             });
             textarea.value = value;
+            bindResizableCustomFieldInput(
+                textarea,
+                this.plugin.settings,
+                customFieldInputHeightKey('universal', tpl.id),
+                () => this.plugin.saveSettings(),
+                multiline ? 48 : 34,
+            );
             textarea.addEventListener('input', () => {
                 draft.universalFields![tpl.id] = textarea.value;
                 this.scheduleSave(draft);
@@ -1407,17 +1503,6 @@ export class LocationView extends ProjectBoundItemView {
             cb.checked = !!checked;
             cb.addEventListener('change', () => {
                 draft.universalFields![tpl.id] = cb.checked ? 'true' : 'false';
-                this.scheduleSave(draft);
-            });
-        } else {
-            const input = row.createEl('input', {
-                cls: 'location-field-input',
-                type: 'text',
-                attr: { placeholder: tpl.placeholder || '' },
-            });
-            input.value = value;
-            input.addEventListener('input', () => {
-                draft.universalFields![tpl.id] = input.value;
                 this.scheduleSave(draft);
             });
         }
@@ -1491,6 +1576,39 @@ export class LocationView extends ProjectBoundItemView {
         obsidian.setIcon(icon, 'plus-circle');
         sectionHeader.createSpan({ text: t(title) });
 
+        const layoutKey = draft.type === 'world' ? 'world' : 'location';
+        const categories = draft.type === 'world' ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
+        attachProfileSectionOrderControls(sectionHeader, {
+            settings: this.plugin.settings,
+            categoryKey: layoutKey,
+            sectionId: title,
+            defaultIds: [...categories.map(item => item.title), title],
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
+
+        const addCustomFieldBtn = createProfileSectionAction(sectionHeader, {
+            icon: 'plus',
+            title: 'Add custom field',
+            className: 'profile-section-add-field-btn',
+        });
+        addCustomFieldBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            if (!draft.custom) draft.custom = {};
+            let n = Object.keys(draft.custom).length + 1;
+            let newKey = `field_${n}`;
+            while (draft.custom[newKey]) newKey = `field_${++n}`;
+            draft.custom[newKey] = '';
+            this.scheduleSave(draft);
+            renderAll();
+        });
+
         const sectionBody = section.createDiv('location-section-body');
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
@@ -1523,12 +1641,38 @@ export class LocationView extends ProjectBoundItemView {
                 });
                 keyIn.value = key;
 
-                const valIn = row.createEl('input', {
+                const valIn = row.createEl('textarea', {
                     cls: 'location-field-input location-custom-value',
-                    type: 'text',
-                    attr: { placeholder: t('Value') },
+                    attr: { placeholder: t('Value'), rows: '1' },
                 });
                 valIn.value = val;
+                bindResizableCustomFieldInput(
+                    valIn,
+                    this.plugin.settings,
+                    customFieldInputHeightKey(draft.type, 'custom', key),
+                    () => this.plugin.saveSettings(),
+                );
+
+                const customKeys = Object.keys(custom).filter(candidate => !isCustomSectionKey(candidate));
+                const customIndex = customKeys.indexOf(key);
+                const move = (direction: -1 | 1, icon: string, label: string, disabled: boolean): void => {
+                    const button = row.createEl('button', {
+                        cls: 'profile-field-action-btn location-custom-move',
+                        attr: { type: 'button', title: t(label), 'aria-label': t(label) },
+                    });
+                    button.disabled = disabled;
+                    obsidian.setIcon(button, icon);
+                    button.addEventListener('click', () => {
+                        draft.custom = moveMappingEntry(
+                            draft.custom || {}, key, direction,
+                            candidate => !isCustomSectionKey(candidate),
+                        );
+                        this.scheduleSave(draft);
+                        renderAll();
+                    });
+                };
+                move(-1, 'chevron-up', 'Move field up', customIndex <= 0);
+                move(1, 'chevron-down', 'Move field down', customIndex < 0 || customIndex >= customKeys.length - 1);
 
                 const removeBtn = row.createEl('button', { cls: 'location-custom-remove', attr: { title: t('Remove') } });
                 obsidian.setIcon(removeBtn, 'x');
@@ -1550,16 +1694,6 @@ export class LocationView extends ProjectBoundItemView {
                 });
             }
 
-            const addRow = sectionBody.createDiv('location-custom-add-row');
-            const addBtn = addRow.createEl('button', { cls: 'location-custom-add-btn', text: t('+ Add Field') });
-            addBtn.addEventListener('click', () => {
-                if (!draft.custom) draft.custom = {};
-                let n = Object.keys(draft.custom).length + 1;
-                let nk = `field_${n}`;
-                while (draft.custom[nk]) nk = `field_${++n}`;
-                draft.custom[nk] = '';
-                renderAll();
-            });
         };
 
         renderAll();
@@ -1591,6 +1725,15 @@ export class LocationView extends ProjectBoundItemView {
             cssPrefix: 'location',
             scheduleSave: (d) => this.scheduleSave(d),
             persistSections: () => { void this.plugin.saveSettings(); },
+            bindCustomTextArea: (textarea, fieldKey, minHeight) => {
+                bindResizableCustomFieldInput(
+                    textarea,
+                    this.plugin.settings,
+                    customFieldInputHeightKey(draft.type, fieldKey),
+                    () => this.plugin.saveSettings(),
+                    minHeight,
+                );
+            },
             requestRerender: () => {
                 if (this.rootContainer) this.renderView(this.rootContainer);
             },
@@ -1930,7 +2073,7 @@ export class LocationView extends ProjectBoundItemView {
      * Check if a world/location name changed and offer to cascade-update all references.
      * Called on blur of the Name input field.
      */
-    private checkLocationRename(draft: WorldOrLocation, inputEl: HTMLInputElement): void {
+    private checkLocationRename(draft: WorldOrLocation, inputEl: HTMLInputElement | HTMLTextAreaElement): void {
         const oldName = this.originalItemName;
         const newName = draft.name?.trim();
         if (!oldName || !newName || oldName === newName) return;

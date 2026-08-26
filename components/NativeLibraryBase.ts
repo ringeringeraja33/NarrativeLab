@@ -21,6 +21,7 @@ import {
 } from '../models/StoryLineProject';
 import type SceneCardsPlugin from '../main';
 import { isExcalidrawFilePath } from '../services/EntityFileCache';
+import { getLibraryProfilePropertyOrder } from '../utils/libraryProfilePropertyOrder';
 import {
     buildLibraryPathScopeFilter,
     collectReferencedLibraryCategoryIds,
@@ -533,6 +534,19 @@ function findViewForCategory(views: BaseViewConfig[], categoryId: string): BaseV
     return views.find(view => String(view[VIEW_CATEGORY_KEY] || '') === categoryId);
 }
 
+function applyProfileOrdersToConfig(config: Record<string, unknown>): boolean {
+    let dirty = false;
+    for (const view of getViews(config)) {
+        const categoryId = String(view[VIEW_CATEGORY_KEY] || '');
+        if (!categoryId) continue;
+        const profileOrder = getProfileTableOrder(categoryId);
+        if (!profileOrder || stringArrayEqual(view.order, profileOrder)) continue;
+        view.order = profileOrder;
+        dirty = true;
+    }
+    return dirty;
+}
+
 function viewFiltersMatch(view: BaseViewConfig, required: LibraryBaseFilter[]): boolean {
     if (required.length === 0) {
         return view.filters == null
@@ -651,6 +665,9 @@ async function writeBaseConfig(
     // Prefer any live embed layout over a stale in-memory config so ensure*
     // rewrites cannot clobber Properties/Sort changes the user just made.
     applyLiveLayoutsToConfig(basePath, config);
+    // Widths and sorts may come from the live view, but profile layout owns
+    // field visibility/order and must win over a stale Base snapshot.
+    applyProfileOrdersToConfig(config);
     await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
     const yaml = stringifyYaml(config);
     const existing = plugin.app.vault.getAbstractFileByPath(basePath);
@@ -917,6 +934,8 @@ async function persistLayoutSnapshot(
         const view = findViewForCategory(views, categoryId);
         if (!view) return;
         if (!applyLayoutSnapshotToView(view, snapshot)) return;
+        const profileOrder = getProfileTableOrder(categoryId);
+        if (profileOrder) view.order = profileOrder;
         config.views = views;
         // Bypass writeBaseConfig's live merge — this snapshot is already authoritative.
         await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
@@ -1036,6 +1055,26 @@ function extractTableOrder(config: Record<string, unknown> | null, discovered: s
     ];
 }
 
+function getProfileTableOrder(categoryId: string): string[] | null {
+    const layouts = categoryId === 'characters'
+        ? [getLibraryProfilePropertyOrder('character')]
+        : categoryId === 'locations'
+            ? [getLibraryProfilePropertyOrder('world'), getLibraryProfilePropertyOrder('location')]
+            : [getLibraryProfilePropertyOrder(categoryId)];
+    if (layouts.every(layout => !layout)) return null;
+    const result = ['file.name'];
+    const seen = new Set(result);
+    for (const layout of layouts) {
+        for (const key of layout?.visibleKeys ?? []) {
+            const propertyId = key === 'name' ? 'file.name' : `note.${key}`;
+            if (seen.has(propertyId)) continue;
+            seen.add(propertyId);
+            result.push(propertyId);
+        }
+    }
+    return result;
+}
+
 function upsertCategoryView(
     plugin: SceneCardsPlugin,
     config: Record<string, unknown>,
@@ -1047,6 +1086,7 @@ function upsertCategoryView(
     const recursive = categoryId !== 'uncategorized';
     const requiredFilters = buildRequiredFilters(plugin, categoryId, folderPaths);
     const discovered = collectNoteProperties(plugin, folderPaths, recursive);
+    const profileOrder = getProfileTableOrder(categoryId);
     const label = getNativeBaseDisplayLabel(plugin, categoryId);
     const views = getViews(config);
     let view = findViewForCategory(views, categoryId);
@@ -1057,7 +1097,7 @@ function upsertCategoryView(
             type: 'table',
             name: label,
             [VIEW_CATEGORY_KEY]: categoryId,
-            order: extractTableOrder(options?.seedFromLegacy ?? null, discovered),
+            order: profileOrder ?? extractTableOrder(options?.seedFromLegacy ?? null, discovered),
         };
         if (requiredFilters.length > 0) {
             view.filters = { and: requiredFilters };
@@ -1086,7 +1126,10 @@ function upsertCategoryView(
             dirty = true;
         }
         if (!Array.isArray(view.order) || view.order.length === 0) {
-            view.order = extractTableOrder(null, discovered);
+            view.order = profileOrder ?? extractTableOrder(null, discovered);
+            dirty = true;
+        } else if (profileOrder && !stringArrayEqual(view.order, profileOrder)) {
+            view.order = profileOrder;
             dirty = true;
         }
     }
