@@ -2434,6 +2434,21 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
 
 /* Display-only cleanup for Obsidian's Files view. The underlying vault items
    remain untouched and available to NarrativeLab. */
+.sl-narrative-lab-hide-file-explorer-internals
+    .workspace-leaf-content[data-type="file-explorer"]
+    .nav-folder:has(> .nav-folder-title:is(
+        [data-path="System" i], [data-path$="/System" i],
+        [data-path="Library" i], [data-path$="/Library" i],
+        [data-path="Canvas" i], [data-path$="/Canvas" i]
+    )),
+.sl-narrative-lab-hide-file-explorer-internals
+    .workspace-leaf-content[data-type="file-explorer"]
+    .nav-file:has(> .nav-file-title:is(
+        [data-path="series.json" i], [data-path$="/series.json" i]
+    )) {
+    display: none !important;
+}
+
 .workspace-leaf-content[data-type="file-explorer"] .sl-narrative-lab-hidden-file-tree-item {
     display: none !important;
 }
@@ -10434,8 +10449,8 @@ body /* Clamp title on mobile too, in case it's very long */
     font-size: 13px;
     --sl-nav-row-h: 22px;
     --sl-nav-pad-x: 6px;
-    /* Keep in sync with NavigatorView.NAV_INDENT_STEP */
-    --sl-nav-indent-step: 12px;
+    /* Compact but still readable project → section → item hierarchy. */
+    --sl-nav-indent-step: 8px;
     /* Hierarchy: toggle/folder icons (upper) > leaf row icons > status/plotline dots */
     --sl-nav-toggle-w: 16px;
     --sl-nav-icon-w: 16px;
@@ -10653,7 +10668,8 @@ body /* Clamp title on mobile too, in case it's very long */
     color: var(--text-muted);
     font-size: 11px;
 }
-/* Shared leading gutters: toggle | icon | seq → title column aligns per depth */
+/* Shared leading gutters. Sequence width is reserved only on scene rows that
+   actually display a sequence number; notes/folders do not carry an empty slot. */
 .sl-nav-gutter-toggle {
     display: inline-flex;
     align-items: center;

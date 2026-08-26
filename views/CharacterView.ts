@@ -413,7 +413,13 @@ export class CharacterView extends ProjectBoundItemView {
         container.empty();
         if (this.characterOverviewMode === 'base') {
             renderLibraryModeToolbar(container, actions => this.renderCharacterOverviewModes(actions));
-            void renderNativeLibraryBase(container, this.plugin, 'characters', this);
+            void renderNativeLibraryBase(
+                container,
+                this.plugin,
+                'characters',
+                this,
+                () => this.promptNewCharacter(),
+            );
             return;
         }
         // Tab already says “角色” — skip a redundant page title to free vertical space.

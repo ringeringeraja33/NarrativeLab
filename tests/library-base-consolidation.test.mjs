@@ -112,11 +112,13 @@ test('Library Base folder filters use file.inFolder and only the native New cont
     assert.doesNotMatch(nativeLibraryBase, /has-nl-new|library-native-base-actions|hideBasesNativeNewButtons/);
 });
 
-test('native Base New routes the created note into the active Library category folder', () => {
-    assert.match(nativeLibraryBase, /routeNativeBaseNewNotes\(host, plugin, resolved\.folderPath\)/);
-    assert.match(nativeLibraryBase, /plugin\.app\.vault\.on\('create'/);
-    assert.match(nativeLibraryBase, /plugin\.app\.fileManager\.renameFile\(file, destination\)/);
-    assert.match(nativeLibraryBase, /availableNotePath/);
+test('native Base New reuses each Profiles page category-aware creation flow', () => {
+    assert.match(nativeLibraryBase, /wireNativeBaseNewAction\(host, onNew\)/);
+    assert.match(nativeLibraryBase, /event\.stopImmediatePropagation\(\)/);
+    assert.doesNotMatch(nativeLibraryBase, /vault\.on\('create'|availableNotePath/);
+    assert.match(characterView, /renderNativeLibraryBase\([\s\S]*?\(\) => this\.promptNewCharacter\(\)/);
+    assert.match(locationView, /renderNativeLibraryBase\([\s\S]*?event => this\.showNewLocationMenu\(event\)/);
+    assert.match(codexView, /this\.activeCategory === UNCATEGORIZED_CATEGORY_ID[\s\S]*?this\.promptNewEntry\(\)/);
 });
 
 test('Library Base excludes Excalidraw markdown drawings', () => {

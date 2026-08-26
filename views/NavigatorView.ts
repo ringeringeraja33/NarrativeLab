@@ -437,11 +437,6 @@ export class NavigatorView extends ItemView {
             iconSlot.addClass('has-icon');
             setIcon(iconSlot, opts.icon);
         }
-        // Reserve seq column when this folder sits beside scene/note rows (depth ≥ 2).
-        // Primary sections keep their own gutter even when nested under a series.
-        if (depth >= 2 && !/\bsl-nav-primary-folder\b/.test(opts.cls || '')) {
-            this.appendNavSeqSlot(header);
-        }
         header.createSpan({ text: opts.label, cls: 'sl-nav-folder-label' });
         if (opts.count !== undefined) {
             header.createSpan({ text: String(opts.count), cls: 'sl-nav-folder-count' });
@@ -1062,7 +1057,6 @@ export class NavigatorView extends ItemView {
         const icon = this.appendNavIconSlot(row);
         icon.addClass('has-icon');
         setIcon(icon, 'sticky-note');
-        this.appendNavSeqSlot(row);
         row.createSpan({ text: note.title || t('Untitled note'), cls: 'sl-nav-title' });
 
         row.addEventListener('dragstart', (event) => {
@@ -1178,7 +1172,6 @@ export class NavigatorView extends ItemView {
         const icon = this.appendNavIconSlot(row);
         icon.addClass('has-icon');
         setIcon(icon, RESEARCH_TYPE_CONFIG[post.researchType]?.icon || 'file-text');
-        this.appendNavSeqSlot(row);
         row.createSpan({ text: post.title || t('Untitled'), cls: 'sl-nav-title' });
         if (post.subfolder) {
             row.createSpan({ text: post.subfolder, cls: 'sl-nav-folder-count' });
@@ -1688,7 +1681,6 @@ export class NavigatorView extends ItemView {
             this.setNavDepth(header, depth);
             this.appendNavToggle(header, isCollapsed ? '▸' : '▾');
             this.appendNavIconSlot(header);
-            this.appendNavSeqSlot(header);
             header.createSpan({ text: actLabel, cls: 'sl-nav-act-label' });
             const count = header.createSpan({ cls: 'sl-nav-act-count' });
             count.textContent = `${actScenes.length}`;
@@ -1738,7 +1730,6 @@ export class NavigatorView extends ItemView {
             this.setNavDepth(header, depth);
             this.appendNavToggle(header, isCollapsed ? '▸' : '▾');
             this.appendNavIconSlot(header);
-            this.appendNavSeqSlot(header);
             header.createSpan({ text: chKey, cls: 'sl-nav-chapter-label' });
             const count = header.createSpan({ cls: 'sl-nav-chapter-count' });
             count.textContent = `${chScenes.length}`;

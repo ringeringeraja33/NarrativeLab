@@ -467,7 +467,7 @@ export default class SceneCardsPlugin extends Plugin {
     private lastObservedObsidianTheme: 'light' | 'dark' | null = null;
     /** Keeps Obsidian's Files view free of NarrativeLab internals and unreadable files. */
     private fileExplorerVisibilityObserver: MutationObserver | null = null;
-    private fileExplorerVisibilityFrame: number | null = null;
+    private fileExplorerVisibilityRibbonEl: HTMLElement | null = null;
 
     /**
      * Resolve the Board that owns an undo shortcut. Corkboard Canvas runs in a
@@ -503,6 +503,7 @@ export default class SceneCardsPlugin extends Plugin {
 
     async onload(): Promise<void> {
         await this.loadSettings();
+        this.updateFileExplorerVisibilityModeClass();
         this.applyUiTheme();
         this.observeObsidianUiTheme();
         setActiveUiLanguage(this.getEffectiveInterfaceLanguage());
@@ -771,6 +772,12 @@ export default class SceneCardsPlugin extends Plugin {
         this.addRibbonIcon('activity', t('Open writing tracker'), () => {
             void this.openWritingTracker();
         });
+        this.fileExplorerVisibilityRibbonEl = this.addRibbonIcon(
+            'eye',
+            t('Show hidden project files'),
+            () => { void this.toggleFileExplorerVisibility(); },
+        );
+        this.updateFileExplorerVisibilityRibbon();
 
         // Commands
         this.addCommand({
@@ -1953,12 +1960,9 @@ export default class SceneCardsPlugin extends Plugin {
             this.fileExplorerVisibilityObserver.disconnect();
             this.fileExplorerVisibilityObserver = null;
         }
-        if (this.fileExplorerVisibilityFrame !== null) {
-            window.cancelAnimationFrame(this.fileExplorerVisibilityFrame);
-            this.fileExplorerVisibilityFrame = null;
-        }
         activeDocument.querySelectorAll('.sl-narrative-lab-hidden-file-tree-item')
             .forEach(el => el.classList.remove('sl-narrative-lab-hidden-file-tree-item'));
+        activeDocument.body?.classList.remove('sl-narrative-lab-hide-file-explorer-internals');
 
         // Clean up any floating lightbox windows left on activeDocument.body
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(el => el.remove());
@@ -2054,6 +2058,7 @@ export default class SceneCardsPlugin extends Plugin {
     public updateFileExplorerVisibility(): void {
         const hiddenClass = 'sl-narrative-lab-hidden-file-tree-item';
         const enabled = this.settings.hideUnsupportedFilesInExplorer !== false;
+        this.updateFileExplorerVisibilityModeClass();
         const explorers = activeDocument.querySelectorAll<HTMLElement>(
             '.workspace-leaf-content[data-type="file-explorer"]',
         );
@@ -2077,22 +2082,56 @@ export default class SceneCardsPlugin extends Plugin {
                 row.classList.toggle(hiddenClass, hidden);
             }
         }
+        this.updateFileExplorerVisibilityRibbon();
+    }
+
+    private updateFileExplorerVisibilityModeClass(): void {
+        activeDocument.body?.classList.toggle(
+            'sl-narrative-lab-hide-file-explorer-internals',
+            this.settings.hideUnsupportedFilesInExplorer !== false,
+        );
+    }
+
+    private updateFileExplorerVisibilityRibbon(): void {
+        const button = this.fileExplorerVisibilityRibbonEl;
+        if (!button) return;
+        const hidden = this.settings.hideUnsupportedFilesInExplorer !== false;
+        const label = hidden
+            ? t('Show hidden project files')
+            : t('Hide project internal files');
+        setIcon(button, hidden ? 'eye' : 'eye-off');
+        button.setAttribute('aria-label', label);
+        button.setAttribute('data-tooltip-position', 'right');
+        button.classList.toggle('is-active', !hidden);
+    }
+
+    private async toggleFileExplorerVisibility(): Promise<void> {
+        const previous = this.settings.hideUnsupportedFilesInExplorer !== false;
+        this.settings.hideUnsupportedFilesInExplorer = !previous;
+        try {
+            await this.saveSettings();
+            this.updateFileExplorerVisibility();
+            new Notice(this.settings.hideUnsupportedFilesInExplorer
+                ? t('Project internal files hidden')
+                : t('Hidden project files shown'));
+        } catch (error: unknown) {
+            this.settings.hideUnsupportedFilesInExplorer = previous;
+            this.updateFileExplorerVisibility();
+            new Notice(t('Could not update project file visibility: {error}', {
+                error: error instanceof Error ? error.message : String(error),
+            }), 10000);
+        }
     }
 
     private observeFileExplorerVisibility(): void {
-        const scheduleRefresh = (): void => {
-            if (this.fileExplorerVisibilityFrame !== null) return;
-            this.fileExplorerVisibilityFrame = window.requestAnimationFrame(() => {
-                this.fileExplorerVisibilityFrame = null;
-                this.updateFileExplorerVisibility();
-            });
-        };
-
         this.fileExplorerVisibilityObserver?.disconnect();
         this.updateFileExplorerVisibility();
         this.fileExplorerVisibilityObserver = new MutationObserver(mutations => {
             if (mutations.some(mutation => mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
-                scheduleRefresh();
+                // MutationObserver callbacks run before the browser's next
+                // paint. Apply visibility immediately so newly mounted rows do
+                // not appear for one frame when a folder is expanded.
+                this.updateFileExplorerVisibility();
             }
         });
         const explorers = activeDocument.querySelectorAll<HTMLElement>(
@@ -7651,16 +7690,25 @@ class SeriesManagementModal extends Modal {
         this.render();
     }
 
+    private findSeriesBookProject(folder: string, bookName: string): StoryLineProject | undefined {
+        const seriesFolder = normalizePath(folder);
+        return this.plugin.sceneManager.getProjects().find(project => {
+            const projectFolder = normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
+            const projectParent = projectFolder.includes('/')
+                ? projectFolder.slice(0, projectFolder.lastIndexOf('/'))
+                : '';
+            const projectFolderName = projectFolder.split('/').pop() ?? '';
+            return projectParent === seriesFolder
+                && (projectFolderName === bookName || project.title === bookName);
+        });
+    }
+
     private async removeBook(folder: string, meta: SeriesMetadata, bookName: string) {
         // Find the project for this book and activate it so removeProjectFromSeries works
-        const projects = this.plugin.sceneManager.getProjects();
-        const bookProject = projects.find(p => {
-            const fp = normalizePath(p.filePath);
-            return fp.startsWith(normalizePath(folder) + '/') && p.title === bookName;
-        });
+        const bookProject = this.findSeriesBookProject(folder, bookName);
 
         if (!bookProject) {
-            new Notice(t('Could not find project "{name}" — it may have been moved or deleted.', { name: bookName }));
+            await this.removeMissingBookReference(folder, meta, bookName);
             return;
         }
 
@@ -7695,20 +7743,70 @@ class SeriesManagementModal extends Modal {
     }
 
     /**
+     * Clean a stale series.json entry when its project is no longer available.
+     * No project files or folders are moved or deleted by this operation.
+     */
+    private async removeMissingBookReference(folder: string, meta: SeriesMetadata, bookName: string): Promise<void> {
+        const confirmed = await new Promise<boolean>((resolve) => {
+            const modal = new Modal(this.app);
+            modal.titleEl.setText(t('Remove missing project entry'));
+            modal.contentEl.createEl('p', {
+                text: t('NarrativeLab cannot find "{book}". Remove its stale entry from the series "{series}"?', {
+                    book: bookName,
+                    series: meta.name,
+                }),
+            });
+            modal.contentEl.createEl('p', {
+                text: t('Only the series list will be updated. No files or folders will be moved or deleted.'),
+                cls: 'setting-item-description',
+            });
+            new Setting(modal.contentEl)
+                .addButton((btn: ButtonComponent) => btn.setButtonText(t('Cancel')).onClick(() => {
+                    modal.close();
+                    resolve(false);
+                }))
+                .addButton((btn: ButtonComponent) => btn.setButtonText(t('Remove entry')).setClass('mod-warning').onClick(() => {
+                    modal.close();
+                    resolve(true);
+                }));
+            openStackedModal(modal);
+        });
+        if (!confirmed) return;
+
+        try {
+            // Re-scan immediately before cleanup. If Obsidian has just finished
+            // indexing the project, keep the entry and let the normal move flow
+            // handle it on the next click.
+            await this.plugin.sceneManager.scanProjects();
+            const projectNowAvailable = this.findSeriesBookProject(folder, bookName);
+            if (projectNowAvailable) {
+                new Notice(t('Project "{name}" is available again. Nothing was removed.', { name: bookName }));
+                await this.render();
+                return;
+            }
+
+            const removed = await this.plugin.seriesManager.removeMissingProjectReference(folder, bookName);
+            new Notice(removed
+                ? t('Removed missing project entry "{name}" from the series. No files were deleted.', { name: bookName })
+                : t('The missing project entry was already removed.'));
+            await this.plugin.refreshOpenViews();
+            await this.render();
+        } catch (error: unknown) {
+            new Notice(error instanceof Error ? error.message : String(error), 10000);
+        }
+    }
+
+    /**
      * Permanently delete a book from a series.
      *
      * Shows a type-to-confirm warning modal, then trashes the book's folder
      * (scenes, codex, notes, etc.) and removes it from `series.json`.
      */
     private async deleteBook(folder: string, meta: SeriesMetadata, bookName: string) {
-        const projects = this.plugin.sceneManager.getProjects();
-        const bookProject = projects.find(p => {
-            const fp = normalizePath(p.filePath);
-            return fp.startsWith(normalizePath(folder) + '/') && p.title === bookName;
-        });
+        const bookProject = this.findSeriesBookProject(folder, bookName);
 
         if (!bookProject) {
-            new Notice(t('Could not find project "{name}" — it may have been moved or deleted.', { name: bookName }));
+            await this.removeMissingBookReference(folder, meta, bookName);
             return;
         }
 
@@ -7768,11 +7866,7 @@ class SeriesManagementModal extends Modal {
     }
 
     private async renameBook(folder: string, _meta: SeriesMetadata, bookName: string) {
-        const projects = this.plugin.sceneManager.getProjects();
-        const bookProject = projects.find(p => {
-            const fp = normalizePath(p.filePath);
-            return fp.startsWith(normalizePath(folder) + '/') && p.title === bookName;
-        });
+        const bookProject = this.findSeriesBookProject(folder, bookName);
 
         if (!bookProject) {
             new Notice(t('Could not find project "{name}".', { name: bookName }));

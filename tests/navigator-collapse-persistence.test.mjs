@@ -2,11 +2,44 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
-const [navigatorView, settings, mainTs] = await Promise.all([
+const [navigatorView, settings, mainTs, styles] = await Promise.all([
     readFile(new URL('../views/NavigatorView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../settings.ts', import.meta.url), 'utf8'),
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
 ]);
+
+test('Navigator primary sections render in Notes, Scenes, Research order', () => {
+    const renderPrimary = navigatorView.slice(
+        navigatorView.indexOf('private renderActiveProjectContents'),
+        navigatorView.indexOf('private renderScenesFolder'),
+    );
+    const scenesAt = renderPrimary.indexOf('this.renderScenesFolder');
+    const notesAt = renderPrimary.indexOf('this.renderNotesFolder');
+    const researchAt = renderPrimary.indexOf('this.renderResearchFolder');
+    assert.ok(notesAt >= 0 && notesAt < scenesAt && scenesAt < researchAt);
+});
+
+test('Navigator leaf titles use compact indentation without empty sequence gutters', () => {
+    assert.match(styles, /--sl-nav-indent-step:\s*8px/);
+    const folderHeader = navigatorView.slice(
+        navigatorView.indexOf('private renderFolderHeader'),
+        navigatorView.indexOf('private binderTextMatches'),
+    );
+    const noteRow = navigatorView.slice(
+        navigatorView.indexOf('private renderNoteRow'),
+        navigatorView.indexOf('private renderResearchFolder'),
+    );
+    const researchRow = navigatorView.slice(
+        navigatorView.indexOf('private renderResearchRow'),
+        navigatorView.indexOf('private promptNewResearch'),
+    );
+    const sceneRow = navigatorView.slice(navigatorView.indexOf('private renderSceneRow'));
+    assert.doesNotMatch(folderHeader, /appendNavSeqSlot/);
+    assert.doesNotMatch(noteRow, /appendNavSeqSlot/);
+    assert.doesNotMatch(researchRow, /appendNavSeqSlot/);
+    assert.match(sceneRow, /appendNavSeqSlot/);
+});
 
 test('Navigator restores Notes and Scenes but opens Research collapsed', () => {
     assert.match(settings, /navigatorCollapsedSections: Array<'notes' \| 'scenes'>/);

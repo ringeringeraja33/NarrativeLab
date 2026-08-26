@@ -292,22 +292,6 @@ export class StorylineView extends ProjectBoundItemView {
         plotlines: Map<string, Scene[]>,
         plotlineKeys: string[],
     ): void {
-        // Help text
-        if (plotlineKeys.length > 0) {
-            const helpText = content.createDiv('storyline-help');
-            const helpSpan = helpText.createSpan({ cls: 'storyline-help-text' });
-            helpSpan.appendText('A plotline groups scenes that share a story thread — e.g. "main mystery" or "love story". Hover a plotline header for ');
-            const penIcon = helpSpan.createSpan({ cls: 'storyline-help-icon' });
-            obsidian.setIcon(penIcon, 'pencil');
-            helpSpan.appendText(' rename, ');
-            const plusIcon = helpSpan.createSpan({ cls: 'storyline-help-icon' });
-            obsidian.setIcon(plusIcon, 'plus');
-            helpSpan.appendText(' add scenes, or ');
-            const trashIcon = helpSpan.createSpan({ cls: 'storyline-help-icon' });
-            obsidian.setIcon(trashIcon, 'trash-2');
-            helpSpan.appendText(' delete. Click any scene to assign/remove it from plotlines.');
-        }
-
         // Render each plotline
         for (const plotline of plotlineKeys) {
             const plotScenes = plotlines.get(plotline) || [];

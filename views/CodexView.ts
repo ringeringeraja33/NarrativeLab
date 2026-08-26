@@ -554,6 +554,13 @@ export class CodexView extends ProjectBoundItemView {
                 this.plugin,
                 this.activeCategory || ALL_LIBRARY_CATEGORY_ID,
                 this,
+                () => {
+                    if (this.activeCategory === UNCATEGORIZED_CATEGORY_ID) {
+                        this.promptNewUncategorizedEntry();
+                    } else {
+                        this.promptNewEntry();
+                    }
+                },
             );
             return;
         }

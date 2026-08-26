@@ -152,6 +152,28 @@ test('character tagline can read built-in, universal, and custom fields', () => 
     assert.equal(characterMod.resolveCharacterCardSnippet({ ...base, tagline: 'custom:missing' }), 'calm');
 });
 
+test('character defaults split family and early life into distinct ordered fields', async () => {
+    const basic = characterMod.CHARACTER_CATEGORIES.find(category => category.title === 'Basic Information');
+    assert.ok(basic);
+    const familyIndex = basic.fields.findIndex(field => field.key === 'family');
+    const earlyLifeIndex = basic.fields.findIndex(field => field.key === 'earlylife');
+    assert.ok(familyIndex >= 0);
+    assert.equal(earlyLifeIndex, familyIndex + 1);
+    assert.equal(basic.fields[familyIndex].label, 'Family');
+    assert.equal(basic.fields[earlyLifeIndex].label, 'Early life');
+
+    const keyFamilyIndex = characterMod.CHARACTER_FIELD_KEYS.indexOf('family');
+    assert.equal(characterMod.CHARACTER_FIELD_KEYS[keyFamilyIndex + 1], 'earlylife');
+
+    const managerSource = await readFile('services/CharacterManager.ts', 'utf8');
+    assert.match(managerSource, /earlylife:\s*safeFm\.earlylife\s*\?\?\s*\(safeFm\.earlyLife/);
+    assert.match(managerSource, /delete fm\['earlyLife'\]/);
+
+    const templatesSource = await readFile('services/FieldTemplateService.ts', 'utf8');
+    assert.match(templatesSource, /'family',\s*'earlylife'/);
+    assert.match(templatesSource, /newly shipped fields[\s\S]*`earlylife` after `family`/);
+});
+
 test('character tagline selector lists universal and per-character custom fields', async () => {
     const source = await readFile('views/CharacterView.ts', 'utf8');
     assert.match(source, /fieldTemplates\.getAll\(\)/);
@@ -378,6 +400,16 @@ test('all custom profile text renderers support remembered vertical resizing', a
     assert.match(customSections, /bindCustomTextArea/);
     assert.match(customSections, /createEl\('textarea'/);
     assert.match(css, /textarea\.nl-resizable-custom-field/);
+});
+
+test('profile textarea resizing updates memory immediately and never stores collapsed height', async () => {
+    const resizeSource = await readFile('utils/customFieldInputHeight.ts', 'utf8');
+    assert.match(resizeSource, /if \(!textarea\.isConnected\)/);
+    assert.match(resizeSource, /measuredHeight <= 0/);
+    assert.match(resizeSource, /heights\[key\] = height;[\s\S]*savePending = true/);
+    assert.match(resizeSource, /textarea\.addEventListener\('pointerup', flushHeight\)/);
+    assert.match(resizeSource, /textarea\.addEventListener\('blur', flushHeight\)/);
+    assert.match(resizeSource, /normalizedSavedHeight >= minHeight/);
 });
 
 test('built-in and universal profile fields share the five-action toolbar', async () => {

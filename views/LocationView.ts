@@ -304,7 +304,13 @@ export class LocationView extends ProjectBoundItemView {
         container.empty();
         if (this.locationOverviewMode === 'base') {
             renderLibraryModeToolbar(container, actions => this.renderLocationOverviewModes(actions));
-            void renderNativeLibraryBase(container, this.plugin, 'locations', this);
+            void renderNativeLibraryBase(
+                container,
+                this.plugin,
+                'locations',
+                this,
+                event => this.showNewLocationMenu(event),
+            );
             return;
         }
 
@@ -340,12 +346,7 @@ export class LocationView extends ProjectBoundItemView {
                 this.browseFilterOpen = open;
                 this.renderOverview(container);
             },
-            onNew: (ev) => {
-                const menu = new Menu();
-                menu.addItem(item => item.setTitle(t('New World')).onClick(() => this.promptNewWorld()));
-                menu.addItem(item => item.setTitle(t('New Location')).onClick(() => this.promptNewLocation()));
-                showMenuSafely(menu, ev);
-            },
+            onNew: event => this.showNewLocationMenu(event),
             newLabel: t('New'),
             // Location Profiles is card-only; Browse (native Base) owns table/list.
             showLayoutToggle: false,
@@ -2140,6 +2141,13 @@ export class LocationView extends ProjectBoundItemView {
     }
 
     // ── Actions ────────────────────────────────────────
+
+    private showNewLocationMenu(event: MouseEvent | PointerEvent): void {
+        const menu = new Menu();
+        menu.addItem(item => item.setTitle(t('New World')).onClick(() => this.promptNewWorld()));
+        menu.addItem(item => item.setTitle(t('New Location')).onClick(() => this.promptNewLocation()));
+        showMenuSafely(menu, event);
+    }
 
     private promptNewWorld(): void {
         const modal = new Modal(this.app);

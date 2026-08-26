@@ -60,6 +60,7 @@ test('Order and plotline tools share one Structure tab with five subviews', asyn
     assert.match(storyline, /if \(this\.sortMode === mode\) return/);
     assert.match(storyline, /window\.cancelAnimationFrame\(this\._pendingRefresh\)/);
     assert.match(storyline, /scrollTop = scroll\.top/);
+    assert.doesNotMatch(storyline, /A plotline groups scenes that share a story thread/);
     assert.match(styles, /data-type="narrative-lab-timeline"[^}]+flex-wrap:\s*nowrap/s);
     assert.match(styles, /data-type="narrative-lab-timeline"[^}]+overflow-x:\s*auto/s);
 });
@@ -312,6 +313,30 @@ test('series convert and dissolve open stacked child modals after the click sett
 test('failed project trash restores series metadata', () => {
     assert.match(sceneManager, /seriesMetadataRollback/);
     assert.match(sceneManager, /Failed to restore series metadata after project deletion failed/);
+});
+
+test('missing series projects can be removed as metadata-only stale entries', () => {
+    const cleanup = seriesManager.slice(
+        seriesManager.indexOf('async removeMissingProjectReference'),
+        seriesManager.indexOf('async dissolveSeries'),
+    );
+    assert.match(cleanup, /loadSeriesMetadata\(seriesFolder\)/);
+    assert.match(cleanup, /bookOrder\.filter\(name => name !== bookName\)/);
+    assert.match(cleanup, /saveSeriesMetadata\(seriesFolder, meta\)/);
+    assert.doesNotMatch(cleanup, /trashFile|removeProjectFromSeries|moveProjectFolder/);
+
+    const modalCleanup = mainTs.slice(
+        mainTs.indexOf('private async removeMissingBookReference'),
+        mainTs.indexOf('private async deleteBook'),
+    );
+    assert.match(modalCleanup, /No files or folders will be moved or deleted/);
+    assert.match(modalCleanup, /sceneManager\.scanProjects\(\)/);
+    assert.match(modalCleanup, /removeMissingProjectReference\(folder, bookName\)/);
+    assert.doesNotMatch(modalCleanup, /deleteProject|trashFile/);
+    assert.match(mainTs, /private findSeriesBookProject[\s\S]*?projectParent === seriesFolder[\s\S]*?projectFolderName === bookName \|\| project\.title === bookName/);
+
+    const missingBranches = mainTs.match(/if \(!bookProject\) \{[\s\S]*?removeMissingBookReference\(folder, meta, bookName\);[\s\S]*?return;[\s\S]*?\}/g) ?? [];
+    assert.equal(missingBranches.length, 2);
 });
 
 test('series category deletion warns that every project is affected', () => {

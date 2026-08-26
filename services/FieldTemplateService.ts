@@ -310,9 +310,9 @@ export class FieldTemplateService {
 
     /**
      * Resolve the full display order for a section, interleaving built-in
-     * field keys with universal-field template ids. Any items missing from
-     * the stored order are appended at the end (built-ins first in their
-     * natural sequence, then universals sorted by their `order` value).
+     * field keys with universal-field template ids. Newly introduced built-in
+     * fields are inserted beside their nearest natural neighbour, so upgrades
+     * do not strand a new default field at the bottom of a user-sorted section.
      */
     getMergedOrder(section: string, category: string | undefined, builtInKeys: string[]): SectionOrderEntry[] {
         const stored = this.sectionOrders[this.sectionKey(section, category)] ?? [];
@@ -329,10 +329,39 @@ export class FieldTemplateService {
                 if (!seen.has(tag)) { result.push(e); seen.add(tag); }
             }
         }
-        // Append any built-ins not yet ordered, preserving their natural sequence.
-        for (const bk of builtInKeys) {
+        // Insert missing built-ins beside an existing natural neighbour. This
+        // preserves the user's stored order while keeping newly shipped fields
+        // (for example `earlylife` after `family`) in a meaningful position.
+        for (let index = 0; index < builtInKeys.length; index++) {
+            const bk = builtInKeys[index];
             const tag = `builtin:${bk}`;
-            if (!seen.has(tag)) { result.push({ kind: 'builtin', key: bk }); seen.add(tag); }
+            if (seen.has(tag)) continue;
+
+            let insertAt = -1;
+            for (let previous = index - 1; previous >= 0; previous--) {
+                const previousIndex = result.findIndex(entry =>
+                    entry.kind === 'builtin' && entry.key === builtInKeys[previous]);
+                if (previousIndex >= 0) {
+                    insertAt = previousIndex + 1;
+                    break;
+                }
+            }
+            if (insertAt < 0) {
+                for (let next = index + 1; next < builtInKeys.length; next++) {
+                    const nextIndex = result.findIndex(entry =>
+                        entry.kind === 'builtin' && entry.key === builtInKeys[next]);
+                    if (nextIndex >= 0) {
+                        insertAt = nextIndex;
+                        break;
+                    }
+                }
+            }
+            if (insertAt < 0) {
+                const firstUniversal = result.findIndex(entry => entry.kind === 'universal');
+                insertAt = firstUniversal >= 0 ? firstUniversal : result.length;
+            }
+            result.splice(insertAt, 0, { kind: 'builtin', key: bk });
+            seen.add(tag);
         }
         // Append any universals not yet ordered.
         for (const u of universals) {
@@ -500,7 +529,7 @@ export const RESERVED_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
     'corkboardNoteCaption', 'plotgridOrigin', 'subtitle', 'color',
     'timeline_mode', 'timeline_strand',
     'image', 'gallery', 'tagline', 'role', 'occupation', 'residency',
-    'family', 'appearance', 'personality', 'goal', 'belief', 'misbelief',
+    'family', 'earlylife', 'appearance', 'personality', 'goal', 'belief', 'misbelief',
     'fears', 'flaws', 'strengths', 'relations', 'books',
     'world', 'parent', 'description', 'geography', 'culture', 'politics',
     'magicTechnology', 'beliefs', 'economy', 'history', 'locationType',

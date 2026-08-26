@@ -43,7 +43,8 @@ export function fileExtension(path: string): string {
 }
 
 export function shouldHideFileExplorerFolder(path: string): boolean {
-    return pathBasename(path) === 'system';
+    const basename = pathBasename(path);
+    return basename === 'system' || basename === 'library' || basename === 'canvas';
 }
 
 export function shouldHideFileExplorerFile(

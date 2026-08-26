@@ -802,7 +802,7 @@ export interface SceneCardsSettings {
      */
     autoHideViewLabels?: boolean;
 
-    /** Hide System, series.json, and files Obsidian has no registered view for. */
+    /** Hide Library, System, Canvas, series.json, and files Obsidian has no registered view for. */
     hideUnsupportedFilesInExplorer: boolean;
 
     // DOCX export settings (adapted from ToWord plugin)
@@ -921,7 +921,7 @@ export interface SceneCardsSettings {
      * Horizontal = section columns left-to-right; vertical = stacked sections.
      */
     profileOrientations?: Record<string, 'horizontal' | 'vertical'>;
-    /** Remembered textarea heights for user-created fields, scoped to the active project. */
+    /** Remembered textarea heights for all profile fields, scoped to the active project. */
     profileFieldInputHeights?: Record<string, number>;
     /** Per-project label and placeholder customizations for built-in profile fields. */
     profileFieldOverrides?: Record<string, Record<string, { label?: string; placeholder?: string }>>;
@@ -1311,7 +1311,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         new Setting(panel)
             .setName(t('Hide project internals in Obsidian Files'))
-            .setDesc(t('Hides System folders, series.json, and file types that Obsidian has no view for. Files stay on disk and remain available to NarrativeLab.'))
+            .setDesc(t('Hides Library, System, and Canvas folders, series.json, and file types that Obsidian has no view for. Files stay on disk and remain available to NarrativeLab. Use the ribbon eye button to show or hide them at any time.'))
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.hideUnsupportedFilesInExplorer !== false)
                 .onChange(async (value) => {

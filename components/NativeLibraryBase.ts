@@ -277,7 +277,10 @@ async function ensureVaultFolder(plugin: SceneCardsPlugin, folderPath: string): 
 function isNativeBasesNewButton(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) return false;
     const control = target.closest<HTMLElement>('button, [role="button"]');
-    if (!control || !control.closest('.bases-toolbar, .bases-toolbar-container')) return false;
+    // Obsidian has renamed the Base toolbar wrapper across releases. The
+    // listener is already scoped to this one embedded Base, so the exact New
+    // label is a more stable discriminator than a private toolbar class.
+    if (!control) return false;
     const labels = [
         control.textContent,
         control.getAttribute('aria-label'),
@@ -289,74 +292,35 @@ function isNativeBasesNewButton(target: EventTarget | null): boolean {
     });
 }
 
-async function availableNotePath(
-    plugin: SceneCardsPlugin,
-    targetFolder: string,
-    file: TFile,
-): Promise<string> {
-    const extension = file.extension ? `.${file.extension}` : '';
-    const stem = file.basename || t('Untitled');
-    let suffix = 0;
-    while (true) {
-        const name = suffix === 0 ? `${stem}${extension}` : `${stem} ${suffix}${extension}`;
-        const candidate = normalizePath(`${targetFolder}/${name}`);
-        if (!(await pathExists(plugin, candidate))) return candidate;
-        suffix += 1;
-    }
-}
-
 /**
- * Keep the native Bases New control and editor, but route the note it creates
- * into the active Library category instead of Obsidian's global new-note path.
+ * Make the native Base New control use the same category-aware creation flow
+ * as the Profiles page. Creating directly in the destination is safer than
+ * watching Obsidian create a note elsewhere and moving it afterward.
  */
-function routeNativeBaseNewNotes(
+function wireNativeBaseNewAction(
     host: HTMLElement,
-    plugin: SceneCardsPlugin,
-    targetFolder: string,
+    onNew: (event: MouseEvent | PointerEvent) => void,
 ): () => void {
-    let armedCreateRef: ReturnType<typeof plugin.app.vault.on> | null = null;
-    let disarmTimer: number | null = null;
-
-    const disarm = () => {
-        if (armedCreateRef) {
-            plugin.app.vault.offref(armedCreateRef);
-            armedCreateRef = null;
-        }
-        if (disarmTimer != null) {
-            window.clearTimeout(disarmTimer);
-            disarmTimer = null;
-        }
-    };
-
-    const arm = () => {
-        disarm();
-        armedCreateRef = plugin.app.vault.on('create', file => {
-            if (!(file instanceof TFile) || file.extension.toLocaleLowerCase() !== 'md') return;
-            disarm();
-            void (async () => {
-                const destinationFolder = normalizePath(targetFolder);
-                if (normalizePath(file.parent?.path || '') === destinationFolder) return;
-                await ensureVaultFolder(plugin, destinationFolder);
-                const destination = await availableNotePath(plugin, destinationFolder, file);
-                await plugin.app.fileManager.renameFile(file, destination);
-            })().catch(error => {
-                console.error('[NarrativeLab] Failed to route new Library note:', error);
-            });
-        });
-        disarmTimer = window.setTimeout(disarm, 5000);
-    };
-
+    let lastPointerActionAt = 0;
     const onTrigger = (event: MouseEvent | PointerEvent) => {
-        if (isNativeBasesNewButton(event.target)) arm();
+        if (!isNativeBasesNewButton(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        if (event.type === 'pointerdown') {
+            lastPointerActionAt = Date.now();
+            onNew(event);
+            return;
+        }
+        // Pointer activation also emits click; keyboard activation emits only
+        // click. Suppress only the duplicate half of the former pair.
+        if (Date.now() - lastPointerActionAt > 500) onNew(event);
     };
-    // Pointer-down covers Obsidian builds that create before the click event;
-    // click also covers keyboard activation.
     host.addEventListener('pointerdown', onTrigger, true);
     host.addEventListener('click', onTrigger, true);
     return () => {
         host.removeEventListener('pointerdown', onTrigger, true);
         host.removeEventListener('click', onTrigger, true);
-        disarm();
     };
 }
 
@@ -1557,6 +1521,7 @@ export async function renderNativeLibraryBase(
     plugin: SceneCardsPlugin,
     categoryId: string,
     owner: Component,
+    onNew: (event: MouseEvent | PointerEvent) => void,
 ): Promise<void> {
     disposeNativeLibraryBase(owner);
     const state = activeEmbeds.get(owner)!;
@@ -1598,7 +1563,7 @@ export async function renderNativeLibraryBase(
     state.plugin = plugin;
     state.categoryId = categoryId;
     state.basePath = resolved.basePath;
-    state.newNoteUnhook = routeNativeBaseNewNotes(host, plugin, resolved.folderPath);
+    state.newNoteUnhook = wireNativeBaseNewAction(host, onNew);
     const linkPath = escapeWikilinkPath(resolved.basePath);
     const linkView = escapeWikilinkPath(viewName);
     await MarkdownRenderer.render(

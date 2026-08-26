@@ -539,6 +539,27 @@ export class SeriesManager {
     }
 
     /**
+     * Remove an orphaned book name from series.json without touching the vault.
+     *
+     * This is intentionally separate from removeProjectFromSeries(): when the
+     * project can no longer be resolved there is no folder that can safely be
+     * moved and no Library data that can safely be copied. Reloading the file
+     * before editing also prevents an old management modal from overwriting
+     * newer series changes.
+     */
+    async removeMissingProjectReference(seriesFolder: string, bookName: string): Promise<boolean> {
+        const meta = await this.loadSeriesMetadata(seriesFolder);
+        if (!meta) throw new Error(t('Invalid series metadata.'));
+
+        const nextBookOrder = meta.bookOrder.filter(name => name !== bookName);
+        if (nextBookOrder.length === meta.bookOrder.length) return false;
+
+        meta.bookOrder = nextBookOrder;
+        await this.saveSeriesMetadata(seriesFolder, meta);
+        return true;
+    }
+
+    /**
      * Dissolve a series into standalone projects.
      *
      * Every direct child project receives a copy of the shared Library before

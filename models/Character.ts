@@ -44,8 +44,10 @@ export interface Character {
     residency?: string;
     /** Story locations this character appears at */
     locations?: string[];
-    /** Family & background */
+    /** Family relationships and household context */
     family?: string;
+    /** Childhood, upbringing, and formative early experiences */
+    earlylife?: string;
 
     /** Structured relationship rows (category -> type -> target) */
     relations?: CharacterRelation[];
@@ -547,7 +549,8 @@ export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
             { key: 'occupation', label: 'Occupation', placeholder: 'Current job, income level, career history' },
             { key: 'residency', label: 'Residency', placeholder: 'Where they are from and where they currently live', multiline: true },
             { key: 'locations', label: 'Locations', placeholder: 'Story locations they appear at (e.g. The Tavern, Castle Ruins)' },
-            { key: 'family', label: 'Family / Background', placeholder: 'Relationships with parents, siblings, spouse…', multiline: true },
+            { key: 'family', label: 'Family', placeholder: 'Relationships with parents, siblings, spouse…', multiline: true },
+            { key: 'earlylife', label: 'Early life', placeholder: 'Childhood, upbringing, education, and formative experiences…', multiline: true },
             { key: 'relations', label: 'Relations', placeholder: 'Add relation rows by category and type' },
         ],
     },
@@ -589,7 +592,7 @@ export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
  * Frontmatter keys that map to Character fields (excludes computed/meta keys)
  */
 export const CHARACTER_FIELD_KEYS: (keyof Character)[] = [
-    'name', 'tagline', 'image', 'gallery', 'nickname', 'age', 'role', 'roles', 'occupation', 'residency', 'locations', 'family', 'relations',
+    'name', 'tagline', 'image', 'gallery', 'nickname', 'age', 'role', 'roles', 'occupation', 'residency', 'locations', 'family', 'earlylife', 'relations',
     'appearance', 'distinguishingFeatures', 'style', 'quirks',
     'personality', 'internalMotivation', 'externalMotivation', 'strengths', 'flaws', 'fears', 'belief', 'misbelief',
     'formativeMemories', 'accomplishments', 'secrets',
@@ -705,7 +708,7 @@ export function relationDisplayLabel(relation: CharacterRelation): string {
  * allies/enemies (string arrays) and custom (object).
  */
 const PROP_SCAN_FIELDS: (keyof Character)[] = [
-    'nickname', 'age', 'occupation', 'family',
+    'nickname', 'age', 'occupation', 'family', 'earlylife',
     'appearance', 'distinguishingFeatures', 'style', 'quirks',
     'personality', 'internalMotivation', 'externalMotivation',
     'strengths', 'flaws', 'fears', 'belief', 'misbelief',

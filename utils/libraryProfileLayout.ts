@@ -27,7 +27,7 @@ export interface LibraryProfileLayoutSettings {
     codexCategoryFieldTemplates: Record<string, string[]>;
     /** Detail page direction, keyed by character/location/world/Codex category. */
     profileOrientations: Record<string, LibraryProfileOrientation>;
-    /** User-selected heights for resizable custom text fields. */
+    /** User-selected heights for all resizable profile text fields. */
     profileFieldInputHeights: Record<string, number>;
     /** Display overrides for built-in fields, keyed by category then field key. */
     profileFieldOverrides: Record<string, Record<string, ProfileFieldOverride>>;

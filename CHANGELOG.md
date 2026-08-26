@@ -1,5 +1,15 @@
 # NarrativeLab — Changelog
 
+## 1.4.4
+
+- Obsidian's Files view now also hides project `Library` and `Canvas` folders. A ribbon eye button reveals or hides every managed internal item, and newly expanded rows are filtered before the next paint to prevent first-open flashing.
+- Missing projects can be removed safely from series metadata without moving or deleting any vault files. Project lookup also recognizes the actual series folder name when it differs from the display title.
+- Character defaults now separate `family` and `earlylife`; existing legacy family/background content is migrated into Early Life without discarding populated fields.
+- The native Library Base New button now opens the same category-aware creation flow as Profiles, so characters, locations, worlds, and custom entries are created directly in the correct folder.
+- All resizable profile text fields now persist their final dragged height reliably across immediate rerenders, section collapse, tab close, and reopen.
+- Navigator rows use compact indentation without empty sequence gutters while retaining the Notes, Scenes, Research section order.
+- Removed the persistent explanatory paragraph above populated plotline lists while retaining the useful empty-state onboarding guidance.
+
 ## 1.4.3
 
 - Character, Location, and Codex profile sections and fields can now be reordered in both horizontal and vertical layouts. The same visible-field order is reflected in entity YAML frontmatter and the native Library Base view.

@@ -239,6 +239,9 @@ export class CharacterManager {
         }
         // Clean up legacy keys
         delete fm['coreBeliefs'];
+        // `earlyLife` was accepted by some hand-authored templates. Keep one
+        // canonical key so Obsidian Properties never shows duplicate fields.
+        delete fm['earlyLife'];
         delete fm['romanticHistory'];
         delete fm['customRelationType'];
         delete fm['customRelationLabel'];
@@ -372,6 +375,7 @@ export class CharacterManager {
             residency: safeFm.residency,
             locations: this.parseStringList(safeFm.locations),
             family: safeFm.family,
+            earlylife: safeFm.earlylife ?? (safeFm.earlyLife as string | undefined),
             appearance: safeFm.appearance,
             distinguishingFeatures: safeFm.distinguishingFeatures,
             style: safeFm.style,
