@@ -857,6 +857,11 @@ export class SceneManager implements ISceneStore {
         await this.plugin.saveProjectSystemData();
         if (previousFile) this.plugin.stashProjectRuntime(previousFile);
 
+        // From this point until the new scene index and stats ledger are both
+        // ready, delayed refresh/file events must not settle the old baseline
+        // into the new project's stats.json.
+        this.plugin.suspendWritingTrackerForProjectSwitch();
+
         this._activeProject = project;
         this.plugin.settings.activeProjectFile = project.filePath;
         this.applyActiveProjectLocale();

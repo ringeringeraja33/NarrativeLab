@@ -1,5 +1,16 @@
 # NarrativeLab — Changelog
 
+## 1.4.5
+
+- Library profiles preserve custom fields and frontmatter ordering across partial edits, migrations, Base changes, and project reloads without replacing readable data with incomplete editor snapshots.
+- Library relationships can be edited from profile pages and are mirrored into the Story Graph with rename-safe, prose-preserving references.
+- Native Library Base views gain a synchronized bottom horizontal scrollbar and category-aware project scoping.
+- Narrative Canvas projects can keep multiple canvases in a project card box; canvas selection, rename, deletion, and tab state stay bound to the owning project.
+- Concept Grid retains workbook styles more completely when rebuilding sheets and safely handles richer Univer formatting state.
+- Navigator series can be collapsed even when they contain the active project; search expands matches temporarily without erasing the manual collapse choice.
+- Settings disclosure sections now use the same framed visual treatment.
+- Writing statistics pause all ledger mutations while switching projects, reject delayed events from a different project, and reset the session flush cursor when establishing a new baseline.
+
 ## 1.4.4
 
 - Obsidian's Files view now also hides project `Library` and `Canvas` folders. A ribbon eye button reveals or hides every managed internal item, and newly expanded rows are filtered before the next paint to prevent first-open flashing.

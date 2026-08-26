@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-return -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, normalizePath } from 'obsidian';
 import { ensureVaultFolder, isTombstonedProjectPath } from '../utils/vaultFolders';
 import { RESERVED_TOP_LEVEL_KEYS } from '../utils/libraryProfilePropertyOrder';
@@ -767,4 +767,4 @@ export function mirrorUniversalFieldsToTopLevel(
         }
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-return -- end of file-wide suppression block opened at line 1 */

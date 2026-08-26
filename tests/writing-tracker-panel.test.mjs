@@ -270,6 +270,35 @@ test('daily net words roll back deletions instead of retaining a high-water mark
     assert.equal(tracker.getTodayWords(), 50);
 });
 
+test('restarting a session clears the previous flush cursor', () => {
+    const tracker = new WritingTracker();
+    tracker.startSession(0);
+    assert.equal(tracker.flushSession(6794).words, 6794);
+    tracker.startSession(0);
+    assert.equal(tracker.flushSession(0).words, 0);
+    assert.equal(tracker.getTodayWords(), 6794);
+});
+
+test('project switching suspends tracker writes until the new index is rebound', () => {
+    const switchStart = sceneManager.indexOf('private async setActiveProjectNow(');
+    const switchEnd = sceneManager.indexOf('async renameProject(', switchStart);
+    const switchProject = sceneManager.slice(switchStart, switchEnd);
+    assert.match(switchProject, /suspendWritingTrackerForProjectSwitch\(\)/);
+    assert.match(switchProject, /rebindWritingTrackerSession\(\)/);
+    assert.ok(
+        switchProject.indexOf('suspendWritingTrackerForProjectSwitch()')
+            < switchProject.indexOf('this._activeProject = project'),
+    );
+    assert.ok(
+        switchProject.indexOf('refreshOpenViews()')
+            < switchProject.indexOf('rebindWritingTrackerSession()'),
+    );
+    const flushStart = mainTs.indexOf('    flushWritingTrackers(totalWords?:');
+    const flushEnd = mainTs.indexOf('    /** Stop tracker mutations', flushStart);
+    assert.match(mainTs.slice(flushStart, flushEnd), /if \(this\._writingTrackerProjectSwitching\) return;/);
+    assert.match(mainTs, /canRecordWritingChange\(queuedProjectFile\)/);
+});
+
 test('starting a session never deletes a legitimate large daily total', () => {
     const today = writingTrackerDateKey(new Date());
     const tracker = new WritingTracker();

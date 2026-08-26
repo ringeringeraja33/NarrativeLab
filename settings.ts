@@ -2276,10 +2276,9 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         });
 
         // ── Timeline Drag-Scroll Settings (collapsible) ──
-        const tlDetails = panel.createEl('details', { cls: 'story-line-timeline-scroll-section' });
+        const tlDetails = panel.createEl('details', { cls: 'story-line-color-section' });
         tlDetails.createEl('summary', { text: t('Timeline Drag-Scroll') });
         const tlBody = tlDetails.createDiv();
-        tlBody.setCssStyles({ padding: '8px 0' });
 
         new Setting(tlBody)
             .setName(t('Scroll speed'))

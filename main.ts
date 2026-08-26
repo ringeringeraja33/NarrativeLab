@@ -372,6 +372,8 @@ export default class SceneCardsPlugin extends Plugin {
     characterManager!: CharacterManager;
     codexManager!: CodexManager;
     writingTracker: WritingTracker = new WritingTracker();
+    /** Blocks delayed refresh/file events while a different project ledger is loading. */
+    private _writingTrackerProjectSwitching = false;
     globalWritingTracker!: GlobalWritingTracker;
     private _writingTrackerSaveTimer: number | null = null;
     floatingStickyNotes!: FloatingStickyNoteManager;
@@ -1267,15 +1269,22 @@ export default class SceneCardsPlugin extends Plugin {
                         debouncedLibraryEntityReload();
                         return;
                     }
+                    const queuedProjectFile = this.isCurrentProjectManagedPath(filePath)
+                        ? normalizePath(this.sceneManager.activeProject?.filePath || '')
+                        : '';
                     const lightRefresh = file.extension.toLowerCase() === 'md'
-                        && this.isActiveManagedPath(filePath);
+                        && queuedProjectFile !== '';
                     const previousRevision = this._writingRevisionQueues.get(filePath) ?? Promise.resolve();
                     const revisionTask = previousRevision.catch(() => undefined).then(async () => {
+                        if (queuedProjectFile && !this.canRecordWritingChange(queuedProjectFile)) return;
                         const previousSceneBody = this.sceneManager.getScene(filePath)?.body;
                         await this.sceneManager.handleFileChange(file);
                         await this.researchManager?.handleFileChange(file);
                         const nextSceneBody = this.sceneManager.getScene(filePath)?.body;
-                        if (previousSceneBody !== undefined && nextSceneBody !== undefined) {
+                        if (queuedProjectFile
+                            && this.canRecordWritingChange(queuedProjectFile)
+                            && previousSceneBody !== undefined
+                            && nextSceneBody !== undefined) {
                             const churn = countWordRevisionChurn(
                                 previousSceneBody,
                                 nextSceneBody,
@@ -1321,12 +1330,16 @@ export default class SceneCardsPlugin extends Plugin {
                     const createdAt = Date.now();
                     this.invalidateForeignProjectRuntimeCache(file.path);
                     if (file.extension.toLowerCase() === 'base') return;
-                    if (file.extension.toLowerCase() === 'md' && this.isActiveManagedPath(file.path)) {
+                    const queuedProjectFile = this.isCurrentProjectManagedPath(file.path)
+                        ? normalizePath(this.sceneManager.activeProject?.filePath || '')
+                        : '';
+                    if (file.extension.toLowerCase() === 'md' && queuedProjectFile) {
                         void this.ensureActiveField(file).then(() =>
                             this.sceneManager.handleFileCreate(file).then(async () => {
                                 await this.researchManager?.handleFileCreate(file);
                                 const createdBody = this.sceneManager.getScene(file.path)?.body;
-                                if (createdBody !== undefined) {
+                                if (this.canRecordWritingChange(queuedProjectFile)
+                                    && createdBody !== undefined) {
                                     const churn = countWordRevisionChurn(
                                         '',
                                         createdBody,
@@ -1393,7 +1406,12 @@ export default class SceneCardsPlugin extends Plugin {
                     const deletedSceneBody = this.sceneManager.getScene(filePath)?.body;
                     this.sceneManager.handleFileDelete(file.path);
                     this.researchManager?.handleFileDelete(file.path);
-                    if (deletedSceneBody !== undefined) {
+                    const queuedProjectFile = this.isCurrentProjectManagedPath(filePath)
+                        ? normalizePath(this.sceneManager.activeProject?.filePath || '')
+                        : '';
+                    if (queuedProjectFile
+                        && this.canRecordWritingChange(queuedProjectFile)
+                        && deletedSceneBody !== undefined) {
                         const churn = countWordRevisionChurn(
                             deletedSceneBody,
                             '',
@@ -1628,6 +1646,17 @@ export default class SceneCardsPlugin extends Plugin {
             if (roots.some(root => path.startsWith(`${root}/`))) return true;
         }
         return false;
+    }
+
+    /** True only for the currently selected project's editable text trees. */
+    private isCurrentProjectManagedPath(filePath: string): boolean {
+        const project = this.sceneManager?.activeProject;
+        if (!project) return false;
+        const path = normalizePath(filePath);
+        return [project.sceneFolder, project.notesFolder, project.researchFolder]
+            .map(root => normalizePath(root))
+            .filter(Boolean)
+            .some(root => path === root || path.startsWith(`${root}/`));
     }
 
     /** Series projects can own both a shared and a book-local Library. */
@@ -3951,6 +3980,7 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     scheduleWritingTrackerSave(): void {
+        if (this._writingTrackerProjectSwitching) return;
         const projectFilePath = this.sceneManager?.activeProject?.filePath
             ? normalizePath(this.sceneManager.activeProject.filePath)
             : '';
@@ -5508,12 +5538,29 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     flushWritingTrackers(totalWords?: number, now = Date.now()): void {
+        if (this._writingTrackerProjectSwitching) return;
         try {
             const words = totalWords ?? this.getTrackedWordTotal();
             const delta = this.writingTracker.flushSession(words, now);
             this.globalWritingTracker?.recordFlush(delta, now);
             if (delta.words !== 0 || delta.revisions > 0) this.scheduleWritingTrackerSave();
         } catch { /* project may not be set yet */ }
+    }
+
+    /** Stop tracker mutations before activeProject changes but the old ledger is still in memory. */
+    suspendWritingTrackerForProjectSwitch(): void {
+        this._writingTrackerProjectSwitching = true;
+        if (this._writingTrackerSaveTimer !== null) {
+            window.clearTimeout(this._writingTrackerSaveTimer);
+            this._writingTrackerSaveTimer = null;
+        }
+    }
+
+    /** Whether an async text event still belongs to the project that queued it. */
+    canRecordWritingChange(projectFilePath: string): boolean {
+        if (this._writingTrackerProjectSwitching) return false;
+        const active = normalizePath(this.sceneManager.activeProject?.filePath || '');
+        return !!active && active === normalizePath(projectFilePath);
     }
 
     /**
@@ -5545,6 +5592,7 @@ export default class SceneCardsPlugin extends Plugin {
         try {
             const words = this.getTrackedWordTotal();
             this.writingTracker.startSession(words, this.hasOpenFileForProject());
+            this._writingTrackerProjectSwitching = false;
         } catch { /* project may not be set yet */ }
     }
 
@@ -6021,7 +6069,10 @@ export default class SceneCardsPlugin extends Plugin {
         }
         const leaf = this.app.workspace.getLeavesOfType(NARRATIVE_CANVAS_VIEW_TYPE).find(candidate => {
             const state = candidate.getViewState()?.state as { file?: unknown; path?: unknown } | undefined;
-            return normalizePath(String(state?.file || state?.path || '')) === normalized;
+            const statePath = typeof state?.file === 'string'
+                ? state.file
+                : (typeof state?.path === 'string' ? state.path : '');
+            return normalizePath(statePath) === normalized;
         }) || null;
         const existingLibrary = this.app.workspace.getLeavesOfType(NCANVAS_LIBRARY_VIEW_TYPE)
             .find(candidate => getLeafNarrativeLabProjectFile(candidate) === normalizePath(project.filePath));
@@ -6175,7 +6226,10 @@ export default class SceneCardsPlugin extends Plugin {
         const matchingLeaves = this.app.workspace.getLeavesOfType(NARRATIVE_CANVAS_VIEW_TYPE)
             .filter(leaf => {
                 const state = leaf.getViewState()?.state as { file?: unknown; path?: unknown } | undefined;
-                return normalizePath(String(state?.file || state?.path || '')) === normalized;
+                const statePath = typeof state?.file === 'string'
+                    ? state.file
+                    : (typeof state?.path === 'string' ? state.path : '');
+                return normalizePath(statePath) === normalized;
             });
         for (const leaf of matchingLeaves) {
             await leaf.setViewState({

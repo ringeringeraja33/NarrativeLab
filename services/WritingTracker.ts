@@ -83,6 +83,10 @@ export class WritingTracker {
         if (!Number.isFinite(currentTotalWords) || currentTotalWords < 0) return;
 
         this.baselineWords = currentTotalWords;
+        // A restarted session owns a new baseline. Carrying the previous
+        // session's flush cursor forward makes the first flush look like a
+        // deletion (for example, 0 - 6,794 after switching projects).
+        this._flushedSessionWords = 0;
         this.sessionElapsedMs = 0;
         this._projectFilesOpen = projectFilesOpen;
         this.sessionActiveSince = projectFilesOpen ? now : null;

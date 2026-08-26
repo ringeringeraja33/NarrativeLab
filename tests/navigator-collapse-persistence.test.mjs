@@ -69,3 +69,13 @@ test('Navigator search and filters reveal matching file ancestors transiently', 
     assert.match(navigatorView, /!this\.autoExpandedChapters\.has\(chKey\)/);
     assert.match(navigatorView, /this\.collapsedNodes\.has\(key\) && !this\.autoExpandedNodes\.has\(key\)/);
 });
+
+test('active series can be collapsed without search erasing the manual choice', () => {
+    const renderList = navigatorView.slice(
+        navigatorView.indexOf('private renderList'),
+        navigatorView.indexOf('private renderPlotlinesFolder'),
+    );
+    assert.match(renderList, /if \(this\.filterText\) this\.autoExpandedNodes\.add\(root\.key\)/);
+    assert.match(renderList, /onActivate: \(\) => this\.toggleNode\(root\.key\)/);
+    assert.doesNotMatch(renderList, /containsActive\) this\.collapsedNodes\.delete\(root\.key\)/);
+});

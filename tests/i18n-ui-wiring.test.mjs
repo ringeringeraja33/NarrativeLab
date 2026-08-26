@@ -14,6 +14,8 @@ const [
     locationView,
     i18nExtra,
     libraryCategorySync,
+    settings,
+    styles,
 ] = await Promise.all([
     readFile(new URL('../views/CodexView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../components/Inspector.ts', import.meta.url), 'utf8'),
@@ -26,6 +28,8 @@ const [
     readFile(new URL('../views/LocationView.ts', import.meta.url), 'utf8'),
     readFile(new URL('../utils/i18n-extra.zh.ts', import.meta.url), 'utf8'),
     readFile(new URL('../services/LibraryCategorySync.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../settings.ts', import.meta.url), 'utf8'),
+    readFile(new URL('../styles.css', import.meta.url), 'utf8'),
 ]);
 
 test('built-in schema chrome goes through t(); player-authored labels stay verbatim', () => {
@@ -69,4 +73,15 @@ test('chrome-only UI strings still use t()', () => {
     // Scene custom-field group labels are player-authored
     assert.match(boardView, /label:\s*tpl\.label\s*\}/);
     assert.match(filters, /text:\s*tpl\.label\s*\}/);
+});
+
+test('settings collapsibles share one framed section component', () => {
+    for (const label of ['Image & frame sizes', 'Focus Mode Settings', 'Timeline Drag-Scroll']) {
+        assert.match(
+            settings,
+            new RegExp(`createEl\\('details', \\{ cls: 'story-line-color-section' \\}\\);[\\s\\S]{0,160}summary', \\{ text: t\\('${label.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}'\\)`),
+        );
+    }
+    assert.doesNotMatch(settings, /story-line-timeline-scroll-section/);
+    assert.match(styles, /\.story-line-color-section\s*\{[^}]*border:[^;]+;[^}]*border-radius:/s);
 });

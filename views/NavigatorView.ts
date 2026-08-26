@@ -649,10 +649,10 @@ export class NavigatorView extends ItemView {
 
         for (const root of roots) {
             if (root.isSeries) {
-                // Keep series open while filtering so matched books stay visible.
-                if (this.filterText) this.collapsedNodes.delete(root.key);
+                // Reveal matched books while filtering without erasing the
+                // user's remembered manual collapse choice.
+                if (this.filterText) this.autoExpandedNodes.add(root.key);
                 const containsActive = !!active && root.projects.some(p => p.filePath === active.filePath);
-                if (containsActive) this.collapsedNodes.delete(root.key);
                 const seriesNode = this.renderFolderHeader(this.listEl, {
                     key: root.key,
                     label: root.label,

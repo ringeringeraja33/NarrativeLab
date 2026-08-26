@@ -1345,7 +1345,7 @@ function applyUniverBorderToExcel(raw: unknown): Partial<ExcelJS.Border> | undef
 /** Apply the complete retained style before writing a value into a rebuilt workbook. */
 function applyCellStyleToExcel(cell: ExcelJS.Cell, data?: CellData): void {
     const retained = cloneExcelStyle(data?.excelStyle);
-    if (retained) cell.style = retained as unknown as ExcelJS.Style;
+    if (retained) cell.style = retained;
 
     const style = mergeOwnedUniverCellStyle(data);
     const font = { ...(cell.font || {}) };

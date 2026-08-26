@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { App, Notice, TFile, TFolder, normalizePath } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { SeriesMetadata, StoryLineProject, deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
@@ -1210,4 +1210,4 @@ export class SeriesManager {
         if (!await adapter.exists(folder)) await adapter.mkdir(folder);
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-assignment -- end of file-wide suppression block opened at line 1 */
