@@ -4,8 +4,10 @@ import {
     MarkdownRenderer,
     TFile,
     TFolder,
+    Notice,
     normalizePath,
     parseYaml,
+    setIcon,
     stringifyYaml,
 } from 'obsidian';
 import { BUILTIN_CODEX_CATEGORIES } from '../models/Codex';
@@ -22,6 +24,7 @@ import {
 import type SceneCardsPlugin from '../main';
 import { isExcalidrawFilePath } from '../services/EntityFileCache';
 import { getLibraryProfilePropertyOrder } from '../utils/libraryProfilePropertyOrder';
+import { attachTooltip } from './Tooltip';
 import {
     buildLibraryPathScopeFilter,
     collectReferencedLibraryCategoryIds,
@@ -31,6 +34,7 @@ import {
 
 export const ALL_LIBRARY_CATEGORY_ID = '__all-library__';
 const VIEW_CATEGORY_KEY = 'narrativeLabCategoryId';
+const VIEW_HIDDEN_CUSTOM_PROPERTIES_KEY = 'narrativeLabHiddenCustomProperties';
 
 interface NativeBaseEmbedState {
     child: MarkdownRenderChild | null;
@@ -45,6 +49,22 @@ interface NativeBaseEmbedState {
     persistTimer?: number | null;
     /** Last time this embed produced a layout snapshot (ms). Newer wins on merge. */
     lastLayoutAt?: number;
+    /** Monotonic user-layout revision. Older async writes are discarded. */
+    layoutRevision?: number;
+    /** Values passed to config.set are authoritative while get* may still be stale. */
+    pendingLayout?: Partial<ViewLayoutSnapshot>;
+    /** Associates Obsidian's body-level Properties menu with this embed. */
+    lastInteractionAt?: number;
+    /** Layout before opening a body-level toolbar menu. */
+    interactionSnapshot?: ViewLayoutSnapshot;
+    /** Identifies one click inside the body-level Properties menu. */
+    menuOrderToken?: number;
+    /** Visible columns immediately before that menu click. */
+    menuOrderBaseline?: string[];
+    /** First real order delta produced by that click; stale reversions lose. */
+    menuOrderAccepted?: string[];
+    /** Short post-click probes used to catch a transient rendered order. */
+    menuOrderCaptureTimers?: number[];
 }
 
 interface ViewLayoutSnapshot {
@@ -55,9 +75,14 @@ interface ViewLayoutSnapshot {
 }
 
 interface BasesViewLike {
+    allProperties?: unknown;
+    data?: {
+        properties?: unknown;
+    };
     config: {
         getOrder?: () => unknown;
         getSort?: () => unknown;
+        getDisplayName?: (propertyId: string) => string;
         get?: (key: string) => unknown;
         set?: (key: string, value: unknown) => void;
     };
@@ -68,6 +93,8 @@ const activeEmbeds = new WeakMap<Component, NativeBaseEmbedState>();
 const liveEmbedsByBase = new Map<string, Set<NativeBaseEmbedState>>();
 const ensureLocks = new Map<string, Promise<{ basePath: string; folderPath: string } | null>>();
 const persistLocks = new Map<string, Promise<void>>();
+let layoutRevisionCounter = 0;
+const latestLayoutRevisionByView = new Map<string, number>();
 const migrationLocks = new Map<string, Promise<void>>();
 /** Projects whose Library Base migration already completed this session. */
 const migratedLibraryBasePaths = new Set<string>();
@@ -84,6 +111,7 @@ type BaseViewConfig = Record<string, unknown> & {
     columnSize?: unknown;
     groupBy?: unknown;
     narrativeLabCategoryId?: string;
+    narrativeLabHiddenCustomProperties?: unknown;
 };
 
 /** Keep the visible category name readable in the Bases view tabs. */
@@ -274,22 +302,49 @@ async function ensureVaultFolder(plugin: SceneCardsPlugin, folderPath: string): 
     }
 }
 
-function isNativeBasesNewButton(target: EventTarget | null): boolean {
-    if (!(target instanceof HTMLElement)) return false;
-    const control = target.closest<HTMLElement>('button, [role="button"]');
-    // Obsidian has renamed the Base toolbar wrapper across releases. The
-    // listener is already scoped to this one embedded Base, so the exact New
-    // label is a more stable discriminator than a private toolbar class.
-    if (!control) return false;
-    const labels = [
-        control.textContent,
-        control.getAttribute('aria-label'),
-        control.getAttribute('title'),
-    ];
-    return labels.some(label => {
-        const normalized = (label || '').replace(/^\s*\+\s*/, '').trim().toLocaleLowerCase();
-        return normalized === 'new' || normalized === '新建' || normalized === t('New').trim().toLocaleLowerCase();
-    });
+function isNativeBasesNewButton(event: Event): boolean {
+    const controls = new Set<Element>();
+    for (const candidate of event.composedPath()) {
+        if (!(candidate instanceof Element)) continue;
+        const control = candidate.closest(
+            'button, [role="button"], a, .clickable-icon, [class*="bases-toolbar"]',
+        );
+        if (control) controls.add(control);
+    }
+
+    // Clicking Lucide's SVG/path makes event.target an SVGElement, not an
+    // HTMLElement. Walk the composed path and identify the enclosing control
+    // by accessible text so Obsidian DOM/class changes do not break creation.
+    const accepted = new Set([
+        'new',
+        'new note',
+        'new file',
+        'create note',
+        'create file',
+        '新建',
+        '新建笔记',
+        '新建文件',
+        '创建笔记',
+        '创建文件',
+        t('New').trim().toLocaleLowerCase(),
+    ]);
+    for (const control of controls) {
+        const labels = [
+            control.textContent,
+            control.getAttribute('aria-label'),
+            control.getAttribute('title'),
+            control.getAttribute('data-tooltip-position') ? control.getAttribute('data-tooltip-content') : null,
+        ];
+        if (labels.some(label => {
+            const normalized = (label || '')
+                .replace(/^\s*[+＋]\s*/, '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLocaleLowerCase();
+            return accepted.has(normalized);
+        })) return true;
+    }
+    return false;
 }
 
 /**
@@ -301,26 +356,23 @@ function wireNativeBaseNewAction(
     host: HTMLElement,
     onNew: (event: MouseEvent | PointerEvent) => void,
 ): () => void {
-    let lastPointerActionAt = 0;
+    let lastActionAt = 0;
     const onTrigger = (event: MouseEvent | PointerEvent) => {
-        if (!isNativeBasesNewButton(event.target)) return;
+        if (!isNativeBasesNewButton(event)) return;
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation();
-        if (event.type === 'pointerdown') {
-            lastPointerActionAt = Date.now();
+        // One pointer activation produces pointerdown, mousedown, pointerup,
+        // mouseup and click. Block every phase but launch our flow only once.
+        if (Date.now() - lastActionAt > 500) {
+            lastActionAt = Date.now();
             onNew(event);
-            return;
         }
-        // Pointer activation also emits click; keyboard activation emits only
-        // click. Suppress only the duplicate half of the former pair.
-        if (Date.now() - lastPointerActionAt > 500) onNew(event);
     };
-    host.addEventListener('pointerdown', onTrigger, true);
-    host.addEventListener('click', onTrigger, true);
+    const eventTypes = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'] as const;
+    for (const eventType of eventTypes) host.addEventListener(eventType, onTrigger, true);
     return () => {
-        host.removeEventListener('pointerdown', onTrigger, true);
-        host.removeEventListener('click', onTrigger, true);
+        for (const eventType of eventTypes) host.removeEventListener(eventType, onTrigger, true);
     };
 }
 
@@ -498,14 +550,27 @@ function findViewForCategory(views: BaseViewConfig[], categoryId: string): BaseV
     return views.find(view => String(view[VIEW_CATEGORY_KEY] || '') === categoryId);
 }
 
+function getBaseHiddenCustomProperties(view: BaseViewConfig): Set<string> {
+    const raw = view[VIEW_HIDDEN_CUSTOM_PROPERTIES_KEY];
+    if (!Array.isArray(raw)) return new Set();
+    return new Set(raw.filter((value): value is string => typeof value === 'string' && value.length > 0));
+}
+
+function effectiveProfileOrder(view: BaseViewConfig, profileOrder: string[]): string[] {
+    const hidden = getBaseHiddenCustomProperties(view);
+    return hidden.size === 0 ? profileOrder : profileOrder.filter(propertyId => !hidden.has(propertyId));
+}
+
 function applyProfileOrdersToConfig(config: Record<string, unknown>): boolean {
     let dirty = false;
     for (const view of getViews(config)) {
         const categoryId = String(view[VIEW_CATEGORY_KEY] || '');
         if (!categoryId) continue;
         const profileOrder = getProfileTableOrder(categoryId);
-        if (!profileOrder || stringArrayEqual(view.order, profileOrder)) continue;
-        view.order = profileOrder;
+        if (!profileOrder) continue;
+        const order = effectiveProfileOrder(view, profileOrder);
+        if (stringArrayEqual(view.order, order)) continue;
+        view.order = order;
         dirty = true;
     }
     return dirty;
@@ -711,7 +776,12 @@ function groupByEqual(left: unknown, right: unknown): boolean {
 }
 
 function snapshotBasesViewLayout(view: BasesViewLike): ViewLayoutSnapshot {
-    const orderRaw = view.config.getOrder?.();
+    // BasesQueryResult.properties is the list that actually rendered. On
+    // Obsidian 1.13 the toolbar can update it before config.getOrder(), so the
+    // latter alone can report the pre-click column list and undo the action.
+    const renderedOrder = view.data?.properties;
+    const configOrder = view.config.getOrder?.();
+    const orderRaw = Array.isArray(renderedOrder) ? renderedOrder : configOrder;
     const sortRaw = view.config.getSort?.();
     const order = Array.isArray(orderRaw)
         ? orderRaw.map(item => String(item)).filter(Boolean)
@@ -732,6 +802,120 @@ function snapshotBasesViewLayout(view: BasesViewLike): ViewLayoutSnapshot {
         sort,
         columnSize: cloneColumnSize(view.config.get?.('columnSize')),
         groupBy: cloneGroupBy(view.config.get?.('groupBy')),
+    };
+}
+
+/** Obsidian may expose the same note property as `foo` and `note.foo`. */
+function comparableBasePropertyId(value: unknown): string {
+    const propertyId = primitiveText(value);
+    return propertyId.startsWith('note.') ? propertyId.slice('note.'.length) : propertyId;
+}
+
+function baseOrdersEquivalent(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length
+        && left.every((propertyId, index) => (
+            comparableBasePropertyId(propertyId) === comparableBasePropertyId(right[index])
+        ));
+}
+
+function cloneSnapshot(snapshot: ViewLayoutSnapshot): ViewLayoutSnapshot {
+    return {
+        order: snapshot.order.slice(),
+        sort: snapshot.sort.map(item => ({ ...item })),
+        columnSize: snapshot.columnSize ? { ...snapshot.columnSize } : null,
+        groupBy: cloneGroupBy(snapshot.groupBy),
+    };
+}
+
+function overlayPendingLayout(
+    snapshot: ViewLayoutSnapshot,
+    pending: Partial<ViewLayoutSnapshot> | undefined,
+): ViewLayoutSnapshot {
+    if (!pending) return snapshot;
+    return {
+        order: pending.order?.slice() ?? snapshot.order,
+        sort: pending.sort?.map(item => ({ ...item })) ?? snapshot.sort,
+        columnSize: pending.columnSize !== undefined
+            ? (pending.columnSize ? { ...pending.columnSize } : null)
+            : snapshot.columnSize,
+        groupBy: pending.groupBy !== undefined ? cloneGroupBy(pending.groupBy) : snapshot.groupBy,
+    };
+}
+
+function layoutSnapshotsEqual(left: ViewLayoutSnapshot, right: ViewLayoutSnapshot): boolean {
+    return stringArrayEqual(left.order, right.order)
+        && sortConfigsEqual(left.sort, right.sort)
+        && columnSizeEqual(left.columnSize, right.columnSize)
+        && groupByEqual(left.groupBy, right.groupBy);
+}
+
+function layoutRevisionKey(basePath: string, categoryId: string): string {
+    return `${basePath}::${categoryId}`;
+}
+
+function isLatestLayoutRevision(basePath: string, categoryId: string, revision: number): boolean {
+    return latestLayoutRevisionByView.get(layoutRevisionKey(basePath, categoryId)) === revision;
+}
+
+function markLayoutRevision(state: NativeBaseEmbedState): number | null {
+    if (!state.basePath || !state.categoryId) return null;
+    const revision = ++layoutRevisionCounter;
+    state.layoutRevision = revision;
+    latestLayoutRevisionByView.set(layoutRevisionKey(state.basePath, state.categoryId), revision);
+    return revision;
+}
+
+function snapshotPatchForConfigSet(
+    key: string,
+    value: unknown,
+): Partial<ViewLayoutSnapshot> | null {
+    if (key === 'order') {
+        return { order: Array.isArray(value) ? value.map(item => String(item)).filter(Boolean) : [] };
+    }
+    if (key === 'sort') {
+        const sort: ViewLayoutSnapshot['sort'] = [];
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                if (!item || typeof item !== 'object') continue;
+                const row = item as { property?: unknown; direction?: unknown };
+                const property = primitiveText(row.property).trim();
+                if (!property) continue;
+                sort.push({
+                    property,
+                    direction: (primitiveText(row.direction) || 'ASC').toUpperCase() === 'DESC'
+                        ? 'DESC'
+                        : 'ASC',
+                });
+            }
+        }
+        return { sort };
+    }
+    if (key === 'columnSize') return { columnSize: cloneColumnSize(value) };
+    if (key === 'groupBy') return { groupBy: cloneGroupBy(value) };
+    return null;
+}
+
+function normalizeSnapshotPropertyIds(
+    snapshot: ViewLayoutSnapshot,
+    config: Record<string, unknown>,
+): ViewLayoutSnapshot {
+    const known = new Set<string>();
+    const properties = config.properties;
+    if (properties && typeof properties === 'object' && !Array.isArray(properties)) {
+        Object.keys(properties).forEach(key => known.add(key));
+    }
+    const normalize = (raw: string): string => {
+        if (!raw || raw.includes('.')) return raw;
+        const noteId = `note.${raw}`;
+        return known.has(noteId) ? noteId : raw;
+    };
+    return {
+        order: snapshot.order.map(normalize),
+        sort: snapshot.sort.map(item => ({ ...item, property: normalize(item.property) })),
+        columnSize: snapshot.columnSize
+            ? Object.fromEntries(Object.entries(snapshot.columnSize).map(([key, value]) => [normalize(key), value]))
+            : null,
+        groupBy: snapshot.groupBy,
     };
 }
 
@@ -791,6 +975,7 @@ function applyLiveLayoutsToConfig(basePath: string, config: Record<string, unkno
     for (const state of hooks) {
         if (!state.categoryId || !state.liveView) continue;
         const at = state.lastLayoutAt ?? 0;
+        if (at <= 0) continue;
         const prev = newestByCategory.get(state.categoryId);
         if (!prev || at >= prev.at) {
             newestByCategory.set(state.categoryId, { state, at });
@@ -882,6 +1067,7 @@ async function persistLayoutSnapshot(
     basePath: string,
     categoryId: string,
     snapshot: ViewLayoutSnapshot,
+    revision: number,
 ): Promise<void> {
     if (
         snapshot.order.length === 0
@@ -891,15 +1077,30 @@ async function persistLayoutSnapshot(
     ) {
         return;
     }
+    if (!isLatestLayoutRevision(basePath, categoryId, revision)) return;
+    let persistedSnapshot: ViewLayoutSnapshot | null = null;
+    let persistedOrderChanged = false;
     await withPersistLock(basePath, async () => {
+        if (!isLatestLayoutRevision(basePath, categoryId, revision)) return;
         const config = await readBaseConfig(plugin, basePath);
         if (!config) return;
         const views = getViews(config);
         const view = findViewForCategory(views, categoryId);
         if (!view) return;
-        if (!applyLayoutSnapshotToView(view, snapshot)) return;
+        const normalized = normalizeSnapshotPropertyIds(snapshot, config);
+        persistedSnapshot = cloneSnapshot(normalized);
+        persistedOrderChanged = !stringArrayEqual(view.order, normalized.order);
+        let dirty = applyLayoutSnapshotToView(view, normalized);
         const profileOrder = getProfileTableOrder(categoryId);
-        if (profileOrder) view.order = profileOrder;
+        if (profileOrder && persistedOrderChanged) {
+            dirty = updateBaseHiddenCustomProperties(
+                view,
+                normalized.order,
+                profileOrder,
+                getProfileManagedPropertyIds(categoryId),
+            ) || dirty;
+        }
+        if (!dirty) return;
         config.views = views;
         // Bypass writeBaseConfig's live merge — this snapshot is already authoritative.
         await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
@@ -915,18 +1116,79 @@ async function persistLayoutSnapshot(
         }
         await plugin.app.vault.create(basePath, yaml);
     });
+    const authoritativeSnapshot = persistedSnapshot as ViewLayoutSnapshot | null;
+    if (!authoritativeSnapshot || !isLatestLayoutRevision(basePath, categoryId, revision)) return;
+    // Sort/width/group changes must not be interpreted as a Properties action.
+    // In particular, a stale getOrder() equal to disk is not evidence that all
+    // omitted custom fields were deliberately hidden.
+    if (!persistedOrderChanged) return;
+
+    // Write the Base first: saving project profile settings may remount this
+    // embed, and a remount must never reopen the layout from before the click.
+    await plugin.syncLibraryProfileVisibilityFromBase(categoryId, authoritativeSnapshot.order);
+    if (!isLatestLayoutRevision(basePath, categoryId, revision)) return;
+
+    // With both stores in agreement, restore the shared canonical order while
+    // preserving the exact visibility choice made in the Properties menu.
+    await withPersistLock(basePath, async () => {
+        if (!isLatestLayoutRevision(basePath, categoryId, revision)) return;
+        const config = await readBaseConfig(plugin, basePath);
+        if (!config) return;
+        const views = getViews(config);
+        const view = findViewForCategory(views, categoryId);
+        const profileOrder = getProfileTableOrder(categoryId);
+        if (!view || !profileOrder) return;
+        const hiddenDirty = updateBaseHiddenCustomProperties(
+            view,
+            authoritativeSnapshot.order,
+            profileOrder,
+            getProfileManagedPropertyIds(categoryId),
+        );
+        const order = effectiveProfileOrder(view, profileOrder);
+        const orderDirty = !stringArrayEqual(view.order, order);
+        if (!hiddenDirty && !orderDirty) return;
+        if (orderDirty) view.order = order;
+        config.views = views;
+        await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
+        const yaml = stringifyYaml(config);
+        const existing = plugin.app.vault.getAbstractFileByPath(basePath);
+        if (existing instanceof TFile) await plugin.app.vault.modify(existing, yaml);
+        else if (await pathExists(plugin, basePath)) await plugin.app.vault.adapter.write(basePath, yaml);
+        else await plugin.app.vault.create(basePath, yaml);
+    });
 }
 
-function schedulePersistLiveLayout(state: NativeBaseEmbedState): void {
+function schedulePersistLiveLayout(
+    state: NativeBaseEmbedState,
+    patch?: Partial<ViewLayoutSnapshot> | null,
+): void {
     if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
     state.lastLayoutAt = Date.now();
+    const revision = markLayoutRevision(state);
+    if (revision == null) return;
+    if (patch) state.pendingLayout = { ...(state.pendingLayout ?? {}), ...patch };
+    const baseline = patch ? undefined : state.interactionSnapshot;
     if (state.persistTimer != null) window.clearTimeout(state.persistTimer);
     state.persistTimer = window.setTimeout(() => {
-        state.persistTimer = null;
-        if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
-        const snapshot = snapshotBasesViewLayout(state.liveView);
-        void persistLayoutSnapshot(state.plugin, state.basePath, state.categoryId, snapshot)
-            .catch(error => console.warn('[NarrativeLab] Failed to persist live Base layout:', error));
+        void (async () => {
+            state.persistTimer = null;
+            if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
+            const pending = state.pendingLayout;
+            state.pendingLayout = undefined;
+            let snapshot = overlayPendingLayout(snapshotBasesViewLayout(state.liveView), pending);
+            // Body-level Properties/Sort menus can repaint before their query data
+            // settles. Wait briefly for a real layout delta; if none appears, this
+            // was only a menu navigation click and must not write anything.
+            if (!patch && baseline) {
+                for (let attempt = 0; attempt < 12 && layoutSnapshotsEqual(snapshot, baseline); attempt++) {
+                    await new Promise<void>(resolve => window.setTimeout(resolve, 100));
+                    if (!state.liveView || !isLatestLayoutRevision(state.basePath, state.categoryId, revision)) return;
+                    snapshot = snapshotBasesViewLayout(state.liveView);
+                }
+                if (layoutSnapshotsEqual(snapshot, baseline)) return;
+            }
+            await persistLayoutSnapshot(state.plugin, state.basePath, state.categoryId, snapshot, revision);
+        })().catch(error => console.warn('[NarrativeLab] Failed to persist live Base layout:', error));
     }, 250);
 }
 
@@ -937,28 +1199,97 @@ function hookLiveBasesView(state: NativeBaseEmbedState, view: BasesViewLike): vo
     const originalSet = config.set;
     if (originalSet) {
         config.set = (key: string, value: unknown) => {
-            originalSet.call(config, key, value);
-            if (key === 'order' || key === 'sort' || key === 'columnSize' || key === 'groupBy') {
-                schedulePersistLiveLayout(state);
+            const patch = snapshotPatchForConfigSet(key, value);
+            if (patch?.order) {
+                const baseline = state.menuOrderBaseline;
+                const accepted = state.menuOrderAccepted;
+                // Obsidian 1.13 can emit the pre-click order after already
+                // emitting and rendering the user's new Properties choice.
+                // Do not let that late echo visually undo the same menu click.
+                if (
+                    baseline
+                    && accepted
+                    && !baseOrdersEquivalent(accepted, baseline)
+                    && baseOrdersEquivalent(patch.order, baseline)
+                ) {
+                    return;
+                }
+                if (baseline && !accepted && !baseOrdersEquivalent(patch.order, baseline)) {
+                    state.menuOrderAccepted = patch.order.slice();
+                }
             }
+            originalSet.call(config, key, value);
+            if (patch) schedulePersistLiveLayout(state, patch);
         };
     }
 
     // Toolbar menus may update config without going through a patched set in
     // some Obsidian builds — also snapshot after Properties/Sort interactions.
     const host = state.child?.containerEl;
-    const onPointerUp = (event: Event) => {
+    const clearMenuOrderCaptures = () => {
+        for (const timer of state.menuOrderCaptureTimers ?? []) window.clearTimeout(timer);
+        state.menuOrderCaptureTimers = [];
+    };
+    const onHostPointerDown = () => {
+        clearMenuOrderCaptures();
+        state.menuOrderToken = (state.menuOrderToken ?? 0) + 1;
+        state.menuOrderBaseline = undefined;
+        state.menuOrderAccepted = undefined;
+        state.lastInteractionAt = Date.now();
+        if (state.liveView) state.interactionSnapshot = snapshotBasesViewLayout(state.liveView);
+    };
+    const isRecentBaseMenuEvent = (event: Event): boolean => {
+        if (Date.now() - (state.lastInteractionAt ?? 0) > 60_000) return false;
         const target = event.target as HTMLElement | null;
-        if (!target?.closest?.('.bases-toolbar, .menu, .suggestion-container, .bases-view')) return;
+        return !!target?.closest?.('.menu, .suggestion-container');
+    };
+    const onDocumentPointerDown = (event: Event) => {
+        if (!isRecentBaseMenuEvent(event) || !state.liveView) return;
+        clearMenuOrderCaptures();
+        state.menuOrderToken = (state.menuOrderToken ?? 0) + 1;
+        state.interactionSnapshot = snapshotBasesViewLayout(state.liveView);
+        state.menuOrderBaseline = state.interactionSnapshot.order.slice();
+        state.menuOrderAccepted = undefined;
+    };
+    const onDocumentPointerUp = (event: Event) => {
+        if (!isRecentBaseMenuEvent(event) || !state.liveView) return;
+        const token = state.menuOrderToken ?? 0;
+        const baseline = state.menuOrderBaseline?.slice()
+            ?? state.interactionSnapshot?.order.slice()
+            ?? snapshotBasesViewLayout(state.liveView).order;
+        const capture = () => {
+            if (!state.liveView || state.menuOrderToken !== token) return;
+            if (state.menuOrderAccepted) {
+                clearMenuOrderCaptures();
+                schedulePersistLiveLayout(state, { order: state.menuOrderAccepted.slice() });
+                return;
+            }
+            const order = snapshotBasesViewLayout(state.liveView).order;
+            if (baseOrdersEquivalent(order, baseline)) return;
+            state.menuOrderAccepted = order.slice();
+            clearMenuOrderCaptures();
+            schedulePersistLiveLayout(state, { order: order.slice() });
+        };
+
+        // Run once after the target's click handler and probe a few early
+        // frames. This preserves even a short-lived rendered column before a
+        // stale configuration echo can remove it again.
+        clearMenuOrderCaptures();
+        state.menuOrderCaptureTimers = [0, 16, 50, 120, 250].map(delay => (
+            window.setTimeout(capture, delay)
+        ));
         schedulePersistLiveLayout(state);
     };
-    host?.addEventListener('pointerup', onPointerUp, true);
-    host?.addEventListener('change', onPointerUp, true);
+    host?.addEventListener('pointerdown', onHostPointerDown, true);
+    activeDocument.addEventListener('pointerdown', onDocumentPointerDown, true);
+    activeDocument.addEventListener('pointerup', onDocumentPointerUp, true);
 
     state.unhook = () => {
         config.set = originalSet;
-        host?.removeEventListener('pointerup', onPointerUp, true);
-        host?.removeEventListener('change', onPointerUp, true);
+        host?.removeEventListener('pointerdown', onHostPointerDown, true);
+        activeDocument.removeEventListener('pointerdown', onDocumentPointerDown, true);
+        activeDocument.removeEventListener('pointerup', onDocumentPointerUp, true);
+        clearMenuOrderCaptures();
         if (state.persistTimer != null) {
             window.clearTimeout(state.persistTimer);
             state.persistTimer = null;
@@ -971,12 +1302,16 @@ function hookLiveBasesView(state: NativeBaseEmbedState, view: BasesViewLike): vo
 
 async function flushEmbedLayout(state: NativeBaseEmbedState): Promise<void> {
     if (!state.plugin || !state.basePath || !state.categoryId || !state.liveView) return;
+    const revision = state.layoutRevision;
+    if (revision == null || !isLatestLayoutRevision(state.basePath, state.categoryId, revision)) return;
     if (state.persistTimer != null) {
         window.clearTimeout(state.persistTimer);
         state.persistTimer = null;
     }
-    const snapshot = snapshotBasesViewLayout(state.liveView);
-    await persistLayoutSnapshot(state.plugin, state.basePath, state.categoryId, snapshot);
+    const pending = state.pendingLayout;
+    state.pendingLayout = undefined;
+    const snapshot = overlayPendingLayout(snapshotBasesViewLayout(state.liveView), pending);
+    await persistLayoutSnapshot(state.plugin, state.basePath, state.categoryId, snapshot, revision);
 }
 
 async function readLegacyCategoryConfig(
@@ -1039,6 +1374,66 @@ function getProfileTableOrder(categoryId: string): string[] | null {
     return result;
 }
 
+function getProfileManagedPropertyIds(categoryId: string): Set<string> {
+    const layouts = categoryId === 'characters'
+        ? [getLibraryProfilePropertyOrder('character')]
+        : categoryId === 'locations'
+            ? [getLibraryProfilePropertyOrder('world'), getLibraryProfilePropertyOrder('location')]
+            : [getLibraryProfilePropertyOrder(categoryId)];
+    // `file.name` is mandatory in the profile editor but remains optional as
+    // a Base column, so it deliberately uses the Base-only hidden list below.
+    const result = new Set<string>();
+    for (const layout of layouts) {
+        for (const propertyKey of Object.keys(layout?.visibilityKeys ?? {})) {
+            if (propertyKey !== 'name') result.add(`note.${propertyKey}`);
+        }
+    }
+    return result;
+}
+
+/**
+ * Track Base-only visibility for custom/top-level properties that have no
+ * hiddenFields key. Built-in and universal fields are handled by the shared
+ * profile layout; custom fields remain recoverable from Base Properties.
+ */
+function updateBaseHiddenCustomProperties(
+    view: BaseViewConfig,
+    snapshotOrder: readonly string[],
+    profileOrder: readonly string[],
+    managedPropertyIds: ReadonlySet<string>,
+): boolean {
+    const visible = new Set(snapshotOrder);
+    const hidden = getBaseHiddenCustomProperties(view);
+    const profileProperties = new Set(profileOrder);
+    let dirty = false;
+    for (const propertyId of profileOrder) {
+        if (managedPropertyIds.has(propertyId)) continue;
+        if (visible.has(propertyId)) {
+            if (hidden.delete(propertyId)) dirty = true;
+        } else if (!hidden.has(propertyId)) {
+            hidden.add(propertyId);
+            dirty = true;
+        }
+    }
+    for (const propertyId of [...hidden]) {
+        if (!profileProperties.has(propertyId)) {
+            hidden.delete(propertyId);
+            dirty = true;
+        }
+    }
+    const next = [...hidden];
+    if (next.length === 0) {
+        if (view[VIEW_HIDDEN_CUSTOM_PROPERTIES_KEY] !== undefined) {
+            delete view[VIEW_HIDDEN_CUSTOM_PROPERTIES_KEY];
+            dirty = true;
+        }
+    } else if (!stringArrayEqual(view[VIEW_HIDDEN_CUSTOM_PROPERTIES_KEY], next)) {
+        view[VIEW_HIDDEN_CUSTOM_PROPERTIES_KEY] = next;
+        dirty = true;
+    }
+    return dirty;
+}
+
 function upsertCategoryView(
     plugin: SceneCardsPlugin,
     config: Record<string, unknown>,
@@ -1092,9 +1487,12 @@ function upsertCategoryView(
         if (!Array.isArray(view.order) || view.order.length === 0) {
             view.order = profileOrder ?? extractTableOrder(null, discovered);
             dirty = true;
-        } else if (profileOrder && !stringArrayEqual(view.order, profileOrder)) {
-            view.order = profileOrder;
-            dirty = true;
+        } else if (profileOrder) {
+            const order = effectiveProfileOrder(view, profileOrder);
+            if (!stringArrayEqual(view.order, order)) {
+                view.order = order;
+                dirty = true;
+            }
         }
     }
 
@@ -1277,6 +1675,51 @@ async function ensureNativeBase(
         .finally(() => ensureLocks.delete(basePath));
     ensureLocks.set(basePath, pending);
     return pending;
+}
+
+/** Open the canonical Base file at the requested category's native view. */
+export async function openNativeLibraryBase(
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+): Promise<boolean> {
+    try {
+        const resolved = await ensureNativeBase(plugin, categoryId);
+        if (!resolved) {
+            new Notice(t('No active project'));
+            return false;
+        }
+        const viewName = getNativeBaseDisplayLabel(plugin, categoryId);
+        // Obsidian's documented Base deep-link form is File.base#View.
+        await plugin.app.workspace.openLinkText(
+            `${resolved.basePath}#${viewName}`,
+            '',
+            true,
+        );
+        return true;
+    } catch (error) {
+        console.error('[NarrativeLab] Failed to open native Library Base:', error);
+        new Notice(t('Failed to open Base'));
+        return false;
+    }
+}
+
+/** Compact far-right action shared by every Library profile/browse row. */
+export function renderOpenNativeLibraryBaseAction(
+    parent: HTMLElement,
+    plugin: SceneCardsPlugin,
+    categoryId: string,
+): HTMLButtonElement {
+    const label = t('Open in Obsidian Base');
+    const button = parent.createEl('button', {
+        cls: 'clickable-icon library-open-native-base',
+        attr: { type: 'button', 'aria-label': label },
+    });
+    setIcon(button, 'database');
+    attachTooltip(button, label);
+    button.addEventListener('click', () => {
+        void openNativeLibraryBase(plugin, categoryId);
+    });
+    return button;
 }
 
 /** Rename a category view when its Library tab/folder label changes. */

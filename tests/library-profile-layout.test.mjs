@@ -205,22 +205,45 @@ test('character persistence normalizes stale role cache values before writing', 
     assert.match(managerSource, /role: normalizedRole/);
 });
 
-test('character defaults split family and early life into distinct ordered fields', async () => {
+test('character defaults include gender, family, early life, and remarks in canonical order', async () => {
     const basic = characterMod.CHARACTER_CATEGORIES.find(category => category.title === 'Basic Information');
     assert.ok(basic);
+    const ageIndex = basic.fields.findIndex(field => field.key === 'age');
+    const genderIndex = basic.fields.findIndex(field => field.key === 'gender');
     const familyIndex = basic.fields.findIndex(field => field.key === 'family');
     const earlyLifeIndex = basic.fields.findIndex(field => field.key === 'earlylife');
+    const noteIndex = basic.fields.findIndex(field => field.key === 'note');
+    assert.equal(genderIndex, ageIndex + 1);
     assert.ok(familyIndex >= 0);
     assert.equal(earlyLifeIndex, familyIndex + 1);
+    assert.equal(noteIndex, earlyLifeIndex + 1);
+    assert.equal(basic.fields[genderIndex].label, 'Gender');
     assert.equal(basic.fields[familyIndex].label, 'Family');
     assert.equal(basic.fields[earlyLifeIndex].label, 'Early life');
+    assert.equal(basic.fields[noteIndex].label, 'Remarks');
 
     const keyFamilyIndex = characterMod.CHARACTER_FIELD_KEYS.indexOf('family');
     assert.equal(characterMod.CHARACTER_FIELD_KEYS[keyFamilyIndex + 1], 'earlylife');
+    assert.ok(characterMod.CHARACTER_FIELD_KEYS.includes('gender'));
+    assert.ok(characterMod.CHARACTER_FIELD_KEYS.includes('note'));
+    assert.ok(!characterMod.CHARACTER_FIELD_KEYS.includes('notes'));
 
-    const managerSource = await readFile('services/CharacterManager.ts', 'utf8');
+    const [managerSource, characterViewSource, propertyOrderSource] = await Promise.all([
+        readFile('services/CharacterManager.ts', 'utf8'),
+        readFile('views/CharacterView.ts', 'utf8'),
+        readFile('utils/libraryProfilePropertyOrder.ts', 'utf8'),
+    ]);
+    assert.match(managerSource, /gender:\s*text\(safeFm\.gender\)/);
+    assert.match(managerSource, /note:\s*canonicalRemark\s*\|\|/);
+    assert.match(managerSource, /collidedLegacyRemark\s*&&\s*collidedLegacyRemark\s*!==\s*body/);
+    assert.match(managerSource, /notes:\s*body\s*\|\|\s*undefined/);
+    assert.match(managerSource, /delete fm\['notes'\]/);
+    assert.match(managerSource, /const finalBody = character\.notes \?\? body/);
     assert.match(managerSource, /earlylife:\s*text\(safeFm\.earlylife\)\s*\|\|\s*text\(safeFm\.earlyLife\)/);
     assert.match(managerSource, /delete fm\['earlyLife'\]/);
+    assert.match(characterViewSource, /this\.renderNotesSection\(sidePanel, draft\)/);
+    assert.match(characterViewSource, /private renderNotesSection[\s\S]*?draft\.notes = textarea\.value[\s\S]*?this\.scheduleSave\(draft\)/);
+    assert.match(propertyOrderSource, /'tagline', 'gender', 'role'/);
 
     const [templatesSource, propertyOrderSourceFile] = await Promise.all([
         readFile('services/FieldTemplateService.ts', 'utf8'),
@@ -466,6 +489,38 @@ test('custom field mirrors merge Base and profile edits without duplicate fallba
     setLibraryProfilePropertyOrderProvider(null);
 });
 
+test('partial editor snapshots preserve readable custom fields already on disk', () => {
+    const { mergeCustomFieldsForSafeSave } = propertyOrderMod;
+    assert.deepEqual(
+        mergeCustomFieldsForSafeSave(
+            { '英雄介绍': '已保存内容', '技能1': '旧值' },
+            {},
+        ),
+        { '英雄介绍': '已保存内容', '技能1': '旧值' },
+    );
+    assert.deepEqual(
+        mergeCustomFieldsForSafeSave(
+            { '英雄介绍': '已保存内容', '技能1': '旧值' },
+            { '技能1': '新值' },
+        ),
+        { '英雄介绍': '已保存内容', '技能1': '新值' },
+    );
+    assert.equal(mergeCustomFieldsForSafeSave(undefined, undefined), undefined);
+});
+
+test('partial standard-field snapshots preserve omissions but honor explicit clears', () => {
+    const { applyDefinedFrontmatterField } = propertyOrderMod;
+    const frontmatter = { description: 'saved', tags: ['old'] };
+    applyDefinedFrontmatterField(frontmatter, 'description', undefined);
+    assert.equal(frontmatter.description, 'saved');
+    applyDefinedFrontmatterField(frontmatter, 'description', '');
+    assert.equal(frontmatter.description, undefined);
+    applyDefinedFrontmatterField(frontmatter, 'tags', []);
+    assert.equal(frontmatter.tags, undefined);
+    applyDefinedFrontmatterField(frontmatter, 'status', 'active');
+    assert.equal(frontmatter.status, 'active');
+});
+
 test('flat custom fields can move without disturbing custom-section slots', () => {
     const source = {
         Alpha: 'a',
@@ -507,6 +562,21 @@ test('profile ordering is wired through editors, YAML writers, and native Base v
     assert.match(nativeBase, /visibleKeys/);
     assert.match(main, /setLibraryProfilePropertyOrderProvider/);
     assert.match(main, /resolveLibraryProfilePropertyOrder/);
+});
+
+test('native Base field visibility synchronizes back to the canonical profile layout', async () => {
+    const [mainSource, nativeBaseSource] = await Promise.all([
+        readFile('main.ts', 'utf8'),
+        readFile('components/NativeLibraryBase.ts', 'utf8'),
+    ]);
+    assert.match(mainSource, /visibilityKeys\[entry\.key\] = entry\.key/);
+    assert.match(mainSource, /visibilityKeys\[topLevelKey\] = `universal:\$\{entry\.key\}`/);
+    assert.match(mainSource, /async syncLibraryProfileVisibilityFromBase\(/);
+    assert.match(mainSource, /visiblePropertyIds[\s\S]*?startsWith\('note\.'\)[\s\S]*?!propertyId\.includes\('\.'\)/);
+    assert.match(mainSource, /this\.settings\.hiddenFields\[settingsKey\] = previous;[\s\S]*?throw error/);
+    assert.match(nativeBaseSource, /await plugin\.syncLibraryProfileVisibilityFromBase\(categoryId, authoritativeSnapshot\.order\)/);
+    assert.match(nativeBaseSource, /snapshotPatchForConfigSet\(key, value\)/);
+    assert.match(nativeBaseSource, /latestLayoutRevisionByView/);
 });
 
 test('built-in, legacy custom, and user-defined sections share one header action style', async () => {
@@ -555,6 +625,7 @@ test('profile textarea resizing updates memory immediately and never stores coll
     assert.match(resizeSource, /textarea\.addEventListener\('pointerup', flushHeight\)/);
     assert.match(resizeSource, /textarea\.addEventListener\('blur', flushHeight\)/);
     assert.match(resizeSource, /normalizedSavedHeight >= minHeight/);
+    assert.match(resizeSource, /height === undefined \|\| height === lastHeight/);
 });
 
 test('built-in and universal profile fields share the five-action toolbar', async () => {
@@ -594,6 +665,29 @@ test('custom-section field actions share the label row and inputs use a full row
     assert.match(css, /\.profile-custom-field-control\s*\{[\s\S]*?width:\s*100%/);
 });
 
+test('horizontal profile columns keep independent scroll and remove controls stay compact', async () => {
+    const [character, location, codex, scroll, css] = await Promise.all([
+        readFile('views/CharacterView.ts', 'utf8'),
+        readFile('views/LocationView.ts', 'utf8'),
+        readFile('views/CodexView.ts', 'utf8'),
+        readFile('utils/libraryProfileBoardScroll.ts', 'utf8'),
+        readFile('styles.css', 'utf8'),
+    ]);
+    for (const source of [character, location, codex]) {
+        assert.match(source, /captureLibraryProfileBoardScroll\(container\)/);
+        assert.match(source, /restoreLibraryProfileBoardScroll\(container, boardScroll\)/);
+        assert.match(source, /profile-field-action-btn field-remove-btn .*custom.*remove/);
+    }
+    assert.match(scroll, /columns: columnBodies\(track\)\.map\(body => body\.scrollTop\)/);
+    assert.match(scroll, /top: track\.scrollTop/);
+    assert.match(scroll, /character-detail-board-track, \.character-detail-vertical-track/);
+    assert.match(scroll, /track\.scrollLeft = state\.left/);
+    assert.match(scroll, /track\.scrollTop = state\.top/);
+    assert.match(scroll, /bodies\[index\]\.scrollTop = top/);
+    assert.match(scroll, /requestAnimationFrame[\s\S]*requestAnimationFrame/);
+    assert.match(css, /\.profile-field-action-btn\s*\{[\s\S]*?width:\s*14px;[\s\S]*?height:\s*14px;[\s\S]*?min-width:\s*14px\s*!important;[\s\S]*?min-height:\s*14px\s*!important;[\s\S]*?border:\s*0\s*!important;[\s\S]*?box-shadow:\s*none\s*!important/);
+});
+
 test('all Library entity writers mirror custom fields and startup reconciles existing notes', async () => {
     const [character, location, codex, main] = await Promise.all([
         readFile('services/CharacterManager.ts', 'utf8'),
@@ -603,9 +697,35 @@ test('all Library entity writers mirror custom fields and startup reconciles exi
     ]);
     for (const source of [character, location, codex]) {
         assert.match(source, /hydrateCustomFieldsFromTopLevel/);
+        assert.match(source, /mergeCustomFieldsForSafeSave\(previousCustom,/);
         assert.match(source, /mirrorCustomFieldsToTopLevel/);
+        assert.match(source, /applyDefinedFrontmatterField\(fm, key, val\)/);
+        assert.match(source, /mergeUniversalFieldsForSafeSave\(previousUniversal,/);
+        assert.match(source, /frontmatter is unreadable; refusing to overwrite/);
     }
+    assert.match(codex, /preservesLooseTopLevelFields/);
     assert.match(main, /async syncCustomFieldFrontmatter/);
+    assert.match(main, /This is a disk migration, not an editor save/);
+    assert.match(main, /hydrateCustomFieldsFromTopLevel\([\s\S]*?fm,[\s\S]*?previous,[\s\S]*?categoryKey/);
     assert.match(main, /void this\.syncCustomFieldFrontmatter\(\)/);
     assert.match(main, /pushVisible\(topLevelKey\)/);
+});
+
+test('character detail keeps an unchanged right rail mounted and rejects stale async painting', async () => {
+    const [character, relations] = await Promise.all([
+        readFile('views/CharacterView.ts', 'utf8'),
+        readFile('components/LibraryRelationsPanel.ts', 'utf8'),
+    ]);
+    assert.match(character, /private detailRefreshSignature\(/);
+    assert.match(character, /nextSignature === this\._detailRenderSignature\) return/);
+    assert.match(character, /this\.rerenderCharacterDetail\(\);[\s\S]{0,80}?return;/);
+    assert.match(character, /this\.renderScenePanel\(sceneHost, selected\.name\)/);
+    assert.match(character, /renderGeneration !== this\._detailSideGen/);
+    assert.match(character, /this\.selectedCharacter !== selectedPath \|\| !container\.isConnected/);
+    assert.doesNotMatch(
+        character,
+        /setTimeout\(\(\) => \{[\s\S]{0,260}?this\.renderScenePanel\(deferredHost/,
+    );
+    assert.match(relations, /export function getLibraryRelationsPanelSignature/);
+    assert.match(relations, /focusNotes\(focusBundleFor\(plugin, relation\)\)/);
 });

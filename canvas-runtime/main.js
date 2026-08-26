@@ -2446,6 +2446,12 @@ class NarrativeCanvasView extends ItemView {
           }
           return Promise.resolve("");
         },
+        openCanvasLibrary: () => {
+          if (typeof this.plugin.openNarrativeLabCanvasLibrary === "function") {
+            return this.plugin.openNarrativeLabCanvasLibrary(this.file);
+          }
+          return Promise.resolve();
+        },
         getRichTextFormat: () => normalizeRichTextFormatSetting(this.plugin.settings?.richTextFormat),
         setRichTextFormat: (format) => this.plugin.updateRichTextFormatSetting(format, { applyToCanvas: false }),
         getSpellCheck: () => Boolean(this.plugin.settings?.spellCheck),
@@ -14023,6 +14029,7 @@ const CANVAS_INDEX_HTML = [
   "        \u003c/header\u003e",
   "        \u003cheader id=\"workspaceToolbar\" class=\"canvas-workspace-tabs\"\u003e",
   "          \u003cdiv class=\"toolbar-group\"\u003e",
+  "            \u003cbutton class=\"toolbar-button\" data-action=\"open-canvas-library\" type=\"button\" title=\"Back to canvas box\" aria-label=\"Back to canvas box\"\u003eCanvas box\u003c/button\u003e",
   "            \u003cbutton class=\"toolbar-button\" data-action=\"zoom-out\" data-files=\"adventure\" title=\"Zoom out\"\u003e-\u003c/button\u003e",
   "            \u003cspan id=\"zoomReadout\" class=\"zoom-readout\" data-files=\"adventure\"\u003e100%\u003c/span\u003e",
   "            \u003cbutton class=\"toolbar-button\" data-action=\"zoom-in\" data-files=\"adventure\" title=\"Zoom in\"\u003e+\u003c/button\u003e",
@@ -15702,6 +15709,8 @@ function installNarrativeCanvasApp() {
       "Add entry": "新增资料条目",
       "Cancel": "取消",
       "Canvas": "画布",
+      "Canvas box": "画布盒",
+      "Back to canvas box": "返回画布盒",
       "Canvas quick menu": "画布快捷菜单",
       "Category": "分类",
       "Character": "人物",
@@ -19075,6 +19084,7 @@ function installNarrativeCanvasApp() {
       ["[data-action='center-view']", "Center"],
       ["[data-action='toggle-snap-grid']", "Snap"],
       ["[data-action='play']", "Play"],
+      ["[data-action='open-canvas-library']", "Canvas box"],
       [".frame-canvas-label", "Frame canvas"],
       ["#frameCanvasExitButton", "Exit"],
       ["[data-action='export-json']", "Project .json"],
@@ -19110,6 +19120,8 @@ function installNarrativeCanvasApp() {
       ["[data-action='toggle-snap-grid']", "title", "Snap nodes to grid"],
       ["[data-action='toggle-snap-grid']", "aria-label", "Snap nodes to grid"],
       ["[data-action='play']", "title", "Play from entry"],
+      ["[data-action='open-canvas-library']", "title", "Back to canvas box"],
+      ["[data-action='open-canvas-library']", "aria-label", "Back to canvas box"],
       ["[data-action='export-json']", "title", "Export editable project file (.json)"],
       ["[data-action='export-story-md']", "title", "Export readable story text (.md)"],
       ["[data-action='import-story-md']", "title", "Import Story Markdown and replace this project"],
@@ -28535,6 +28547,10 @@ function installNarrativeCanvasApp() {
 
   function handleAction(target) {
     const action = target.dataset.action;
+    if (action === "open-canvas-library") {
+      void window.NarrativeCanvasHost?.openCanvasLibrary?.();
+      return;
+    }
     if (action === "set-document-format") {
       setDocumentFormat(target.dataset.documentFormat);
       return;

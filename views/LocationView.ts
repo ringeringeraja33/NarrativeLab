@@ -25,6 +25,10 @@ import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
 import { bindResizableCustomFieldInput, customFieldInputHeightKey } from '../utils/customFieldInputHeight';
 import { moveMappingEntry } from '../utils/libraryProfilePropertyOrder';
+import {
+    captureLibraryProfileBoardScroll,
+    restoreLibraryProfileBoardScroll,
+} from '../utils/libraryProfileBoardScroll';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
@@ -55,7 +59,13 @@ import { applyMobileClass, isMobile } from '../components/MobileAdapter';
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
-import { renderNativeLibraryBase, disposeNativeLibraryBase, syncAllNativeLibraryBases } from '../components/NativeLibraryBase';
+import { renderLibraryRelationsPanel } from '../components/LibraryRelationsPanel';
+import {
+    renderNativeLibraryBase,
+    disposeNativeLibraryBase,
+    renderOpenNativeLibraryBaseAction,
+    syncAllNativeLibraryBases,
+} from '../components/NativeLibraryBase';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import {
     ARCHIVE_FILTER_HASHTAGS_KEY,
@@ -309,7 +319,11 @@ export class LocationView extends ProjectBoundItemView {
         this.focusSearchOnNextOverview = false;
         container.empty();
         if (this.locationOverviewMode === 'base') {
-            renderLibraryModeToolbar(container, actions => this.renderLocationOverviewModes(actions));
+            renderLibraryModeToolbar(
+                container,
+                actions => this.renderLocationOverviewModes(actions),
+                actions => renderOpenNativeLibraryBaseAction(actions, this.plugin, 'locations'),
+            );
             void renderNativeLibraryBase(
                 container,
                 this.plugin,
@@ -358,6 +372,9 @@ export class LocationView extends ProjectBoundItemView {
             showLayoutToggle: false,
             onLayoutChange: () => this.renderOverview(container),
             renderLeadingActions: (actionsEl) => this.renderLocationOverviewModes(actionsEl),
+            renderTrailingActions: (actionsEl) => {
+                renderOpenNativeLibraryBaseAction(actionsEl, this.plugin, 'locations');
+            },
             appendExtra: (actionsEl) => {
                 const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
                 const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
@@ -747,6 +764,7 @@ export class LocationView extends ProjectBoundItemView {
     // ── Detail view ────────────────────────────────────
 
     private renderDetail(container: HTMLElement): void {
+        const boardScroll = captureLibraryProfileBoardScroll(container);
         container.empty();
         const item = this.locationManager.getItem(this.selectedItem!);
         if (!item) {
@@ -929,6 +947,10 @@ export class LocationView extends ProjectBoundItemView {
 
         // Gallery (before side panel stats)
         this.renderGallery(sidePanel, draft);
+        renderLibraryRelationsPanel(sidePanel, this.plugin, {
+            name: draft.name || item.name,
+            filePath: item.filePath,
+        });
 
         // Side panel
         if (isWorld) {
@@ -942,6 +964,7 @@ export class LocationView extends ProjectBoundItemView {
             this.renderReferencesPanel(sidePanel, item.name);
         }
         this.renderNotesSection(sidePanel, draft);
+        restoreLibraryProfileBoardScroll(container, boardScroll);
     }
 
     private renderCategory(
@@ -1701,7 +1724,10 @@ export class LocationView extends ProjectBoundItemView {
                 move(-1, 'chevron-up', 'Move field up', customIndex <= 0);
                 move(1, 'chevron-down', 'Move field down', customIndex < 0 || customIndex >= customKeys.length - 1);
 
-                const removeBtn = row.createEl('button', { cls: 'location-custom-remove', attr: { title: t('Remove') } });
+                const removeBtn = row.createEl('button', {
+                    cls: 'profile-field-action-btn field-remove-btn location-custom-remove',
+                    attr: { type: 'button', title: t('Remove'), 'aria-label': t('Remove') },
+                });
                 obsidian.setIcon(removeBtn, 'x');
 
                 keyIn.addEventListener('change', () => {

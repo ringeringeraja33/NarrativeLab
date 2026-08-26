@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { WorkspaceLeaf, Menu, TFile, Notice, MarkdownRenderer, Component } from 'obsidian';
+import { WorkspaceLeaf, Menu, TFile, Notice, MarkdownRenderer, Component, normalizePath } from 'obsidian';
 import * as obsidian from 'obsidian';
 import {
     CellData,
@@ -22,6 +22,7 @@ import {
 } from '../utils/loadPlotGridUniver';
 import {
     conceptGridContentFingerprint,
+    plotGridXlsxPath,
     serializePlotGridNlMeta,
 } from '../services/PlotGridXlsxCodec';
 import {
@@ -415,6 +416,87 @@ export class PlotgridView extends ProjectBoundItemView {
         }
     }
 
+    private getWorkbookPath(): string {
+        const projectFile = this.getTargetProjectFile();
+        if (!projectFile) return '';
+        const baseFolder = deriveProjectFoldersFromFilePath(projectFile).baseFolder;
+        return normalizePath(plotGridXlsxPath(baseFolder));
+    }
+
+    /** Save the live editor first, then resolve the one canonical workbook. */
+    private async prepareWorkbookForHandoff(): Promise<TFile | null> {
+        await this.persistBoundPlotGrid();
+        if (
+            this.hasHydratedDocument
+            && this.persistedDocumentFingerprint() !== this.lastPersistedDocumentFingerprint
+        ) {
+            new Notice(t('Could not save the current spreadsheet before opening another application.'));
+            return null;
+        }
+        const workbookPath = this.getWorkbookPath();
+        if (!workbookPath) {
+            new Notice(t('No active project'));
+            return null;
+        }
+        let file = this.app.vault.getAbstractFileByPath(workbookPath);
+        if (!(file instanceof TFile) && this.hasHydratedDocument) {
+            const projectFile = this.getTargetProjectFile();
+            if (projectFile) await this.saveBoundDocumentIfChanged(projectFile, { force: true });
+            file = this.app.vault.getAbstractFileByPath(workbookPath);
+        }
+        if (!(file instanceof TFile)) {
+            new Notice(t('Spreadsheet file is not available yet.'));
+            return null;
+        }
+        return file;
+    }
+
+    /** Hand the xlsx file to the Obsidian view registered by the Univer plugin. */
+    private async openWorkbookWithUniver(): Promise<void> {
+        try {
+            const file = await this.prepareWorkbookForHandoff();
+            if (!file) return;
+            await this.app.workspace.getLeaf('tab').openFile(file, { active: true });
+        } catch (error) {
+            console.error('[NarrativeLab] Could not open workbook with Univer:', error);
+            new Notice(t('Could not open spreadsheet: {message}', {
+                message: error instanceof Error ? error.message : String(error),
+            }));
+        }
+    }
+
+    /** Hand the xlsx file to Windows/macOS (normally Microsoft Excel). */
+    private async openWorkbookWithDefaultApplication(): Promise<void> {
+        try {
+            const file = await this.prepareWorkbookForHandoff();
+            if (!file) return;
+            const adapter = this.app.vault.adapter as unknown as {
+                getFullPath?: (path: string) => string;
+                getBasePath?: () => string;
+            };
+            const rawBasePath = adapter.getBasePath?.() || '';
+            const basePath = rawBasePath.replace(/[\\/]+$/, '');
+            const absolutePath = adapter.getFullPath?.(file.path)
+                || (basePath ? `${basePath}/${file.path}` : '');
+            if (!absolutePath) throw new Error(t('Desktop file path is unavailable.'));
+
+            const win = window as unknown as { require?: (module: string) => unknown };
+            let electron: { shell?: { openPath: (path: string) => Promise<string> } } | undefined;
+            let remote: { shell?: { openPath: (path: string) => Promise<string> } } | undefined;
+            try { electron = win.require?.('electron') as typeof electron; } catch { /* try remote */ }
+            try { remote = win.require?.('@electron/remote') as typeof remote; } catch { /* unavailable */ }
+            const shell = electron?.shell || remote?.shell;
+            if (!shell) throw new Error(t('Default application launcher is unavailable.'));
+            const result = await shell.openPath(absolutePath);
+            if (result) throw new Error(result);
+        } catch (error) {
+            console.error('[NarrativeLab] Could not open workbook in the default application:', error);
+            new Notice(t('Could not open spreadsheet: {message}', {
+                message: error instanceof Error ? error.message : String(error),
+            }));
+        }
+    }
+
     /** Stable full-state fingerprint; unlike the UI fingerprint it includes zoom/sidebar metadata. */
     private persistedDocumentFingerprint(): string {
         return serializePlotGridNlMeta(this.document);
@@ -764,6 +846,26 @@ export class PlotgridView extends ProjectBoundItemView {
         actions.setCssStyles({
             display: 'flex',
             gap: '2px',
+        });
+
+        const openActions = controls.createDiv('plot-grid-open-actions');
+        const openUniverBtn = openActions.createEl('button', {
+            cls: 'clickable-icon',
+            attr: { type: 'button', 'aria-label': t('Open with Univer') },
+        });
+        obsidian.setIcon(openUniverBtn, 'table-2');
+        attachTooltip(openUniverBtn, t('Open with Univer'));
+        openUniverBtn.addEventListener('click', () => {
+            void this.openWorkbookWithUniver();
+        });
+        const openDefaultBtn = openActions.createEl('button', {
+            cls: 'clickable-icon',
+            attr: { type: 'button', 'aria-label': t('Open with default application (Excel)') },
+        });
+        obsidian.setIcon(openDefaultBtn, 'external-link');
+        attachTooltip(openDefaultBtn, t('Open with default application (Excel)'));
+        openDefaultBtn.addEventListener('click', () => {
+            void this.openWorkbookWithDefaultApplication();
         });
 
         // Toolbar icon styling lives in styles.css under `.plot-grid-toolbar`.

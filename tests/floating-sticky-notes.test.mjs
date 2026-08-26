@@ -93,7 +93,13 @@ test('plugin wires floating sticky notes like Web Novel Assistant', () => {
     assert.match(settings, /floatingStickyNoteAutoSave: boolean/);
     assert.match(settings, /t\('Floating sticky notes'\)/);
     assert.match(manager, /FLOATING_NOTES_FILENAME/);
-    assert.match(manager, /adapter\.write\(this\.getNotesFilePath\(\)/);
+    assert.match(manager, /isFloatingStickyNoteState/);
+    assert.match(manager, /Refusing to overwrite unreadable floating sticky-note data/);
+    assert.match(manager, /for \(const candidate of \[`\$\{path\}\.tmp`, path, `\$\{path\}\.bak`\]\)/);
+    assert.match(manager, /if \(!this\.loadedFromBackup && await adapter\.exists\(path\)\)/);
+    assert.match(manager, /await adapter\.write\(path, content\)/);
+    assert.ok(manager.indexOf('this.unloading = true;', manager.indexOf('async unloadAll'))
+        > manager.indexOf('await this.flush();', manager.indexOf('async unloadAll')));
     assert.match(noteUi, /cls: `\$\{FLOATING_NOTE_CLASS\} story-line-floating-sticky-note`/);
     assert.match(noteUi, /MarkdownRenderer\.render/);
     assert.match(noteUi, /addDropdown/);

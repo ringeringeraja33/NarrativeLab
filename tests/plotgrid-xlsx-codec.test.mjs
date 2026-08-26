@@ -18,6 +18,17 @@ test('production bundle guards ExcelJS UUID buffer writes', async () => {
     assert.match(bundle, /UUID byte range is out of buffer bounds/);
 });
 
+test('plot grid can hand its saved workbook to Univer or the system default app', async () => {
+    const view = await readFile(join(projectRoot, 'views/PlotgridView.ts'), 'utf8');
+    assert.match(view, /await this\.persistBoundPlotGrid\(\)/);
+    assert.match(view, /this\.persistedDocumentFingerprint\(\) !== this\.lastPersistedDocumentFingerprint/);
+    assert.match(view, /openWorkbookWithUniver/);
+    assert.match(view, /getLeaf\('tab'\)\.openFile\(file/);
+    assert.match(view, /openWorkbookWithDefaultApplication/);
+    assert.match(view, /shell\.openPath\(absolutePath\)/);
+    assert.match(view, /plot-grid-open-actions/);
+});
+
 test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'nl-plotgrid-xlsx-'));
     const outfile = join(dir, 'codec.cjs');
@@ -121,7 +132,8 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.deepEqual(decoded.pages[0].univerExtras.mergeData, [
             { startRow: 3, endRow: 4, startColumn: 3, endColumn: 4 },
         ]);
-        assert.deepEqual(decoded.pages[0].cells['r1-c1'].univerStyle, { n: { pattern: '0.0' }, tb: 3 });
+        assert.deepEqual(decoded.pages[0].cells['r1-c1'].univerStyle.n, { pattern: '0.0' });
+        assert.equal(decoded.pages[0].cells['r1-c1'].univerStyle.tb, 3);
         assert.equal(decoded.pages.length, 1);
         assert.equal(decoded.pages[0].hidden, true);
         assert.equal(decoded.pages[0].tabColor, '#c45c26');
@@ -634,6 +646,49 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(clearedAll.pages[0].cells['r1-c1'].italic, false);
         assert.equal(clearedAll.pages[0].cells['r1-c1'].univerStyle, undefined);
 
+        // Clear formatting is not a content deletion. A null target matrix must
+        // reset every persisted style field while keeping text, formula/native
+        // value, and note-link metadata intact.
+        const formatOnlySource = structuredClone(merged);
+        formatOnlySource.pages[0].cells['r1-c1'].formula = '=1+1';
+        formatOnlySource.pages[0].cells['r1-c1'].univerValue = 2;
+        formatOnlySource.pages[0].cells['r1-c1'].univerValueType = 2;
+        const formatOnly = codec.mergeUniverCellDataIntoDocument(
+            formatOnlySource,
+            'page-1',
+            { 0: { 1: null }, 1: { 0: null, 1: null } },
+            undefined,
+            undefined,
+            undefined,
+            { clearStyles: true, clearContent: false },
+        );
+        assert.equal(formatOnly.pages[0].columns[0].label, 'Hero');
+        assert.equal(formatOnly.pages[0].rows[0].label, 'Scene 1');
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].content, 'updated text');
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].formula, '=1+1');
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].univerValue, 2);
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].univerValueType, 2);
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].linkedSceneId, 'Scenes/opening.md');
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].bgColor, '');
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].textColor, '');
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].bold, false);
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].italic, false);
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].align, 'left');
+        assert.equal(formatOnly.pages[0].cells['r1-c1'].univerStyle, undefined);
+
+        // Univer can express a format reset as a style-only `{ s: null }`
+        // mutation. It is authoritative for style and must not erase content.
+        const styleOnlyReset = codec.mergeUniverCellDataIntoDocument(
+            structuredClone(merged),
+            'page-1',
+            { 0: { 1: { s: null } }, 1: { 0: { s: null }, 1: { s: null } } },
+        );
+        assert.equal(styleOnlyReset.pages[0].columns[0].label, 'Hero');
+        assert.equal(styleOnlyReset.pages[0].rows[0].label, 'Scene 1');
+        assert.equal(styleOnlyReset.pages[0].cells['r1-c1'].content, 'updated text');
+        assert.equal(styleOnlyReset.pages[0].cells['r1-c1'].bgColor, '');
+        assert.equal(styleOnlyReset.pages[0].cells['r1-c1'].univerStyle, undefined);
+
         // Empty reserved matrix must not expand row/col extents
         const same = codec.mergeUniverCellDataIntoDocument(decoded, 'page-1', {
             0: { 0: { v: '' }, 1: { v: 'Hero' } },
@@ -797,6 +852,68 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         }, 'page-1', { 0: { 0: { v: '' } }, 1: { 1: { v: 'Updated' } } });
         assert.equal(normalizedIds.pages[0].cells['r1-c1'].id, 'r1-c1');
         assert.equal(normalizedIds.pages[0].cells['r1-c1'].content, 'Updated');
+
+        const externalBook = new ExcelJS.Workbook();
+        const externalSheet = externalBook.addWorksheet('External styles');
+        externalSheet.getCell('A1').value = '';
+        externalSheet.getCell('B1').value = 'Column';
+        externalSheet.getCell('A2').value = 'Row';
+        const externalCell = externalSheet.getCell('B2');
+        externalCell.value = 0.42;
+        externalCell.font = {
+            name: 'Cambria', size: 15, bold: true, italic: true,
+            underline: 'double', strike: true, color: { argb: 'FF123456' },
+        };
+        externalCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFABCDEF' } };
+        externalCell.border = {
+            top: { style: 'double', color: { argb: 'FFAA0000' } },
+            right: { style: 'mediumDashDot', color: { argb: 'FF00AA00' } },
+            bottom: { style: 'thin', color: { argb: 'FF0000AA' } },
+            left: { style: 'dotted', color: { argb: 'FF444444' } },
+        };
+        externalCell.alignment = { horizontal: 'right', vertical: 'middle', wrapText: true, textRotation: 20 };
+        externalCell.numFmt = '0.00%';
+        externalCell.protection = { locked: false, hidden: true };
+        const externalDecoded = await codec.decodePlotGridXlsx(await externalBook.xlsx.writeBuffer());
+        const decodedStyled = Object.values(externalDecoded.pages[0].cells)
+            .find(cell => cell.univerValue === 0.42);
+        assert.equal(decodedStyled.univerStyle.ff, 'Cambria');
+        assert.equal(decodedStyled.univerStyle.fs, 15);
+        assert.equal(decodedStyled.univerStyle.bg.rgb, '#abcdef');
+        assert.equal(decodedStyled.univerStyle.n.pattern, '0.00%');
+        assert.equal(decodedStyled.excelStyle.protection.hidden, true);
+
+        const externalRoundTrip = new ExcelJS.Workbook();
+        await externalRoundTrip.xlsx.load(await codec.encodePlotGridXlsx(externalDecoded));
+        const roundTripCell = externalRoundTrip.worksheets[0].getCell('B2');
+        assert.equal(roundTripCell.font.name, 'Cambria');
+        assert.equal(roundTripCell.font.size, 15);
+        assert.equal(roundTripCell.font.underline, 'double');
+        assert.equal(roundTripCell.font.strike, true);
+        assert.equal(roundTripCell.fill.fgColor.argb, 'FFABCDEF');
+        assert.equal(roundTripCell.border.top.style, 'double');
+        assert.equal(roundTripCell.border.right.style, 'mediumDashDot');
+        assert.equal(roundTripCell.alignment.vertical, 'middle');
+        assert.equal(roundTripCell.alignment.wrapText, true);
+        assert.equal(roundTripCell.alignment.textRotation, 20);
+        assert.equal(roundTripCell.numFmt, '0.00%');
+        assert.equal(roundTripCell.protection.hidden, true);
+
+        const univerWorkbook = codec.documentToUniverWorkbookData(externalDecoded);
+        assert.equal(univerWorkbook.sheets[externalDecoded.pages[0].id].defaultStyle.ff, 'Microsoft YaHei');
+        const uiOnly = structuredClone(externalDecoded);
+        uiOnly.activePageId = 'another-ui-selection';
+        uiOnly.sidebarCollapsed = !uiOnly.sidebarCollapsed;
+        uiOnly.pages[0].zoom = 1.75;
+        assert.equal(
+            codec.plotGridWorkbookContentFingerprint(externalDecoded),
+            codec.plotGridWorkbookContentFingerprint(uiOnly),
+        );
+        uiOnly.pages[0].cells[decodedStyled.id].content = 'changed';
+        assert.notEqual(
+            codec.plotGridWorkbookContentFingerprint(externalDecoded),
+            codec.plotGridWorkbookContentFingerprint(uiOnly),
+        );
     } finally {
         await rm(dir, { recursive: true, force: true });
     }
@@ -1372,7 +1489,10 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.doesNotMatch(host, /active\.closest\('\[class\*="univer"\]'\)/);
     assert.match(host, /sheet\.mutation\.set-range-values/);
     assert.match(host, /applyRangeValuesMutation/);
-    assert.match(host, /clearStyles: id === 'sheet\.command\.clear-selection-all'/);
+    assert.match(host, /sheet\.command\.clear-selection-format/);
+    assert.match(host, /clearContent: id !== 'sheet\.command\.clear-selection-format'/);
+    assert.match(host, /reapplySessionClearIntents/);
+    assert.match(host, /clearIntents/);
     assert.match(host, /createPlotGridWorkbookUnitId/);
     assert.match(host, /commandWorkbookUnitId/);
     assert.match(host, /recentlyClearedCells/);
@@ -1414,7 +1534,8 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /menuHoldUntil/);
     assert.doesNotMatch(host, /addEventListener\('pointerover'/);
     assert.match(host, /pullFromUniver\(true, \{ clearMissing: false, mergeDimensions: true \}\)/);
-    assert.match(host, /if \(text != null && !\(text && recentlyClearedCells\.has\(clearedKey\)\)\)/);
+    assert.match(host, /const contentWasCleared = recentlyClearedCells\.has\(clearedKey\)/);
+    assert.match(host, /if \(text != null && !\(text && contentWasCleared\)\)/);
     assert.doesNotMatch(host, /narrativelab-univer-submenu-stale/);
     assert.doesNotMatch(host, /pruneStackedUniverSubmenus/);
     assert.match(host, /retireUniverSubmenus/);
@@ -1524,6 +1645,11 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /freezeFirstRow:\s*'固定首行'/);
     assert.match(host, /cancelFreeze:\s*'取消固定'/);
     assert.equal((host.match(/ribbonType:\s*'classic'/g) || []).length, 1);
+    assert.match(host, /customFontFamily:\s*\{/);
+    assert.match(host, /override:\s*true/);
+    assert.match(host, /value:\s*'Microsoft YaHei'/);
+    assert.match(host, /value:\s*'Source Han Sans SC'/);
+    assert.match(host, /value:\s*'Aptos'/);
     assert.match(host, /export function warmupPlotGridUniver/);
     assert.match(host, /sheetBar:\s*true/);
     assert.match(host, /statisticBar:\s*true/);

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { Character, CharacterRelation, CharacterRelationCategory, CHARACTER_FIELD_KEYS, LEGACY_RELATION_FIELDS_TO_CLEAN, normalizeCharacterRelations, normalizeCharacterRole, normalizeRoleEntries } from '../models/Character';
-import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
+import { hydrateUniversalFieldsFromTopLevel, mergeUniversalFieldsForSafeSave, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { App, TFile, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceString, coerceText } from '../utils/narrow';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
@@ -8,6 +8,8 @@ import { ensureVaultFolder } from '../utils/vaultFolders';
 import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 import {
     hydrateCustomFieldsFromTopLevel,
+    applyDefinedFrontmatterField,
+    mergeCustomFieldsForSafeSave,
     mirrorCustomFieldsToTopLevel,
     orderLibraryEntityFrontmatter,
 } from '../utils/libraryProfilePropertyOrder';
@@ -221,11 +223,15 @@ export class CharacterManager {
         }
 
         const content = await this.app.vault.read(file);
-        const existingFm = this.extractFrontmatter(content) || {};
+        const existingFm = this.extractFrontmatter(content);
+        if (/^[\uFEFF\u200B-\u200F\u2028-\u202F]*---\r?\n/.test(content) && !existingFm) {
+            throw new Error(`Character frontmatter is unreadable; refusing to overwrite ${normalizedFilePath}`);
+        }
+        const diskFm = existingFm ?? {};
         const body = this.extractBody(content);
 
         // Build frontmatter from character object
-        const fm: Record<string, unknown> = { ...existingFm };
+        const fm: Record<string, unknown> = { ...diskFm };
         fm.type = 'character';
         fm.name = character.name;
         fm.modified = new Date().toISOString().split('T')[0];
@@ -241,17 +247,17 @@ export class CharacterManager {
                 : key === 'roles'
                     ? normalizedRoleEntries
                     : character[key];
-            if (val !== undefined && val !== null && val !== '' && !(Array.isArray(val) && val.length === 0)) {
-                fm[key] = val;
-            } else {
-                delete fm[key]; // Remove empty fields to keep frontmatter clean
-            }
+            applyDefinedFrontmatterField(fm, key, val);
         }
         // Clean up legacy keys
         delete fm['coreBeliefs'];
         // `earlyLife` was accepted by some hand-authored templates. Keep one
         // canonical key so Obsidian Properties never shows duplicate fields.
         delete fm['earlyLife'];
+        // `notes` briefly shipped as the Remarks property, colliding with the
+        // long-form Markdown body. `note` is the canonical frontmatter key;
+        // never leave a second copy of the body in YAML.
+        delete fm['notes'];
         delete fm['romanticHistory'];
         delete fm['customRelationType'];
         delete fm['customRelationLabel'];
@@ -259,12 +265,12 @@ export class CharacterManager {
             delete fm[key];
         }
 
-        const previousCustom = existingFm.custom && typeof existingFm.custom === 'object' && !Array.isArray(existingFm.custom)
-            ? existingFm.custom as Record<string, string>
+        const previousCustom = diskFm.custom && typeof diskFm.custom === 'object' && !Array.isArray(diskFm.custom)
+            ? diskFm.custom as Record<string, string>
             : undefined;
         const resolvedCustom = hydrateCustomFieldsFromTopLevel(
-            existingFm,
-            character.custom,
+            diskFm,
+            mergeCustomFieldsForSafeSave(previousCustom, character.custom),
             'character',
         );
         // Custom fields
@@ -276,7 +282,14 @@ export class CharacterManager {
         mirrorCustomFieldsToTopLevel(fm, resolvedCustom, 'character', previousCustom);
 
         // Universal fields (values from field-templates)
-        const resolvedUniversal = hydrateUniversalFieldsFromTopLevel(existingFm, character.universalFields) as
+        const previousUniversal = diskFm.universalFields && typeof diskFm.universalFields === 'object'
+            && !Array.isArray(diskFm.universalFields)
+            ? diskFm.universalFields as Record<string, unknown>
+            : undefined;
+        const resolvedUniversal = hydrateUniversalFieldsFromTopLevel(
+            diskFm,
+            mergeUniversalFieldsForSafeSave(previousUniversal, character.universalFields),
+        ) as
             Record<string, string | string[]> | undefined;
         if (resolvedUniversal && Object.keys(resolvedUniversal).length > 0) {
             fm.universalFields = resolvedUniversal;
@@ -286,7 +299,8 @@ export class CharacterManager {
         // Issue #71 — mirror to top-level YAML keys for templates that opt in
         mirrorUniversalFieldsToTopLevel(fm, resolvedUniversal);
 
-        // Write notes to body
+        // Remarks (`note`) and long-form notes (`notes`) have deliberately
+        // separate storage: YAML frontmatter versus the Markdown body.
         const finalBody = character.notes ?? body;
         const orderedFm = orderLibraryEntityFrontmatter(fm, 'character');
         const newContent = `---\n${stringifyYaml(orderedFm)}---\n${finalBody ? '\n' + finalBody : ''}`;
@@ -384,9 +398,11 @@ export class CharacterManager {
         const safeFm = (fm ?? {}) as Partial<Character> & Record<string, unknown>;
         if (safeFm.type !== 'character' && !folderFallback) return null;
 
-        const body = this.extractBody(content);
-        const relations = normalizeCharacterRelations(this.parseRelations(safeFm.relations) || this.buildLegacyRelations(safeFm));
         const text = (value: unknown): string | undefined => coerceText(value).trim() || undefined;
+        const body = this.extractBody(content);
+        const canonicalRemark = text(safeFm.note);
+        const collidedLegacyRemark = text(safeFm.notes);
+        const relations = normalizeCharacterRelations(this.parseRelations(safeFm.relations) || this.buildLegacyRelations(safeFm));
 
         const character: Character = {
             filePath,
@@ -400,6 +416,7 @@ export class CharacterManager {
             gallery: this.parseGallery(safeFm.gallery),
             nickname: text(safeFm.nickname),
             age: text(safeFm.age),
+            gender: text(safeFm.gender),
             role: normalizeCharacterRole(safeFm.role),
             roles: normalizeRoleEntries(safeFm.roles),
             occupation: text(safeFm.occupation),
@@ -407,6 +424,14 @@ export class CharacterManager {
             locations: this.parseStringList(safeFm.locations),
             family: text(safeFm.family),
             earlylife: text(safeFm.earlylife) || text(safeFm.earlyLife),
+            // Recover a non-duplicated value written by the short-lived
+            // `notes` frontmatter implementation. If it equals the body it is
+            // an accidental mirror, not a genuine short remark.
+            note: canonicalRemark || (
+                collidedLegacyRemark && collidedLegacyRemark !== body
+                    ? collidedLegacyRemark
+                    : undefined
+            ),
             appearance: text(safeFm.appearance),
             distinguishingFeatures: text(safeFm.distinguishingFeatures),
             style: text(safeFm.style),
@@ -444,7 +469,7 @@ export class CharacterManager {
             ) as Record<string, string | string[]> | undefined,
             created: text(safeFm.created),
             modified: text(safeFm.modified),
-            notes: body || coerceString(safeFm.notes) || undefined,
+            notes: body || undefined,
         };
 
         return character;

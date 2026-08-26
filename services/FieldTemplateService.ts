@@ -126,6 +126,7 @@ export class FieldTemplateService {
     private onChange?: (change: FieldTemplateChange) => void | Promise<void>;
     /** True when field-templates.json existed but could not be parsed — refuse save overwrite. */
     private _invalidFile = false;
+    private _loadedFromBackup = false;
 
     constructor(app: App, getSystemFolder: () => string) {
         this.app = app;
@@ -445,14 +446,41 @@ export class FieldTemplateService {
         try {
             const adapter = this.app.vault.adapter;
             const filePath = normalizePath(`${this.getSystemFolder()}/field-templates.json`);
-            if (!await adapter.exists(filePath)) {
+            const candidates = [`${filePath}.tmp`, filePath, `${filePath}.bak`];
+            const existingCandidates: string[] = [];
+            for (const candidate of candidates) {
+                if (await adapter.exists(candidate)) existingCandidates.push(candidate);
+            }
+            if (existingCandidates.length === 0) {
                 this._invalidFile = false;
+                this._loadedFromBackup = false;
                 this.templates = [];
                 this.sectionOrders = {};
                 return;
             }
-            const txt = await adapter.read(filePath);
-            const data: FieldTemplateFile = JSON.parse(txt);
+            let data: FieldTemplateFile | undefined;
+            let loadedCandidate = '';
+            for (const candidate of existingCandidates) {
+                try {
+                    const raw = JSON.parse(await adapter.read(candidate)) as unknown;
+                    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                        throw new Error('invalid field template object');
+                    }
+                    const parsed = raw as Partial<FieldTemplateFile>;
+                    if (!Array.isArray(parsed.fields)
+                        || (parsed.sectionOrders !== undefined
+                            && (!parsed.sectionOrders || typeof parsed.sectionOrders !== 'object'
+                                || Array.isArray(parsed.sectionOrders)))) {
+                        throw new Error('invalid field template structure');
+                    }
+                    data = parsed as FieldTemplateFile;
+                    loadedCandidate = candidate;
+                    break;
+                } catch (error) {
+                    console.error(`[NarrativeLab] Could not load field templates from ${candidate}:`, error);
+                }
+            }
+            if (!data) throw new Error('No readable field template file or backup was found.');
             this.sectionOrders = {};
             if (data.sectionOrders && typeof data.sectionOrders === 'object') {
                 for (const [k, v] of Object.entries(data.sectionOrders)) {
@@ -505,8 +533,10 @@ export class FieldTemplateService {
             }
             this.sectionOrders = mergedOrders;
             this._invalidFile = false;
+            this._loadedFromBackup = loadedCandidate !== filePath;
         } catch {
             this._invalidFile = true;
+            this._loadedFromBackup = false;
         }
     }
 
@@ -529,10 +559,17 @@ export class FieldTemplateService {
                 fields: this.templates,
                 sectionOrders: this.sectionOrders,
             };
-            await adapter.write(
-                normalizePath(`${systemFolder}/field-templates.json`),
-                JSON.stringify(data, null, 2),
-            );
+            const filePath = normalizePath(`${systemFolder}/field-templates.json`);
+            const tempPath = `${filePath}.tmp`;
+            const backupPath = `${filePath}.bak`;
+            const content = JSON.stringify(data, null, 2);
+            await adapter.write(tempPath, content);
+            if (!this._loadedFromBackup && await adapter.exists(filePath)) {
+                await adapter.write(backupPath, await adapter.read(filePath));
+            }
+            await adapter.write(filePath, content);
+            await adapter.remove(tempPath).catch(() => undefined);
+            this._loadedFromBackup = false;
         } catch (e) {
             console.error('[NarrativeLab] FieldTemplateService.save():', e);
             throw e;
@@ -687,6 +724,18 @@ export function hydrateUniversalFieldsFromTopLevel(
         }
     }
     return Object.keys(result).length ? result : undefined;
+}
+
+/** Preserve values omitted by a partial editor snapshot while allowing an
+ * explicitly supplied empty value to clear an individual field. */
+export function mergeUniversalFieldsForSafeSave(
+    diskFields: Record<string, unknown> | undefined,
+    liveFields: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+    const diskEntries = Object.entries(diskFields ?? {});
+    const liveEntries = Object.entries(liveFields ?? {});
+    if (diskEntries.length === 0 && liveEntries.length === 0) return undefined;
+    return Object.fromEntries([...diskEntries, ...liveEntries]);
 }
 
 /**

@@ -7,10 +7,12 @@ import {
     StoryWorld, StoryLocation, WorldOrLocation,
     WORLD_FIELD_KEYS, LOCATION_FIELD_KEYS,
 } from '../models/Location';
-import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
+import { hydrateUniversalFieldsFromTopLevel, mergeUniversalFieldsForSafeSave, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { collectMarkdownFiles, isExcalidrawFilePath, loadWithStampCache, setCachedEntry, fileStamp, rememberEntityAfterSave } from './EntityFileCache';
 import {
     hydrateCustomFieldsFromTopLevel,
+    applyDefinedFrontmatterField,
+    mergeCustomFieldsForSafeSave,
     mirrorCustomFieldsToTopLevel,
     orderLibraryEntityFrontmatter,
 } from '../utils/libraryProfilePropertyOrder';
@@ -353,10 +355,14 @@ export class LocationManager {
         }
 
         const content = await this.app.vault.read(file);
-        const existingFm = this.extractFrontmatter(content) || {};
+        const existingFm = this.extractFrontmatter(content);
+        if (/^[\uFEFF\u200B-\u200F\u2028-\u202F]*---\r?\n/.test(content) && !existingFm) {
+            throw new Error(`Library frontmatter is unreadable; refusing to overwrite ${normalizedFilePath}`);
+        }
+        const diskFm = existingFm ?? {};
         const body = this.extractBody(content);
 
-        const fm: Record<string, unknown> = { ...existingFm };
+        const fm: Record<string, unknown> = { ...diskFm };
         fm.type = item.type;
         fm.name = item.name;
         fm.modified = new Date().toISOString().split('T')[0];
@@ -365,19 +371,15 @@ export class LocationManager {
         for (const key of fieldKeys) {
             if (key === 'name') continue;
             const val = (item as unknown as Record<string, unknown>)[key];
-            if (val !== undefined && val !== null && val !== '' && !(Array.isArray(val) && val.length === 0)) {
-                fm[key] = val;
-            } else {
-                delete fm[key];
-            }
+            applyDefinedFrontmatterField(fm, key, val);
         }
 
-        const previousCustom = existingFm.custom && typeof existingFm.custom === 'object' && !Array.isArray(existingFm.custom)
-            ? existingFm.custom as Record<string, string>
+        const previousCustom = diskFm.custom && typeof diskFm.custom === 'object' && !Array.isArray(diskFm.custom)
+            ? diskFm.custom as Record<string, string>
             : undefined;
         const resolvedCustom = hydrateCustomFieldsFromTopLevel(
-            existingFm,
-            item.custom,
+            diskFm,
+            mergeCustomFieldsForSafeSave(previousCustom, item.custom),
             item.type,
         );
         if (resolvedCustom && Object.keys(resolvedCustom).length > 0) {
@@ -387,7 +389,14 @@ export class LocationManager {
         }
         mirrorCustomFieldsToTopLevel(fm, resolvedCustom, item.type, previousCustom);
 
-        const resolvedUniversal = hydrateUniversalFieldsFromTopLevel(existingFm, item.universalFields) as
+        const previousUniversal = diskFm.universalFields && typeof diskFm.universalFields === 'object'
+            && !Array.isArray(diskFm.universalFields)
+            ? diskFm.universalFields as Record<string, unknown>
+            : undefined;
+        const resolvedUniversal = hydrateUniversalFieldsFromTopLevel(
+            diskFm,
+            mergeUniversalFieldsForSafeSave(previousUniversal, item.universalFields),
+        ) as
             Record<string, string | string[]> | undefined;
         if (resolvedUniversal && Object.keys(resolvedUniversal).length > 0) {
             fm.universalFields = resolvedUniversal;

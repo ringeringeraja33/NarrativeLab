@@ -79,11 +79,22 @@ function normalizePreset(template: ProjectPresetTemplate, scope: TemplateScope):
     };
 }
 
+function isProjectTemplateFile(value: unknown): value is ProjectTemplateFile {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const file = value as Partial<ProjectTemplateFile>;
+    return file.version === 1
+        && Array.isArray(file.sceneTemplates)
+        && Array.isArray(file.structureTemplates)
+        && Array.isArray(file.projectPresets);
+}
+
 /** Owns global and per-project template persistence. Project data never enters Library/. */
 export class TemplateCenterService {
     private projectSceneTemplates: SceneTemplate[] = [];
     private projectStructureTemplates: BeatSheetTemplate[] = [];
     private projectPresets: ProjectPresetTemplate[] = [];
+    private projectFileInvalid = false;
+    private projectLoadedFromBackup = false;
 
     constructor(private app: App, private plugin: SceneCardsPlugin) {}
 
@@ -99,34 +110,34 @@ export class TemplateCenterService {
         this.projectSceneTemplates = [];
         this.projectStructureTemplates = [];
         this.projectPresets = [];
+        this.projectFileInvalid = false;
+        this.projectLoadedFromBackup = false;
         if (!this.plugin.sceneManager?.activeProject) return;
-        try {
-            if (!await this.app.vault.adapter.exists(this.filePath)) return;
-            let raw: Partial<ProjectTemplateFile>;
+        const adapter = this.app.vault.adapter;
+        let foundCandidate = false;
+        for (const candidate of [`${this.filePath}.tmp`, this.filePath, `${this.filePath}.bak`]) {
             try {
-                raw = JSON.parse(await this.app.vault.adapter.read(this.filePath)) as Partial<ProjectTemplateFile>;
+                if (!await adapter.exists(candidate)) continue;
+                foundCandidate = true;
+                const raw = JSON.parse(await adapter.read(candidate)) as unknown;
+                if (!isProjectTemplateFile(raw)) throw new Error('invalid project template file');
+                this.projectSceneTemplates = raw.sceneTemplates.map(template => normalizeSceneTemplate(template, 'project'));
+                this.projectStructureTemplates = raw.structureTemplates.map(template => normalizeStructureTemplate(template, 'project'));
+                this.projectPresets = raw.projectPresets.map(template => normalizePreset(template, 'project'));
+                this.projectLoadedFromBackup = candidate !== this.filePath;
+                return;
             } catch (error) {
-                const backupPath = `${this.filePath}.bak`;
-                if (!await this.app.vault.adapter.exists(backupPath)) throw error;
-                raw = JSON.parse(await this.app.vault.adapter.read(backupPath)) as Partial<ProjectTemplateFile>;
-                console.warn('[NarrativeLab] Loaded project templates from backup after the main file became unreadable.');
+                console.error(`[NarrativeLab] Could not load project templates from ${candidate}:`, error);
             }
-            this.projectSceneTemplates = Array.isArray(raw.sceneTemplates)
-                ? raw.sceneTemplates.map(template => normalizeSceneTemplate(template, 'project'))
-                : [];
-            this.projectStructureTemplates = Array.isArray(raw.structureTemplates)
-                ? raw.structureTemplates.map(template => normalizeStructureTemplate(template, 'project'))
-                : [];
-            this.projectPresets = Array.isArray(raw.projectPresets)
-                ? raw.projectPresets.map(template => normalizePreset(template, 'project'))
-                : [];
-        } catch (error) {
-            console.error('[NarrativeLab] Could not load project templates:', error);
         }
+        this.projectFileInvalid = foundCandidate;
     }
 
     private async saveProject(): Promise<void> {
         if (!this.plugin.sceneManager?.activeProject) throw new Error(t('Open a project before saving project templates.'));
+        if (this.projectFileInvalid) {
+            throw new Error(t('Project templates cannot be saved because the existing file is unreadable.'));
+        }
         if (!await this.app.vault.adapter.exists(this.folderPath)) {
             await this.app.vault.createFolder(this.folderPath);
         }
@@ -140,11 +151,12 @@ export class TemplateCenterService {
         const tempPath = `${this.filePath}.tmp`;
         const backupPath = `${this.filePath}.bak`;
         await this.app.vault.adapter.write(tempPath, content);
-        if (await this.app.vault.adapter.exists(this.filePath)) {
+        if (!this.projectLoadedFromBackup && await this.app.vault.adapter.exists(this.filePath)) {
             await this.app.vault.adapter.write(backupPath, await this.app.vault.adapter.read(this.filePath));
         }
         await this.app.vault.adapter.write(this.filePath, content);
         await this.app.vault.adapter.remove(tempPath).catch(() => undefined);
+        this.projectLoadedFromBackup = false;
     }
 
     getSceneTemplates(): SceneTemplate[] {

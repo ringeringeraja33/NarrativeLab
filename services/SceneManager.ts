@@ -3665,7 +3665,10 @@ export class SceneManager implements ISceneStore {
             if (!await adapter.exists(sysFolder)) {
                 await this.ensureFolder(sysFolder);
             }
-            await adapter.write(`${sysFolder}/board.json`, JSON.stringify({ corkboardPositions: cleaned }));
+            await this.plugin.writeVaultTextResilient(
+                `${sysFolder}/board.json`,
+                JSON.stringify({ corkboardPositions: cleaned }),
+            );
         } catch (e) {
             console.error('[NarrativeLab] Failed to save corkboard positions:', e);
         }
@@ -3714,8 +3717,8 @@ export class SceneManager implements ISceneStore {
         if (fmMatch) {
             try {
                 existingFm = parseYaml(fmMatch[1]) || {};
-            } catch {
-                existingFm = {};
+            } catch (error) {
+                throw new Error(`Project frontmatter is unreadable; refusing to overwrite ${project.filePath}: ${String(error)}`);
             }
             body = content.slice(fmMatch[0].length);
         }

@@ -1039,7 +1039,8 @@ function applyClearSelectionMutation(
         };
     };
     if (id !== 'sheet.command.clear-selection-all'
-        && id !== 'sheet.command.clear-selection-content') return null;
+        && id !== 'sheet.command.clear-selection-content'
+        && id !== 'sheet.command.clear-selection-format') return null;
     const sheetId = params?.subUnitId || fallback?.sheetId;
     if (!sheetId) return null;
     const page = doc.pages.find(item => item.id === sheetId);
@@ -1079,7 +1080,10 @@ function applyClearSelectionMutation(
         undefined,
         undefined,
         undefined,
-        { clearStyles: id === 'sheet.command.clear-selection-all' },
+        {
+            clearStyles: id !== 'sheet.command.clear-selection-content',
+            clearContent: id !== 'sheet.command.clear-selection-format',
+        },
     );
 }
 
@@ -1144,6 +1148,44 @@ function scheduleSiblingPlotGridRelayout(except?: () => void): void {
     window.setTimeout(kick, 320);
     window.setTimeout(kick, 600);
 }
+
+/** Ordered, practical desktop font list; first entry is the new-sheet default. */
+const PLOTGRID_FONT_FAMILIES = [
+    { value: 'Microsoft YaHei', label: 'ui.fontFamily.microsoft-yahei', category: 'sans-serif' },
+    { value: 'Microsoft YaHei UI', label: 'Microsoft YaHei UI', category: 'sans-serif' },
+    { value: 'DengXian', label: '等线 DengXian', category: 'sans-serif' },
+    { value: 'SimSun', label: 'ui.fontFamily.simsun', category: 'serif' },
+    { value: 'NSimSun', label: 'ui.fontFamily.nsimsun', category: 'serif' },
+    { value: 'SimHei', label: 'ui.fontFamily.simhei', category: 'sans-serif' },
+    { value: 'KaiTi', label: 'ui.fontFamily.kaiti', category: 'handwriting' },
+    { value: 'FangSong', label: 'ui.fontFamily.fangsong', category: 'serif' },
+    { value: 'STSong', label: '华文宋体 STSong', category: 'serif' },
+    { value: 'STHeiti', label: '华文黑体 STHeiti', category: 'sans-serif' },
+    { value: 'STKaiti', label: '华文楷体 STKaiti', category: 'handwriting' },
+    { value: 'STFangsong', label: '华文仿宋 STFangsong', category: 'serif' },
+    { value: 'STXinwei', label: 'ui.fontFamily.stxinwei', category: 'display' },
+    { value: 'STXingkai', label: 'ui.fontFamily.stxingkai', category: 'handwriting' },
+    { value: 'STLiti', label: 'ui.fontFamily.stliti', category: 'display' },
+    { value: 'Source Han Sans SC', label: '思源黑体 Source Han Sans SC', category: 'sans-serif' },
+    { value: 'Source Han Serif SC', label: '思源宋体 Source Han Serif SC', category: 'serif' },
+    { value: 'Noto Sans CJK SC', label: 'Noto Sans CJK SC', category: 'sans-serif' },
+    { value: 'Noto Serif CJK SC', label: 'Noto Serif CJK SC', category: 'serif' },
+    { value: 'PingFang SC', label: '苹方 PingFang SC', category: 'sans-serif' },
+    { value: 'Hiragino Sans GB', label: '冬青黑体 Hiragino Sans GB', category: 'sans-serif' },
+    { value: 'WenQuanYi Micro Hei', label: '文泉驿微米黑', category: 'sans-serif' },
+    { value: 'Aptos', label: 'Aptos', category: 'sans-serif' },
+    { value: 'Calibri', label: 'Calibri', category: 'sans-serif' },
+    { value: 'Arial', label: 'ui.fontFamily.arial', category: 'sans-serif' },
+    { value: 'Segoe UI', label: 'Segoe UI', category: 'sans-serif' },
+    { value: 'Tahoma', label: 'ui.fontFamily.tahoma', category: 'sans-serif' },
+    { value: 'Verdana', label: 'ui.fontFamily.verdana', category: 'sans-serif' },
+    { value: 'Georgia', label: 'Georgia', category: 'serif' },
+    { value: 'Times New Roman', label: 'ui.fontFamily.times-new-roman', category: 'serif' },
+    { value: 'Cambria', label: 'Cambria', category: 'serif' },
+    { value: 'Consolas', label: 'Consolas', category: 'monospace' },
+    { value: 'Courier New', label: 'Courier New', category: 'monospace' },
+    { value: 'JetBrains Mono', label: 'JetBrains Mono', category: 'monospace' },
+] as const;
 
 /**
  * Mount Univer Sheets into `container` and keep a ConceptGridDocument in sync.
@@ -1226,6 +1268,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 formulaBar: true,
                 ribbonType: 'classic',
                 contextMenu: true,
+                customFontFamily: {
+                    override: true,
+                    list: [...PLOTGRID_FONT_FAMILIES],
+                },
                 menu: {
                     [TEXT_TO_NUMBER_TOOLBAR_MENU_ID]: { hidden: true },
                 },
@@ -1252,6 +1298,17 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let syncEnabled = false;
     let ourUnitId: string | null = null;
     const recentlyClearedCells = new Set<string>();
+    const clearIntents = new Map<string, { content: boolean; format: boolean }>();
+    const cellIntentKey = (sheetId: string, row: number | string, col: number | string) =>
+        `${sheetId}:${row}:${col}`;
+    const updateClearIntent = (
+        key: string,
+        update: Partial<{ content: boolean; format: boolean }>,
+    ) => {
+        const next = { ...(clearIntents.get(key) || { content: false, format: false }), ...update };
+        if (!next.content && !next.format) clearIntents.delete(key);
+        else clearIntents.set(key, next);
+    };
     const markClearedUniverCells = (
         sheetId: string | undefined,
         cellValue: Record<number, Record<number, unknown>> | undefined,
@@ -1260,13 +1317,114 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         for (const [rowKey, rowBucket] of Object.entries(cellValue)) {
             if (!rowBucket || typeof rowBucket !== 'object') continue;
             for (const [colKey, raw] of Object.entries(rowBucket)) {
-                const snapshot = raw as { v?: unknown; p?: unknown } | null;
-                const empty = snapshot == null
-                    || (!('v' in snapshot) && !('p' in snapshot))
-                    || univerCellPlainText(snapshot) === '';
-                if (empty) recentlyClearedCells.add(`${sheetId}:${rowKey}:${colKey}`);
+                const snapshot = raw && typeof raw === 'object'
+                    ? raw as {
+                        v?: unknown;
+                        p?: unknown;
+                        f?: unknown;
+                        custom?: Record<string, unknown>;
+                        s?: unknown;
+                    }
+                    : null;
+                const key = cellIntentKey(sheetId, rowKey, colKey);
+                const contentProvided = snapshot == null
+                    || 'v' in snapshot
+                    || 'p' in snapshot
+                    || 'f' in snapshot
+                    || 'custom' in snapshot
+                    || Object.keys(snapshot).length === 0;
+                if (contentProvided) {
+                    const empty = snapshot == null || univerCellPlainText(snapshot) === '';
+                    updateClearIntent(key, { content: empty });
+                    if (empty) recentlyClearedCells.add(key);
+                    else recentlyClearedCells.delete(key);
+                }
+                if (snapshot && 's' in snapshot) {
+                    updateClearIntent(key, { format: snapshot.s == null });
+                }
             }
         }
+    };
+    const markSelectionClearIntent = (
+        command: unknown,
+        fallback: { sheetId: string; row: number; col: number } | null,
+    ) => {
+        const id = commandId(command);
+        if (id !== 'sheet.command.clear-selection-all'
+            && id !== 'sheet.command.clear-selection-content'
+            && id !== 'sheet.command.clear-selection-format') return;
+        const params = commandParams(command);
+        const sheetId = typeof params?.subUnitId === 'string' ? params.subUnitId : fallback?.sheetId;
+        if (!sheetId) return;
+        const page = liveDoc.pages.find(item => item.id === sheetId);
+        if (!page) return;
+        const ranges = Array.isArray(params?.ranges) && params.ranges.length
+            ? params.ranges as Array<{
+                startRow?: number;
+                endRow?: number;
+                startColumn?: number;
+                endColumn?: number;
+            }>
+            : (fallback && fallback.sheetId === sheetId
+                ? [{
+                    startRow: fallback.row,
+                    endRow: fallback.row,
+                    startColumn: fallback.col,
+                    endColumn: fallback.col,
+                }]
+                : []);
+        const maxRow = page.rows.length;
+        const maxColumn = page.columns.length;
+        for (const range of ranges) {
+            const startRow = Math.max(0, Math.min(maxRow, Math.floor(range.startRow ?? 0)));
+            const endRow = Math.max(startRow, Math.min(maxRow, Math.floor(range.endRow ?? startRow)));
+            const startColumn = Math.max(0, Math.min(maxColumn, Math.floor(range.startColumn ?? 0)));
+            const endColumn = Math.max(startColumn, Math.min(maxColumn, Math.floor(range.endColumn ?? startColumn)));
+            for (let row = startRow; row <= endRow; row += 1) {
+                for (let col = startColumn; col <= endColumn; col += 1) {
+                    const key = cellIntentKey(sheetId, row, col);
+                    const clearsContent = id !== 'sheet.command.clear-selection-format';
+                    const clearsFormat = id !== 'sheet.command.clear-selection-content';
+                    updateClearIntent(key, { content: clearsContent, format: clearsFormat });
+                    if (clearsContent) recentlyClearedCells.add(key);
+                }
+            }
+        }
+    };
+    const reapplySessionClearIntents = (doc: ConceptGridDocument): ConceptGridDocument => {
+        const contentBySheet = new Map<string, Record<number, Record<number, null>>>();
+        const formatBySheet = new Map<string, Record<number, Record<number, null>>>();
+        for (const [key, intent] of clearIntents) {
+            const match = /^(.*):(\d+):(\d+)$/.exec(key);
+            if (!match) continue;
+            const sheetId = match[1];
+            const row = Number(match[2]);
+            const col = Number(match[3]);
+            const add = (target: Map<string, Record<number, Record<number, null>>>) => {
+                const matrix = target.get(sheetId) || {};
+                const bucket = matrix[row] || (matrix[row] = {});
+                bucket[col] = null;
+                target.set(sheetId, matrix);
+            };
+            if (intent.content) add(contentBySheet);
+            if (intent.format) add(formatBySheet);
+        }
+        let next = doc;
+        for (const [sheetId, matrix] of contentBySheet) {
+            next = mergeUniverCellDataIntoDocument(next, sheetId, matrix);
+        }
+        for (const [sheetId, matrix] of formatBySheet) {
+            next = mergeUniverCellDataIntoDocument(
+                next,
+                sheetId,
+                matrix,
+                undefined,
+                undefined,
+                undefined,
+                { clearStyles: true, clearContent: false },
+            );
+        }
+        return next;
     };
     let revealFrame = 0;
     let revealTries = 0;
@@ -1544,6 +1702,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                     { clearMissing, mergeDimensions },
                 );
             }
+            // Explicit Clear commands stay authoritative for this workbook
+            // session. Univer save snapshots may lag and briefly carry the old
+            // value/style, which must never resurrect data the user removed.
+            next = reapplySessionClearIntents(next);
             const snapshotIds = new Set(Object.keys(saved.sheets));
             const snapshotOmitsPages = base.pages.some(page => !snapshotIds.has(page.id));
             if (!snapshotOmitsPages) {
@@ -2022,6 +2184,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 if (
                     id === 'sheet.command.clear-selection-all'
                     || id === 'sheet.command.clear-selection-content'
+                    || id === 'sheet.command.clear-selection-format'
                     || id === 'sheet.mutation.set-range-values'
                     || id === 'sheet.mutation.set-range-formatted-value'
                     || id === 'sheet.command.set-range-values'
@@ -2031,6 +2194,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                         sheetId,
                         params?.cellValue as Record<number, Record<number, unknown>> | undefined,
                     );
+                    markSelectionClearIntent(command, lastSelection);
                     if (
                         (id === 'sheet.command.clear-selection-all'
                             || id === 'sheet.command.clear-selection-content')
@@ -2195,7 +2359,9 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             const clearedKey = `${active.sheetId}:${active.row}:${active.col}`;
             // Stale getValue() after Delete must not resurrect header/body text
             // the mutation stream already cleared.
-            if (text != null && !(text && recentlyClearedCells.has(clearedKey))) {
+            const contentWasCleared = recentlyClearedCells.has(clearedKey)
+                || clearIntents.get(clearedKey)?.content === true;
+            if (text != null && !(text && contentWasCleared)) {
                 const next = mergeUniverCellDataIntoDocument(liveDoc, active.sheetId, {
                     [active.row]: { [active.col]: { v: text } },
                 });
@@ -2259,6 +2425,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             pendingClearMissing = false;
             pendingMergeDimensions = false;
             recentlyClearedCells.clear();
+            clearIntents.clear();
             disposed = true;
             livePlotGridRelayouts.delete(relayout);
             for (const d of disposers) {
@@ -2281,6 +2448,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 pendingSetDoc = next;
                 return;
             }
+            recentlyClearedCells.clear();
+            clearIntents.clear();
             clearAxisSizeOverrides(axisSizeOverrides);
             liveDoc = next;
             contentFp = conceptGridContentFingerprint(liveDoc);
@@ -2420,6 +2589,7 @@ function pickMeta(doc: ConceptGridDocument): unknown {
                 italic: c?.italic,
                 align: c?.align,
                 univerStyle: c?.univerStyle,
+                excelStyle: c?.excelStyle,
             }]),
         ),
         rows: (p.rows || []).map(r => ({ id: r.id, height: r.height, sourceId: r.sourceId, sourceType: r.sourceType })),

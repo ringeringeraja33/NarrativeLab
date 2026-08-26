@@ -95,6 +95,8 @@ interface StoryGraphEdge {
     kind: EdgeKind;   // drives colour & dash pattern
     /** Stable directed key for a real Obsidian wikilink edge. */
     linkKey?: string;
+    /** Stable id when the edge is owned by the profile association panel. */
+    managedRelationId?: string;
     sourcePath?: string;
     targetPath?: string;
     relationCategoryId?: string;
@@ -190,6 +192,8 @@ export interface StoryGraphHostOptions {
 export interface StoryGraphWikilink {
     sourcePath: string;
     targetPath: string;
+    /** Frontmatter-managed association; no body wikilink is required. */
+    managedRelationId?: string;
 }
 
 export interface StoryGraphRelationCategory {
@@ -224,6 +228,7 @@ export interface StoryGraphLinkEdgeInfo {
     from: string;
     to: string;
     relationCategoryId?: string;
+    managedRelationId?: string;
 }
 
 // ── Colours ───────────────────────────────────────────
@@ -2704,6 +2709,7 @@ export class StoryGraph {
                 target: targetId,
                 kind: 'wikilink',
                 linkKey,
+                managedRelationId: link.managedRelationId,
                 sourcePath: link.sourcePath,
                 targetPath: link.targetPath,
                 relationCategoryId,
@@ -3239,6 +3245,7 @@ export class StoryGraph {
                             from: a.label,
                             to: b.label,
                             relationCategoryId: edge.relationCategoryId,
+                            managedRelationId: edge.managedRelationId,
                         }, e);
                     } else if (focusEdge && this.onEdgeFocus) {
                         const menu = new Menu();

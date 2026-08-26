@@ -95,6 +95,16 @@ test("native Canvas sync stays in advanced project tools", () => {
   assert.match(pluginBundle, /validateNarrativeCanvasProjection/);
 });
 
+test("flat corkboard exposes its native Obsidian Canvas at the far right", async () => {
+  const [board, styles] = await Promise.all([
+    readFile(new URL("../views/BoardView.ts", import.meta.url), "utf8"),
+    readFile(new URL("../styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(board, /story-line-open-native-action/);
+  assert.match(board, /openCorkboardCanvasInTab\(\)/);
+  assert.match(styles, /\.story-line-open-native-action\s*\{[\s\S]*?margin-left:\s*auto/);
+});
+
 test("library files and preview images share aligned controls", () => {
   assert.equal((app.match(/class="codex-asset-toolbar/g) || []).length, 2);
   assert.match(app, /class="small-button codex-asset-add-button"/);
@@ -139,4 +149,39 @@ test("ncanvas library sync keeps unwritten embeds and drops deleted files", () =
   assert.match(pluginBundle, /Brand-new canvas entry with no vault file yet/);
   assert.match(pluginBundle, /getCodexLibraryRootsForProject/);
   assert.match(pluginBundle, /resolveLoadedLibraryNotes/);
+});
+
+test("project canvas entry opens a card box before an individual canvas", async () => {
+  const [main, constants, switcher, libraryView, styles] = await Promise.all([
+    readFile(new URL("../main.ts", import.meta.url), "utf8"),
+    readFile(new URL("../constants.ts", import.meta.url), "utf8"),
+    readFile(new URL("../components/ViewSwitcher.ts", import.meta.url), "utf8"),
+    readFile(new URL("../views/NCanvasLibraryView.ts", import.meta.url), "utf8"),
+    readFile(new URL("../styles.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(constants, /NCANVAS_LIBRARY_VIEW_TYPE\s*=\s*'narrative-lab-canvas-library'/);
+  assert.match(main, /registerView\(NCANVAS_LIBRARY_VIEW_TYPE/);
+  assert.match(main, /openNCanvasLibraryForCanvasPath/);
+  assert.match(switcher, /openNCanvasLibrary\(getLeafNarrativeLabProjectFile\(leaf\), leaf\)/);
+  assert.match(libraryView, /nl-ncanvas-card-grid/);
+  assert.match(libraryView, /createBlankNcanvasInActiveProject/);
+  assert.match(libraryView, /renameNcanvasInActiveProject/);
+  assert.match(libraryView, /deleteNcanvasInActiveProject/);
+  assert.match(styles, /\.nl-ncanvas-card-grid\s*\{/);
+});
+
+test("canvas card actions stay project-scoped and deletion uses Obsidian trash", async () => {
+  const main = await readFile(new URL("../main.ts", import.meta.url), "utf8");
+  assert.match(main, /requireActiveProjectNcanvas\(path: string\)/);
+  assert.match(main, /getNcanvasPathsForProject\(project\)\.candidates/);
+  assert.match(main, /await this\.app\.fileManager\.renameFile\(file, destination\)/);
+  assert.match(main, /await this\.app\.fileManager\.trashFile\(file\)/);
+  assert.match(main, /type: NCANVAS_LIBRARY_VIEW_TYPE,[\s\S]*?await this\.app\.fileManager\.trashFile/);
+});
+
+test("embedded canvas can return to the project canvas box", () => {
+  assert.match(html, /data-action="open-canvas-library"/);
+  assert.match(app, /window\.NarrativeCanvasHost\?\.openCanvasLibrary\?\.\(\)/);
+  assert.match(pluginBundle, /openCanvasLibrary:\s*\(\)\s*=>/);
+  assert.match(pluginBundle, /openNarrativeLabCanvasLibrary\(this\.file\)/);
 });

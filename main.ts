@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars, no-useless-escape -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { AbstractInputSuggest, App, ButtonComponent, DropdownComponent, FileView, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon } from 'obsidian';
+import { AbstractInputSuggest, App, ButtonComponent, DropdownComponent, FileView, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon, stringifyYaml } from 'obsidian';
 import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './settings';
 import { asRecord, isRecord } from './utils/narrow';
 import { countWordRevisionChurn } from './utils/wordcountText';
@@ -8,6 +8,7 @@ import {
     OBSIDIAN_OPENABLE_EXTENSION_FALLBACK,
     shouldHideFileExplorerFile,
     shouldHideFileExplorerFolder,
+    type FileExplorerVisibilityRules,
 } from './utils/fileExplorerVisibility';
 import {
     getLeafNarrativeLabProjectFile,
@@ -46,6 +47,7 @@ import {
     SYNOPSIS_VIEW_TYPE,
     DETAILS_VIEW_TYPE,
     NARRATIVE_CANVAS_VIEW_TYPE,
+    NCANVAS_LIBRARY_VIEW_TYPE,
     WRITING_TRACKER_PANEL_TYPE,
     WRITING_TRACKER_VIEW_TYPE,
 } from './constants';
@@ -74,6 +76,7 @@ import {
     plotGridFolderPath,
     plotGridNlMetaPath,
     plotGridNlMetaStructureMatchesDocument,
+    plotGridWorkbookContentFingerprint,
     plotGridXlsxNeedsRewrite,
     plotGridXlsxPath,
     legacyPlotGridXlsxPath,
@@ -112,6 +115,7 @@ import { ManuscriptView, clearLastManuscriptState } from './views/ManuscriptView
 import { ResearchView } from './views/ResearchView';
 import { WritingTrackerPanel } from './views/WritingTrackerPanel';
 import { WritingTrackerView } from './views/WritingTrackerView';
+import { NCanvasLibraryView } from './views/NCanvasLibraryView';
 import { ResearchManager } from './services/ResearchManager';
 import { FloatingStickyNoteManager } from './services/FloatingStickyNoteManager';
 import { LocationManager } from './services/LocationManager';
@@ -157,6 +161,7 @@ import {
 } from './utils/libraryProfileLayout';
 import { vaultRelativeFolderPath } from './utils/vaultFolders';
 import { clearPendingStoryGraphWikilinks } from './components/LibraryModeBar';
+import { rebaseStoryGraphRelationPaths } from './utils/storyGraphRefs';
 import { QuickAddModal } from './components/QuickAddModal';
 import { ConverterModal, type ConverterTab } from './components/ConverterModal';
 import { syncAllNativeLibraryBases } from './components/NativeLibraryBase';
@@ -171,7 +176,6 @@ import {
 import { CUSTOM_SECTION_KEY_SEP, type CustomSection } from './components/CustomSectionsRenderer';
 import { migrateLibraryAttachmentsForAllProjects } from './services/LibraryAttachmentMigration';
 import {
-    NCanvasManagerModal,
     SAMPLE_NCANVAS_FILENAMES,
     type SampleNcanvasLanguage,
 } from './components/NCanvasManagerModal';
@@ -265,6 +269,7 @@ type EmbeddedCanvasModule = Plugin & {
     onNarrativeLabUiThemeChanged?: (theme: 'light' | 'dark') => void;
     onNarrativeLabLanguageChanged?: (language: UiLanguage) => void;
     createSampleInActiveProject?: (language?: string) => Promise<string | null>;
+    openNarrativeLabCanvasLibrary?: (canvasPath?: string) => Promise<void>;
     createCurrentProjectBackup?: () => Promise<string>;
     chooseProjectBackupToRestore?: () => Promise<string>;
     notifyCanvasSettingsChanged?: () => void;
@@ -644,6 +649,9 @@ export default class SceneCardsPlugin extends Plugin {
         );
         this.registerView(WRITING_TRACKER_VIEW_TYPE, (leaf) =>
             new WritingTrackerView(leaf, this)
+        );
+        this.registerView(NCANVAS_LIBRARY_VIEW_TYPE, (leaf) =>
+            new NCanvasLibraryView(leaf, this)
         );
 
         // Register layout bootstrap BEFORE awaiting Narrative Canvas.
@@ -1415,6 +1423,7 @@ export default class SceneCardsPlugin extends Plugin {
                         if (projectTreeChanged) {
                             renameAllEntityCachePrefixes(oldPath, file.path);
                         }
+                        await rebaseStoryGraphRelationPaths(this, oldPath, file.path, true);
                         // Draft roots live at Scenes/<name>/ — keep sidebar label in sync
                         const draftChanged = await this.sceneManager.handleDraftFolderRename(oldPath, file.path);
                         let libraryChanged = false;
@@ -1444,6 +1453,7 @@ export default class SceneCardsPlugin extends Plugin {
                         void this.sceneManager.handleFileRename(file, oldPath).then(async () => {
                             await this.researchManager?.handleFileRename(file, oldPath);
                             await this.updatePlotGridLinkedSceneIds(oldPath, file.path);
+                            await rebaseStoryGraphRelationPaths(this, oldPath, file.path);
                             debouncedLibraryEntityReload();
                             debouncedRefresh();
                         });
@@ -1453,6 +1463,7 @@ export default class SceneCardsPlugin extends Plugin {
                         await this.researchManager?.handleFileRename(file, oldPath);
                         // Update any PlotGrid cells that reference the old path
                         await this.updatePlotGridLinkedSceneIds(oldPath, file.path);
+                        await rebaseStoryGraphRelationPaths(this, oldPath, file.path);
                         debouncedRefresh();
                     });
                 }
@@ -1979,6 +1990,12 @@ export default class SceneCardsPlugin extends Plugin {
         activeDocument.querySelectorAll('.sl-narrative-lab-hidden-file-tree-item')
             .forEach(el => el.classList.remove('sl-narrative-lab-hidden-file-tree-item'));
         activeDocument.body?.classList.remove('sl-narrative-lab-hide-file-explorer-internals');
+        activeDocument.body?.classList.remove(
+            'sl-narrative-lab-hide-system-folder',
+            'sl-narrative-lab-hide-library-folder',
+            'sl-narrative-lab-hide-canvas-folder',
+            'sl-narrative-lab-hide-series-metadata',
+        );
 
         // Clean up any floating lightbox windows left on activeDocument.body
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(el => el.remove());
@@ -2067,6 +2084,16 @@ export default class SceneCardsPlugin extends Plugin {
         return OBSIDIAN_OPENABLE_EXTENSION_FALLBACK.has(normalized);
     }
 
+    private fileExplorerVisibilityRules(): FileExplorerVisibilityRules {
+        return {
+            systemFolder: this.settings.hideSystemFolderInExplorer !== false,
+            libraryFolder: this.settings.hideLibraryFolderInExplorer !== false,
+            canvasFolder: this.settings.hideCanvasFolderInExplorer !== false,
+            seriesMetadata: this.settings.hideSeriesMetadataInExplorer !== false,
+            unsupportedFiles: this.settings.hideUnopenableFilesInExplorer !== false,
+        };
+    }
+
     /**
      * Hide only file-tree rows. Nothing is deleted, moved, excluded from search,
      * or made unavailable to NarrativeLab's own readers.
@@ -2074,6 +2101,7 @@ export default class SceneCardsPlugin extends Plugin {
     public updateFileExplorerVisibility(): void {
         const hiddenClass = 'sl-narrative-lab-hidden-file-tree-item';
         const enabled = this.settings.hideUnsupportedFilesInExplorer !== false;
+        const rules = this.fileExplorerVisibilityRules();
         this.updateFileExplorerVisibilityModeClass();
         const explorers = activeDocument.querySelectorAll<HTMLElement>(
             '.workspace-leaf-content[data-type="file-explorer"]',
@@ -2084,7 +2112,7 @@ export default class SceneCardsPlugin extends Plugin {
                 const row = title.closest<HTMLElement>('.nav-folder');
                 if (!row) continue;
                 const path = title.dataset.path ?? '';
-                row.classList.toggle(hiddenClass, enabled && shouldHideFileExplorerFolder(path));
+                row.classList.toggle(hiddenClass, enabled && shouldHideFileExplorerFolder(path, rules));
             }
 
             for (const title of Array.from(explorer.querySelectorAll<HTMLElement>('.nav-file-title[data-path]'))) {
@@ -2094,6 +2122,7 @@ export default class SceneCardsPlugin extends Plugin {
                 const hidden = enabled && shouldHideFileExplorerFile(
                     path,
                     extension => this.canObsidianOpenExtension(extension),
+                    rules,
                 );
                 row.classList.toggle(hiddenClass, hidden);
             }
@@ -2102,10 +2131,18 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     private updateFileExplorerVisibilityModeClass(): void {
-        activeDocument.body?.classList.toggle(
+        const body = activeDocument.body;
+        if (!body) return;
+        const enabled = this.settings.hideUnsupportedFilesInExplorer !== false;
+        const rules = this.fileExplorerVisibilityRules();
+        body.classList.toggle(
             'sl-narrative-lab-hide-file-explorer-internals',
-            this.settings.hideUnsupportedFilesInExplorer !== false,
+            enabled,
         );
+        body.classList.toggle('sl-narrative-lab-hide-system-folder', enabled && rules.systemFolder);
+        body.classList.toggle('sl-narrative-lab-hide-library-folder', enabled && rules.libraryFolder);
+        body.classList.toggle('sl-narrative-lab-hide-canvas-folder', enabled && rules.canvasFolder);
+        body.classList.toggle('sl-narrative-lab-hide-series-metadata', enabled && rules.seriesMetadata);
     }
 
     private updateFileExplorerVisibilityRibbon(): void {
@@ -2620,6 +2657,7 @@ export default class SceneCardsPlugin extends Plugin {
         const visibleKeys: string[] = [];
         const universalFieldIds: string[] = [];
         const customKeys: string[] = [];
+        const visibilityKeys: Record<string, string> = {};
         const seenOrdered = new Set<string>();
         const seenVisible = new Set<string>();
         const seenUniversal = new Set<string>();
@@ -2722,6 +2760,7 @@ export default class SceneCardsPlugin extends Plugin {
             const merged = this.fieldTemplates.getMergedOrder(section.title, templateCategory, builtInKeys);
             for (const entry of merged) {
                 if (entry.kind === 'builtin') {
+                    visibilityKeys[entry.key] = entry.key;
                     pushOrdered(entry.key);
                     if (!removedSections.has(section.title)
                         && !removedFields.has(entry.key)
@@ -2738,6 +2777,7 @@ export default class SceneCardsPlugin extends Plugin {
                 const template = this.fieldTemplates.getById(entry.key);
                 const topLevelKey = template?.topLevelKey?.trim();
                 if (!topLevelKey) continue;
+                visibilityKeys[topLevelKey] = `universal:${entry.key}`;
                 pushOrdered(topLevelKey);
                 if (!removedSections.has(section.title)
                     && !hiddenFields.has(`universal:${entry.key}`)) {
@@ -2756,7 +2796,67 @@ export default class SceneCardsPlugin extends Plugin {
             customKeys,
             universalFieldIds,
             reservedKeys: [...reservedProfileKeys],
+            visibilityKeys,
         };
+    }
+
+    /**
+     * Apply a native Base Properties change to the matching profile layout.
+     * Base `order` is its visible-column list; synchronising it here prevents
+     * the canonical profile order from restoring a column the user just hid.
+     */
+    async syncLibraryProfileVisibilityFromBase(
+        categoryId: string,
+        visiblePropertyIds: readonly string[],
+    ): Promise<boolean> {
+        const profileCategoryKeys = categoryId === 'characters'
+            ? ['character']
+            : categoryId === 'locations'
+                ? ['world', 'location']
+                : categoryId === '__all-library__'
+                    ? []
+                    : [categoryId];
+        if (profileCategoryKeys.length === 0) return false;
+
+        const settingsKey = categoryId === 'characters'
+            ? 'character'
+            : categoryId === 'locations'
+                ? 'location'
+                : categoryId;
+        const visibleNoteKeys = new Set(
+            visiblePropertyIds
+                .map(propertyId => propertyId.startsWith('note.')
+                    ? propertyId.slice('note.'.length)
+                    : (!propertyId.includes('.') ? propertyId : ''))
+                .filter(Boolean),
+        );
+        const managed = new Map<string, string>();
+        for (const profileCategoryKey of profileCategoryKeys) {
+            const layout = this.resolveLibraryProfilePropertyOrder(profileCategoryKey);
+            for (const [propertyKey, hiddenKey] of Object.entries(layout?.visibilityKeys ?? {})) {
+                if (propertyKey !== 'name' && hiddenKey !== 'name') managed.set(propertyKey, hiddenKey);
+            }
+        }
+        if (managed.size === 0) return false;
+
+        const previous = [...(this.settings.hiddenFields?.[settingsKey] ?? [])];
+        const hidden = new Set(previous);
+        for (const [propertyKey, hiddenKey] of managed) {
+            if (visibleNoteKeys.has(propertyKey)) hidden.delete(hiddenKey);
+            else hidden.add(hiddenKey);
+        }
+        const next = [...hidden];
+        if (next.length === previous.length && next.every(key => previous.includes(key))) return false;
+
+        if (!this.settings.hiddenFields) this.settings.hiddenFields = {};
+        this.settings.hiddenFields[settingsKey] = next;
+        try {
+            await this.saveSettings();
+        } catch (error) {
+            this.settings.hiddenFields[settingsKey] = previous;
+            throw error;
+        }
+        return true;
     }
 
     private applyImageSizingVariables(): void {
@@ -3137,6 +3237,40 @@ export default class SceneCardsPlugin extends Plugin {
     // ────────────────────────────────────
 
     /**
+     * Transform the file's current text rather than Obsidian's possibly stale
+     * metadata cache. This is required for startup migrations: a file restored
+     * externally can be newer than MetadataCache, and processFrontMatter would
+     * otherwise recreate the cached empty version over the restored content.
+     */
+    private async processReadableFrontmatter(
+        file: TFile,
+        mutate: (frontmatter: Record<string, unknown>) => void,
+    ): Promise<boolean> {
+        let changed = false;
+        const transform = (content: string): string => {
+            const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+            if (!match) return content;
+            const parsed = parseYaml(match[1]) as unknown;
+            if (!isRecord(parsed)) {
+                throw new Error(`Frontmatter is unreadable; refusing migration overwrite: ${file.path}`);
+            }
+            const before = JSON.stringify(parsed);
+            mutate(parsed);
+            if (JSON.stringify(parsed) === before) return content;
+            changed = true;
+            return `---\n${stringifyYaml(parsed)}---${content.slice(match[0].length)}`;
+        };
+        if (typeof this.app.vault.process === 'function') {
+            await this.app.vault.process(file, transform);
+        } else {
+            const current = await this.app.vault.read(file);
+            const next = transform(current);
+            if (next !== current) await this.app.vault.modify(file, next);
+        }
+        return changed;
+    }
+
+    /**
      * Re-mirror universal-field values to top-level YAML for every existing
      * entity (characters, codex entries, locations, scenes) after a template
      * change. This means users adding `topLevelKey` to a previously-saved
@@ -3169,31 +3303,30 @@ export default class SceneCardsPlugin extends Plugin {
         let touched = 0;
         for (const file of files) {
             try {
-                await this.app.fileManager.processFrontMatter(file, (fm) => {
-                    let didChange = false;
+                const didChange = await this.processReadableFrontmatter(file, (fm) => {
                     // Strip a renamed / removed top-level key.
                     if (oldKey && !isReservedTopLevelKey(oldKey) && fm[oldKey] !== undefined) {
                         delete fm[oldKey];
-                        didChange = true;
                     }
                     if (removedTpl && change?.oldTopLevelKey && !isReservedTopLevelKey(change.oldTopLevelKey)) {
                         if (fm[change.oldTopLevelKey] !== undefined) {
                             delete fm[change.oldTopLevelKey];
-                            didChange = true;
                         }
                     }
                     if (mirrorOn) {
-                        const before = JSON.stringify(fm);
                         // Hydrate first so values that only live in top-level
                         // YAML get a universalFields counterpart, then mirror
                         // back to apply the (possibly new) wikilink wrapping.
-                        const hydrated = hydrateUniversalFieldsFromTopLevel(fm, fm.universalFields);
+                        const stored = fm.universalFields && typeof fm.universalFields === 'object'
+                            && !Array.isArray(fm.universalFields)
+                            ? fm.universalFields as Record<string, unknown>
+                            : undefined;
+                        const hydrated = hydrateUniversalFieldsFromTopLevel(fm, stored);
                         if (hydrated !== fm.universalFields) fm.universalFields = hydrated;
-                        mirrorUniversalFieldsToTopLevel(fm, fm.universalFields);
-                        if (JSON.stringify(fm) !== before) didChange = true;
+                        mirrorUniversalFieldsToTopLevel(fm, hydrated);
                     }
-                    if (didChange) touched++;
                 });
+                if (didChange) touched++;
             } catch (e) {
                 console.error('[NarrativeLab] migrateUniversalFieldMirror:', file.path, e);
             }
@@ -4081,8 +4214,22 @@ export default class SceneCardsPlugin extends Plugin {
             }
         }
 
+        // Sidecar-only UI state (active sheet/sidebar/zoom/resources) must not
+        // rebuild the workbook. Reuse the exact Excel bytes so externally
+        // authored styles and workbook features remain untouched.
+        const workbookContentUnchanged = Boolean(
+            currentBinary
+            && cached
+            && cached.xlsxPath === path
+            && !options.allowEmptyOverwrite
+            && !deletesPersistedPage
+            && plotGridWorkbookContentFingerprint(cached.doc)
+                === plotGridWorkbookContentFingerprint(documentToPersist),
+        );
         // Clean xlsx (no embedded meta) so Excel/Univer only see page sheets.
-        const binary = await encodePlotGridXlsx(documentToPersist, { vaultName: this.app.vault.getName() });
+        const binary = workbookContentUnchanged
+            ? currentBinary!
+            : await encodePlotGridXlsx(documentToPersist, { vaultName: this.app.vault.getName() });
         const metaJson = serializePlotGridNlMeta(documentToPersist);
         const previousXlsxDigest = currentBinary
             ? plotGridBinaryDigest(currentBinary)
@@ -4160,7 +4307,7 @@ export default class SceneCardsPlugin extends Plugin {
         if (!projectPath) return 0;
         if (!categoryFilter && !force && this.customFieldFrontmatterSyncedProjects.has(projectPath)) return 0;
 
-        const targets = new Map<string, { file: TFile; categoryKey: string; custom?: Record<string, string> }>();
+        const targets = new Map<string, { file: TFile; categoryKey: string }>();
         const add = (filePath: string, categoryKey: string, custom?: Record<string, string>): void => {
             const matches = !categoryFilter
                 || categoryFilter === categoryKey
@@ -4171,7 +4318,7 @@ export default class SceneCardsPlugin extends Plugin {
             if (!(file instanceof TFile) || file.extension !== 'md') return;
             const configured = this.resolveLibraryProfilePropertyOrder(categoryKey)?.customKeys ?? [];
             if (configured.length === 0 && Object.keys(custom ?? {}).length === 0) return;
-            targets.set(normalized, { file, categoryKey, custom });
+            targets.set(normalized, { file, categoryKey });
         };
         for (const character of this.characterManager?.getAllCharacters() ?? []) {
             add(character.filePath, 'character', character.custom);
@@ -4187,23 +4334,42 @@ export default class SceneCardsPlugin extends Plugin {
         }
 
         let touched = 0;
-        for (const { file, categoryKey, custom } of targets.values()) {
+        for (const { file, categoryKey } of targets.values()) {
             try {
-                await this.app.fileManager.processFrontMatter(file, fm => {
-                    const before = JSON.stringify(fm);
+                const didChange = await this.processReadableFrontmatter(file, fm => {
+                    const meaningfulLeafCount = (value: unknown): number => {
+                        if (value === undefined || value === null || value === '') return 0;
+                        if (Array.isArray(value)) {
+                            return value.reduce<number>((sum, item) => sum + meaningfulLeafCount(item), 0);
+                        }
+                        if (typeof value === 'object') {
+                            return Object.values(value as Record<string, unknown>)
+                                .reduce<number>((sum, item) => sum + meaningfulLeafCount(item), 0);
+                        }
+                        return 1;
+                    };
+                    const meaningfulBefore = meaningfulLeafCount(fm);
                     const previous = fm.custom && typeof fm.custom === 'object' && !Array.isArray(fm.custom)
                         ? fm.custom as Record<string, string>
                         : undefined;
-                    const hydrated = hydrateCustomFieldsFromTopLevel(fm, custom ?? previous, categoryKey);
+                    const hydrated = hydrateCustomFieldsFromTopLevel(
+                        fm,
+                        // This is a disk migration, not an editor save. The
+                        // manager snapshot may predate an external restore or
+                        // Base edit, so only the current file is authoritative.
+                        previous,
+                        categoryKey,
+                    );
                     if (hydrated && Object.keys(hydrated).length > 0) fm.custom = hydrated;
                     mirrorCustomFieldsToTopLevel(fm, hydrated, categoryKey, previous);
                     const ordered = orderLibraryEntityFrontmatter(fm, categoryKey);
-                    if (JSON.stringify(ordered) !== before) {
-                        for (const key of Object.keys(fm)) delete fm[key];
-                        Object.assign(fm, ordered);
-                        touched++;
+                    if (meaningfulLeafCount(ordered) < meaningfulBefore) {
+                        throw new Error(`Custom-field sync would discard populated YAML; refusing overwrite: ${file.path}`);
                     }
+                    for (const key of Object.keys(fm)) delete fm[key];
+                    Object.assign(fm, ordered);
                 });
+                if (didChange) touched++;
             } catch (error) {
                 console.error('[NarrativeLab] syncCustomFieldFrontmatter:', file.path, error);
             }
@@ -4749,6 +4915,7 @@ export default class SceneCardsPlugin extends Plugin {
         STATS_VIEW_TYPE,
         MANUSCRIPT_VIEW_TYPE,
         RESEARCH_VIEW_TYPE,
+        NCANVAS_LIBRARY_VIEW_TYPE,
         NARRATIVE_CANVAS_VIEW_TYPE,
     ];
 
@@ -5661,6 +5828,8 @@ export default class SceneCardsPlugin extends Plugin {
             };
             canvas.createSampleInActiveProject = (language?: string) =>
                 this.createSampleNcanvasInActiveProject(language === 'zh' ? 'zh' : 'en');
+            canvas.openNarrativeLabCanvasLibrary = (canvasPath?: string) =>
+                this.openNCanvasLibraryForCanvasPath(canvasPath);
             canvas.getNarrativeLabLibraryCategories = () => listVisibleLibraryCategories(this);
             canvas.resolveNarrativeLabLibraryCategoryLabel = (kind: string) =>
                 resolveLibraryCategoryLabelForKind(this, kind);
@@ -5809,13 +5978,60 @@ export default class SceneCardsPlugin extends Plugin {
         }
     }
 
-    /** Open the per-project NCanvas manager (list / new / CN·EN samples). */
+    /** Open the project-local Canvas card box. Kept as the public manager alias. */
     openNCanvasManager(): void {
         if (!this.sceneManager.activeProject) {
             new Notice(t('No active project. Open a project first.'));
             return;
         }
-        new NCanvasManagerModal(this.app, this).open();
+        void this.openNCanvasLibrary();
+    }
+
+    /** Open the Canvas card box, optionally replacing the supplied NarrativeLab leaf. */
+    async openNCanvasLibrary(projectFile?: string | null, targetLeaf?: WorkspaceLeaf | null): Promise<void> {
+        const projectPath = normalizePath(String(
+            projectFile || this.sceneManager.activeProject?.filePath || '',
+        ));
+        if (!projectPath) {
+            new Notice(t('No active project. Open a project first.'));
+            return;
+        }
+        if (targetLeaf) {
+            await targetLeaf.setViewState({
+                type: NCANVAS_LIBRARY_VIEW_TYPE,
+                active: true,
+                state: narrativeLabLeafState(projectPath),
+            });
+            this.app.workspace.revealLeaf(targetLeaf);
+            return;
+        }
+        await this.activateView(NCANVAS_LIBRARY_VIEW_TYPE, projectPath);
+    }
+
+    /** Return from an embedded canvas to the owning project's card box in the same tab. */
+    async openNCanvasLibraryForCanvasPath(canvasPath?: string): Promise<void> {
+        const normalized = normalizePath(String(canvasPath || ''));
+        const project = this.sceneManager.getProjects().find(candidate =>
+            this.getNcanvasPathsForProject(candidate).candidates
+                .some(path => normalizePath(path) === normalized),
+        ) || this.sceneManager.activeProject;
+        if (!project) {
+            new Notice(t('No active project. Open a project first.'));
+            return;
+        }
+        const leaf = this.app.workspace.getLeavesOfType(NARRATIVE_CANVAS_VIEW_TYPE).find(candidate => {
+            const state = candidate.getViewState()?.state as { file?: unknown; path?: unknown } | undefined;
+            return normalizePath(String(state?.file || state?.path || '')) === normalized;
+        }) || null;
+        const existingLibrary = this.app.workspace.getLeavesOfType(NCANVAS_LIBRARY_VIEW_TYPE)
+            .find(candidate => getLeafNarrativeLabProjectFile(candidate) === normalizePath(project.filePath));
+        if (existingLibrary) {
+            await (existingLibrary.view as unknown as { refresh?: () => Promise<void> }).refresh?.();
+            this.app.workspace.revealLeaf(existingLibrary);
+            if (leaf) leaf.detach();
+            return;
+        }
+        await this.openNCanvasLibrary(project.filePath, leaf);
     }
 
     /** Unified converter (manuscript export / project bundle / plotline → ncanvas). */
@@ -5920,6 +6136,72 @@ export default class SceneCardsPlugin extends Plugin {
         await this.saveSettings();
     }
 
+    private requireActiveProjectNcanvas(path: string): { project: StoryLineProject; file: TFile } {
+        const project = this.sceneManager.activeProject;
+        const normalized = normalizePath(path);
+        const allowed = project && this.getNcanvasPathsForProject(project).candidates
+            .some(candidate => normalizePath(candidate) === normalized);
+        const file = this.app.vault.getAbstractFileByPath(normalized);
+        if (!project || !allowed || !(file instanceof TFile)) {
+            throw new Error(t('This canvas is not part of the active project.'));
+        }
+        return { project, file };
+    }
+
+    /** Rename a project canvas without overwriting another file. */
+    async renameNcanvasInActiveProject(path: string, requestedName: string): Promise<string> {
+        const { project, file } = this.requireActiveProjectNcanvas(path);
+        const title = String(requestedName || '').trim();
+        if (!title) throw new Error(t('Enter a canvas name.'));
+        const safeTitle = title.replace(/[\\/:*?"<>|]/g, '-').replace(/\.n(?:arrative)?canvas$/i, '').trim();
+        if (!safeTitle) throw new Error(t('Enter a canvas name.'));
+        const parent = file.parent?.path || '';
+        const intended = normalizePath(`${parent}/${safeTitle}.ncanvas`);
+        if (intended === normalizePath(file.path)) return intended;
+        const destination = await this.uniqueNcanvasPath(parent, `${safeTitle}.ncanvas`);
+        await this.app.fileManager.renameFile(file, destination);
+        if (normalizePath(String(this.settings.narrativeCanvasPathByProject?.[project.filePath] || ''))
+            === normalizePath(path)) {
+            await this.rememberNcanvasPath(project, destination);
+        }
+        new Notice(t('Renamed canvas to {name}', { name: destination.split('/').pop() || destination }));
+        return destination;
+    }
+
+    /** Move one project canvas to Obsidian's configured trash and forget stale selection state. */
+    async deleteNcanvasInActiveProject(path: string): Promise<void> {
+        const { project, file } = this.requireActiveProjectNcanvas(path);
+        const normalized = normalizePath(file.path);
+        const matchingLeaves = this.app.workspace.getLeavesOfType(NARRATIVE_CANVAS_VIEW_TYPE)
+            .filter(leaf => {
+                const state = leaf.getViewState()?.state as { file?: unknown; path?: unknown } | undefined;
+                return normalizePath(String(state?.file || state?.path || '')) === normalized;
+            });
+        for (const leaf of matchingLeaves) {
+            await leaf.setViewState({
+                type: NCANVAS_LIBRARY_VIEW_TYPE,
+                active: false,
+                state: narrativeLabLeafState(project.filePath),
+            });
+        }
+        await this.app.fileManager.trashFile(file);
+
+        const remembered = normalizePath(String(
+            this.settings.narrativeCanvasPathByProject?.[project.filePath] || '',
+        ));
+        if (remembered === normalized) {
+            const next = this.getNcanvasPathsForProject(project).candidates
+                .find(candidate => normalizePath(candidate) !== normalized);
+            this.settings.narrativeCanvasPathByProject = {
+                ...(this.settings.narrativeCanvasPathByProject || {}),
+            };
+            if (next) this.settings.narrativeCanvasPathByProject[project.filePath] = next;
+            else delete this.settings.narrativeCanvasPathByProject[project.filePath];
+            await this.saveSettings();
+        }
+        new Notice(t('Moved canvas to trash: {name}', { name: file.name }));
+    }
+
     /** Create a blank .ncanvas in the active project's NCanvas folder and open it. */
     async createBlankNcanvasInActiveProject(name?: string): Promise<string | null> {
         const project = this.sceneManager.activeProject;
@@ -6001,8 +6283,11 @@ export default class SceneCardsPlugin extends Plugin {
     /** Keep an already-open Canvas leaf aligned with the newly active project. */
     async syncNarrativeCanvasToActiveProject(): Promise<void> {
         if (!this.canvasModule) return;
-        if (this.app.workspace.getLeavesOfType(NARRATIVE_CANVAS_VIEW_TYPE).length === 0) return;
-        await this.openNarrativeCanvas();
+        const leaf = this.app.workspace.getLeavesOfType(NARRATIVE_CANVAS_VIEW_TYPE)[0];
+        const project = this.sceneManager.activeProject;
+        if (!leaf || !project) return;
+        // A project switch must not guess which of several canvases to enter.
+        await this.openNCanvasLibrary(project.filePath, leaf);
     }
 
     /**

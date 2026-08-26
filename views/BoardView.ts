@@ -483,14 +483,6 @@ export class BoardView extends ItemView {
                 void this.openImageNotePicker();
             });
 
-            const openCanvasBtn = controls.createEl('button', {
-                cls: 'clickable-icon',
-            });
-            obsidian.setIcon(openCanvasBtn, 'external-link');
-            attachTooltip(openCanvasBtn, t('Open corkboard Canvas in tab'));
-            openCanvasBtn.addEventListener('click', () => {
-                void this.openCorkboardCanvasInTab();
-            });
         }
 
         // Icon button group
@@ -561,6 +553,20 @@ export class BoardView extends ItemView {
         obsidian.setIcon(archiveBtn, 'archive');
         attachTooltip(archiveBtn, t('Archived Scenes'));
         archiveBtn.addEventListener('click', () => this.openArchiveModal());
+
+        // Native-file handoff stays at the far right, matching Library Base
+        // and spreadsheet openers in their secondary toolbar rows.
+        if (this.boardMode === 'corkboard') {
+            const openCanvasBtn = controls.createEl('button', {
+                cls: 'clickable-icon story-line-open-native-action',
+                attr: { type: 'button', 'aria-label': t('Open corkboard Canvas in tab') },
+            });
+            obsidian.setIcon(openCanvasBtn, 'external-link');
+            attachTooltip(openCanvasBtn, t('Open corkboard Canvas in tab'));
+            openCanvasBtn.addEventListener('click', () => {
+                void this.openCorkboardCanvasInTab();
+            });
+        }
 
     }
 

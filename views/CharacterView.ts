@@ -27,6 +27,10 @@ import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { formatActChapterPrefix } from '../utils/actChapter';
 import { bindResizableCustomFieldInput, customFieldInputHeightKey } from '../utils/customFieldInputHeight';
 import { moveMappingEntry } from '../utils/libraryProfilePropertyOrder';
+import {
+    captureLibraryProfileBoardScroll,
+    restoreLibraryProfileBoardScroll,
+} from '../utils/libraryProfileBoardScroll';
 
 import type SceneCardsPlugin from '../main';
 import type { LibraryProfileEmbedOptions } from './CanvasLibraryProfileHost';
@@ -34,9 +38,18 @@ import type { LibraryProfileEmbedOptions } from './CanvasLibraryProfileHost';
 import { attachTooltip } from '../components/Tooltip';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
+import {
+    getLibraryRelationsPanelSignature,
+    renderLibraryRelationsPanel,
+} from '../components/LibraryRelationsPanel';
 import { renderCodexCategoryTabs } from '../components/CodexCategoryTabs';
 import { renderLibraryArchiveFilterBar, collectEntityFilterKeys, collectArchiveFilterLabels, ARCHIVE_FILTER_HASHTAGS_KEY, buildArchiveFilterFieldOptions } from '../components/LibraryFilterChips';
-import { disposeNativeLibraryBase, renderNativeLibraryBase, syncAllNativeLibraryBases } from '../components/NativeLibraryBase';
+import {
+    disposeNativeLibraryBase,
+    renderNativeLibraryBase,
+    renderOpenNativeLibraryBaseAction,
+    syncAllNativeLibraryBases,
+} from '../components/NativeLibraryBase';
 import {
     renderLibraryBrowseToolbar,
     renderLibraryModeToolbar,
@@ -62,6 +75,7 @@ import {
     getLibraryProfileOrientation,
     getOrderedProfileSectionIds,
     isBuiltinSectionRemoved,
+    readLibraryProfileLayout,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
     universalProfileFieldKey,
@@ -148,6 +162,8 @@ export class CharacterView extends ProjectBoundItemView {
     private _overviewScrollHandler: (() => void) | null = null;
     /** Invalidate deferred detail side-panel / lazy column work when navigating away. */
     private _detailSideGen = 0;
+    /** Last complete detail snapshot; unchanged global refreshes keep the DOM mounted. */
+    private _detailRenderSignature = '';
     private _detailBodyObservers: IntersectionObserver[] = [];
     private static readonly OVERVIEW_BATCH = 36;
     private static readonly OVERVIEW_LITE_THRESHOLD = 36;
@@ -412,7 +428,11 @@ export class CharacterView extends ProjectBoundItemView {
         this.focusSearchOnNextOverview = false;
         container.empty();
         if (this.characterOverviewMode === 'base') {
-            renderLibraryModeToolbar(container, actions => this.renderCharacterOverviewModes(actions));
+            renderLibraryModeToolbar(
+                container,
+                actions => this.renderCharacterOverviewModes(actions),
+                actions => renderOpenNativeLibraryBaseAction(actions, this.plugin, 'characters'),
+            );
             void renderNativeLibraryBase(
                 container,
                 this.plugin,
@@ -462,6 +482,9 @@ export class CharacterView extends ProjectBoundItemView {
             showLayoutToggle: false,
             onLayoutChange: () => this.renderCharacterOverview(container),
             renderLeadingActions: (actionsEl) => this.renderCharacterOverviewModes(actionsEl),
+            renderTrailingActions: (actionsEl) => {
+                renderOpenNativeLibraryBaseAction(actionsEl, this.plugin, 'characters');
+            },
             appendExtra: (actionsEl) => {
                 const currentBook = this.plugin.sceneManager.getCurrentBookTitle();
                 const inSeries = !!this.plugin.sceneManager.getSeriesFolder();
@@ -1204,7 +1227,68 @@ export class CharacterView extends ProjectBoundItemView {
         if (host) this.renderCharacterDetail(host);
     }
 
+    /**
+     * Data that can affect the selected character editor or its right rail.
+     * This deliberately excludes volatile global counters/timestamps so an
+     * unrelated vault refresh cannot make the profile blink.
+     */
+    private detailRefreshSignature(filePath: string): string {
+        const normalizedPath = normalizePath(filePath);
+        const basename = normalizedPath.split('/').pop()?.replace(/\.md$/i, '') ?? '';
+        const character = this.characterManager.getCharacter(normalizedPath)
+            || (basename ? this.characterManager.findByName(basename) : undefined);
+        if (!character) return JSON.stringify(['missing', normalizedPath]);
+
+        const scenes = this.sceneManager.queryService.getFilteredScenes(
+            undefined,
+            { field: 'sequence', direction: 'asc' },
+        ).map(scene => [
+            scene.filePath,
+            scene.title,
+            scene.act ?? null,
+            scene.sequence ?? null,
+            scene.pov || '',
+            scene.characters || [],
+            scene.status || '',
+            scene.intensity ?? null,
+        ]);
+        const aliases = Object.entries(this.plugin.settings.characterAliases || {})
+            .sort(([a], [b]) => a.localeCompare(b));
+        const refs = this.plugin.linkScanner.buildEntityIndex()
+            .get(character.name.toLowerCase())
+            ?.map(ref => [ref.filePath, ref.name, ref.type, ref.codexCategory || ''])
+            .sort((a, b) => String(a[0]).localeCompare(String(b[0]))) || [];
+        const layout = readLibraryProfileLayout(this.plugin.settings);
+
+        return JSON.stringify({
+            character,
+            scenes,
+            aliases,
+            refs,
+            relations: getLibraryRelationsPanelSignature(this.plugin, {
+                name: character.name,
+                filePath: character.filePath,
+            }),
+            layout: {
+                hiddenFields: layout.hiddenFields.character || [],
+                removedBuiltinFields: layout.removedBuiltinFields.character || [],
+                removedBuiltinSections: layout.removedBuiltinSections.character || [],
+                customSections: layout.characterCustomSections,
+                orientation: layout.profileOrientations.character || 'horizontal',
+                inputHeights: layout.profileFieldInputHeights,
+                fieldOverrides: layout.profileFieldOverrides.character || {},
+                sectionOrder: layout.profileSectionOrders.character || [],
+            },
+            language: this.plugin.getEffectiveInterfaceLanguage(),
+        });
+    }
+
     private renderCharacterDetail(container: HTMLElement): void {
+        // Every detail repaint owns its async side work. Invalidate callbacks
+        // from the previous DOM even when the selected file did not change.
+        this.cancelDetailBodyObservers();
+        this._detailSideGen++;
+        const boardScroll = captureLibraryProfileBoardScroll(container);
         container.empty();
         container.removeClass('character-detail--board', 'character-detail--vertical');
         const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, 'character');
@@ -1402,8 +1486,8 @@ export class CharacterView extends ProjectBoundItemView {
         }
 
         // ── Form sections as board columns (+ interleaved custom sections) ──
-        // Eagerly fill only the first columns; remaining column fields load when
-        // scrolled into view so open-detail stays responsive.
+        // Build all board columns before restoring their independent scroll
+        // positions. Deferred bodies could otherwise clamp a restored offset to 0.
         const sectionIds = [...CHARACTER_CATEGORIES.map(category => category.title), 'Custom Fields'];
         const orderedSectionIds = getOrderedProfileSectionIds(this.plugin.settings, 'character', sectionIds);
         const customHost = this.buildCustomSectionsHost(draft, orderedSectionIds.length);
@@ -1423,7 +1507,7 @@ export class CharacterView extends ProjectBoundItemView {
             }
             this.renderCategory(formPanel, category, draft, {
                 board: horizontalProfile,
-                eager: horizontalProfile ? i < 2 : true,
+                eager: true,
             });
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
@@ -1439,28 +1523,55 @@ export class CharacterView extends ProjectBoundItemView {
             },
         });
 
-        // ── Side panel: gallery first; defer scene/refs until after first paint ──
+        // ── Side panel: render the visible cards in one pass. ──
+        // The scene summary used to be inserted by a zero-delay timer. During
+        // refresh storms this repeatedly collapsed and expanded the right rail.
         this.renderGallery(sidePanel, draft);
+        renderLibraryRelationsPanel(sidePanel, this.plugin, {
+            name: draft.name || selected.name,
+            filePath: selected.filePath,
+        });
+        const sceneHost = sidePanel.createDiv('character-detail-side-scenes-host');
+        this.renderScenePanel(sceneHost, selected.name);
         const deferredHost = sidePanel.createDiv('character-detail-side-deferred');
+        // Keep the long-form Markdown body visible as the final right-rail
+        // card. It is intentionally separate from the built-in `note` Remarks
+        // field, which lives in frontmatter.
+        this.renderNotesSection(sidePanel, draft);
         const sideGen = this._detailSideGen;
         const selectedPathForSide = selected.filePath;
         const characterName = selected.name;
-        // setTimeout (not rAF): let the browser paint header + first columns first.
+        // Less important alias/reference lists may wait until after first paint.
         window.setTimeout(() => {
             if (sideGen !== this._detailSideGen) return;
             if (this.selectedCharacter !== selectedPathForSide) return;
-            deferredHost.empty();
-            this.renderScenePanel(deferredHost, characterName);
-            window.setTimeout(() => {
-                if (sideGen !== this._detailSideGen) return;
-                if (this.selectedCharacter !== selectedPathForSide) return;
-                this.renderLinkedAliasesPanel(deferredHost, characterName);
-                if (!this.embedOptions?.hideVaultReferences) {
-                    this.renderReferencesPanel(deferredHost, characterName);
-                }
-                this.renderNotesSection(deferredHost, draft);
-            }, 0);
+            if (!deferredHost.isConnected) return;
+            this.renderLinkedAliasesPanel(deferredHost, characterName);
+            if (!this.embedOptions?.hideVaultReferences) {
+                this.renderReferencesPanel(deferredHost, characterName);
+            }
         }, 0);
+        this._detailRenderSignature = this.detailRefreshSignature(selected.filePath);
+        restoreLibraryProfileBoardScroll(container, boardScroll);
+    }
+
+    private renderNotesSection(container: HTMLElement, draft: Character): void {
+        const section = container.createDiv('codex-side-section entity-notes-section');
+        const header = section.createDiv('entity-notes-header');
+        const icon = header.createSpan('entity-notes-icon');
+        obsidian.setIcon(icon, 'notebook-pen');
+        header.createEl('h4', { cls: 'entity-notes-title', text: t('Notes') });
+        header.createSpan({ cls: 'entity-notes-format', text: t('Markdown') });
+
+        const textarea = section.createEl('textarea', {
+            cls: 'codex-notes-textarea',
+            attr: { placeholder: t('Write additional notes…'), rows: '12', 'aria-label': t('Notes') },
+        });
+        textarea.value = draft.notes || '';
+        textarea.addEventListener('input', () => {
+            draft.notes = textarea.value;
+            this.scheduleSave(draft);
+        });
     }
 
     private renderCategory(
@@ -2711,7 +2822,10 @@ export class CharacterView extends ProjectBoundItemView {
                 move(-1, 'chevron-up', 'Move field up', customIndex <= 0);
                 move(1, 'chevron-down', 'Move field down', customIndex < 0 || customIndex >= customKeys.length - 1);
 
-                const removeBtn = row.createEl('button', { cls: 'character-custom-remove', attr: { title: t('Remove field') } });
+                const removeBtn = row.createEl('button', {
+                    cls: 'profile-field-action-btn field-remove-btn character-custom-remove',
+                    attr: { type: 'button', title: t('Remove field'), 'aria-label': t('Remove field') },
+                });
                 obsidian.setIcon(removeBtn, 'x');
 
                 keyInput.addEventListener('change', () => {
@@ -2975,28 +3089,11 @@ export class CharacterView extends ProjectBoundItemView {
         renderThumbs();
     }
 
-    private renderNotesSection(container: HTMLElement, draft: Character): void {
-        const section = container.createDiv('codex-side-section entity-notes-section');
-        const header = section.createDiv('entity-notes-header');
-        const icon = header.createSpan('entity-notes-icon');
-        obsidian.setIcon(icon, 'notebook-pen');
-        header.createEl('h4', { cls: 'entity-notes-title', text: t('Notes') });
-        header.createSpan({ cls: 'entity-notes-format', text: t('Markdown') });
-
-        const textarea = section.createEl('textarea', {
-            cls: 'codex-notes-textarea',
-            attr: { placeholder: t('Write additional notes…'), rows: '12', 'aria-label': t('Notes') },
-        });
-        textarea.value = draft.notes || '';
-        textarea.addEventListener('input', () => {
-            draft.notes = textarea.value;
-            this.scheduleSave(draft);
-        });
-    }
-
     // ── Scene side panel ───────────────────────────────
 
     private renderScenePanel(container: HTMLElement, characterName: string): void {
+        const renderGeneration = this._detailSideGen;
+        const selectedPath = this.selectedCharacter;
         const scenes = this.sceneManager.queryService.getFilteredScenes(
             undefined,
             { field: 'sequence', direction: 'asc' }
@@ -3111,6 +3208,8 @@ export class CharacterView extends ProjectBoundItemView {
 
         if (typeof this.plugin.scanPlotGridCells === 'function') {
             this.plugin.scanPlotGridCells().then(result => {
+                if (renderGeneration !== this._detailSideGen) return;
+                if (this.selectedCharacter !== selectedPath || !container.isConnected) return;
                 const hitsByKey = result.characterHits || new Map();
                 const hitMap = new Map<string, import('../models/PlotGridData').PlotGridAppearanceHit>();
                 for (const key of charAliases) {
@@ -3373,6 +3472,9 @@ export class CharacterView extends ProjectBoundItemView {
                         } catch (error) {
                             console.warn('NarrativeLab: character saved, but reciprocal relations could not be synchronized', error);
                         }
+                    }
+                    if (this.selectedCharacter === draft.filePath) {
+                        this._detailRenderSignature = this.detailRefreshSignature(draft.filePath);
                     }
                 } catch (error) {
                     console.error('NarrativeLab: failed to save character', error);
@@ -3858,6 +3960,19 @@ export class CharacterView extends ProjectBoundItemView {
         const categoriesEpoch = this.plugin.libraryCategoriesStructureEpoch;
         const categoriesChanged = categoriesEpoch !== this._libraryCategoriesEpoch;
         this._libraryCategoriesEpoch = categoriesEpoch;
+        if (
+            !categoriesChanged
+            && this.selectedCharacter
+            && this.getViewRoot().querySelector('.character-detail-layout')
+        ) {
+            const nextSignature = this.detailRefreshSignature(this.selectedCharacter);
+            if (nextSignature === this._detailRenderSignature) return;
+            // Keep the existing toolbar/tabs and let renderCharacterDetail
+            // capture the live horizontal or vertical scroll position before
+            // replacing only the profile content.
+            this.rerenderCharacterDetail();
+            return;
+        }
         // Keep the native Bases embed mounted — remounting flashes the table.
         // Still remount when Library folders are newly adopted into tabs.
         if (
@@ -3885,9 +4000,17 @@ export class CharacterView extends ProjectBoundItemView {
                 .forEach(el => { el.textContent = title; });
             return;
         }
+        const previousDetailHost = this.selectedCharacter ? this.getContentHost() : null;
+        const detailScroll = previousDetailHost
+            ? captureLibraryProfileBoardScroll(previousDetailHost)
+            : null;
         const scroller = this.getViewRoot().querySelector('.story-line-character-content') as HTMLElement | null;
         const scrollTop = !this.selectedCharacter ? (scroller?.scrollTop ?? 0) : 0;
         this.renderView(this.getViewRoot());
+        if (detailScroll && this.selectedCharacter) {
+            const nextDetailHost = this.getContentHost();
+            if (nextDetailHost) restoreLibraryProfileBoardScroll(nextDetailHost, detailScroll);
+        }
         if (scrollTop > 0) {
             const next = this.getViewRoot().querySelector('.story-line-character-content') as HTMLElement | null;
             if (next) {

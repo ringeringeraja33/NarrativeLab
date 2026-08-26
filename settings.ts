@@ -15,6 +15,7 @@ import { applyLibraryCategorySettings, reconcileLibraryCategoriesForActiveProjec
 import { syncAllNativeLibraryBases } from './components/NativeLibraryBase';
 import { openConfirmModal } from './components/ConfirmModal';
 import { writingTrackerDateKey } from './utils/writingTrackerHeatmap';
+import type { StoryGraphFocusBundle } from './utils/storyGraphStrands';
 
 // ═══════════════════════════════════════════════════════
 //  COLOR PALETTES — Catppuccin + Mood-based
@@ -763,19 +764,7 @@ export interface SceneCardsSettings {
      * Focus-view strand bundles keyed by undirected pair `pathA::pathB`.
      * Each strand becomes one parallel edge on the Story Graph.
      */
-    storyGraphFocusBundles?: Record<string, {
-        leftPath: string;
-        rightPath: string;
-        leftName?: string;
-        rightName?: string;
-        strands: Array<{
-            id: string;
-            direction: 'ltr' | 'rtl' | 'both';
-            label: string;
-            color: string;
-            lineStyle: 'solid' | 'dashed' | 'dotted';
-        }>;
-    }>;
+    storyGraphFocusBundles?: Record<string, StoryGraphFocusBundle>;
 
     // Manual character alias mappings (lowercased alias → canonical character name)
     // e.g. { "sven": "Sven Andersson" } — user-defined via "Link to…" in Characters view
@@ -802,8 +791,13 @@ export interface SceneCardsSettings {
      */
     autoHideViewLabels?: boolean;
 
-    /** Hide Library, System, Canvas, series.json, and files Obsidian has no registered view for. */
+    /** Master switch; the individual rules below remain remembered while temporarily showing all. */
     hideUnsupportedFilesInExplorer: boolean;
+    hideSystemFolderInExplorer: boolean;
+    hideLibraryFolderInExplorer: boolean;
+    hideCanvasFolderInExplorer: boolean;
+    hideSeriesMetadataInExplorer: boolean;
+    hideUnopenableFilesInExplorer: boolean;
 
     // DOCX export settings (adapted from ToWord plugin)
     docxSettings: SLDocxSettings;
@@ -1100,6 +1094,11 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     frontmatterDisplay: 'collapse',
     autoHideViewLabels: true,
     hideUnsupportedFilesInExplorer: true,
+    hideSystemFolderInExplorer: true,
+    hideLibraryFolderInExplorer: true,
+    hideCanvasFolderInExplorer: true,
+    hideSeriesMetadataInExplorer: true,
+    hideUnopenableFilesInExplorer: true,
 
     docxSettings: { ...SL_DEFAULT_DOCX_SETTINGS },
 
@@ -1311,7 +1310,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         new Setting(panel)
             .setName(t('Hide project internals in Obsidian Files'))
-            .setDesc(t('Hides Library, System, and Canvas folders, series.json, and file types that Obsidian has no view for. Files stay on disk and remain available to NarrativeLab. Use the ribbon eye button to show or hide them at any time.'))
+            .setDesc(t('Master switch for the rules below. The ribbon eye button enables or disables all selected rules without forgetting your choices. Files stay on disk and remain available to NarrativeLab.'))
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.hideUnsupportedFilesInExplorer !== false)
                 .onChange(async (value) => {
@@ -1319,6 +1318,54 @@ export class SceneCardsSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                     this.plugin.updateFileExplorerVisibility();
                 }));
+
+        type ExplorerVisibilitySettingKey =
+            | 'hideSystemFolderInExplorer'
+            | 'hideLibraryFolderInExplorer'
+            | 'hideCanvasFolderInExplorer'
+            | 'hideSeriesMetadataInExplorer'
+            | 'hideUnopenableFilesInExplorer';
+        const addExplorerRule = (
+            key: ExplorerVisibilitySettingKey,
+            name: string,
+            description: string,
+        ): void => {
+            new Setting(panel)
+                .setName(t(name))
+                .setDesc(t(description))
+                .addToggle(toggle => toggle
+                    .setValue(this.plugin.settings[key] !== false)
+                    .onChange(async value => {
+                        this.plugin.settings[key] = value;
+                        await this.plugin.saveSettings();
+                        this.plugin.updateFileExplorerVisibility();
+                    }));
+        };
+        addExplorerRule(
+            'hideSystemFolderInExplorer',
+            'Hide System folders',
+            'Hide NarrativeLab project configuration, statistics, and recovery metadata folders.',
+        );
+        addExplorerRule(
+            'hideLibraryFolderInExplorer',
+            'Hide Library folders',
+            'Hide profile source folders managed through NarrativeLab Library views.',
+        );
+        addExplorerRule(
+            'hideCanvasFolderInExplorer',
+            'Hide Canvas folders',
+            'Hide project Canvas storage folders while keeping Canvas available inside NarrativeLab.',
+        );
+        addExplorerRule(
+            'hideSeriesMetadataInExplorer',
+            'Hide series.json',
+            'Hide NarrativeLab series metadata files from the Obsidian Files view.',
+        );
+        addExplorerRule(
+            'hideUnopenableFilesInExplorer',
+            'Hide files Obsidian cannot open',
+            'Hide file types without a registered Obsidian view; registered plugin file types remain visible.',
+        );
 
         new Setting(panel)
             .setName(t('Collapse view-tab labels when toolbar is narrow'))

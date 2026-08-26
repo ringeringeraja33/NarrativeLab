@@ -31,6 +31,22 @@ export const OBSIDIAN_OPENABLE_EXTENSION_FALLBACK = new Set([
     'narrativecanvas',
 ]);
 
+export interface FileExplorerVisibilityRules {
+    systemFolder: boolean;
+    libraryFolder: boolean;
+    canvasFolder: boolean;
+    seriesMetadata: boolean;
+    unsupportedFiles: boolean;
+}
+
+export const DEFAULT_FILE_EXPLORER_VISIBILITY_RULES: FileExplorerVisibilityRules = {
+    systemFolder: true,
+    libraryFolder: true,
+    canvasFolder: true,
+    seriesMetadata: true,
+    unsupportedFiles: true,
+};
+
 function pathBasename(path: string): string {
     const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
     return normalized.slice(normalized.lastIndexOf('/') + 1).toLowerCase();
@@ -42,17 +58,23 @@ export function fileExtension(path: string): string {
     return dot > 0 && dot < basename.length - 1 ? basename.slice(dot + 1) : '';
 }
 
-export function shouldHideFileExplorerFolder(path: string): boolean {
+export function shouldHideFileExplorerFolder(
+    path: string,
+    rules: FileExplorerVisibilityRules = DEFAULT_FILE_EXPLORER_VISIBILITY_RULES,
+): boolean {
     const basename = pathBasename(path);
-    return basename === 'system' || basename === 'library' || basename === 'canvas';
+    return (basename === 'system' && rules.systemFolder)
+        || (basename === 'library' && rules.libraryFolder)
+        || (basename === 'canvas' && rules.canvasFolder);
 }
 
 export function shouldHideFileExplorerFile(
     path: string,
     canOpenExtension: (extension: string) => boolean = extension =>
         OBSIDIAN_OPENABLE_EXTENSION_FALLBACK.has(extension),
+    rules: FileExplorerVisibilityRules = DEFAULT_FILE_EXPLORER_VISIBILITY_RULES,
 ): boolean {
-    if (pathBasename(path) === 'series.json') return true;
+    if (pathBasename(path) === 'series.json') return rules.seriesMetadata;
     const extension = fileExtension(path);
-    return !extension || !canOpenExtension(extension);
+    return rules.unsupportedFiles && (!extension || !canOpenExtension(extension));
 }

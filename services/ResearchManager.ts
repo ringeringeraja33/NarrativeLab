@@ -18,6 +18,8 @@ export class ResearchManager {
     private linkedPaths = new Set<string>();
     /** Whether linkedPaths has been loaded from disk at least once */
     private linksLoaded = false;
+    private linksFileInvalid = false;
+    private linksLoadedFromBackup = false;
 
     constructor(
         private app: App,
@@ -292,32 +294,61 @@ export class ResearchManager {
     /** Read the .links.json manifest from the Research/ folder. */
     private async loadLinks(): Promise<void> {
         this.linkedPaths.clear();
-        this.linksLoaded = true;
+        this.linksLoaded = false;
+        this.linksFileInvalid = false;
+        this.linksLoadedFromBackup = false;
         const folder = this.getResearchFolder();
-        if (!folder) return;
+        if (!folder) {
+            this.linksLoaded = true;
+            return;
+        }
         const linksPath = normalizePath(`${folder}/.links.json`);
         const adapter = this.app.vault.adapter;
-        if (!await adapter.exists(linksPath)) return;
-        try {
-            const raw = await adapter.read(linksPath);
-            const data = JSON.parse(raw);
-            if (Array.isArray(data)) {
-                for (const entry of data) {
-                    if (typeof entry === 'string') this.linkedPaths.add(entry);
-                    else if (entry?.path) this.linkedPaths.add(entry.path);
-                }
+        let foundCandidate = false;
+        for (const candidate of [`${linksPath}.tmp`, linksPath, `${linksPath}.bak`]) {
+            try {
+                if (!await adapter.exists(candidate)) continue;
+                foundCandidate = true;
+                const data = JSON.parse(await adapter.read(candidate)) as unknown;
+                if (!Array.isArray(data) || !data.every(entry =>
+                    typeof entry === 'string'
+                    || (!!entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).path === 'string')
+                )) throw new Error('invalid linked-note manifest');
+                this.linkedPaths = new Set(data.map(entry => typeof entry === 'string'
+                    ? entry
+                    : String((entry as Record<string, unknown>).path)));
+                this.linksLoaded = true;
+                this.linksLoadedFromBackup = candidate !== linksPath;
+                return;
+            } catch (error) {
+                console.error(`[NarrativeLab] Could not load linked research notes from ${candidate}:`, error);
             }
-        } catch { /* corrupted file — ignore */ }
+        }
+        this.linksFileInvalid = foundCandidate;
+        this.linksLoaded = !foundCandidate;
     }
 
     /** Persist the linked paths to .links.json. */
     private async saveLinks(): Promise<void> {
+        if (this.linksFileInvalid) {
+            throw new Error('Cannot save linked research notes because the existing manifest is unreadable.');
+        }
         const folder = this.getResearchFolder();
         if (!folder) return;
         await this.ensureFolder(folder);
         const linksPath = normalizePath(`${folder}/.links.json`);
         const data = Array.from(this.linkedPaths);
-        await this.app.vault.adapter.write(linksPath, JSON.stringify(data, null, 2));
+        const adapter = this.app.vault.adapter;
+        const content = JSON.stringify(data, null, 2);
+        const tempPath = `${linksPath}.tmp`;
+        const backupPath = `${linksPath}.bak`;
+        await adapter.write(tempPath, content);
+        if (!this.linksLoadedFromBackup && await adapter.exists(linksPath)) {
+            await adapter.write(backupPath, await adapter.read(linksPath));
+        }
+        await adapter.write(linksPath, content);
+        await adapter.remove(tempPath).catch(() => undefined);
+        this.linksLoadedFromBackup = false;
     }
 
     /** Parse any vault file as a linked research post. */
@@ -378,8 +409,14 @@ export class ResearchManager {
         if (!this.linksLoaded) {
             await this.loadLinks();
         }
+        const alreadyLinked = this.linkedPaths.has(vaultPath);
         this.linkedPaths.add(vaultPath);
-        await this.saveLinks();
+        try {
+            await this.saveLinks();
+        } catch (error) {
+            if (!alreadyLinked) this.linkedPaths.delete(vaultPath);
+            throw error;
+        }
         // Index it immediately
         const file = this.app.vault.getAbstractFileByPath(vaultPath);
         if (file instanceof TFile) {
@@ -393,9 +430,17 @@ export class ResearchManager {
         if (!this.linksLoaded) {
             await this.loadLinks();
         }
+        const linked = this.linkedPaths.has(vaultPath);
+        const post = this.posts.get(vaultPath);
         this.linkedPaths.delete(vaultPath);
         this.posts.delete(vaultPath);
-        await this.saveLinks();
+        try {
+            await this.saveLinks();
+        } catch (error) {
+            if (linked) this.linkedPaths.add(vaultPath);
+            if (post) this.posts.set(vaultPath, post);
+            throw error;
+        }
     }
 
     /** Check if a path is a linked note. */

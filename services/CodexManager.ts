@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { hydrateUniversalFieldsFromTopLevel, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
+import { hydrateUniversalFieldsFromTopLevel, mergeUniversalFieldsForSafeSave, mirrorUniversalFieldsToTopLevel } from './FieldTemplateService';
 import { App, TFile, TFolder, normalizePath, parseYaml, stringifyYaml } from 'obsidian';
 import {
     CodexCategoryDef,
@@ -15,9 +15,42 @@ import { coerceString, coerceStringList, coerceText } from '../utils/narrow';
 import { ensureVaultFolder } from '../utils/vaultFolders';
 import {
     hydrateCustomFieldsFromTopLevel,
+    applyDefinedFrontmatterField,
+    getLibraryProfilePropertyOrder,
+    mergeCustomFieldsForSafeSave,
     mirrorCustomFieldsToTopLevel,
     orderLibraryEntityFrontmatter,
+    RESERVED_TOP_LEVEL_KEYS,
 } from '../utils/libraryProfilePropertyOrder';
+
+export interface CodexSaveOptions {
+    /** Snapshot loaded when the editor opened. Unchanged fields are rebased onto disk. */
+    baseline?: CodexEntry;
+}
+
+function sameEntryValue(left: unknown, right: unknown): boolean {
+    if (left === right) return true;
+    try { return JSON.stringify(left) === JSON.stringify(right); } catch { return false; }
+}
+
+function reconcileEditedMapping<T>(
+    disk: Record<string, T> | undefined,
+    live: Record<string, T> | undefined,
+    baseline: Record<string, T> | undefined,
+): Record<string, T> | undefined {
+    const result: Record<string, T> = { ...(disk || {}) };
+    const keys = new Set([...Object.keys(baseline || {}), ...Object.keys(live || {})]);
+    for (const key of keys) {
+        const liveHas = Object.prototype.hasOwnProperty.call(live || {}, key);
+        const baselineHas = Object.prototype.hasOwnProperty.call(baseline || {}, key);
+        const liveValue = live?.[key];
+        const baselineValue = baseline?.[key];
+        if (liveHas === baselineHas && sameEntryValue(liveValue, baselineValue)) continue;
+        if (liveHas) result[key] = liveValue as T;
+        else delete result[key];
+    }
+    return Object.keys(result).length ? result : undefined;
+}
 
 /**
  * Manages generic Codex entries — loading, saving, creating, and deleting
@@ -380,7 +413,7 @@ export class CodexManager {
     /**
      * Save an entry back to its .md file.
      */
-    async saveEntry(entry: CodexEntry): Promise<void> {
+    async saveEntry(entry: CodexEntry, options: CodexSaveOptions = {}): Promise<void> {
         const normalizedPath = normalizePath(entry.filePath);
         const file = this.app.vault.getAbstractFileByPath(normalizedPath);
         if (!(file instanceof TFile)) {
@@ -391,15 +424,19 @@ export class CodexManager {
         const fieldKeys = catDef?.fieldKeys ?? [];
 
         const content = await this.app.vault.read(file);
-        const existingFm = this.extractFrontmatter(content) || {};
+        const existingFm = this.extractFrontmatter(content);
+        if (/^[\uFEFF\u200B-\u200F\u2028-\u202F]*---\r?\n/.test(content) && !existingFm) {
+            throw new Error(`Codex frontmatter is unreadable; refusing to overwrite ${normalizedPath}`);
+        }
+        const diskFm = existingFm ?? {};
         const body = this.extractBody(content);
 
-        const fm: Record<string, unknown> = { ...existingFm };
+        const fm: Record<string, unknown> = { ...diskFm };
         const uncategorizedDef = this.categoryDefs.get(UNCATEGORIZED_CATEGORY_ID);
         const isUncategorizedEntry = uncategorizedDef
             && this.entriesByCategory.get(UNCATEGORIZED_CATEGORY_ID)?.has(normalizedPath);
         if (isUncategorizedEntry) {
-            const preservedType = existingFm.type;
+            const preservedType = diskFm.type;
             if (preservedType && preservedType !== UNCATEGORIZED_CATEGORY_ID) {
                 fm.type = preservedType;
             } else {
@@ -408,33 +445,35 @@ export class CodexManager {
         } else {
             fm.type = entry.type;
         }
-        fm.name = entry.name;
+        const baseline = options.baseline;
+        const changedSinceBaseline = (key: string): boolean =>
+            !baseline || !sameEntryValue(entry[key], baseline[key]);
+        if (changedSinceBaseline('name') || !coerceString(fm.name).trim()) fm.name = entry.name;
         fm.modified = new Date().toISOString().split('T')[0];
-        if (entry.created) fm.created = entry.created;
+        if (entry.created && (changedSinceBaseline('created') || !fm.created)) fm.created = entry.created;
 
         // Standard fields for this category
         for (const key of fieldKeys) {
             if (key === 'name') continue;
+            if (!changedSinceBaseline(key)) continue;
             const val = entry[key];
-            if (val !== undefined && val !== null && val !== '' &&
-                !(Array.isArray(val) && val.length === 0)) {
-                fm[key] = val;
-            } else {
-                delete fm[key];
-            }
+            applyDefinedFrontmatterField(fm, key, val);
         }
 
         // Series-ready: books list
-        if (entry.books && entry.books.length > 0) {
-            fm.books = entry.books;
-        } else {
-            delete fm.books;
-        }
+        if (changedSinceBaseline('books')) applyDefinedFrontmatterField(fm, 'books', entry.books);
 
-        const previousCustom = existingFm.custom && typeof existingFm.custom === 'object' && !Array.isArray(existingFm.custom)
-            ? existingFm.custom as Record<string, string>
+        const previousCustom = diskFm.custom && typeof diskFm.custom === 'object' && !Array.isArray(diskFm.custom)
+            ? diskFm.custom as Record<string, string>
             : undefined;
-        const resolvedCustom = hydrateCustomFieldsFromTopLevel(existingFm, entry.custom, entry.type);
+        const diskCustom = hydrateCustomFieldsFromTopLevel(diskFm, previousCustom, entry.type);
+        const resolvedCustom = baseline
+            ? reconcileEditedMapping(diskCustom, entry.custom, baseline.custom)
+            : hydrateCustomFieldsFromTopLevel(
+                diskFm,
+                mergeCustomFieldsForSafeSave(previousCustom, entry.custom),
+                entry.type,
+            );
         // Custom fields
         if (resolvedCustom && Object.keys(resolvedCustom).length > 0) {
             fm.custom = resolvedCustom;
@@ -444,8 +483,18 @@ export class CodexManager {
         mirrorCustomFieldsToTopLevel(fm, resolvedCustom, entry.type, previousCustom);
 
         // Universal field template values
-        const resolvedUniversal = hydrateUniversalFieldsFromTopLevel(existingFm, entry.universalFields) as
+        const previousUniversal = diskFm.universalFields && typeof diskFm.universalFields === 'object'
+            && !Array.isArray(diskFm.universalFields)
+            ? diskFm.universalFields as Record<string, unknown>
+            : undefined;
+        const diskUniversal = hydrateUniversalFieldsFromTopLevel(diskFm, previousUniversal) as
             Record<string, string | string[]> | undefined;
+        const resolvedUniversal = baseline
+            ? reconcileEditedMapping(diskUniversal, entry.universalFields, baseline.universalFields)
+            : hydrateUniversalFieldsFromTopLevel(
+                diskFm,
+                mergeUniversalFieldsForSafeSave(previousUniversal, entry.universalFields),
+            ) as Record<string, string | string[]> | undefined;
         if (resolvedUniversal && Object.keys(resolvedUniversal).length > 0) {
             fm.universalFields = resolvedUniversal;
         } else {
@@ -454,7 +503,7 @@ export class CodexManager {
         // Issue #71 — mirror to top-level YAML keys for templates that opt in
         mirrorUniversalFieldsToTopLevel(fm, resolvedUniversal);
 
-        const finalBody = entry.notes ?? body;
+        const finalBody = changedSinceBaseline('notes') ? (entry.notes ?? '') : body;
         const orderedFm = orderLibraryEntityFrontmatter(fm, entry.type);
         const newContent = `---\n${stringifyYaml(orderedFm)}---\n${finalBody ? '\n' + finalBody : ''}`;
         await this.app.vault.modify(file, newContent);
@@ -596,14 +645,19 @@ export class CodexManager {
             if (text) entry[key] = text;
         }
 
-        // Library-root notes may have originated in any deleted category.
-        // Preserve unfamiliar top-level properties as visible custom fields
-        // instead of dropping them the next time the uncategorized entry saves.
-        if (catDef.id === UNCATEGORIZED_CATEGORY_ID) {
+        // Library-root notes may have originated in any deleted category, and
+        // blank user categories may be authored directly through Obsidian Base.
+        // Preserve unfamiliar top-level properties as visible custom fields so
+        // a missing template/layout definition cannot make valid data vanish.
+        const preservesLooseTopLevelFields = catDef.id === UNCATEGORIZED_CATEGORY_ID
+            || (!catDef.builtIn && catDef.categories.length === 0);
+        if (preservesLooseTopLevelFields) {
             const reserved = new Set([
+                ...RESERVED_TOP_LEVEL_KEYS,
                 'type', 'name', 'image', 'gallery', 'created', 'modified',
                 'custom', 'universalFields', 'books',
                 ...catDef.fieldKeys,
+                ...(getLibraryProfilePropertyOrder(catDef.id)?.reservedKeys ?? []),
             ]);
             const custom = { ...(entry.custom || {}) };
             for (const [key, value] of Object.entries(safeFm)) {

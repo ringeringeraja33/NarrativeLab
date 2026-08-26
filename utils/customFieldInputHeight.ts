@@ -111,7 +111,10 @@ export function bindResizableCustomFieldInput(
         const measuredHeight = textarea.getBoundingClientRect().height;
         if (!Number.isFinite(measuredHeight) || measuredHeight <= 0) return;
         const height = normalizeCustomFieldInputHeight(Math.max(minHeight, measuredHeight));
-        if (height === undefined || (height === lastHeight && heights[key] === height)) return;
+        // ResizeObserver always delivers an initial layout notification. That
+        // is not a user resize and must not turn every natural textarea height
+        // into a settings write (and a later detail refresh/scroll jump).
+        if (height === undefined || height === lastHeight) return;
         recordCurrentHeight(false);
     });
     observer.observe(textarea);

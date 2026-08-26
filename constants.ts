@@ -21,5 +21,6 @@ export const NOTES_VIEW_TYPE = 'narrative-lab-notes';
 export const SYNOPSIS_VIEW_TYPE = 'narrative-lab-synopsis';
 export const DETAILS_VIEW_TYPE = 'narrative-lab-scene-details';
 export const NARRATIVE_CANVAS_VIEW_TYPE = 'narrative-lab-canvas-view';
+export const NCANVAS_LIBRARY_VIEW_TYPE = 'narrative-lab-canvas-library';
 export const WRITING_TRACKER_PANEL_TYPE = 'narrative-lab-writing-tracker-panel';
 export const WRITING_TRACKER_VIEW_TYPE = 'narrative-lab-writing-tracker';

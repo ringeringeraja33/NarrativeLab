@@ -110,6 +110,71 @@ test('unreadable field-templates.json cannot be overwritten by a later save', as
     assert.doesNotMatch(load, /this\.templates = \[\];\s*this\.sectionOrders = \{\};\s*\}/);
     assert.match(save, /if \(this\._invalidFile\)[\s\S]*?throw new Error/);
     assert.match(save, /isTombstonedProjectPath\(systemFolder\)/);
+    assert.match(load, /`\$\{filePath\}\.tmp`, filePath, `\$\{filePath\}\.bak`/);
+    assert.match(save, /!this\._loadedFromBackup/);
+    assert.match(save, /adapter\.write\(tempPath, content\)/);
+});
+
+test('all profile and scene writers reject malformed YAML instead of rebuilding it empty', async () => {
+    const sources = await Promise.all([
+        readFile(new URL('../services/CharacterManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/LocationManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/CodexManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/MetadataParser.ts', import.meta.url), 'utf8'),
+    ]);
+    for (const source of sources) {
+        assert.match(source, /frontmatter is unreadable; refusing to overwrite/);
+    }
+    assert.match(sceneManager, /Project frontmatter is unreadable; refusing to overwrite/);
+    assert.doesNotMatch(sceneManager, /catch \{\s*existingFm = \{\};/);
+    assert.match(mainTs, /private async processReadableFrontmatter/);
+    assert.match(mainTs, /this\.app\.vault\.process\(file, transform\)/);
+    assert.doesNotMatch(mainTs, /processFrontMatter\(file, \(fm\) =>/);
+    const syncStart = mainTs.indexOf('async syncCustomFieldFrontmatter');
+    const syncEnd = mainTs.indexOf('private async preserveRejectedPlotGridSnapshot', syncStart);
+    const sync = mainTs.slice(syncStart, syncEnd);
+    assert.match(sync, /This is a disk migration, not an editor save/);
+    assert.doesNotMatch(sync, /mergeCustomFieldsForSafeSave\(previous, custom\)/);
+});
+
+test('Codex autosave rebases stale drafts and batch field sync cannot reduce populated YAML', async () => {
+    const [codexManager, codexView] = await Promise.all([
+        readFile(new URL('../services/CodexManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/CodexView.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(codexManager, /interface CodexSaveOptions[\s\S]*?baseline\?: CodexEntry/);
+    assert.match(codexManager, /reconcileEditedMapping\(diskCustom, entry\.custom, baseline\.custom\)/);
+    assert.match(codexManager, /changedSinceBaseline\('notes'\)[\s\S]*?entry\.notes[\s\S]*?: body/);
+    assert.match(codexView, /_editingDraftBaseline/);
+    assert.match(codexView, /saveEntry\(snapshot, \{ baseline \}\)/);
+    assert.match(mainTs, /meaningfulLeafCount\(ordered\) < meaningfulBefore/);
+    assert.match(mainTs, /Custom-field sync would discard populated YAML; refusing overwrite/);
+});
+
+test('auxiliary JSON stores recover from backups and refuse unreadable overwrites', async () => {
+    const [sticky, tracker, research] = await Promise.all([
+        readFile(new URL('../services/FloatingStickyNoteManager.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/GlobalWritingTracker.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../services/ResearchManager.ts', import.meta.url), 'utf8'),
+    ]);
+    for (const source of [sticky, tracker, research, templateCenter]) {
+        assert.match(source, /\.tmp/);
+        assert.match(source, /\.bak/);
+        assert.match(source, /[Ii]nvalid|unreadable/);
+        assert.match(source, /[Ll]oadedFromBackup/);
+    }
+    assert.match(sticky, /raw\.every\(isFloatingStickyNoteState\)/);
+    assert.match(tracker, /Refusing to overwrite an unreadable writing tracker ledger/);
+    assert.match(research, /Cannot save linked research notes because the existing manifest is unreadable/);
+    assert.match(templateCenter, /Project templates cannot be saved because the existing file is unreadable/);
+});
+
+test('series metadata and corkboard positions use recoverable writes', () => {
+    assert.match(seriesManager, /parseSeriesMetadata/);
+    assert.match(seriesManager, /series\.json\.bak|`\$\{metaPath\}\.bak`/);
+    assert.match(seriesManager, /Cannot save series metadata because the existing file and backup are unreadable/);
+    assert.match(seriesManager, /adapter\.write\(tempPath, content\)/);
+    assert.match(sceneManager, /writeVaultTextResilient\([\s\S]*?board\.json/);
 });
 
 test('Library reconcile cannot trash custom category folders after a local move', () => {
@@ -651,10 +716,11 @@ test('Story Graph is the first peer tab while profile and browse modes stay in t
     assert.match(characterView, /renderLeadingActions: \(actionsEl\) => this\.renderCharacterOverviewModes\(actionsEl\)/);
     assert.match(locationView, /renderLeadingActions: \(actionsEl\) => this\.renderLocationOverviewModes\(actionsEl\)/);
     assert.match(codexView, /renderLeadingActions: \(actionsEl\) => this\.renderOverviewModes\(actionsEl\)/);
-    assert.doesNotMatch(libraryBrowseLayout, /renderTrailingActions/);
-    assert.match(characterView, /renderLibraryModeToolbar\(container, actions => this\.renderCharacterOverviewModes\(actions\)\)/);
-    assert.match(locationView, /renderLibraryModeToolbar\(container, actions => this\.renderLocationOverviewModes\(actions\)\)/);
-    assert.match(codexView, /renderLibraryModeToolbar\(container, actions => this\.renderOverviewModes\(actions\)\)/);
+    assert.match(libraryBrowseLayout, /renderTrailingActions\?: \(actionsEl: HTMLElement\) => void/);
+    assert.match(libraryBrowseLayout, /library-browse-native-actions[\s\S]*?renderTrailingActions\(trailing\)/);
+    assert.match(characterView, /renderLibraryModeToolbar\([\s\S]*?renderCharacterOverviewModes\(actions\)[\s\S]*?renderOpenNativeLibraryBaseAction\(actions, this\.plugin, 'characters'\)/);
+    assert.match(locationView, /renderLibraryModeToolbar\([\s\S]*?renderLocationOverviewModes\(actions\)[\s\S]*?renderOpenNativeLibraryBaseAction\(actions, this\.plugin, 'locations'\)/);
+    assert.match(codexView, /renderLibraryModeToolbar\([\s\S]*?renderOverviewModes\(actions\)[\s\S]*?renderOpenNativeLibraryBaseAction/);
     assert.doesNotMatch(characterView, /story-graph' && !isMobile\) \{\s*renderLibraryModeToolbar/);
     assert.doesNotMatch(locationView, /story-graph' && !isMobile\) \{\s*renderLibraryModeToolbar/);
     assert.doesNotMatch(codexView, /'story-graph' && !isMobile\) \{\s*renderLibraryModeToolbar/);

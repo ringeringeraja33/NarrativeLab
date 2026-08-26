@@ -33,6 +33,8 @@ export class GlobalWritingTracker {
     private writeQueue: Promise<void> = Promise.resolve();
     private saveTimer: number | null = null;
     private loaded = false;
+    private invalidFile = false;
+    private loadedFromBackup = false;
     private unattributedHistory: Record<string, number> = {};
     private unattributedRevisionHistory: Record<string, number> = {};
     private mutatingLedger = false;
@@ -48,21 +50,42 @@ export class GlobalWritingTracker {
     async load(): Promise<void> {
         const adapter = this.plugin.app.vault.adapter;
         const path = this.getFilePath();
+        this.loaded = false;
+        this.invalidFile = false;
+        this.loadedFromBackup = false;
         // A leftover temp file is the fully staged payload from an interrupted
         // safe write, so prefer it over the older canonical ledger.
-        for (const candidate of [`${path}.tmp`, path]) {
+        let foundCandidate = false;
+        for (const candidate of [`${path}.tmp`, path, `${path}.bak`]) {
             try {
                 if (!await adapter.exists(candidate)) continue;
-                const parsed = parseWritingTrackerFile(JSON.parse(await adapter.read(candidate)) as unknown);
+                foundCandidate = true;
+                const raw = JSON.parse(await adapter.read(candidate)) as unknown;
+                if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+                    throw new Error('invalid writing tracker object');
+                }
+                const parsed = parseWritingTrackerFile(raw);
                 this.tracker.importData(parsed);
                 this.unattributedHistory = parsed.unattributedHistory;
                 this.unattributedRevisionHistory = parsed.unattributedRevisionHistory;
+                this.invalidFile = false;
+                this.loadedFromBackup = candidate !== path;
+                this.loaded = true;
                 break;
             } catch (error) {
                 console.error(`[NarrativeLab] Failed to load writing tracker from ${candidate}:`, error);
             }
         }
-        this.loaded = true;
+        if (!this.loaded) {
+            this.invalidFile = foundCandidate;
+            this.loadedFromBackup = false;
+            this.loaded = !foundCandidate;
+            if (!foundCandidate) {
+                this.tracker.importData({ history: {} });
+                this.unattributedHistory = {};
+                this.unattributedRevisionHistory = {};
+            }
+        }
     }
 
     /** Rebuild vault totals from project ledgers and quarantine legacy-only dates. */
@@ -294,6 +317,10 @@ export class GlobalWritingTracker {
     }
 
     async save(): Promise<boolean> {
+        if (this.invalidFile) {
+            console.error('[NarrativeLab] Refusing to overwrite an unreadable writing tracker ledger.');
+            return false;
+        }
         const payload = JSON.stringify({
             ...this.tracker.exportData(),
             unattributedHistory: this.unattributedHistory,
@@ -307,11 +334,12 @@ export class GlobalWritingTracker {
                 const tempPath = `${path}.tmp`;
                 const backupPath = `${path}.bak`;
                 await adapter.write(tempPath, payload);
-                if (await adapter.exists(path)) {
+                if (!this.loadedFromBackup && await adapter.exists(path)) {
                     try { await adapter.write(backupPath, await adapter.read(path)); } catch { /* best effort */ }
                 }
                 await adapter.write(path, payload);
                 await adapter.remove(tempPath).catch(() => undefined);
+                this.loadedFromBackup = false;
             });
         try {
             await this.writeQueue;

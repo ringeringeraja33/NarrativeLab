@@ -15,6 +15,18 @@ function createLibraryTransferJournal(): LibraryTransferJournal {
     return { movedFiles: [], copiedFiles: [], duplicateFiles: [] };
 }
 
+function parseSeriesMetadata(raw: unknown): SeriesMetadata | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const data = raw as Record<string, unknown>;
+    if (typeof data.name !== 'string' || !data.name.trim()
+        || !Array.isArray(data.bookOrder) || !data.bookOrder.every(path => typeof path === 'string')) return null;
+    return {
+        name: data.name,
+        bookOrder: data.bookOrder,
+        created: typeof data.created === 'string' ? data.created : '',
+    };
+}
+
 /**
  * Manages series — groups of book projects sharing a common Library.
  *
@@ -46,19 +58,17 @@ export class SeriesManager {
     async loadSeriesMetadata(seriesFolder: string): Promise<SeriesMetadata | null> {
         const adapter = this.app.vault.adapter;
         const metaPath = normalizePath(`${seriesFolder}/series.json`);
-        if (!await adapter.exists(metaPath)) return null;
-        try {
-            const raw = await adapter.read(metaPath);
-            const data = JSON.parse(raw);
-            if (!data.name || !Array.isArray(data.bookOrder)) return null;
-            return {
-                name: data.name,
-                bookOrder: data.bookOrder,
-                created: data.created || '',
-            };
-        } catch {
-            return null;
+        for (const candidate of [`${metaPath}.tmp`, metaPath, `${metaPath}.bak`]) {
+            try {
+                if (!await adapter.exists(candidate)) continue;
+                const parsed = parseSeriesMetadata(JSON.parse(await adapter.read(candidate)) as unknown);
+                if (!parsed) throw new Error('invalid series metadata');
+                return parsed;
+            } catch (error) {
+                console.error(`[NarrativeLab] Could not load series metadata from ${candidate}:`, error);
+            }
         }
+        return null;
     }
 
     /**
@@ -67,7 +77,33 @@ export class SeriesManager {
     async saveSeriesMetadata(seriesFolder: string, meta: SeriesMetadata): Promise<void> {
         const adapter = this.app.vault.adapter;
         const metaPath = normalizePath(`${seriesFolder}/series.json`);
-        await adapter.write(metaPath, JSON.stringify(meta, null, 2));
+        const backupPath = `${metaPath}.bak`;
+        const tempPath = `${metaPath}.tmp`;
+        let readableMain: string | null = null;
+        if (await adapter.exists(metaPath)) {
+            const current = await adapter.read(metaPath);
+            const currentParsed = (() => {
+                try { return parseSeriesMetadata(JSON.parse(current) as unknown); } catch { return null; }
+            })();
+            if (!currentParsed) {
+                let backupReadable = false;
+                if (await adapter.exists(backupPath)) {
+                    try {
+                        backupReadable = !!parseSeriesMetadata(JSON.parse(await adapter.read(backupPath)) as unknown);
+                    } catch { /* unreadable backup */ }
+                }
+                if (!backupReadable) {
+                    throw new Error('Cannot save series metadata because the existing file and backup are unreadable.');
+                }
+            } else {
+                readableMain = current;
+            }
+        }
+        const content = JSON.stringify(meta, null, 2);
+        await adapter.write(tempPath, content);
+        if (readableMain !== null) await adapter.write(backupPath, readableMain);
+        await adapter.write(metaPath, content);
+        await adapter.remove(tempPath).catch(() => undefined);
     }
 
     /**

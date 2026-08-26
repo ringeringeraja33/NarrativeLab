@@ -56,6 +56,8 @@ import {
     collectLinkRelationAssignments,
     migrateLinkAssignmentsToFrontmatter,
     pruneOrphanStoryRefs,
+    readStoryRefsFromCache,
+    syncStoryGraphRelationCategoryMetadata,
     removeStoryGraphLinkEdge,
     removeWikilinksBetween,
 } from '../utils/storyGraphRefs';
@@ -561,14 +563,20 @@ function collectStoryGraphWikilinks(
     const knownPaths = new Set(documents.map(document => normalizePath(document.filePath)));
     const links: StoryGraphWikilink[] = [];
     const seen = new Set<string>();
-    const add = (sourcePath: string, targetPath: string) => {
+    const add = (sourcePath: string, targetPath: string, managedRelationId?: string) => {
         const src = normalizePath(sourcePath);
         const tgt = normalizePath(targetPath);
         if (!knownPaths.has(tgt) || tgt === src) return;
         const key = `${src}=>${tgt}`;
-        if (seen.has(key)) return;
+        if (seen.has(key)) {
+            if (managedRelationId) {
+                const existing = links.find(link => link.sourcePath === src && link.targetPath === tgt);
+                if (existing) existing.managedRelationId = managedRelationId;
+            }
+            return;
+        }
         seen.add(key);
-        links.push({ sourcePath: src, targetPath: tgt });
+        links.push({ sourcePath: src, targetPath: tgt, managedRelationId });
     };
 
     const resolvedLinks = plugin.app.metadataCache.resolvedLinks;
@@ -587,6 +595,19 @@ function collectStoryGraphWikilinks(
         for (const link of cache?.links || []) {
             const dest = plugin.app.metadataCache.getFirstLinkpathDest(link.link, sourcePath);
             if (dest) add(sourcePath, dest.path);
+        }
+    }
+
+    // Profile-managed associations live in mirrored frontmatter rows. Only the
+    // declared source mirror emits the directed edge, so both profile pages can
+    // edit one relation without drawing it twice in the Story Graph.
+    for (const document of documents) {
+        const ownerPath = normalizePath(document.filePath);
+        for (const ref of readStoryRefsFromCache(plugin.app, ownerPath)) {
+            if (!ref.managed || !ref.id || !ref.targetPath) continue;
+            const sourcePath = normalizePath(ref.sourcePath || ownerPath);
+            if (sourcePath !== ownerPath) continue;
+            add(sourcePath, ref.targetPath, ref.id);
         }
     }
 
@@ -631,7 +652,7 @@ export function renderLibraryStoryGraph(
     page.createEl('h3', { cls: 'story-graph-title', text: t('Story Graph') });
     page.createEl('p', {
         cls: 'setting-item-description story-graph-description',
-        text: t('Body wikilinks are default references. Right-click an edge to set a category (written to frontmatter), focus strands, or delete the link entirely (clears body + frontmatter on both notes).'),
+        text: t('Profile associations and body wikilinks both appear here. Right-click an edge to set its category, edit focus strands, or remove that relationship.'),
     });
 
     const scenes = plugin.sceneManager.getAllScenes().filter(s => !s.inactive);
@@ -1143,7 +1164,7 @@ export function showRelationEdgeMenu(
     showMenuSafely(menu, evt);
 }
 
-/** Right-click a real Obsidian wikilink edge → category / focus / full delete. */
+/** Right-click a wikilink or profile-managed edge → category / focus / delete. */
 export function showStoryGraphLinkEdgeMenu(
     plugin: SceneCardsPlugin,
     edge: StoryGraphLinkEdgeInfo,
@@ -1275,10 +1296,15 @@ export function showStoryGraphLinkEdgeMenu(
         item.onClick(() => {
             openConfirmModal(plugin.app, {
                 title: t('Remove link'),
-                message: t(
-                    'Remove all body wikilinks and annotated references between "{from}" and "{to}"?',
-                    { from: edge.from, to: edge.to },
-                ),
+                message: edge.managedRelationId
+                    ? t(
+                        'Remove the profile association between "{from}" and "{to}"? Note body text will be kept.',
+                        { from: edge.from, to: edge.to },
+                    )
+                    : t(
+                        'Remove all body wikilinks and annotated references between "{from}" and "{to}"?',
+                        { from: edge.from, to: edge.to },
+                    ),
                 confirmLabel: t('Remove link'),
                 confirmClass: 'mod-warning',
                 onConfirm: async () => {
@@ -1302,6 +1328,15 @@ function makeRelationCategoryId(label: string): string {
         .replace(/\s+/g, '-')
         .replace(/[^a-z0-9\u4e00-\u9fff-]/g, '');
     return slug || `relation-${Date.now().toString(36)}`;
+}
+
+function isStoryGraphLinkCategoryInUse(plugin: SceneCardsPlugin, categoryId: string): boolean {
+    if (Object.values(plugin.settings.storyGraphLinkRelationAssignments || {}).includes(categoryId)) {
+        return true;
+    }
+    return plugin.app.vault.getMarkdownFiles().some(file => (
+        readStoryRefsFromCache(plugin.app, file.path).some(ref => ref.category === categoryId)
+    ));
 }
 
 /** Configure character relation styles + wikilink categories for the Story Graph. */
@@ -1632,9 +1667,24 @@ export function openStoryGraphRelationCategoriesModal(
             });
             color.addEventListener('input', () => { category.color = color.value; });
             name.addEventListener('input', () => { category.label = name.value; });
-            const remove = row.createEl('button', { attr: { 'aria-label': t('Delete') } });
+            const inUse = isStoryGraphLinkCategoryInUse(plugin, category.id);
+            const remove = row.createEl('button', {
+                attr: {
+                    'aria-label': inUse
+                        ? t('Cannot delete: used by note associations')
+                        : t('Delete'),
+                    title: inUse
+                        ? t('Cannot delete: used by note associations')
+                        : t('Delete'),
+                },
+            });
             obsidian.setIcon(remove, 'trash');
+            remove.disabled = inUse;
             remove.addEventListener('click', () => {
+                if (isStoryGraphLinkCategoryInUse(plugin, category.id)) {
+                    new Notice(t('Cannot delete: used by note associations'));
+                    return;
+                }
                 linkDraft = linkDraft.filter(item => item.id !== category.id);
                 render();
             });
@@ -1687,6 +1737,7 @@ export function openStoryGraphRelationCategoriesModal(
                     plugin.settings.storyGraphRelationCategories = cleanLinks;
                     plugin.settings.storyGraphLinkRelationAssignments = assignments;
                     plugin.settings.storyGraphCharacterRelationTypes = cleanChars;
+                    await syncStoryGraphRelationCategoryMetadata(plugin, cleanLinks);
                     const cleanEntity: StoryGraphEntityColorMap = {};
                     for (const type of STORY_GRAPH_ENTITY_TYPES) {
                         const style = entityDraft[type];

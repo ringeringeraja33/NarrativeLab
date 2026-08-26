@@ -16,6 +16,7 @@ import {
     CODEX_VIEW_TYPE,
     MANUSCRIPT_VIEW_TYPE,
     NARRATIVE_CANVAS_VIEW_TYPE,
+    NCANVAS_LIBRARY_VIEW_TYPE,
 } from '../constants';
 import { getBuiltinCodexCategory, makeProfileCodexCategory } from '../models/Codex';
 import { resolveLibraryCategoryLabel } from '../services/LibraryCategorySync';
@@ -50,7 +51,7 @@ const STATS_ENTRY: ViewSwitcherEntry = {
 
 /** Opens the Narrative Canvas manager after Export in the top toolbar. */
 const PLAYMODE_ENTRY: ViewSwitcherEntry = {
-    type: NARRATIVE_CANVAS_VIEW_TYPE,
+    type: NCANVAS_LIBRARY_VIEW_TYPE,
     label: 'Play in Canvas',
     icon: 'monitor-play',
 };
@@ -201,7 +202,8 @@ export function renderViewSwitcher(
         new ConverterModal(plugin).open();
     });
 
-    const playmodeActive = activeViewType === NARRATIVE_CANVAS_VIEW_TYPE;
+    const playmodeActive = activeViewType === NARRATIVE_CANVAS_VIEW_TYPE
+        || activeViewType === NCANVAS_LIBRARY_VIEW_TYPE;
     const playmodeTab = actions.createEl('button', {
         cls: `story-line-view-tab story-line-view-tab-playmode${playmodeActive ? ' active' : ''}`,
         attr: { type: 'button', 'aria-label': t(PLAYMODE_ENTRY.label) },
@@ -212,7 +214,8 @@ export function renderViewSwitcher(
     playmodeTab.createSpan({ cls: 'view-tab-label', text: t(PLAYMODE_ENTRY.label) });
     playmodeTab.addEventListener('click', (e) => {
         e.preventDefault();
-        plugin.openNCanvasManager();
+        if (activeViewType === NCANVAS_LIBRARY_VIEW_TYPE) return;
+        void plugin.openNCanvasLibrary(getLeafNarrativeLabProjectFile(leaf), leaf);
     });
 
     // Collapse primary-tab labels when the toolbar is too narrow.

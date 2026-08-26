@@ -277,7 +277,11 @@ export class MetadataParser {
         if (!(live instanceof TFile)) return;
 
         const content = await app.vault.read(live);
-        const frontmatter = this.extractFrontmatter(content) || {};
+        const parsedFrontmatter = this.extractFrontmatter(content);
+        if (/^---\r?\n/.test(content) && !parsedFrontmatter) {
+            throw new Error(`Scene frontmatter is unreadable; refusing to overwrite ${live.path}`);
+        }
+        const frontmatter = parsedFrontmatter ?? {};
         const body = this.extractBody(content);
         const bodyChanging = 'body' in updates;
 
@@ -366,8 +370,23 @@ export class MetadataParser {
             frontmatter.charcount = this.countChars(finalBody);
         }
 
-        // Issue #71 — mirror universal fields to top-level YAML keys
-        mirrorUniversalFieldsToTopLevel(frontmatter, frontmatter.universalFields as Record<string, unknown> | undefined);
+        // A metadata-only update may carry no universalFields snapshot at all.
+        // Rehydrate legacy/top-level values before mirroring so an unrelated
+        // change cannot delete them. An explicit universalFields update still
+        // wins, including an intentional clear.
+        const universalFieldsWereUpdated = 'universalFields' in updates;
+        const resolvedUniversal = universalFieldsWereUpdated
+            ? frontmatter.universalFields as Record<string, unknown> | undefined
+            : hydrateUniversalFieldsFromTopLevel(
+                frontmatter,
+                frontmatter.universalFields as Record<string, unknown> | undefined,
+            );
+        if (resolvedUniversal && Object.keys(resolvedUniversal).length > 0) {
+            frontmatter.universalFields = resolvedUniversal;
+        } else if (!universalFieldsWereUpdated) {
+            delete frontmatter.universalFields;
+        }
+        mirrorUniversalFieldsToTopLevel(frontmatter, resolvedUniversal);
 
         const newContent = `---\n${stringifyYaml(frontmatter)}---\n\n${finalBody}`;
         if (newContent === content) return;

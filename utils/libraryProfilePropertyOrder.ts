@@ -9,6 +9,8 @@ export interface LibraryProfilePropertyOrder {
     universalFieldIds: string[];
     /** Category-specific built-in / universal keys unavailable to custom mirrors. */
     reservedKeys?: string[];
+    /** Top-level YAML key -> hiddenFields storage key for two-way Base visibility sync. */
+    visibilityKeys?: Record<string, string>;
 }
 
 /** Storage separator used by fields that belong to user-created sections. */
@@ -25,14 +27,14 @@ export const RESERVED_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
     'corkboardNote', 'corkboardNoteColor', 'corkboardNoteImage',
     'corkboardNoteCaption', 'plotgridOrigin', 'subtitle', 'color',
     'timeline_mode', 'timeline_strand',
-    'image', 'gallery', 'tagline', 'role', 'occupation', 'residency',
+    'image', 'gallery', 'tagline', 'gender', 'role', 'occupation', 'residency',
     'family', 'earlylife', 'appearance', 'personality', 'goal', 'belief', 'misbelief',
     'fears', 'flaws', 'strengths', 'relations', 'books',
     'world', 'parent', 'description', 'geography', 'culture', 'politics',
     'magicTechnology', 'beliefs', 'economy', 'history', 'locationType',
     'atmosphere', 'significance', 'inhabitants', 'connectedLocations',
     'mapNotes',
-    'custom', 'universalFields', 'notes',
+    'custom', 'universalFields', 'note', 'notes',
 ]);
 
 type LibraryProfilePropertyOrderProvider = (categoryKey: string) => LibraryProfilePropertyOrder | null;
@@ -121,6 +123,44 @@ function customValueToString(value: unknown): string {
         try { return JSON.stringify(value); } catch { return ''; }
     }
     return '';
+}
+
+/**
+ * Merge an editor snapshot with the last readable on-disk custom mapping.
+ *
+ * Autosave and project switches can briefly expose an empty/partial draft
+ * while the Markdown file still contains valid fields. Missing keys are not
+ * an instruction to erase data; explicit destructive operations must remove
+ * the on-disk property themselves before the next ordinary save.
+ */
+export function mergeCustomFieldsForSafeSave(
+    diskCustom: Record<string, string> | undefined,
+    liveCustom: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+    const diskEntries = Object.entries(diskCustom ?? {});
+    const liveEntries = Object.entries(liveCustom ?? {});
+    if (diskEntries.length === 0 && liveEntries.length === 0) return undefined;
+    return Object.fromEntries([...diskEntries, ...liveEntries]);
+}
+
+/**
+ * Apply one field from a possibly-partial editor snapshot.
+ *
+ * `undefined` means the caller did not load/provide the field and must not
+ * erase a readable on-disk value. Explicit empty values remain a deliberate
+ * clear operation.
+ */
+export function applyDefinedFrontmatterField(
+    frontmatter: Record<string, unknown>,
+    key: string,
+    value: unknown,
+): void {
+    if (value === undefined) return;
+    if (value === null || value === '' || (Array.isArray(value) && value.length === 0)) {
+        delete frontmatter[key];
+        return;
+    }
+    frontmatter[key] = value;
 }
 
 function sameYamlValue(left: unknown, right: unknown): boolean {

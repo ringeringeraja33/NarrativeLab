@@ -6,6 +6,7 @@ import {
     FLOATING_NOTE_CLASS,
     FLOATING_NOTES_FILENAME,
     FLOATING_NOTES_HIDDEN_CLASS,
+    isFloatingStickyNoteState,
     parseFloatingStickyNotes,
     stickyNoteBelongsToProject,
     type FloatingStickyNoteState,
@@ -21,6 +22,8 @@ export class FloatingStickyNoteManager {
     private writeQueue: Promise<void> = Promise.resolve();
     private saveTimer: number | null = null;
     private unloading = false;
+    private invalidFile = false;
+    private loadedFromBackup = false;
 
     constructor(private plugin: SceneCardsPlugin) {}
 
@@ -31,19 +34,31 @@ export class FloatingStickyNoteManager {
     }
 
     async load(): Promise<FloatingStickyNoteState[]> {
-        try {
-            const adapter = this.plugin.app.vault.adapter;
-            const path = this.getNotesFilePath();
-            if (await adapter.exists(path)) {
-                const parsed = JSON.parse(await adapter.read(path)) as unknown;
-                this.notes = parseFloatingStickyNotes(parsed);
-            } else {
-                this.notes = [];
+        const adapter = this.plugin.app.vault.adapter;
+        const path = this.getNotesFilePath();
+        let foundCandidate = false;
+        for (const candidate of [`${path}.tmp`, path, `${path}.bak`]) {
+            try {
+                if (!await adapter.exists(candidate)) continue;
+                foundCandidate = true;
+                const raw = JSON.parse(await adapter.read(candidate)) as unknown;
+                if (!Array.isArray(raw) || !raw.every(isFloatingStickyNoteState)) {
+                    throw new Error('invalid floating sticky-note data');
+                }
+                this.notes = parseFloatingStickyNotes(raw);
+                this.invalidFile = false;
+                // Any fallback source means the canonical file was not the
+                // trusted source; do not copy it over the recovery backup.
+                this.loadedFromBackup = candidate !== path;
+                this.applyHiddenClass();
+                return this.notes;
+            } catch (error) {
+                console.error(`[NarrativeLab] Failed to load floating sticky notes from ${candidate}:`, error);
             }
-        } catch (error) {
-            console.error('[NarrativeLab] Failed to load floating sticky notes:', error);
-            this.notes = [];
         }
+        this.notes = [];
+        this.invalidFile = foundCandidate;
+        this.loadedFromBackup = false;
         this.applyHiddenClass();
         return this.notes;
     }
@@ -87,13 +102,27 @@ export class FloatingStickyNoteManager {
     }
 
     async saveNotes(notes: FloatingStickyNoteState[]): Promise<void> {
+        if (this.invalidFile) {
+            console.error('[NarrativeLab] Refusing to overwrite unreadable floating sticky-note data.');
+            return;
+        }
         const snapshot = notes.map(note => ({ ...note }));
         this.notes = snapshot;
         const content = JSON.stringify(snapshot, null, 2);
         this.writeQueue = this.writeQueue.then(async () => {
             if (this.unloading) return;
             try {
-                await this.plugin.app.vault.adapter.write(this.getNotesFilePath(), content);
+                const adapter = this.plugin.app.vault.adapter;
+                const path = this.getNotesFilePath();
+                const tempPath = `${path}.tmp`;
+                const backupPath = `${path}.bak`;
+                await adapter.write(tempPath, content);
+                if (!this.loadedFromBackup && await adapter.exists(path)) {
+                    await adapter.write(backupPath, await adapter.read(path));
+                }
+                await adapter.write(path, content);
+                await adapter.remove(tempPath).catch(() => undefined);
+                this.loadedFromBackup = false;
             } catch (error) {
                 console.error('[NarrativeLab] Failed to save floating sticky notes:', error);
             }
@@ -177,7 +206,6 @@ export class FloatingStickyNoteManager {
     }
 
     async unloadAll(): Promise<void> {
-        this.unloading = true;
         for (const note of this.activeNotes) {
             if (note.state.isEditing && note.textareaEl) {
                 note.state.content = note.textareaEl.value;
@@ -185,6 +213,7 @@ export class FloatingStickyNoteManager {
             this.updateNote(note.state);
         }
         await this.flush();
+        this.unloading = true;
         for (const note of [...this.activeNotes]) note.destroy();
         activeDocument.querySelectorAll(`.${FLOATING_NOTE_CLASS}`).forEach(el => el.remove());
         activeDocument.body.removeClass(FLOATING_NOTES_HIDDEN_CLASS);

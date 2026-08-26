@@ -68,6 +68,8 @@ export const NL_META_SHEET = '_nl_meta';
 const META_SCHEMA = 3;
 /** Excel shared-string / cell text hard limit (OOXML). Exceeding it makes Excel repair sharedStrings.xml. */
 export const EXCEL_MAX_CELL_CHARS = 32767;
+/** Font used by newly-created NarrativeLab spreadsheet cells. */
+export const DEFAULT_PLOTGRID_FONT_FAMILY = 'Microsoft YaHei';
 
 function sanitizeProjectArtifactName(name: string): string {
     const cleaned = name
@@ -161,7 +163,7 @@ export interface PlotGridNlMeta {
         univerExtras?: UniverSheetSnapshotExtras;
         rows: RowMeta[];
         columns: ColumnMeta[];
-        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align' | 'univerStyle' | 'univerValue' | 'univerValueType'> & {
+        cells: Record<string, Pick<CellData, 'id' | 'linkedSceneId' | 'linkedViaWikilink' | 'formula' | 'manualContent' | 'bgColor' | 'textColor' | 'bold' | 'italic' | 'align' | 'univerStyle' | 'excelStyle' | 'univerValue' | 'univerValueType'> & {
             /** Canonical cell display / Markdown text (schema ≥ 2). */
             content?: string;
             /** Original Markdown source when the visible xlsx cell stores rendered link text. */
@@ -366,6 +368,7 @@ export function documentFromNlMeta(meta: PlotGridNlMeta): ConceptGridDocument {
                 italic: saved.italic,
                 align: saved.align || 'left',
                 univerStyle: saved.univerStyle,
+                excelStyle: saved.excelStyle,
                 univerValue: saved.univerValue,
                 univerValueType: saved.univerValueType,
             });
@@ -704,6 +707,16 @@ function cloneStyleObject(style: UniverStyleSnapshot | Record<string, unknown> |
     }
 }
 
+function cloneExcelStyle(style: ExcelJS.Style | Record<string, unknown> | null | undefined): Record<string, unknown> | undefined {
+    if (!style || typeof style !== 'object' || Object.keys(style).length === 0) return undefined;
+    try {
+        const cloned = JSON.parse(JSON.stringify(style)) as Record<string, unknown>;
+        return Object.keys(cloned).length ? cloned : undefined;
+    } catch {
+        return undefined;
+    }
+}
+
 type UniverNativeValue = string | number | boolean;
 type UniverNativeValueType = 1 | 2 | 3 | 4;
 
@@ -962,26 +975,25 @@ function applyHeaderStyleFromUniver(
         if (target.italic) { target.italic = false; changed = true; }
         return changed;
     }
-    if (!raw) return false;
+    if (!raw || !('s' in raw)) return false;
     const style = resolveUniverStyle(raw, styles);
-    if (!style) return false;
     let changed = false;
-    const bg = style.bg?.rgb || '';
+    const bg = style?.bg?.rgb || '';
     if ((target.headerBgColor || '') !== bg) {
         target.headerBgColor = bg;
         changed = true;
     }
-    const text = style.cl?.rgb || '';
+    const text = style?.cl?.rgb || '';
     if ((target.textColor || '') !== text) {
         target.textColor = text;
         changed = true;
     }
-    const bold = !!(style.bl);
+    const bold = !!(style?.bl);
     if (!!target.bold !== bold) {
         target.bold = bold;
         changed = true;
     }
-    const italic = !!(style.it);
+    const italic = !!(style?.it);
     if (!!target.italic !== italic) {
         target.italic = italic;
         changed = true;
@@ -1007,9 +1019,17 @@ function defaultCell(partial?: Partial<CellData>): CellData {
         formula: partial?.formula,
         manualContent: partial?.manualContent,
         univerStyle: partial?.univerStyle,
+        excelStyle: partial?.excelStyle,
         univerValue: partial?.univerValue,
         univerValueType: partial?.univerValueType,
     };
+}
+
+function plotGridUniverDefaultStyle(raw: unknown): Record<string, unknown> {
+    const retained = raw && typeof raw === 'object'
+        ? cloneStyleObject(raw as Record<string, unknown>) || {}
+        : {};
+    return { ff: DEFAULT_PLOTGRID_FONT_FAMILY, ...retained };
 }
 
 function mergeAxisUniverSnapshot(
@@ -1019,6 +1039,7 @@ function mergeAxisUniverSnapshot(
     raw: UniverCellSnapshot | null | undefined,
     styles?: Record<string, UniverStyleSnapshot>,
     clearStyles = false,
+    clearContent = true,
 ): boolean {
     if (raw === undefined) return false;
     const existing = page.cells[id];
@@ -1031,14 +1052,17 @@ function mergeAxisUniverSnapshot(
         id,
         content,
         manualContent: true,
-        bgColor: clearStyles ? '' : (style ? (style.bg?.rgb || '') : (existing?.bgColor || '')),
-        textColor: clearStyles ? '' : (style ? (style.cl?.rgb || '') : (existing?.textColor || '')),
-        bold: clearStyles ? false : (style?.bl == null ? existing?.bold : !!style.bl),
-        italic: clearStyles ? false : (style?.it == null ? existing?.italic : !!style.it),
-        align: clearStyles ? 'left' : (style?.ht === 2 ? 'center' : style?.ht === 3 ? 'right' : style?.ht === 1 ? 'left' : existing?.align),
+        bgColor: clearStyles ? '' : (styleProvided ? (style?.bg?.rgb || '') : (existing?.bgColor || '')),
+        textColor: clearStyles ? '' : (styleProvided ? (style?.cl?.rgb || '') : (existing?.textColor || '')),
+        bold: clearStyles ? false : (styleProvided ? !!style?.bl : existing?.bold),
+        italic: clearStyles ? false : (styleProvided ? !!style?.it : existing?.italic),
+        align: clearStyles ? 'left' : (styleProvided
+            ? (style?.ht === 2 ? 'center' : style?.ht === 3 ? 'right' : 'left')
+            : existing?.align),
         univerStyle: clearStyles ? undefined : (styleProvided ? cloneStyleObject(style) : existing?.univerStyle),
-        univerValue: clearStyles ? undefined : (valueProvided ? native.value : existing?.univerValue),
-        univerValueType: clearStyles ? undefined : (valueProvided ? native.type : existing?.univerValueType),
+        excelStyle: clearStyles || styleProvided ? undefined : existing?.excelStyle,
+        univerValue: clearStyles && clearContent ? undefined : (valueProvided ? native.value : existing?.univerValue),
+        univerValueType: clearStyles && clearContent ? undefined : (valueProvided ? native.type : existing?.univerValueType),
     });
     if (existing && JSON.stringify(existing) === JSON.stringify(next)) return false;
     page.cells[id] = next;
@@ -1087,13 +1111,113 @@ function excelCellModelText(cell: ExcelJS.Cell, date1904: boolean): string {
     return excelValueModelText(cell.value, date1904);
 }
 
+const EXCEL_NATIVE_UNIVER_STYLE_KEYS = [
+    'ff', 'fs', 'it', 'bl', 'ul', 'st', 'bg', 'bd', 'cl', 'va', 'n', 'tr', 'ht', 'vt', 'tb',
+] as const;
+
+const EXCEL_TO_UNIVER_BORDER_STYLE: Record<string, number> = {
+    thin: 1,
+    hair: 2,
+    dotted: 3,
+    dashed: 4,
+    dashDot: 5,
+    dashDotDot: 6,
+    double: 7,
+    medium: 8,
+    mediumDashed: 9,
+    mediumDashDot: 10,
+    mediumDashDotDot: 11,
+    slantDashDot: 12,
+    thick: 13,
+};
+
+const UNIVER_TO_EXCEL_BORDER_STYLE: Record<number, ExcelJS.BorderStyle> = Object.fromEntries(
+    Object.entries(EXCEL_TO_UNIVER_BORDER_STYLE).map(([name, value]) => [value, name]),
+) as Record<number, ExcelJS.BorderStyle>;
+
+function excelBorderToUniver(border: Partial<ExcelJS.Border> | undefined): Record<string, unknown> | undefined {
+    if (!border?.style) return undefined;
+    const rgb = argbToCss(border.color?.argb);
+    return {
+        s: EXCEL_TO_UNIVER_BORDER_STYLE[border.style] ?? 1,
+        ...(rgb ? { cl: { rgb } } : {}),
+    };
+}
+
 function excelCellUniverStyle(cell: ExcelJS.Cell, saved?: Record<string, unknown>): Record<string, unknown> | undefined {
+    // Excel is canonical for native cell formatting. Retain only Univer-only
+    // fields from the sidecar, otherwise a format cleared in Excel would be
+    // resurrected by stale metadata on the next NarrativeLab save.
     const style = cloneStyleObject(saved) || {};
+    for (const key of EXCEL_NATIVE_UNIVER_STYLE_KEYS) delete style[key];
+
+    const font = cell.font;
+    if (font?.name) style.ff = font.name;
+    if (typeof font?.size === 'number') style.fs = font.size;
+    if (font?.bold != null) style.bl = font.bold ? 1 : 0;
+    if (font?.italic != null) style.it = font.italic ? 1 : 0;
+    if (font?.underline && font.underline !== 'none') style.ul = { s: 1 };
+    if (font?.strike) style.st = { s: 1 };
+    const textColor = argbToCss(font?.color?.argb);
+    if (textColor) style.cl = { rgb: textColor };
+
+    const fill = cell.fill;
+    if (fill?.type === 'pattern' && fill.pattern === 'solid') {
+        const fillColor = argbToCss(fill.fgColor?.argb);
+        if (fillColor) style.bg = { rgb: fillColor };
+    }
+
+    const borders: Record<string, unknown> = {};
+    const borderMap = [
+        ['t', cell.border?.top],
+        ['r', cell.border?.right],
+        ['b', cell.border?.bottom],
+        ['l', cell.border?.left],
+    ] as const;
+    for (const [key, border] of borderMap) {
+        const converted = excelBorderToUniver(border);
+        if (converted) borders[key] = converted;
+    }
+    if (Object.keys(borders).length) style.bd = borders;
+
+    const alignment = cell.alignment;
+    const horizontal = alignment?.horizontal;
+    if (horizontal) {
+        style.ht = horizontal === 'center' || horizontal === 'centerContinuous'
+            ? 2
+            : horizontal === 'right'
+                ? 3
+                : horizontal === 'justify'
+                    ? 4
+                    : horizontal === 'distributed'
+                        ? 6
+                        : 1;
+    }
+    if (alignment?.vertical) {
+        style.vt = alignment.vertical === 'top' ? 1 : alignment.vertical === 'middle' ? 2 : 3;
+    }
+    if (alignment?.wrapText === true) style.tb = 3;
+    if (typeof alignment?.textRotation === 'number') style.tr = { a: alignment.textRotation };
+
     const pattern = typeof cell.numFmt === 'string' && cell.numFmt.trim() && cell.numFmt !== 'General'
         ? cell.numFmt
         : '';
     if (pattern) style.n = { pattern };
     return Object.keys(style).length ? style : undefined;
+}
+
+function excelCellFillColor(cell: ExcelJS.Cell): string {
+    return cell.fill?.type === 'pattern' && cell.fill.pattern === 'solid'
+        ? argbToCss(cell.fill.fgColor?.argb)
+        : '';
+}
+
+function excelCellHorizontalAlign(cell: ExcelJS.Cell): CellData['align'] {
+    return cell.alignment?.horizontal === 'center' || cell.alignment?.horizontal === 'centerContinuous'
+        ? 'center'
+        : cell.alignment?.horizontal === 'right'
+            ? 'right'
+            : 'left';
 }
 
 function cellFromExcelAxis(
@@ -1111,7 +1235,13 @@ function cellFromExcelAxis(
         id,
         content,
         manualContent: true,
+        bgColor: excelCellFillColor(cell),
+        textColor: argbToCss(cell.font?.color?.argb),
+        bold: Boolean(cell.font?.bold),
+        italic: Boolean(cell.font?.italic),
+        align: excelCellHorizontalAlign(cell),
         univerStyle: style,
+        excelStyle: cloneExcelStyle(cell.style),
         univerValue: native.value,
         univerValueType: native.type,
     });
@@ -1141,6 +1271,7 @@ export function buildNlMeta(doc: ConceptGridDocument, sheetNames: string[]): Plo
                 italic: cell.italic,
                 align: cell.align,
                 univerStyle: cell.univerStyle,
+                excelStyle: cell.excelStyle,
                 univerValue: cell.univerValue,
                 univerValueType: cell.univerValueType,
             };
@@ -1192,6 +1323,97 @@ export function serializePlotGridNlMeta(raw: unknown): string {
     return `${JSON.stringify(buildNlMetaForDocument(raw), null, 2)}\n`;
 }
 
+function univerColor(styleValue: unknown): string {
+    if (!styleValue || typeof styleValue !== 'object') return '';
+    const rgb = (styleValue as { rgb?: unknown }).rgb;
+    return typeof rgb === 'string' ? rgb : '';
+}
+
+function applyUniverBorderToExcel(raw: unknown): Partial<ExcelJS.Border> | undefined {
+    if (!raw || typeof raw !== 'object') return undefined;
+    const border = raw as { s?: unknown; cl?: unknown };
+    const borderCode = Number(border.s);
+    const style = UNIVER_TO_EXCEL_BORDER_STYLE[borderCode];
+    if (!style) return undefined;
+    const color = univerColor(border.cl);
+    return {
+        style,
+        ...(color ? { color: { argb: cssToArgb(color) } } : {}),
+    };
+}
+
+/** Apply the complete retained style before writing a value into a rebuilt workbook. */
+function applyCellStyleToExcel(cell: ExcelJS.Cell, data?: CellData): void {
+    const retained = cloneExcelStyle(data?.excelStyle);
+    if (retained) cell.style = retained as unknown as ExcelJS.Style;
+
+    const style = mergeOwnedUniverCellStyle(data);
+    const font = { ...(cell.font || {}) };
+    const family = typeof style.ff === 'string' && style.ff.trim()
+        ? style.ff.trim()
+        : (!retained ? DEFAULT_PLOTGRID_FONT_FAMILY : '');
+    if (family) font.name = family;
+    if (typeof style.fs === 'number' && Number.isFinite(style.fs)) font.size = style.fs;
+    if ('bl' in style) font.bold = Boolean(style.bl);
+    if ('it' in style) font.italic = Boolean(style.it);
+    // Univer has only a binary underline flag; retain Excel's double/accounting
+    // underline variants until NarrativeLab explicitly changes the style.
+    if ('ul' in style && !retained) font.underline = Boolean(style.ul);
+    if ('st' in style) font.strike = Boolean(style.st);
+    const textColor = univerColor(style.cl);
+    if (textColor) font.color = { argb: cssToArgb(textColor) };
+    cell.font = font;
+
+    const fillColor = univerColor(style.bg);
+    if (fillColor) {
+        cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: cssToArgb(fillColor) },
+        };
+    }
+
+    if (style.bd && typeof style.bd === 'object') {
+        const borders = style.bd as Record<string, unknown>;
+        const top = applyUniverBorderToExcel(borders.t);
+        const right = applyUniverBorderToExcel(borders.r);
+        const bottom = applyUniverBorderToExcel(borders.b);
+        const left = applyUniverBorderToExcel(borders.l);
+        cell.border = {
+            ...(cell.border || {}),
+            ...(top ? { top } : {}),
+            ...(right ? { right } : {}),
+            ...(bottom ? { bottom } : {}),
+            ...(left ? { left } : {}),
+        };
+    }
+
+    const alignment = { ...(cell.alignment || {}) };
+    const horizontalCode = Number(style.ht);
+    if (Number.isFinite(horizontalCode)) {
+        alignment.horizontal = horizontalCode === 2
+            ? 'center'
+            : horizontalCode === 3
+                ? 'right'
+                : horizontalCode === 4
+                    ? 'justify'
+                    : horizontalCode === 6
+                        ? 'distributed'
+                        : 'left';
+    }
+    const verticalCode = Number(style.vt);
+    if (Number.isFinite(verticalCode) && verticalCode > 0) {
+        alignment.vertical = verticalCode === 1 ? 'top' : verticalCode === 2 ? 'middle' : 'bottom';
+    }
+    if (Number(style.tb) === 3) alignment.wrapText = true;
+    const rotation = style.tr && typeof style.tr === 'object'
+        ? Number((style.tr as { a?: unknown }).a)
+        : Number.NaN;
+    if (Number.isFinite(rotation)) alignment.textRotation = rotation;
+    cell.alignment = alignment;
+    applyExcelNumberFormat(cell, data);
+}
+
 /** Encode ConceptGridDocument → xlsx ArrayBuffer. */
 export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEncodeOptions = {}): Promise<ArrayBuffer> {
     const doc = normalizeConceptGridDocument(raw);
@@ -1225,6 +1447,7 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
         // Header row: corner + column labels. Axis cells keep their native
         // number/date value and format just like ordinary body cells.
         const cornerCell = sheet.getCell(1, 1);
+        applyCellStyleToExcel(cornerCell, page.cells[AXIS_CORNER_CELL_ID]);
         writeExcelValue(cornerCell, page.cornerLabel || '', page.cells[AXIS_CORNER_CELL_ID]);
         if ((page.labelColumnWidth || 0) > 0) {
             sheet.getColumn(1).width = Math.max(8, (page.labelColumnWidth || 0) / 8);
@@ -1235,6 +1458,7 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
         cols.forEach((col, ci) => {
             const cell = sheet.getCell(1, ci + 2);
             const axisData = page.cells[axisColumnCellId(col.id)];
+            applyCellStyleToExcel(cell, axisData);
             writeExcelValue(cell, col.label || '', axisData);
             if (col.headerBgColor || col.bgColor) {
                 cell.fill = {
@@ -1249,6 +1473,7 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
         rows.forEach((row, ri) => {
             const header = sheet.getCell(ri + 2, 1);
             const axisData = page.cells[axisRowCellId(row.id)];
+            applyCellStyleToExcel(header, axisData);
             writeExcelValue(header, row.label || '', axisData);
             if (row.headerBgColor || row.bgColor) {
                 header.fill = {
@@ -1262,6 +1487,7 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
             cols.forEach((col, ci) => {
                 const data = page.cells[cellKey(row.id, col.id)];
                 const excelCell = sheet.getCell(ri + 2, ci + 2);
+                applyCellStyleToExcel(excelCell, data);
                 const nativeHyperlink = data?.linkedSceneId && !data.formula
                     ? obsidianOpenUri(data.linkedSceneId, options.vaultName)
                     : '';
@@ -1298,7 +1524,7 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
                         color: { argb: data?.textColor ? cssToArgb(data.textColor) : 'FF0563C1' },
                         bold: data.bold,
                         italic: data.italic,
-                        underline: nativeHyperlink ? true : undefined,
+                        ...(nativeHyperlink ? { underline: true } : {}),
                     };
                 } else if (data?.bold || data?.italic) {
                     excelCell.font = {
@@ -1308,7 +1534,7 @@ export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEnco
                     };
                 }
                 if (data?.align) {
-                    excelCell.alignment = { horizontal: data.align };
+                    excelCell.alignment = { ...(excelCell.alignment || {}), horizontal: data.align };
                 }
             });
         });
@@ -1638,12 +1864,13 @@ export async function decodePlotGridXlsx(
                     // sidecar formula resurrects formulas replaced in Excel.
                     formula: formulaValue?.formula ? `=${formulaValue.formula}` : undefined,
                     manualContent: saved?.manualContent,
-                    bgColor: fill || saved?.bgColor || '',
-                    textColor: saved?.textColor || '',
-                    bold: saved?.bold ?? !!excelCell.font?.bold,
-                    italic: saved?.italic ?? !!excelCell.font?.italic,
-                    align: saved?.align || (excelCell.alignment?.horizontal as CellData['align']) || 'left',
+                    bgColor: fill,
+                    textColor: argbToCss(excelCell.font?.color?.argb),
+                    bold: Boolean(excelCell.font?.bold),
+                    italic: Boolean(excelCell.font?.italic),
+                    align: excelCellHorizontalAlign(excelCell),
                     univerStyle: excelCellUniverStyle(excelCell, saved?.univerStyle),
+                    excelStyle: cloneExcelStyle(excelCell.style),
                     univerValue: native.value,
                     univerValueType: native.type,
                 });
@@ -1922,7 +2149,7 @@ export function documentToUniverWorkbookData(
             ...(extras?.mergeData ? { mergeData: extras.mergeData } : {}),
             ...(extras?.defaultColumnWidth != null ? { defaultColumnWidth: extras.defaultColumnWidth } : {}),
             ...(extras?.defaultRowHeight != null ? { defaultRowHeight: extras.defaultRowHeight } : {}),
-            ...(extras?.defaultStyle != null ? { defaultStyle: extras.defaultStyle } : {}),
+            defaultStyle: plotGridUniverDefaultStyle(extras?.defaultStyle),
             ...(extras?.rowHeader != null ? { rowHeader: extras.rowHeader } : {}),
             ...(extras?.columnHeader != null ? { columnHeader: extras.columnHeader } : {}),
             ...(extras?.showGridlines != null ? { showGridlines: extras.showGridlines } : {}),
@@ -2179,8 +2406,10 @@ export type MergeUniverCellDataOptions = {
     clearMissing?: boolean;
     /** When false, skip row/column size merges (sizes come from resize mutations). */
     mergeDimensions?: boolean;
-    /** Clear all cell formatting as well as content for explicitly targeted cells. */
+    /** Clear all persisted formatting for explicitly targeted cells. */
     clearStyles?: boolean;
+    /** Set false for Univer's format-only clear so cell values and formulas survive. */
+    clearContent?: boolean;
 };
 
 /** Merge Univer cellData edits back into ConceptGridDocument (preserves links via existing meta). */
@@ -2199,6 +2428,7 @@ export function mergeUniverCellDataIntoDocument(
     const clearMissing = false;
     const mergeDimensions = options.mergeDimensions !== false;
     const clearStyles = options.clearStyles === true;
+    const clearContent = options.clearContent !== false;
     const page = doc.pages.find(p => p.id === sheetId);
     if (!page) return doc;
 
@@ -2270,9 +2500,26 @@ export function mergeUniverCellDataIntoDocument(
         }
         return false;
     };
+    const axisSnapshotText = (
+        bucket: Record<number, UniverCellSnapshot | null> | undefined,
+        index: number,
+        current: string,
+    ): string | undefined => {
+        const raw = bucket?.[index];
+        if (raw === undefined) return undefined;
+        const styleOnly = raw !== null
+            && 's' in raw
+            && !('v' in raw)
+            && !('p' in raw)
+            && !('f' in raw)
+            && !('custom' in raw);
+        return !clearContent || styleOnly
+            ? current
+            : committedUniverCellText(bucket, index);
+    };
     {
         const raw = cellData[0]?.[0];
-        const next = committedUniverCellText(cellData[0], 0);
+        const next = axisSnapshotText(cellData[0], 0, page.cornerLabel || '');
         if (applyAxisLabel(page.cornerLabel || '', next, AXIS_CORNER_CELL_ID, value => {
             page.cornerLabel = value;
         })) changed = true;
@@ -2283,11 +2530,12 @@ export function mergeUniverCellDataIntoDocument(
             raw,
             styles,
             clearStyles,
+            clearContent,
         )) changed = true;
     }
     cols.forEach((col, ci) => {
         const raw = cellData[0]?.[ci + 1];
-        const next = committedUniverCellText(cellData[0], ci + 1);
+        const next = axisSnapshotText(cellData[0], ci + 1, col.label || '');
         if (applyAxisLabel(col.label || '', next, axisColumnCellId(col.id), value => {
             col.label = value;
         })) changed = true;
@@ -2298,12 +2546,13 @@ export function mergeUniverCellDataIntoDocument(
             raw,
             styles,
             clearStyles,
+            clearContent,
         )) changed = true;
         if (applyHeaderStyleFromUniver(col, raw, styles, clearStyles)) changed = true;
     });
     rows.forEach((row, ri) => {
         const raw = cellData[ri + 1]?.[0];
-        const next = committedUniverCellText(cellData[ri + 1], 0);
+        const next = axisSnapshotText(cellData[ri + 1], 0, row.label || '');
         if (applyAxisLabel(row.label || '', next, axisRowCellId(row.id), value => {
             row.label = value;
         })) changed = true;
@@ -2314,6 +2563,7 @@ export function mergeUniverCellDataIntoDocument(
             raw,
             styles,
             clearStyles,
+            clearContent,
         )) changed = true;
         if (applyHeaderStyleFromUniver(row, raw, styles, clearStyles)) changed = true;
     });
@@ -2329,10 +2579,10 @@ export function mergeUniverCellDataIntoDocument(
             // Univer "Clear all" writes an explicit null into the matrix; "Clear contents"
             // writes `{ v: null, p: null, custom: null }`. Those are committed clears even
             // when the surrounding snapshot is still sparse.
-            if (raw == null || (!('v' in raw) && !('p' in raw))) {
+            if (raw == null || Object.keys(raw).length === 0) {
                 const explicitNull = rowBucket != null
                     && (ci + 1) in rowBucket
-                    && !raw;
+                    && (raw == null || Object.keys(raw).length === 0);
                 if (!clearMissing && !explicitNull) return;
                 const headerPresent = cellData[0] != null;
                 const hasStoredState = Boolean(
@@ -2344,11 +2594,24 @@ export function mergeUniverCellDataIntoDocument(
                     || existing.bold
                     || existing.italic
                     || existing.univerStyle
+                    || existing.excelStyle
                     || existing.univerValue !== undefined,
                 );
                 if (hasStoredState && (rowBucket != null || headerPresent)) {
-                    page.cells[key] = clearStyles
+                    page.cells[key] = clearStyles && clearContent
                         ? defaultCell({ id: key, content: '', manualContent: true })
+                        : clearStyles
+                            ? {
+                                ...existing,
+                                id: key,
+                                bgColor: '',
+                                textColor: '',
+                                bold: false,
+                                italic: false,
+                                align: 'left',
+                                univerStyle: undefined,
+                                excelStyle: undefined,
+                            }
                         : {
                             ...existing,
                             id: key,
@@ -2364,7 +2627,8 @@ export function mergeUniverCellDataIntoDocument(
                 }
                 return;
             }
-            const displayText = univerCellPlainText(raw) || '';
+            const contentProvided = 'v' in raw || 'p' in raw || 'f' in raw || 'custom' in raw;
+            const displayText = contentProvided ? (univerCellPlainText(raw) || '') : existing.content;
             const storedSource = typeof raw.custom?.[PLOTGRID_SOURCE_FIELD] === 'string'
                 ? raw.custom[PLOTGRID_SOURCE_FIELD]
                 : '';
@@ -2372,38 +2636,46 @@ export function mergeUniverCellDataIntoDocument(
             // represents it. A direct in-cell edit intentionally becomes plain
             // text; syntax-rich edits belong in the focused cell editor.
             // Empty display never keeps a leftover Markdown/wikilink source.
-            const nextContent = !displayText
+            const nextContent = !contentProvided
+                ? existing.content
+                : !displayText
                 ? ''
                 : (storedSource
                     && plotGridSourceToUniverRichText(storedSource).displayText === displayText
                     ? storedSource
                     : displayText);
             const style = resolveUniverStyle(raw, styles);
+            const styleProvided = 's' in raw;
             const native = nativeUniverValueFromSnapshot(raw);
             const valueProvided = 'v' in raw;
-            const nextFormula = typeof raw.f === 'string' && raw.f.trim()
-                ? (raw.f.startsWith('=') ? raw.f : `=${raw.f}`)
-                : undefined;
+            const nextFormula = !contentProvided
+                ? existing.formula
+                : (typeof raw.f === 'string' && raw.f.trim()
+                    ? (raw.f.startsWith('=') ? raw.f : `=${raw.f}`)
+                    : undefined);
             const nextCell: CellData = {
                 ...existing,
                 id: key,
                 content: nextContent,
                 formula: nextFormula,
-                manualContent: true,
-                linkedSceneId: !nextContent && existing.linkedViaWikilink
+                manualContent: contentProvided ? true : existing.manualContent,
+                linkedSceneId: contentProvided && !nextContent && existing.linkedViaWikilink
                     ? undefined
                     : existing.linkedSceneId,
-                linkedViaWikilink: !nextContent && existing.linkedViaWikilink
+                linkedViaWikilink: contentProvided && !nextContent && existing.linkedViaWikilink
                     ? undefined
                     : existing.linkedViaWikilink,
-                bgColor: clearStyles ? '' : (style ? (style.bg?.rgb || '') : existing.bgColor),
-                textColor: clearStyles ? '' : (style ? (style.cl?.rgb || '') : existing.textColor),
-                bold: clearStyles ? false : (style?.bl == null ? existing.bold : !!style.bl),
-                italic: clearStyles ? false : (style?.it == null ? existing.italic : !!style.it),
-                align: clearStyles ? 'left' : (style?.ht === 2 ? 'center' : style?.ht === 3 ? 'right' : style?.ht === 1 ? 'left' : existing.align),
-                univerStyle: clearStyles ? undefined : (cloneStyleObject(style) || existing.univerStyle),
-                univerValue: clearStyles ? undefined : (valueProvided ? native.value : existing.univerValue),
-                univerValueType: clearStyles ? undefined : (valueProvided ? native.type : existing.univerValueType),
+                bgColor: clearStyles ? '' : (styleProvided ? (style?.bg?.rgb || '') : existing.bgColor),
+                textColor: clearStyles ? '' : (styleProvided ? (style?.cl?.rgb || '') : existing.textColor),
+                bold: clearStyles ? false : (styleProvided ? !!style?.bl : existing.bold),
+                italic: clearStyles ? false : (styleProvided ? !!style?.it : existing.italic),
+                align: clearStyles ? 'left' : (styleProvided
+                    ? (style?.ht === 2 ? 'center' : style?.ht === 3 ? 'right' : 'left')
+                    : existing.align),
+                univerStyle: clearStyles ? undefined : (styleProvided ? cloneStyleObject(style) : existing.univerStyle),
+                excelStyle: clearStyles || styleProvided ? undefined : existing.excelStyle,
+                univerValue: clearStyles && clearContent ? undefined : (valueProvided ? native.value : existing.univerValue),
+                univerValueType: clearStyles && clearContent ? undefined : (valueProvided ? native.type : existing.univerValueType),
             };
             if (page.cells[key]
                 && existing.content === nextCell.content
@@ -2415,7 +2687,8 @@ export function mergeUniverCellDataIntoDocument(
                 && existing.align === nextCell.align
                 && existing.univerValue === nextCell.univerValue
                 && existing.univerValueType === nextCell.univerValueType
-                && JSON.stringify(existing.univerStyle || null) === JSON.stringify(nextCell.univerStyle || null)) return;
+                && JSON.stringify(existing.univerStyle || null) === JSON.stringify(nextCell.univerStyle || null)
+                && JSON.stringify(existing.excelStyle || null) === JSON.stringify(nextCell.excelStyle || null)) return;
             page.cells[key] = nextCell;
             changed = true;
         });
@@ -2460,6 +2733,7 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
                 parts.push(`native:${key}:${cell.univerValueType || ''}:${JSON.stringify(cell.univerValue)}`);
             }
             if (cell.univerStyle) parts.push(`style:${key}:${JSON.stringify(cell.univerStyle)}`);
+            if (cell.excelStyle) parts.push(`excel-style:${key}:${JSON.stringify(cell.excelStyle)}`);
         }
         if (page.univerExtras) parts.push(`extras:${page.id}:${JSON.stringify(page.univerExtras)}`);
     }
@@ -2473,6 +2747,23 @@ export function conceptGridContentFingerprint(doc: ConceptGridDocument): string 
     }
     if (doc.univerStyles) parts.push(`styles:${JSON.stringify(doc.univerStyles)}`);
     return parts.join('\n');
+}
+
+/**
+ * Fingerprint only the part that is actually encoded into datasheet.xlsx.
+ * Active sheet, sidebar state, zoom and plugin resources live in the sidecar;
+ * changing those must not rebuild (and thereby normalize) an external workbook.
+ */
+export function plotGridWorkbookContentFingerprint(raw: unknown): string {
+    const doc = structuredClone(normalizeConceptGridDocument(raw));
+    doc.activePageId = '';
+    doc.sidebarCollapsed = false;
+    doc.univerResources = undefined;
+    doc.explicitlyRemovedPageIds = undefined;
+    doc.explicitlyRemovedRowIds = undefined;
+    doc.explicitlyRemovedColumnIds = undefined;
+    for (const page of doc.pages) page.zoom = 1;
+    return JSON.stringify(doc);
 }
 
 /**

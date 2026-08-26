@@ -88,3 +88,35 @@ test('an empty legend selection displays no Story Graph nodes or edges', async (
     assert.match(graph, /syncSimulationWithLegend\(filtersActive\)/);
     assert.doesNotMatch(graph, /this\.buildSVG\(\);\s*this\.runSimulation\(\)/);
 });
+
+test('profile associations are mirrored, graph-backed, rename-safe, and never delete note prose', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const [panel, refs, modeBar, graph, characterView, locationView, codexView, main] = await Promise.all([
+        readFile(new URL('../components/LibraryRelationsPanel.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../utils/storyGraphRefs.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/StoryGraph.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/CharacterView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/LocationView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../views/CodexView.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../main.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(panel, /upsertManagedStoryGraphRelation/);
+    assert.match(panel, /migrateFocusPair/);
+    assert.match(panel, /focusNotes\(focusBundleFor/);
+    assert.match(panel, /relatedPaths/);
+    assert.match(panel, /library-relations-icon-button is-confirm/);
+    assert.doesNotMatch(panel, /Repair a missing mirror/);
+    assert.match(refs, /await writeManagedRelationMirror\(app, normalized\.sourcePath/);
+    assert.match(refs, /await writeManagedRelationMirror\(app, normalized\.targetPath/);
+    assert.match(refs, /processManagedRelationFrontmatter/);
+    assert.match(refs, /rebaseStoryGraphRelationPaths/);
+    assert.match(refs, /if \(edge\.managedRelationId\)[\s\S]*?removeManagedStoryGraphRelation/);
+    assert.match(refs, /if \(ref\.managed\) \{[\s\S]*?kept\.push\(ref\)/);
+    assert.match(modeBar, /add\(sourcePath, ref\.targetPath, ref\.id\)/);
+    assert.match(graph, /managedRelationId: link\.managedRelationId/);
+    assert.match(main, /rebaseStoryGraphRelationPaths\(this, oldPath, file\.path/);
+    for (const view of [characterView, locationView, codexView]) {
+        assert.match(view, /renderLibraryRelationsPanel\(sidePanel/);
+    }
+});

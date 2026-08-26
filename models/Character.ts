@@ -24,6 +24,8 @@ export interface Character {
     nickname?: string;
     /** Age or date of birth */
     age?: string;
+    /** Gender, gender identity, or pronouns */
+    gender?: string;
     /** Role in the story (string or list of roles — issue #72 Tier 1) */
     role?: string | string[];
     /**
@@ -199,7 +201,9 @@ export interface Character {
     created?: string;
     /** Modified date */
     modified?: string;
-    /** Free-form notes (markdown body) */
+    /** Short remarks stored in the `note` frontmatter property. */
+    note?: string;
+    /** Long-form Markdown content stored below frontmatter. */
     notes?: string;
 }
 
@@ -553,12 +557,14 @@ export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
             { key: 'tagline', label: 'Tagline', placeholder: 'Choose which field to show on the card' },
             { key: 'nickname', label: 'Nickname / Alias', placeholder: 'Alternative names and their origins', multiline: true },
             { key: 'age', label: 'Age', placeholder: 'Date of birth, current life stage' },
+            { key: 'gender', label: 'Gender', placeholder: 'Gender, identity, or pronouns' },
             { key: 'role', label: 'Role in Story', placeholder: 'Protagonist, antagonist, mentor, sidekick…' },
             { key: 'occupation', label: 'Occupation', placeholder: 'Current job, income level, career history' },
             { key: 'residency', label: 'Residency', placeholder: 'Where they are from and where they currently live', multiline: true },
             { key: 'locations', label: 'Locations', placeholder: 'Story locations they appear at (e.g. The Tavern, Castle Ruins)' },
             { key: 'family', label: 'Family', placeholder: 'Relationships with parents, siblings, spouse…', multiline: true },
             { key: 'earlylife', label: 'Early life', placeholder: 'Childhood, upbringing, education, and formative experiences…', multiline: true },
+            { key: 'note', label: 'Remarks', placeholder: 'Reference notes, inspirations, or additional remarks…', multiline: true },
             { key: 'relations', label: 'Relations', placeholder: 'Add relation rows by category and type' },
         ],
     },
@@ -600,7 +606,7 @@ export const CHARACTER_CATEGORIES: CharacterFieldCategory[] = [
  * Frontmatter keys that map to Character fields (excludes computed/meta keys)
  */
 export const CHARACTER_FIELD_KEYS: (keyof Character)[] = [
-    'name', 'tagline', 'image', 'gallery', 'nickname', 'age', 'role', 'roles', 'occupation', 'residency', 'locations', 'family', 'earlylife', 'relations',
+    'name', 'tagline', 'image', 'gallery', 'nickname', 'age', 'gender', 'role', 'roles', 'occupation', 'residency', 'locations', 'family', 'earlylife', 'note', 'relations',
     'appearance', 'distinguishingFeatures', 'style', 'quirks',
     'personality', 'internalMotivation', 'externalMotivation', 'strengths', 'flaws', 'fears', 'belief', 'misbelief',
     'formativeMemories', 'accomplishments', 'secrets',
@@ -716,7 +722,7 @@ const PROP_SCAN_FIELDS: (keyof Character)[] = [
     'strengths', 'flaws', 'fears', 'belief', 'misbelief',
     'formativeMemories', 'accomplishments', 'secrets',
     'startingPoint', 'goal', 'expectedChange',
-    'habits', 'props', 'notes',
+    'habits', 'props', 'note',
 ];
 
 /**

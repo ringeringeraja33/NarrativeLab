@@ -18,6 +18,12 @@ export interface CellData {
     manualContent?: boolean;
     /** Full Univer IStyleData (borders, wrap, nfmt, font…) so remounts keep formatting. */
     univerStyle?: Record<string, unknown>;
+    /**
+     * Opaque ExcelJS cell-style snapshot. Univer only models part of Excel's
+     * formatting surface, so this keeps externally authored styles lossless
+     * until the user explicitly changes/clears formatting in NarrativeLab.
+     */
+    excelStyle?: Record<string, unknown>;
     /** Native non-text Univer value (number / boolean / forced string). */
     univerValue?: string | number | boolean;
     /** Univer CellValueType: 1=string, 2=number, 3=boolean, 4=forced string. */
@@ -324,6 +330,7 @@ function normalizeCells(value: unknown): Record<string, CellData> {
             formula: typeof cell.formula === 'string' ? cell.formula : undefined,
             manualContent: cell.manualContent === true ? true : undefined,
             univerStyle: normalizeJsonObject(cell.univerStyle),
+            excelStyle: normalizeJsonObject(cell.excelStyle),
             univerValue: nativeValue,
             univerValueType: nativeValue === undefined ? undefined : nativeType,
         };

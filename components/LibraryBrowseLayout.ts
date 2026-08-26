@@ -337,6 +337,8 @@ export interface LibraryBrowseToolbarOpts {
     appendExtra?: (actionsEl: HTMLElement) => void;
     /** Content-mode controls (Profiles / Browse) at the far left of the toolbar. */
     renderLeadingActions?: (actionsEl: HTMLElement) => void;
+    /** File-native actions pinned to the far right of the row. */
+    renderTrailingActions?: (actionsEl: HTMLElement) => void;
 }
 
 export interface LibraryBrowseToolbarResult {
@@ -699,6 +701,10 @@ export function renderLibraryBrowseToolbar(
     if (opts.showLayoutToggle !== false) {
         renderLibraryLayoutToggle(toolbar, opts.plugin, opts.categoryId, opts.onLayoutChange);
     }
+    if (opts.renderTrailingActions) {
+        const trailing = toolbar.createDiv('library-browse-native-actions');
+        opts.renderTrailingActions(trailing);
+    }
 
     let searchInput: HTMLInputElement | null = null;
     if (searchShowing) {
@@ -735,11 +741,16 @@ export function renderLibraryBrowseToolbar(
 export function renderLibraryModeToolbar(
     parent: HTMLElement,
     renderActions: (actionsEl: HTMLElement) => void,
+    renderTrailingActions?: (actionsEl: HTMLElement) => void,
 ): HTMLElement {
     const root = parent.createDiv('library-browse-chrome library-mode-only-chrome');
     const toolbar = root.createDiv('codex-search-row library-browse-toolbar');
     const leading = toolbar.createDiv('library-browse-mode-actions');
     renderActions(leading);
+    if (renderTrailingActions) {
+        const trailing = toolbar.createDiv('library-browse-native-actions');
+        renderTrailingActions(trailing);
+    }
     return root;
 }
 /* eslint-enable @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

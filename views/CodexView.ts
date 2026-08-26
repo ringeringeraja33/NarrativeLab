@@ -30,6 +30,7 @@ import { attachTooltip } from '../components/Tooltip';
 import { isLibraryEntityMarkdownFile } from '../services/EntityFileCache';
 import { mountLibraryEntityBoardAction } from '../components/LibraryEntityBoardAction';
 import { renderLibraryProfileOrientationToggle } from '../components/LibraryProfileOrientationToggle';
+import { renderLibraryRelationsPanel } from '../components/LibraryRelationsPanel';
 import { openConfirmModal } from '../components/ConfirmModal';
 import {
     ARCHIVE_FILTER_HASHTAGS_KEY,
@@ -55,6 +56,10 @@ import { showMenuSafely } from '../utils/obsidianMenu';
 import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import { bindResizableCustomFieldInput, customFieldInputHeightKey } from '../utils/customFieldInputHeight';
 import { moveMappingEntry } from '../utils/libraryProfilePropertyOrder';
+import {
+    captureLibraryProfileBoardScroll,
+    restoreLibraryProfileBoardScroll,
+} from '../utils/libraryProfileBoardScroll';
 import {
     attachBuiltinFieldEditControl,
     attachBuiltinFieldVisibilityControls,
@@ -91,6 +96,7 @@ import {
     ALL_LIBRARY_CATEGORY_ID,
     disposeNativeLibraryBase,
     renderNativeLibraryBase,
+    renderOpenNativeLibraryBaseAction,
     syncAllNativeLibraryBases,
 } from '../components/NativeLibraryBase';
 import {
@@ -132,6 +138,21 @@ type CategoryManagerState = {
     categories: ManagedCodexCategory[];
     deletedPresets: Set<string>;
 };
+
+function cloneCodexEntry(entry: CodexEntry): CodexEntry {
+    return {
+        ...entry,
+        gallery: entry.gallery?.map(image => ({ ...image })),
+        books: entry.books ? [...entry.books] : undefined,
+        custom: entry.custom ? { ...entry.custom } : undefined,
+        universalFields: entry.universalFields
+            ? Object.fromEntries(Object.entries(entry.universalFields).map(([key, value]) => [
+                key,
+                Array.isArray(value) ? [...value] : value,
+            ]))
+            : undefined,
+    };
+}
 
 const FIXED_LIBRARY_CATEGORY_IDS = ['characters', 'locations', UNCATEGORIZED_CATEGORY_ID] as const;
 
@@ -218,6 +239,8 @@ export class CodexView extends ProjectBoundItemView {
     private _pendingDraft: CodexEntry | null = null;
     /** Stable working copy reused across internal detail re-renders. */
     private _editingDraft: CodexEntry | null = null;
+    /** Disk-derived snapshot used to distinguish actual edits from stale UI values. */
+    private _editingDraftBaseline: CodexEntry | null = null;
     private _saveRevision = 0;
     private _saveQueue: Promise<void> = Promise.resolve();
     private _saveInFlight = false;
@@ -301,6 +324,7 @@ export class CodexView extends ProjectBoundItemView {
         this.destroyListScroller();
         await this.flushPendingSave();
         this._editingDraft = null;
+        this._editingDraftBaseline = null;
         activeDocument.querySelectorAll('.gallery-lightbox-window').forEach(w => w.remove());
         this.clearPortaledDropdowns();
     }
@@ -349,6 +373,7 @@ export class CodexView extends ProjectBoundItemView {
     async unmountEmbeddedDetail(): Promise<void> {
         await this.flushPendingSave();
         this._editingDraft = null;
+        this._editingDraftBaseline = null;
         this.selectedEntry = null;
         this.clearPortaledDropdowns();
         this.embedOptions = null;
@@ -461,7 +486,10 @@ export class CodexView extends ProjectBoundItemView {
         )) {
             return;
         }
-        if (this.selectedEntry) this._editingDraft = null;
+        if (this.selectedEntry) {
+            this._editingDraft = null;
+            this._editingDraftBaseline = null;
+        }
         const categoriesEpoch = this.plugin.libraryCategoriesStructureEpoch;
         const categoriesChanged = categoriesEpoch !== this._libraryCategoriesEpoch;
         this._libraryCategoriesEpoch = categoriesEpoch;
@@ -560,7 +588,15 @@ export class CodexView extends ProjectBoundItemView {
     private renderOverview(container: HTMLElement): void {
         container.empty();
         if (getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'browse' && !this.isProfileOverviewMode()) {
-            renderLibraryModeToolbar(container, actions => this.renderOverviewModes(actions));
+            renderLibraryModeToolbar(
+                container,
+                actions => this.renderOverviewModes(actions),
+                actions => renderOpenNativeLibraryBaseAction(
+                    actions,
+                    this.plugin,
+                    this.activeCategory || ALL_LIBRARY_CATEGORY_ID,
+                ),
+            );
             void renderNativeLibraryBase(
                 container,
                 this.plugin,
@@ -659,6 +695,13 @@ export class CodexView extends ProjectBoundItemView {
             // Profile galleries are card-only, same as Character / Location Profiles.
             showLayoutToggle: false,
             renderLeadingActions: (actionsEl) => this.renderOverviewModes(actionsEl),
+            renderTrailingActions: (actionsEl) => {
+                renderOpenNativeLibraryBaseAction(
+                    actionsEl,
+                    this.plugin,
+                    this.activeCategory || ALL_LIBRARY_CATEGORY_ID,
+                );
+            },
         });
 
         if (overviewHeading) {
@@ -1177,9 +1220,9 @@ export class CodexView extends ProjectBoundItemView {
                 });
                 inp.value = val;
                 inp.addEventListener('change', async () => {
-                    const draft: CodexEntry = { ...entry, [key]: inp.value };
+                    const draft: CodexEntry = { ...cloneCodexEntry(entry), [key]: inp.value };
                     try {
-                        await this.codexManager.saveEntry(draft);
+                        await this.codexManager.saveEntry(draft, { baseline: cloneCodexEntry(entry) });
                     } catch (e) {
                         new Notice(t('Save failed'));
                     }
@@ -1259,6 +1302,7 @@ export class CodexView extends ProjectBoundItemView {
     // ══════════════════════════════════════════════════
 
     private renderDetail(container: HTMLElement): void {
+        const boardScroll = captureLibraryProfileBoardScroll(container);
         container.empty();
         const entry = this.codexManager.getEntry(this.selectedEntry!);
         if (!entry) {
@@ -1293,7 +1337,10 @@ export class CodexView extends ProjectBoundItemView {
                 custom: { ...(entry.custom || {}) },
                 universalFields: { ...(entry.universalFields || {}) },
             };
-        if (!sameDraft) this._editingDraft = draft;
+        if (!sameDraft) {
+            this._editingDraft = draft;
+            this._editingDraftBaseline = cloneCodexEntry(entry);
+        }
         const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, catDef.id);
         const horizontalProfile = profileOrientation === 'horizontal';
 
@@ -1319,6 +1366,7 @@ export class CodexView extends ProjectBoundItemView {
         backBtn.addEventListener('click', async () => {
             await this.flushPendingSave();
             this._editingDraft = null;
+            this._editingDraftBaseline = null;
             this.selectedEntry = null;
             if (this.embedOptions) {
                 this.embedOptions.onBack();
@@ -1468,6 +1516,10 @@ export class CodexView extends ProjectBoundItemView {
 
         // Side panel — gallery + notes + references
         this.renderGallerySection(sidePanel, draft);
+        renderLibraryRelationsPanel(sidePanel, this.plugin, {
+            name: draft.name || entry.name,
+            filePath: entry.filePath,
+        });
         this.renderNotesSection(sidePanel, draft);
         if (!this.embedOptions?.hideVaultReferences) {
             this.renderReferencesPanel(sidePanel, entry.name);
@@ -1475,6 +1527,7 @@ export class CodexView extends ProjectBoundItemView {
 
         // Show stale-entry warning if codex content changed since last review
         void this.renderStaleWarning(sidePanel, entry);
+        restoreLibraryProfileBoardScroll(container, boardScroll);
     }
 
     // ── Field category rendering ───────────────────────
@@ -2231,8 +2284,8 @@ export class CodexView extends ProjectBoundItemView {
             move(1, 'chevron-down', 'Move field down', customIndex < 0 || customIndex >= customKeys.length - 1);
 
             const removeBtn = row.createEl('button', {
-                cls: 'codex-custom-field-remove',
-                attr: { 'aria-label': t('Remove field') },
+                cls: 'profile-field-action-btn field-remove-btn codex-custom-field-remove',
+                attr: { type: 'button', title: t('Remove field'), 'aria-label': t('Remove field') },
             });
             obsidian.setIcon(removeBtn, 'x');
             removeBtn.addEventListener('click', () => {
@@ -3831,13 +3884,26 @@ export class CodexView extends ProjectBoundItemView {
     }
 
     private async persistCodexDraft(draft: CodexEntry, revision: number): Promise<void> {
+        const snapshot = cloneCodexEntry(draft);
+        const baseline = this._editingDraft === draft && this._editingDraftBaseline
+            ? cloneCodexEntry(this._editingDraftBaseline)
+            : undefined;
         const operation = this._saveQueue
             .catch(() => undefined)
             .then(async () => {
                 this._saveInFlight = true;
                 try {
-                    await this.codexManager.saveEntry(draft);
+                    await this.codexManager.saveEntry(snapshot, { baseline });
                     this._lastSaveTime = Date.now();
+                    if (this._editingDraft === draft) {
+                        this._editingDraftBaseline = cloneCodexEntry(snapshot);
+                        if (this._saveRevision === revision) {
+                            draft.custom = snapshot.custom ? { ...snapshot.custom } : undefined;
+                            draft.universalFields = snapshot.universalFields
+                                ? { ...snapshot.universalFields }
+                                : undefined;
+                        }
+                    }
                     if (this._pendingDraft === draft && this._saveRevision === revision) {
                         this._pendingDraft = null;
                     }

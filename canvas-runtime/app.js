@@ -1170,6 +1170,8 @@ const uiTranslations = {
     "Add entry": "新增资料条目",
     "Cancel": "取消",
     "Canvas": "画布",
+    "Canvas box": "画布盒",
+    "Back to canvas box": "返回画布盒",
     "Canvas quick menu": "画布快捷菜单",
     "Category": "分类",
     "Character": "人物",
@@ -4543,6 +4545,7 @@ function localizeStaticShell() {
     ["[data-action='center-view']", "Center"],
     ["[data-action='toggle-snap-grid']", "Snap"],
     ["[data-action='play']", "Play"],
+    ["[data-action='open-canvas-library']", "Canvas box"],
     [".frame-canvas-label", "Frame canvas"],
     ["#frameCanvasExitButton", "Exit"],
     ["[data-action='export-json']", "Project .json"],
@@ -4578,6 +4581,8 @@ function localizeStaticShell() {
     ["[data-action='toggle-snap-grid']", "title", "Snap nodes to grid"],
     ["[data-action='toggle-snap-grid']", "aria-label", "Snap nodes to grid"],
     ["[data-action='play']", "title", "Play from entry"],
+    ["[data-action='open-canvas-library']", "title", "Back to canvas box"],
+    ["[data-action='open-canvas-library']", "aria-label", "Back to canvas box"],
     ["[data-action='export-json']", "title", "Export editable project file (.json)"],
     ["[data-action='export-story-md']", "title", "Export readable story text (.md)"],
     ["[data-action='import-story-md']", "title", "Import Story Markdown and replace this project"],
@@ -14029,6 +14034,10 @@ function openLinkContextMenu(link, clientX, clientY) {
 
 function handleAction(target) {
   const action = target.dataset.action;
+  if (action === "open-canvas-library") {
+    void window.NarrativeCanvasHost?.openCanvasLibrary?.();
+    return;
+  }
   if (action === "set-document-format") {
     setDocumentFormat(target.dataset.documentFormat);
     return;
