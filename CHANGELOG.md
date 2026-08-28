@@ -1,5 +1,13 @@
 # NarrativeLab — Changelog
 
+## 1.5.0
+
+- Library profile sections can be collapsed and reordered in both layouts. Horizontal mode keeps compact collapsed rows, while vertical mode folds sections into narrow side tabs that release their content width.
+- Section order and collapse state persist per Library category, with drag-and-drop guarded against accidental field edits and rerenders.
+- Related-note rows expose a direct open action, clearer relationship controls, and a documented partial-sync marker without changing the stored relationship data.
+- Native Library Base column visibility synchronization now waits for stable rendered state and ignores transient intermediate frames, preventing columns from disappearing, reappearing, or overwriting the user's choice.
+- Profile rendering and field-control styling are more stable across refreshes, long columns, and custom sections, with regression coverage for layout persistence, Base synchronization, and graph relationships.
+
 ## 1.4.5
 
 - Library profiles preserve custom fields and frontmatter ordering across partial edits, migrations, Base changes, and project reloads without replacing readable data with incomplete editor snapshots.
