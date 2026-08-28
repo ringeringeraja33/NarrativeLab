@@ -568,6 +568,26 @@ export function renderLibraryRelationsPanel(
             populateCategorySelect(typeSelect, plugin, relation.category);
             typeSelect.title = categoryLabel(plugin, relation.category);
 
+            const relatedFile = plugin.app.vault.getAbstractFileByPath(otherPath);
+            const openButton = controls.createEl('button', {
+                cls: 'library-relations-icon-button',
+                attr: {
+                    type: 'button',
+                    'aria-label': t('Open related note: {name}', { name: otherName }),
+                    title: t('Open related note: {name}', { name: otherName }),
+                },
+            });
+            obsidian.setIcon(openButton, 'file-text');
+            openButton.disabled = !(relatedFile instanceof obsidian.TFile);
+            if (openButton.disabled) {
+                openButton.title = t('Related note is missing');
+                openButton.setAttribute('aria-label', t('Related note is missing'));
+            } else {
+                openButton.addEventListener('click', () => {
+                    void plugin.app.workspace.openLinkText(otherPath, currentPath, true);
+                });
+            }
+
             const focusButton = controls.createEl('button', {
                 cls: 'library-relations-icon-button',
                 attr: {
@@ -722,7 +742,9 @@ export function renderLibraryRelationsPanel(
 
             if (relation.mirrorCount < 2) {
                 row.addClass('is-partial');
-                row.setAttribute('title', t('The other note is not synchronized yet. Your data is still kept here.'));
+                const syncWarning = t('The other note is not synchronized yet. Your data is still kept here.');
+                row.setAttribute('title', syncWarning);
+                row.setAttribute('aria-label', syncWarning);
             }
         }
     };

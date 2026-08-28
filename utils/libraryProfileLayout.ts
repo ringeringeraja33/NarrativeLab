@@ -33,6 +33,8 @@ export interface LibraryProfileLayoutSettings {
     profileFieldOverrides: Record<string, Record<string, ProfileFieldOverride>>;
     /** Section/column order shared by horizontal and vertical profile layouts. */
     profileSectionOrders: Record<string, string[]>;
+    /** Collapsed section keys, shared by horizontal and vertical layouts. */
+    profileCollapsedSections: Record<string, string[]>;
 }
 
 export interface ProfileFieldOverride {
@@ -59,6 +61,7 @@ export function emptyLibraryProfileLayout(): LibraryProfileLayoutSettings {
         profileFieldInputHeights: {},
         profileFieldOverrides: {},
         profileSectionOrders: {},
+        profileCollapsedSections: {},
     };
 }
 
@@ -79,6 +82,7 @@ export function readLibraryProfileLayout(settings: SceneCardsSettings): LibraryP
         profileFieldInputHeights: sanitizeCustomFieldInputHeightMap(settings.profileFieldInputHeights || {}),
         profileFieldOverrides: sanitizeProfileFieldOverrides(settings.profileFieldOverrides || {}),
         profileSectionOrders: sanitizeStringListMap(settings.profileSectionOrders || {}),
+        profileCollapsedSections: sanitizeStringListMap(settings.profileCollapsedSections || {}),
     };
 }
 
@@ -101,6 +105,7 @@ export function applyLibraryProfileLayout(
     settings.profileFieldInputHeights = { ...(layout.profileFieldInputHeights || {}) };
     settings.profileFieldOverrides = JSON.parse(JSON.stringify(layout.profileFieldOverrides || {})) as SceneCardsSettings['profileFieldOverrides'];
     settings.profileSectionOrders = sanitizeStringListMap(layout.profileSectionOrders || {});
+    settings.profileCollapsedSections = sanitizeStringListMap(layout.profileCollapsedSections || {});
 }
 
 export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLayoutSettings | null {
@@ -118,7 +123,8 @@ export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLay
         || isRecord(rec.profileOrientations)
         || isRecord(rec.profileFieldInputHeights)
         || isRecord(rec.profileFieldOverrides)
-        || isRecord(rec.profileSectionOrders);
+        || isRecord(rec.profileSectionOrders)
+        || isRecord(rec.profileCollapsedSections);
     if (!hasAny && !('version' in rec)) return null;
 
     return {
@@ -155,6 +161,9 @@ export function libraryProfileLayoutFromUnknown(raw: unknown): LibraryProfileLay
             : {},
         profileSectionOrders: isRecord(rec.profileSectionOrders)
             ? sanitizeStringListMap(rec.profileSectionOrders)
+            : {},
+        profileCollapsedSections: isRecord(rec.profileCollapsedSections)
+            ? sanitizeStringListMap(rec.profileCollapsedSections)
             : {},
     };
 }
@@ -263,6 +272,235 @@ export function getOrderedProfileSectionIds(
         seen.add(id);
     }
     return result;
+}
+
+/** Replace the in-memory collapse state for one profile category from project settings. */
+export function restoreProfileSectionCollapseState(
+    state: Set<string>,
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    relevantKeys: string[],
+): void {
+    for (const key of relevantKeys) state.delete(key);
+    const relevant = new Set(relevantKeys);
+    for (const key of settings.profileCollapsedSections?.[categoryKey] ?? []) {
+        if (relevant.has(key)) state.add(key);
+    }
+}
+
+/** Update the project-backed collapse state synchronously before its save is queued. */
+export function rememberProfileSectionCollapsed(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    sectionKey: string,
+    collapsed: boolean,
+): void {
+    const map = settings.profileCollapsedSections ??= {};
+    const next = new Set(map[categoryKey] ?? []);
+    if (collapsed) next.add(sectionKey);
+    else next.delete(sectionKey);
+    if (next.size > 0) map[categoryKey] = [...next];
+    else delete map[categoryKey];
+}
+
+export interface ReorderableProfileCustomSection {
+    title: string;
+    position?: number;
+}
+
+const BUILTIN_SECTION_TOKEN = 'builtin::';
+const CUSTOM_SECTION_TOKEN = 'custom::';
+
+/** Stable DOM token for one schema-defined profile section. */
+export function profileBuiltinSectionToken(sectionId: string): string {
+    return `${BUILTIN_SECTION_TOKEN}${sectionId}`;
+}
+
+/** Stable DOM token for one user-defined profile section. */
+export function profileCustomSectionToken(sectionTitle: string): string {
+    return `${CUSTOM_SECTION_TOKEN}${sectionTitle}`;
+}
+
+/** Mark a rendered profile section so the shared drag controller can find it. */
+export function markProfileSection(section: HTMLElement, token: string): void {
+    section.dataset.profileSectionToken = token;
+}
+
+function interleavedProfileSectionTokens(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    defaultIds: string[],
+    customSections: ReorderableProfileCustomSection[],
+): string[] {
+    const builtins = getOrderedProfileSectionIds(settings, categoryKey, defaultIds);
+    const buckets = Array.from({ length: builtins.length + 1 }, () => [] as string[]);
+    for (const section of customSections) {
+        const raw = Number.isFinite(section.position) ? Math.trunc(section.position!) : builtins.length;
+        const slot = Math.max(0, Math.min(builtins.length, raw));
+        buckets[slot].push(profileCustomSectionToken(section.title));
+    }
+    const result = [...buckets[0]];
+    builtins.forEach((id, index) => {
+        result.push(profileBuiltinSectionToken(id), ...buckets[index + 1]);
+    });
+    return result;
+}
+
+function applyInterleavedProfileSectionTokens(
+    settings: SceneCardsSettings,
+    categoryKey: string,
+    defaultIds: string[],
+    customSections: ReorderableProfileCustomSection[],
+    tokens: string[],
+): void {
+    const allowedBuiltins = new Set(defaultIds);
+    const customByToken = new Map(customSections.map(section => [profileCustomSectionToken(section.title), section]));
+    const builtinOrder: string[] = [];
+    const customOrder: ReorderableProfileCustomSection[] = [];
+    let builtinsSeen = 0;
+    for (const token of tokens) {
+        if (token.startsWith(BUILTIN_SECTION_TOKEN)) {
+            const id = token.slice(BUILTIN_SECTION_TOKEN.length);
+            if (!allowedBuiltins.has(id) || builtinOrder.includes(id)) continue;
+            builtinOrder.push(id);
+            builtinsSeen++;
+            continue;
+        }
+        const custom = customByToken.get(token);
+        if (!custom || customOrder.includes(custom)) continue;
+        custom.position = builtinsSeen;
+        customOrder.push(custom);
+    }
+    for (const id of defaultIds) {
+        if (!builtinOrder.includes(id)) builtinOrder.push(id);
+    }
+    for (const custom of customSections) {
+        if (!customOrder.includes(custom)) {
+            custom.position = builtinOrder.length;
+            customOrder.push(custom);
+        }
+    }
+    (settings.profileSectionOrders ??= {})[categoryKey] = builtinOrder;
+    customSections.splice(0, customSections.length, ...customOrder);
+}
+
+/**
+ * Add one native drag handle to every rendered profile section. The persisted
+ * sequence includes built-in, flat-custom, and user-defined sections, while
+ * retaining removed/unrendered built-ins in their previous relative order.
+ */
+export function attachProfileSectionDragAndDrop(
+    container: HTMLElement,
+    opts: {
+        settings: SceneCardsSettings;
+        categoryKey: string;
+        defaultIds: string[];
+        customSections: ReorderableProfileCustomSection[];
+        save: () => Promise<void>;
+        onChanged: () => void;
+    },
+): void {
+    const sections = Array.from(container.querySelectorAll<HTMLElement>('[data-profile-section-token]'));
+    if (sections.length < 2) return;
+    let dragged: HTMLElement | null = null;
+    let busy = false;
+    const clearDropState = () => {
+        for (const section of sections) section.classList.remove('is-drop-before', 'is-drop-after');
+    };
+
+    for (const section of sections) {
+        const header = section.querySelector<HTMLElement>(
+            ':scope > .character-section-header, :scope > .location-section-header, :scope > .codex-section-header',
+        );
+        if (!header || header.querySelector('.profile-section-drag-handle')) continue;
+        const handle = createProfileSectionAction(header, {
+            icon: 'grip-vertical',
+            title: 'Drag to reorder section',
+            className: 'profile-section-drag-handle',
+        });
+        handle.setAttr('draggable', 'true');
+        handle.addEventListener('click', event => {
+            event.preventDefault();
+            event.stopPropagation();
+        });
+        handle.addEventListener('dragstart', (event: DragEvent) => {
+            if (busy) {
+                event.preventDefault();
+                return;
+            }
+            dragged = section;
+            section.addClass('is-dragging');
+            event.dataTransfer?.setData('text/plain', section.dataset.profileSectionToken || '');
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+        });
+        handle.addEventListener('dragend', () => {
+            dragged?.removeClass('is-dragging');
+            dragged = null;
+            clearDropState();
+        });
+
+        section.addEventListener('dragover', (event: DragEvent) => {
+            if (!dragged || dragged === section || busy) return;
+            event.preventDefault();
+            const rect = section.getBoundingClientRect();
+            const horizontal = container.classList.contains('character-detail-board-track');
+            const before = horizontal
+                ? event.clientX < rect.left + rect.width / 2
+                : event.clientY < rect.top + rect.height / 2;
+            clearDropState();
+            section.addClass(before ? 'is-drop-before' : 'is-drop-after');
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        });
+        section.addEventListener('drop', (event: DragEvent) => {
+            if (!dragged || dragged === section || busy) return;
+            event.preventDefault();
+            const sourceToken = dragged.dataset.profileSectionToken || '';
+            const targetToken = section.dataset.profileSectionToken || '';
+            const current = interleavedProfileSectionTokens(
+                opts.settings,
+                opts.categoryKey,
+                opts.defaultIds,
+                opts.customSections,
+            );
+            const sourceIndex = current.indexOf(sourceToken);
+            const targetIndex = current.indexOf(targetToken);
+            if (sourceIndex < 0 || targetIndex < 0) return;
+            const rect = section.getBoundingClientRect();
+            const horizontal = container.classList.contains('character-detail-board-track');
+            const before = horizontal
+                ? event.clientX < rect.left + rect.width / 2
+                : event.clientY < rect.top + rect.height / 2;
+            const previousOrder = [...(opts.settings.profileSectionOrders?.[opts.categoryKey] || [])];
+            const previousCustom = opts.customSections.map(custom => ({ custom, position: custom.position }));
+            current.splice(sourceIndex, 1);
+            const adjustedTarget = current.indexOf(targetToken);
+            current.splice(adjustedTarget + (before ? 0 : 1), 0, sourceToken);
+            applyInterleavedProfileSectionTokens(
+                opts.settings,
+                opts.categoryKey,
+                opts.defaultIds,
+                opts.customSections,
+                current,
+            );
+            if (before) section.parentElement?.insertBefore(dragged, section);
+            else section.parentElement?.insertBefore(dragged, section.nextSibling);
+            clearDropState();
+            busy = true;
+            void (async () => {
+                try {
+                    await opts.save();
+                } catch (error) {
+                    (opts.settings.profileSectionOrders ??= {})[opts.categoryKey] = previousOrder;
+                    opts.customSections.splice(0, opts.customSections.length, ...previousCustom.map(item => item.custom));
+                    for (const item of previousCustom) item.custom.position = item.position;
+                    console.error('[NarrativeLab] Failed to save dragged profile section order:', error);
+                } finally {
+                    busy = false;
+                    opts.onChanged();
+                }
+            })();
+        });
+    }
 }
 
 /** Return the one shared action group used by built-in and custom section headers. */

@@ -34,7 +34,7 @@ const [
 
 test('built-in schema chrome goes through t(); player-authored labels stay verbatim', () => {
     // Built-in Codex section titles (from schema English keys)
-    assert.match(codexView, /codex-section-title',\s*text:\s*t\(cat\.title\)/);
+    assert.match(codexView, /codex-section-title profile-section-title',\s*text:\s*t\(cat\.title\)/);
     assert.match(codexView, /text:\s*t\(catDef\.label\)\.replace/);
     // Built-in field rows still translate schema keys
     assert.match(codexView, /const displayLabel = t\(label\);/);

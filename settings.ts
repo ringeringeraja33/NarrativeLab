@@ -921,6 +921,8 @@ export interface SceneCardsSettings {
     profileFieldOverrides?: Record<string, Record<string, { label?: string; placeholder?: string }>>;
     /** Shared section/column order for horizontal and vertical profile layouts. */
     profileSectionOrders?: Record<string, string[]>;
+    /** Collapsed large sections shared by horizontal and vertical layouts. */
+    profileCollapsedSections?: Record<string, string[]>;
     /** Series name — groups projects that share a common universe / codex */
     series: string;
     /** Extra vault-relative folder paths to scan for NarrativeLab entities */
@@ -1137,6 +1139,7 @@ export const DEFAULT_SETTINGS: SceneCardsSettings = {
     profileFieldInputHeights: {},
     profileFieldOverrides: {},
     profileSectionOrders: {},
+    profileCollapsedSections: {},
     series: '',
     extraFolders: [],
 

@@ -106,6 +106,9 @@ test('profile associations are mirrored, graph-backed, rename-safe, and never de
     assert.match(panel, /focusNotes\(focusBundleFor/);
     assert.match(panel, /relatedPaths/);
     assert.match(panel, /library-relations-icon-button is-confirm/);
+    assert.match(panel, /Open related note: \{name\}/);
+    assert.match(panel, /workspace\.openLinkText\(otherPath, currentPath, true\)/);
+    assert.match(panel, /relatedFile instanceof obsidian\.TFile/);
     assert.doesNotMatch(panel, /Repair a missing mirror/);
     assert.match(refs, /await writeManagedRelationMirror\(app, normalized\.sourcePath/);
     assert.match(refs, /await writeManagedRelationMirror\(app, normalized\.targetPath/);

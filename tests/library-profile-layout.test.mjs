@@ -144,6 +144,7 @@ test('libraryProfileLayoutFromUnknown requires useful payload', () => {
     assert.deepEqual(emptyLibraryProfileLayout().characterCustomSections, []);
     assert.deepEqual(emptyLibraryProfileLayout().profileOrientations, {});
     assert.deepEqual(emptyLibraryProfileLayout().profileFieldInputHeights, {});
+    assert.deepEqual(emptyLibraryProfileLayout().profileCollapsedSections, {});
 });
 
 test('character tagline can read built-in, universal, and custom fields', () => {
@@ -598,6 +599,43 @@ test('built-in, legacy custom, and user-defined sections share one header action
     assert.match(layout, /getProfileSectionActions/);
     assert.match(layout, /createProfileSectionAction/);
     assert.match(css, /\.profile-section-actions \.profile-section-action-btn/);
+});
+
+test('horizontal and vertical profile sections share collapse and drag reorder controls', async () => {
+    const [character, location, codex, customSections, layout, settings, main, css] = await Promise.all([
+        readFile('views/CharacterView.ts', 'utf8'),
+        readFile('views/LocationView.ts', 'utf8'),
+        readFile('views/CodexView.ts', 'utf8'),
+        readFile('components/CustomSectionsRenderer.ts', 'utf8'),
+        readFile('utils/libraryProfileLayout.ts', 'utf8'),
+        readFile('settings.ts', 'utf8'),
+        readFile('main.ts', 'utf8'),
+        readFile('styles.css', 'utf8'),
+    ]);
+    for (const source of [character, location, codex]) {
+        assert.match(source, /attachProfileSectionDragAndDrop\(formPanel/);
+        assert.match(source, /markProfileSection\(section, profileBuiltinSectionToken/);
+        assert.match(source, /restoreProfileSectionCollapseState/);
+        assert.match(source, /rememberProfileSectionCollapsed/);
+        assert.doesNotMatch(source, /const isCollapsed = board \? false : this\.collapsedSections/);
+        assert.doesNotMatch(source, /if \(horizontalProfile\) \{[\s\S]{0,500}?collapsedSections\.delete/);
+    }
+    assert.match(customSections, /profileCustomSectionToken\(sec\.title\)/);
+    assert.match(customSections, /section\.toggleClass\('is-collapsed', isCollapsed\)/);
+    assert.match(layout, /profile-section-drag-handle/);
+    assert.match(layout, /applyInterleavedProfileSectionTokens/);
+    assert.match(layout, /previousCustom\.map\(item => item\.custom\)/);
+    assert.match(layout, /profileCollapsedSections/);
+    assert.match(customSections, /onCollapseChanged/);
+    assert.match(settings, /profileCollapsedSections/);
+    assert.match(main, /'profileCollapsedSections'/);
+    assert.match(css, /character-detail-board-track > \[data-profile-section-token\]\.is-collapsed/);
+    assert.match(css, /is-collapsed\s*\{[\s\S]*?flex:\s*0 0 44px;[\s\S]*?max-width:\s*44px/);
+    assert.match(css, /is-collapsed \.profile-section-title\s*\{[\s\S]*?writing-mode:\s*vertical-rl/);
+    assert.match(css, /profile-section-action-btn:not\(\.profile-section-drag-handle\)/);
+    assert.match(css, /profile-section-drag-handle/);
+    assert.match(css, /is-drop-before/);
+    assert.match(css, /is-drop-after/);
 });
 
 test('all custom profile text renderers support remembered vertical resizing', async () => {

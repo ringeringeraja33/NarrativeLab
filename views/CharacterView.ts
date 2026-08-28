@@ -66,6 +66,7 @@ import {
     attachBuiltinFieldEditControl,
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
+    attachProfileSectionDragAndDrop,
     attachProfileSectionOrderControls,
     attachUniversalProfileFieldControls,
     createProfileSectionAction,
@@ -75,6 +76,10 @@ import {
     getLibraryProfileOrientation,
     getOrderedProfileSectionIds,
     isBuiltinSectionRemoved,
+    markProfileSection,
+    profileBuiltinSectionToken,
+    rememberProfileSectionCollapsed,
+    restoreProfileSectionCollapseState,
     readLibraryProfileLayout,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
@@ -1326,14 +1331,17 @@ export class CharacterView extends ProjectBoundItemView {
             this._lastSavedRelations = normalizeCharacterRelations(selected.relations).map(r => ({ ...r }));
         }
 
-        // Horizontal mode shows every section as a column — expand built-ins / custom.
-        if (horizontalProfile) {
-            for (const cat of CHARACTER_CATEGORIES) this.collapsedSections.delete(cat.title);
-            this.collapsedSections.delete('Custom Fields');
-            for (const key of [...this.collapsedSections]) {
-                if (key.startsWith('custom-section::character::')) this.collapsedSections.delete(key);
-            }
-        }
+        restoreProfileSectionCollapseState(
+            this.collapsedSections,
+            this.plugin.settings,
+            'character',
+            [
+                ...CHARACTER_CATEGORIES.map(category => category.title),
+                'Custom Fields',
+                ...(this.plugin.settings.characterCustomSections || [])
+                    .map(section => `custom-section::character::${section.title}`),
+            ],
+        );
 
         // Back + actions
         const header = container.createDiv('character-detail-header');
@@ -1522,6 +1530,20 @@ export class CharacterView extends ProjectBoundItemView {
                 if (this.selectedCharacter && this.rootContainer) this.rerenderCharacterDetail();
             },
         });
+        attachProfileSectionDragAndDrop(formPanel, {
+            settings: this.plugin.settings,
+            categoryKey: 'character',
+            defaultIds: sectionIds,
+            customSections: customHost.sections,
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                this.rerenderCharacterDetail();
+            },
+        });
 
         // ── Side panel: render the visible cards in one pass. ──
         // The scene summary used to be inserted by a zero-delay timer. During
@@ -1583,17 +1605,18 @@ export class CharacterView extends ProjectBoundItemView {
         const board = !!opts?.board;
         const eager = !!opts?.eager;
         const section = parent.createDiv('character-section');
+        markProfileSection(section, profileBuiltinSectionToken(category.title));
         if (board) section.addClass('character-board-column');
-        const isCollapsed = board ? false : this.collapsedSections.has(category.title);
+        const isCollapsed = this.collapsedSections.has(category.title);
+        section.toggleClass('is-collapsed', isCollapsed);
 
         // Section header (collapsible in stacked mode; sticky title in board mode)
         const sectionHeader = section.createDiv('character-section-header');
         const chevron = sectionHeader.createSpan('character-section-chevron');
-        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('character-section-icon');
         obsidian.setIcon(icon, category.icon);
-        sectionHeader.createSpan({ text: t(category.title) });
+        sectionHeader.createSpan({ cls: 'profile-section-title', text: t(category.title) });
 
         attachProfileSectionOrderControls(sectionHeader, {
             settings: this.plugin.settings,
@@ -1742,38 +1765,41 @@ export class CharacterView extends ProjectBoundItemView {
             });
         };
 
-        if (!board) {
-            if (!isCollapsed) ensureBody();
-            sectionHeader.addEventListener('click', (e) => {
-                // Ignore clicks on the add-field button
-                if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
-                if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
-                if (this.collapsedSections.has(category.title)) {
-                    this.collapsedSections.delete(category.title);
-                    ensureBody();
-                    sectionBody.setCssStyles({ display: '' });
-                    obsidian.setIcon(chevron, 'chevron-down');
-                } else {
-                    this.collapsedSections.add(category.title);
-                    sectionBody.setCssStyles({ display: 'none' });
-                    obsidian.setIcon(chevron, 'chevron-right');
-                }
-            });
-            return;
-        }
+        if (!board && !isCollapsed) ensureBody();
+        sectionHeader.addEventListener('click', (e) => {
+            if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
+            if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
+            if (this.collapsedSections.has(category.title)) {
+                this.collapsedSections.delete(category.title);
+                rememberProfileSectionCollapsed(this.plugin.settings, 'character', category.title, false);
+                section.removeClass('is-collapsed');
+                ensureBody();
+                sectionBody.setCssStyles({ display: '' });
+                obsidian.setIcon(chevron, 'chevron-down');
+            } else {
+                this.collapsedSections.add(category.title);
+                rememberProfileSectionCollapsed(this.plugin.settings, 'character', category.title, true);
+                section.addClass('is-collapsed');
+                sectionBody.setCssStyles({ display: 'none' });
+                obsidian.setIcon(chevron, 'chevron-right');
+            }
+            void this.plugin.saveSettings();
+        });
+        if (!board) return;
 
         // Board mode: build field DOM only for eager (visible) columns, or when
         // the user scrolls a column near the viewport.
         if (eager) {
-            ensureBody();
+            if (!isCollapsed) ensureBody();
             return;
         }
 
         const track = parent.closest('.character-detail-board-track') as HTMLElement | null;
         if (typeof IntersectionObserver === 'undefined' || !track) {
-            ensureBody();
+            if (!isCollapsed) ensureBody();
             return;
         }
+        if (isCollapsed) return;
 
         const observer = new IntersectionObserver(
             (entries) => {
@@ -2714,17 +2740,18 @@ export class CharacterView extends ProjectBoundItemView {
     private renderCustomFields(parent: HTMLElement, draft: Character, opts?: { board?: boolean }): void {
         const board = !!opts?.board;
         const section = parent.createDiv('character-section');
+        markProfileSection(section, profileBuiltinSectionToken('Custom Fields'));
         if (board) section.addClass('character-board-column');
         const title = 'Custom Fields';
-        const isCollapsed = board ? false : this.collapsedSections.has(title);
+        const isCollapsed = this.collapsedSections.has(title);
+        section.toggleClass('is-collapsed', isCollapsed);
 
         const sectionHeader = section.createDiv('character-section-header');
         const chevron = sectionHeader.createSpan('character-section-chevron');
-        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('character-section-icon');
         obsidian.setIcon(icon, 'plus-circle');
-        sectionHeader.createSpan({ text: t(title) });
+        sectionHeader.createSpan({ cls: 'profile-section-title', text: t(title) });
 
         attachProfileSectionOrderControls(sectionHeader, {
             settings: this.plugin.settings,
@@ -2760,19 +2787,23 @@ export class CharacterView extends ProjectBoundItemView {
         const sectionBody = section.createDiv('character-section-body');
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
-        if (!board) {
-            sectionHeader.addEventListener('click', () => {
-                if (this.collapsedSections.has(title)) {
-                    this.collapsedSections.delete(title);
-                    sectionBody.setCssStyles({ display: '' });
-                    obsidian.setIcon(chevron, 'chevron-down');
-                } else {
-                    this.collapsedSections.add(title);
-                    sectionBody.setCssStyles({ display: 'none' });
-                    obsidian.setIcon(chevron, 'chevron-right');
-                }
-            });
-        }
+        sectionHeader.addEventListener('click', event => {
+            if ((event.target as HTMLElement).closest('.codex-section-actions')) return;
+            if (this.collapsedSections.has(title)) {
+                this.collapsedSections.delete(title);
+                rememberProfileSectionCollapsed(this.plugin.settings, 'character', title, false);
+                section.removeClass('is-collapsed');
+                sectionBody.setCssStyles({ display: '' });
+                obsidian.setIcon(chevron, 'chevron-down');
+            } else {
+                this.collapsedSections.add(title);
+                rememberProfileSectionCollapsed(this.plugin.settings, 'character', title, true);
+                section.addClass('is-collapsed');
+                sectionBody.setCssStyles({ display: 'none' });
+                obsidian.setIcon(chevron, 'chevron-right');
+            }
+            void this.plugin.saveSettings();
+        });
 
         const renderAllCustomFields = () => {
             sectionBody.empty();
@@ -2892,6 +2923,10 @@ export class CharacterView extends ProjectBoundItemView {
                     await this.plugin.saveSettings();
                     await this.plugin.syncCustomFieldFrontmatter('character', true);
                 })();
+            },
+            onCollapseChanged: (sectionKey, collapsed) => {
+                rememberProfileSectionCollapsed(this.plugin.settings, 'character', sectionKey, collapsed);
+                void this.plugin.saveSettings();
             },
             bindCustomTextArea: (textarea, fieldKey, minHeight) => {
                 bindResizableCustomFieldInput(

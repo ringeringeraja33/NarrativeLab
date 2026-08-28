@@ -4504,7 +4504,86 @@ button.library-profile-orientation-btn.is-active:hover,
 .character-detail-board-track .codex-section-chevron,
 .character-detail-board-track .location-section-chevron.is-hidden,
 .character-detail-board-track .location-section-chevron {
+    display: inline-flex;
+}
+
+/* Horizontal and vertical profiles share the same real accordion state. */
+.character-detail-board-track > [data-profile-section-token].is-collapsed {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    max-width: 44px;
+    align-self: stretch;
+    max-height: 100%;
+}
+
+.character-detail-board-track > [data-profile-section-token].is-collapsed > .character-section-header,
+.character-detail-board-track > [data-profile-section-token].is-collapsed > .location-section-header,
+.character-detail-board-track > [data-profile-section-token].is-collapsed > .codex-section-header {
+    position: static;
+    flex: 1;
+    min-height: 0;
+    padding: 8px 6px;
+    flex-direction: column;
+    justify-content: flex-start;
+    gap: 7px;
+    border-bottom: 0;
+    cursor: pointer;
+}
+
+.character-detail-board-track > [data-profile-section-token].is-collapsed .profile-section-title {
+    writing-mode: vertical-rl;
+    text-orientation: mixed;
+    max-width: 1.4em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    line-height: 1.2;
+}
+
+.character-detail-board-track > [data-profile-section-token].is-collapsed .profile-section-actions {
+    margin: auto 0 0;
+    flex-direction: column;
+}
+
+.character-detail-board-track > [data-profile-section-token].is-collapsed
+    .profile-section-actions > .profile-section-action-btn:not(.profile-section-drag-handle) {
     display: none;
+}
+
+.character-detail-board-track > [data-profile-section-token].is-collapsed > .character-section-body,
+.character-detail-board-track > [data-profile-section-token].is-collapsed > .location-section-body,
+.character-detail-board-track > [data-profile-section-token].is-collapsed > .codex-section-body {
+    display: none !important;
+}
+
+.profile-section-drag-handle {
+    cursor: grab;
+    touch-action: none;
+}
+
+.profile-section-drag-handle:active {
+    cursor: grabbing;
+}
+
+[data-profile-section-token].is-dragging {
+    opacity: 0.42;
+}
+
+.character-detail-board-track > [data-profile-section-token].is-drop-before {
+    box-shadow: -4px 0 0 var(--interactive-accent);
+}
+
+.character-detail-board-track > [data-profile-section-token].is-drop-after {
+    box-shadow: 4px 0 0 var(--interactive-accent);
+}
+
+.character-detail-vertical-track > [data-profile-section-token].is-drop-before {
+    box-shadow: 0 -4px 0 var(--interactive-accent);
+}
+
+.character-detail-vertical-track > [data-profile-section-token].is-drop-after {
+    box-shadow: 0 4px 0 var(--interactive-accent);
 }
 
 .character-detail-board-track .character-field-row,
@@ -4628,7 +4707,7 @@ button.library-profile-orientation-btn.is-active:hover,
 
 .library-relation-controls {
     display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(82px, 0.85fr) 26px 26px;
+    grid-template-columns: minmax(0, 1.35fr) minmax(74px, 0.85fr) repeat(3, 26px);
     align-items: center;
     gap: 4px;
     min-width: 0;

@@ -135,6 +135,7 @@ export const MAIN_ZH: Record<string, string> = {
     "Move field to section": "将字段移至分区",
     "Move section down": "下移分区",
     "Move section up": "上移分区",
+    "Drag to reorder section": "拖动以调整分区顺序",
     "Multi-select (tags)": "多选（标签）",
     "Name is required.": "名称为必填项。",
     "Narrative Canvas is still loading.": "叙事画布仍在加载。",

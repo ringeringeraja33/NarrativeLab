@@ -36,6 +36,7 @@ import {
     attachBuiltinFieldEditControl,
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
+    attachProfileSectionDragAndDrop,
     attachProfileSectionOrderControls,
     attachUniversalProfileFieldControls,
     createProfileSectionAction,
@@ -45,6 +46,10 @@ import {
     getLibraryProfileOrientation,
     getOrderedProfileSectionIds,
     isBuiltinSectionRemoved,
+    markProfileSection,
+    profileBuiltinSectionToken,
+    rememberProfileSectionCollapsed,
+    restoreProfileSectionCollapseState,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
     universalProfileFieldKey,
@@ -808,14 +813,18 @@ export class LocationView extends ProjectBoundItemView {
         const horizontalProfile = profileOrientation === 'horizontal';
 
         const categories = isWorld ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
-        if (horizontalProfile) {
-            for (const category of categories) this.collapsedSections.delete(category.title);
-            this.collapsedSections.delete('Custom Fields');
-            this.collapsedSections.delete('Hierarchy');
-            for (const key of [...this.collapsedSections]) {
-                if (key.startsWith('custom-section::location::')) this.collapsedSections.delete(key);
-            }
-        }
+        restoreProfileSectionCollapseState(
+            this.collapsedSections,
+            this.plugin.settings,
+            layoutKey,
+            [
+                ...categories.map(category => category.title),
+                'Custom Fields',
+                ...(!isWorld ? ['Hierarchy'] : []),
+                ...(this.plugin.settings.locationCustomSections || [])
+                    .map(section => `custom-section::location::${section.title}`),
+            ],
+        );
 
         // Header
         const header = container.createDiv('location-detail-header');
@@ -905,13 +914,22 @@ export class LocationView extends ProjectBoundItemView {
         }
 
         // Categories interleaved with user-defined custom sections (#120)
-        const sectionIds = [...categories.map(category => category.title), 'Custom Fields'];
+        const sectionIds = [
+            ...categories.map(category => category.title),
+            'Custom Fields',
+            ...(!isWorld ? ['Hierarchy'] : []),
+        ];
         const orderedSectionIds = getOrderedProfileSectionIds(this.plugin.settings, layoutKey, sectionIds);
         const customHost = this.buildCustomSectionsHost(draft, orderedSectionIds.length);
         // Slot 0: any custom sections positioned above the first built-in.
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
         for (let i = 0; i < orderedSectionIds.length; i++) {
             const sectionId = orderedSectionIds[i];
+            if (sectionId === 'Hierarchy' && !isWorld) {
+                this.renderLocationHierarchy(formPanel, draft as StoryLocation, { board: horizontalProfile });
+                renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
+                continue;
+            }
             if (sectionId === 'Custom Fields') {
                 this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
                 renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
@@ -928,11 +946,6 @@ export class LocationView extends ProjectBoundItemView {
             renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
         }
 
-        // For locations: world & parent dropdowns
-        if (!isWorld) {
-            this.renderLocationHierarchy(formPanel, draft as StoryLocation, { board: horizontalProfile });
-        }
-
         // "+ Add custom section" button at the bottom
         renderAddCustomSectionButton(formPanel, customHost);
         renderRemovedBuiltinSectionsToggle(formPanel, {
@@ -941,6 +954,20 @@ export class LocationView extends ProjectBoundItemView {
             sections: categories.map(c => ({ title: c.title, fields: c.fields })),
             save: () => this.plugin.saveSettings(),
             onChanged: () => {
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
+        attachProfileSectionDragAndDrop(formPanel, {
+            settings: this.plugin.settings,
+            categoryKey: layoutKey,
+            defaultIds: sectionIds,
+            customSections: customHost.sections,
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
                 if (this.rootContainer) this.renderDetail(this.rootContainer);
             },
         });
@@ -975,16 +1002,17 @@ export class LocationView extends ProjectBoundItemView {
     ): void {
         const board = !!opts?.board;
         const section = parent.createDiv('location-section');
+        markProfileSection(section, profileBuiltinSectionToken(category.title));
         if (board) section.addClass('character-board-column');
-        const isCollapsed = board ? false : this.collapsedSections.has(category.title);
+        const isCollapsed = this.collapsedSections.has(category.title);
+        section.toggleClass('is-collapsed', isCollapsed);
 
         const sectionHeader = section.createDiv('location-section-header');
         const chevron = sectionHeader.createSpan('location-section-chevron');
-        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('location-section-icon');
         obsidian.setIcon(icon, category.icon);
-        sectionHeader.createSpan({ text: t(category.title) });
+        sectionHeader.createSpan({ cls: 'profile-section-title', text: t(category.title) });
 
         const layoutKey = draft.type === 'world' ? 'world' : 'location';
         const categories = draft.type === 'world' ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
@@ -992,7 +1020,11 @@ export class LocationView extends ProjectBoundItemView {
             settings: this.plugin.settings,
             categoryKey: layoutKey,
             sectionId: category.title,
-            defaultIds: [...categories.map(item => item.title), 'Custom Fields'],
+            defaultIds: [
+                ...categories.map(item => item.title),
+                'Custom Fields',
+                ...(draft.type === 'location' ? ['Hierarchy'] : []),
+            ],
             save: async () => {
                 await this.plugin.saveSettings();
                 await syncAllNativeLibraryBases(this.plugin);
@@ -1067,15 +1099,18 @@ export class LocationView extends ProjectBoundItemView {
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
         sectionHeader.addEventListener('click', (e) => {
-            if (board) return;
             if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
             if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
             if (this.collapsedSections.has(category.title)) {
                 this.collapsedSections.delete(category.title);
+                rememberProfileSectionCollapsed(this.plugin.settings, layoutKey, category.title, false);
+                section.removeClass('is-collapsed');
                 sectionBody.setCssStyles({ display: '' });
                 obsidian.setIcon(chevron, 'chevron-down');
             } else {
                 this.collapsedSections.add(category.title);
+                rememberProfileSectionCollapsed(this.plugin.settings, layoutKey, category.title, true);
+                section.addClass('is-collapsed');
                 sectionBody.setCssStyles({ display: 'none' });
                 obsidian.setIcon(chevron, 'chevron-right');
             }
@@ -1565,16 +1600,52 @@ export class LocationView extends ProjectBoundItemView {
     ): void {
         const board = !!opts?.board;
         const section = parent.createDiv('location-section');
+        markProfileSection(section, profileBuiltinSectionToken('Hierarchy'));
         if (board) section.addClass('character-board-column');
+        const sectionKey = 'Hierarchy';
+        const isCollapsed = this.collapsedSections.has(sectionKey);
+        section.toggleClass('is-collapsed', isCollapsed);
         const sectionHeader = section.createDiv('location-section-header');
         const chevron = sectionHeader.createSpan('location-section-chevron');
-        if (board) chevron.addClass('is-hidden');
-        obsidian.setIcon(chevron, 'chevron-down');
+        obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('location-section-icon');
         obsidian.setIcon(icon, 'git-branch');
-        sectionHeader.createSpan({ text: t('Hierarchy') });
+        sectionHeader.createSpan({ cls: 'profile-section-title', text: t('Hierarchy') });
+
+        attachProfileSectionOrderControls(sectionHeader, {
+            settings: this.plugin.settings,
+            categoryKey: 'location',
+            sectionId: sectionKey,
+            defaultIds: [...LOCATION_CATEGORIES.map(item => item.title), 'Custom Fields', sectionKey],
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                if (this.rootContainer) this.renderDetail(this.rootContainer);
+            },
+        });
 
         const body = section.createDiv('location-section-body');
+        if (isCollapsed) body.setCssStyles({ display: 'none' });
+        sectionHeader.addEventListener('click', event => {
+            if ((event.target as HTMLElement).closest('.codex-section-actions')) return;
+            if (this.collapsedSections.has(sectionKey)) {
+                this.collapsedSections.delete(sectionKey);
+                rememberProfileSectionCollapsed(this.plugin.settings, 'location', sectionKey, false);
+                section.removeClass('is-collapsed');
+                body.setCssStyles({ display: '' });
+                obsidian.setIcon(chevron, 'chevron-down');
+            } else {
+                this.collapsedSections.add(sectionKey);
+                rememberProfileSectionCollapsed(this.plugin.settings, 'location', sectionKey, true);
+                section.addClass('is-collapsed');
+                body.setCssStyles({ display: 'none' });
+                obsidian.setIcon(chevron, 'chevron-right');
+            }
+            void this.plugin.saveSettings();
+        });
 
         // World dropdown
         const worldRow = body.createDiv('location-field-row');
@@ -1614,17 +1685,18 @@ export class LocationView extends ProjectBoundItemView {
     ): void {
         const board = !!opts?.board;
         const section = parent.createDiv('location-section');
+        markProfileSection(section, profileBuiltinSectionToken('Custom Fields'));
         if (board) section.addClass('character-board-column');
         const title = 'Custom Fields';
-        const isCollapsed = board ? false : this.collapsedSections.has(title);
+        const isCollapsed = this.collapsedSections.has(title);
+        section.toggleClass('is-collapsed', isCollapsed);
 
         const sectionHeader = section.createDiv('location-section-header');
         const chevron = sectionHeader.createSpan('location-section-chevron');
-        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
         const icon = sectionHeader.createSpan('location-section-icon');
         obsidian.setIcon(icon, 'plus-circle');
-        sectionHeader.createSpan({ text: t(title) });
+        sectionHeader.createSpan({ cls: 'profile-section-title', text: t(title) });
 
         const layoutKey = draft.type === 'world' ? 'world' : 'location';
         const categories = draft.type === 'world' ? WORLD_CATEGORIES : LOCATION_CATEGORIES;
@@ -1632,7 +1704,11 @@ export class LocationView extends ProjectBoundItemView {
             settings: this.plugin.settings,
             categoryKey: layoutKey,
             sectionId: title,
-            defaultIds: [...categories.map(item => item.title), title],
+            defaultIds: [
+                ...categories.map(item => item.title),
+                title,
+                ...(draft.type === 'location' ? ['Hierarchy'] : []),
+            ],
             save: async () => {
                 await this.plugin.saveSettings();
                 await syncAllNativeLibraryBases(this.plugin);
@@ -1662,19 +1738,23 @@ export class LocationView extends ProjectBoundItemView {
         const sectionBody = section.createDiv('location-section-body');
         if (isCollapsed) sectionBody.setCssStyles({ display: 'none' });
 
-        if (!board) {
-            sectionHeader.addEventListener('click', () => {
-                if (this.collapsedSections.has(title)) {
-                    this.collapsedSections.delete(title);
-                    sectionBody.setCssStyles({ display: '' });
-                    obsidian.setIcon(chevron, 'chevron-down');
-                } else {
-                    this.collapsedSections.add(title);
-                    sectionBody.setCssStyles({ display: 'none' });
-                    obsidian.setIcon(chevron, 'chevron-right');
-                }
-            });
-        }
+        sectionHeader.addEventListener('click', event => {
+            if ((event.target as HTMLElement).closest('.codex-section-actions')) return;
+            if (this.collapsedSections.has(title)) {
+                this.collapsedSections.delete(title);
+                rememberProfileSectionCollapsed(this.plugin.settings, layoutKey, title, false);
+                section.removeClass('is-collapsed');
+                sectionBody.setCssStyles({ display: '' });
+                obsidian.setIcon(chevron, 'chevron-down');
+            } else {
+                this.collapsedSections.add(title);
+                rememberProfileSectionCollapsed(this.plugin.settings, layoutKey, title, true);
+                section.addClass('is-collapsed');
+                sectionBody.setCssStyles({ display: 'none' });
+                obsidian.setIcon(chevron, 'chevron-right');
+            }
+            void this.plugin.saveSettings();
+        });
 
         const renderAll = () => {
             sectionBody.empty();
@@ -1782,6 +1862,10 @@ export class LocationView extends ProjectBoundItemView {
                     await this.plugin.saveSettings();
                     await this.plugin.syncCustomFieldFrontmatter('location', true);
                 })();
+            },
+            onCollapseChanged: (sectionKey, collapsed) => {
+                rememberProfileSectionCollapsed(this.plugin.settings, draft.type, sectionKey, collapsed);
+                void this.plugin.saveSettings();
             },
             bindCustomTextArea: (textarea, fieldKey, minHeight) => {
                 bindResizableCustomFieldInput(

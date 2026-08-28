@@ -2462,7 +2462,7 @@ export default class SceneCardsPlugin extends Plugin {
         'hiddenFields', 'removedBuiltinFields', 'removedBuiltinSections',
         'characterCustomSections', 'locationCustomSections', 'codexCategoryCustomSections',
         'codexCategoryFieldTemplates', 'profileOrientations', 'profileFieldInputHeights',
-        'profileFieldOverrides', 'profileSectionOrders',
+        'profileFieldOverrides', 'profileSectionOrders', 'profileCollapsedSections',
     ];
 
     /** Obsidian appearance → NL/ncanvas light|dark. */
@@ -2611,6 +2611,7 @@ export default class SceneCardsPlugin extends Plugin {
             toSave.profileFieldInputHeights = emptyProfile.profileFieldInputHeights;
             toSave.profileFieldOverrides = emptyProfile.profileFieldOverrides;
             toSave.profileSectionOrders = emptyProfile.profileSectionOrders;
+            toSave.profileCollapsedSections = emptyProfile.profileCollapsedSections;
             // When using per-project colours, restore global defaults into
             // data.json so the global values are not overwritten by the
             // project-specific ones currently in memory.
@@ -3657,6 +3658,7 @@ export default class SceneCardsPlugin extends Plugin {
                 profileFieldInputHeights: { ...this._legacyLibraryProfileLayoutDefaults.profileFieldInputHeights },
                 profileFieldOverrides: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.profileFieldOverrides)),
                 profileSectionOrders: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.profileSectionOrders)),
+                profileCollapsedSections: JSON.parse(JSON.stringify(this._legacyLibraryProfileLayoutDefaults.profileCollapsedSections)),
             });
             profileLayoutDirty = true;
         }

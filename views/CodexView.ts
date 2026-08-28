@@ -64,6 +64,7 @@ import {
     attachBuiltinFieldEditControl,
     attachBuiltinFieldVisibilityControls,
     attachBuiltinSectionRemoveControl,
+    attachProfileSectionDragAndDrop,
     attachProfileSectionOrderControls,
     attachUniversalProfileFieldControls,
     createProfileSectionAction,
@@ -74,6 +75,10 @@ import {
     getLibraryProfileOrientation,
     getOrderedProfileSectionIds,
     isBuiltinSectionRemoved,
+    markProfileSection,
+    profileBuiltinSectionToken,
+    rememberProfileSectionCollapsed,
+    restoreProfileSectionCollapseState,
     isCoreProfileField,
     renderRemovedBuiltinFieldsToggle,
     renderRemovedBuiltinSectionsToggle,
@@ -1344,17 +1349,18 @@ export class CodexView extends ProjectBoundItemView {
         const profileOrientation = getLibraryProfileOrientation(this.plugin.settings, catDef.id);
         const horizontalProfile = profileOrientation === 'horizontal';
 
-        // Horizontal mode expands every section into a board column.
-        if (horizontalProfile) {
-            for (const category of catDef.categories) {
-                this.collapsedSections.delete(`${catDef.id}-${category.title}`);
-            }
-            this.collapsedSections.delete('custom-fields');
-            this.collapsedSections.delete('books');
-            for (const key of [...this.collapsedSections]) {
-                if (key.startsWith(`custom-section::codex::${catDef.id}::`)) this.collapsedSections.delete(key);
-            }
-        }
+        restoreProfileSectionCollapseState(
+            this.collapsedSections,
+            this.plugin.settings,
+            catDef.id,
+            [
+                ...catDef.categories.map(category => `${catDef.id}-${category.title}`),
+                'custom-fields',
+                ...(this.plugin.settings.series ? ['books'] : []),
+                ...(this.plugin.settings.codexCategoryCustomSections?.[catDef.id] || [])
+                    .map(section => `custom-section::codex::${catDef.id}::${section.title}`),
+            ],
+        );
 
         // ── Header ─────────────────────────────────────
         const header = container.createDiv('codex-detail-header');
@@ -1480,12 +1486,21 @@ export class CodexView extends ProjectBoundItemView {
         }
 
         // Render field categories interleaved with user-defined custom sections (#114)
-        const sectionIds = [...catDef.categories.map(category => category.title), 'Custom Fields'];
+        const sectionIds = [
+            ...catDef.categories.map(category => category.title),
+            'Custom Fields',
+            ...(this.plugin.settings.series ? ['Books'] : []),
+        ];
         const orderedSectionIds = getOrderedProfileSectionIds(this.plugin.settings, catDef.id, sectionIds);
         const customHost = this.buildCustomSectionsHost(draft, orderedSectionIds.length);
         renderCustomSectionsAtSlot(formPanel, customHost, 0);
         for (let i = 0; i < orderedSectionIds.length; i++) {
             const sectionId = orderedSectionIds[i];
+            if (sectionId === 'Books' && this.plugin.settings.series) {
+                this.renderBooksField(formPanel, draft, { board: horizontalProfile });
+                renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
+                continue;
+            }
             if (sectionId === 'Custom Fields') {
                 this.renderCustomFields(formPanel, draft, { board: horizontalProfile });
                 renderCustomSectionsAtSlot(formPanel, customHost, i + 1);
@@ -1510,9 +1525,20 @@ export class CodexView extends ProjectBoundItemView {
             save: () => this.plugin.saveSettings(),
             onChanged: () => this.refreshEmbeddedOrView(),
         });
-
-        // Books (series-ready)
-        this.renderBooksField(formPanel, draft, { board: horizontalProfile });
+        attachProfileSectionDragAndDrop(formPanel, {
+            settings: this.plugin.settings,
+            categoryKey: catDef.id,
+            defaultIds: sectionIds,
+            customSections: customHost.sections,
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                this.refreshEmbeddedOrView();
+            },
+        });
 
         // Side panel — gallery + notes + references
         this.renderGallerySection(sidePanel, draft);
@@ -1541,38 +1567,47 @@ export class CodexView extends ProjectBoundItemView {
     ): void {
         const board = !!opts?.board;
         const sectionKey = `${catDef.id}-${cat.title}`;
-        const isCollapsed = board ? false : this.collapsedSections.has(sectionKey);
+        const isCollapsed = this.collapsedSections.has(sectionKey);
 
         const section = container.createDiv('codex-section');
+        markProfileSection(section, profileBuiltinSectionToken(cat.title));
         if (board) section.addClass('character-board-column');
+        section.toggleClass('is-collapsed', isCollapsed);
         const sectionHeader = section.createDiv('codex-section-header');
         sectionHeader.addEventListener('click', (e) => {
-            if (board) return;
             // Ignore clicks on the add-field button
             if ((e.target as HTMLElement).closest('.character-section-add-field-btn')) return;
             if ((e.target as HTMLElement).closest('.codex-section-actions, .builtin-section-remove-btn')) return;
             if (this.collapsedSections.has(sectionKey)) {
                 this.collapsedSections.delete(sectionKey);
+                rememberProfileSectionCollapsed(this.plugin.settings, catDef.id, sectionKey, false);
+                section.removeClass('is-collapsed');
             } else {
                 this.collapsedSections.add(sectionKey);
+                rememberProfileSectionCollapsed(this.plugin.settings, catDef.id, sectionKey, true);
+                section.addClass('is-collapsed');
             }
+            void this.plugin.saveSettings();
             if (this.rootContainer) this.renderView(this.rootContainer);
         });
 
         const chevron = sectionHeader.createSpan({ cls: 'codex-section-chevron' });
-        if (board) chevron.addClass('is-hidden');
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
 
         const catIcon = sectionHeader.createSpan({ cls: 'codex-section-icon' });
         obsidian.setIcon(catIcon, cat.icon);
 
-        sectionHeader.createSpan({ cls: 'codex-section-title', text: t(cat.title) });
+        sectionHeader.createSpan({ cls: 'codex-section-title profile-section-title', text: t(cat.title) });
 
         attachProfileSectionOrderControls(sectionHeader, {
             settings: this.plugin.settings,
             categoryKey: catDef.id,
             sectionId: cat.title,
-            defaultIds: [...catDef.categories.map(item => item.title), 'Custom Fields'],
+            defaultIds: [
+                ...catDef.categories.map(item => item.title),
+                'Custom Fields',
+                ...(this.plugin.settings.series ? ['Books'] : []),
+            ],
             save: async () => {
                 await this.plugin.saveSettings();
                 await syncAllNativeLibraryBases(this.plugin);
@@ -2167,25 +2202,30 @@ export class CodexView extends ProjectBoundItemView {
         }
 
         const section = container.createDiv('codex-section');
+        markProfileSection(section, profileBuiltinSectionToken('Custom Fields'));
         if (board) section.addClass('character-board-column');
         const header = section.createDiv('codex-section-header');
         const chevron = header.createSpan({ cls: 'codex-section-chevron' });
-        if (board) chevron.addClass('is-hidden');
 
         const sectionKey = 'custom-fields';
-        const isCollapsed = board ? false : this.collapsedSections.has(sectionKey);
+        const isCollapsed = this.collapsedSections.has(sectionKey);
+        section.toggleClass('is-collapsed', isCollapsed);
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
 
         const icon = header.createSpan({ cls: 'codex-section-icon' });
         obsidian.setIcon(icon, 'plus-circle');
-        header.createSpan({ cls: 'codex-section-title', text: t('Custom Fields') });
+        header.createSpan({ cls: 'codex-section-title profile-section-title', text: t('Custom Fields') });
 
         const catDef = this.codexManager.getCategoryDef(draft.type);
         attachProfileSectionOrderControls(header, {
             settings: this.plugin.settings,
             categoryKey: draft.type,
             sectionId: 'Custom Fields',
-            defaultIds: [...(catDef?.categories ?? []).map(item => item.title), 'Custom Fields'],
+            defaultIds: [
+                ...(catDef?.categories ?? []).map(item => item.title),
+                'Custom Fields',
+                ...(this.plugin.settings.series ? ['Books'] : []),
+            ],
             save: async () => {
                 await this.plugin.saveSettings();
                 await syncAllNativeLibraryBases(this.plugin);
@@ -2223,16 +2263,20 @@ export class CodexView extends ProjectBoundItemView {
             modal.open();
         });
 
-        if (!board) {
-            header.addEventListener('click', () => {
-                if (this.collapsedSections.has(sectionKey)) {
-                    this.collapsedSections.delete(sectionKey);
-                } else {
-                    this.collapsedSections.add(sectionKey);
-                }
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            });
-        }
+        header.addEventListener('click', event => {
+            if ((event.target as HTMLElement).closest('.codex-section-actions')) return;
+            if (this.collapsedSections.has(sectionKey)) {
+                this.collapsedSections.delete(sectionKey);
+                rememberProfileSectionCollapsed(this.plugin.settings, draft.type, sectionKey, false);
+                section.removeClass('is-collapsed');
+            } else {
+                this.collapsedSections.add(sectionKey);
+                rememberProfileSectionCollapsed(this.plugin.settings, draft.type, sectionKey, true);
+                section.addClass('is-collapsed');
+            }
+            void this.plugin.saveSettings();
+            if (this.rootContainer) this.renderView(this.rootContainer);
+        });
 
         if (isCollapsed) return;
 
@@ -2359,6 +2403,10 @@ export class CodexView extends ProjectBoundItemView {
                     await this.plugin.syncCustomFieldFrontmatter(draft.type, true);
                 })();
             },
+            onCollapseChanged: (sectionKey, collapsed) => {
+                rememberProfileSectionCollapsed(this.plugin.settings, draft.type, sectionKey, collapsed);
+                void this.plugin.saveSettings();
+            },
             bindCustomTextArea: (textarea, fieldKey, minHeight) => {
                 bindResizableCustomFieldInput(
                     textarea,
@@ -2386,29 +2434,50 @@ export class CodexView extends ProjectBoundItemView {
         const board = !!opts?.board;
 
         const section = container.createDiv('codex-section');
+        markProfileSection(section, profileBuiltinSectionToken('Books'));
         if (board) section.addClass('character-board-column');
         const header = section.createDiv('codex-section-header');
         const chevron = header.createSpan({ cls: 'codex-section-chevron' });
-        if (board) chevron.addClass('is-hidden');
 
         const sectionKey = 'books';
-        const isCollapsed = board ? false : this.collapsedSections.has(sectionKey);
+        const isCollapsed = this.collapsedSections.has(sectionKey);
+        section.toggleClass('is-collapsed', isCollapsed);
         obsidian.setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
 
         const icon = header.createSpan({ cls: 'codex-section-icon' });
         obsidian.setIcon(icon, 'library-big');
-        header.createSpan({ cls: 'codex-section-title', text: t('Appears In (Projects)') });
+        header.createSpan({ cls: 'codex-section-title profile-section-title', text: t('Appears In (Projects)') });
 
-        if (!board) {
-            header.addEventListener('click', () => {
-                if (this.collapsedSections.has(sectionKey)) {
-                    this.collapsedSections.delete(sectionKey);
-                } else {
-                    this.collapsedSections.add(sectionKey);
-                }
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            });
-        }
+        const catDef = this.codexManager.getCategoryDef(draft.type);
+        attachProfileSectionOrderControls(header, {
+            settings: this.plugin.settings,
+            categoryKey: draft.type,
+            sectionId: 'Books',
+            defaultIds: [...(catDef?.categories ?? []).map(item => item.title), 'Custom Fields', 'Books'],
+            save: async () => {
+                await this.plugin.saveSettings();
+                await syncAllNativeLibraryBases(this.plugin);
+            },
+            onChanged: () => {
+                this.scheduleSave(draft);
+                this.refreshEmbeddedOrView();
+            },
+        });
+
+        header.addEventListener('click', event => {
+            if ((event.target as HTMLElement).closest('.codex-section-actions')) return;
+            if (this.collapsedSections.has(sectionKey)) {
+                this.collapsedSections.delete(sectionKey);
+                rememberProfileSectionCollapsed(this.plugin.settings, draft.type, sectionKey, false);
+                section.removeClass('is-collapsed');
+            } else {
+                this.collapsedSections.add(sectionKey);
+                rememberProfileSectionCollapsed(this.plugin.settings, draft.type, sectionKey, true);
+                section.addClass('is-collapsed');
+            }
+            void this.plugin.saveSettings();
+            if (this.rootContainer) this.renderView(this.rootContainer);
+        });
 
         if (isCollapsed) return;
 

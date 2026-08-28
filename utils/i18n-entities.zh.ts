@@ -39,6 +39,8 @@ export const ENTITIES_ZH: Record<string, string> = {
     'Gallery image': '图库图片',
     'Related notes': '关联笔记',
     'Related note': '关联对象',
+    'Open related note: {name}': '打开关联笔记：{name}',
+    'Related note is missing': '关联笔记不存在',
     'Select related note…': '选择关联对象…',
     'Connection type': '连线类型',
     'No related notes yet': '暂无关联笔记',

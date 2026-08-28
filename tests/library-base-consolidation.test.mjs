@@ -112,7 +112,7 @@ test('Browse Properties/Sort changes are persisted into library.base', () => {
     assert.match(nativeLibraryBase, /known\.has\(noteId\) \? noteId : raw/);
     assert.match(nativeLibraryBase, /isLatestLayoutRevision\(basePath, categoryId, revision\)/);
     assert.match(nativeLibraryBase, /if \(at <= 0\) continue/);
-    assert.match(nativeLibraryBase, /if \(profileOrder && persistedOrderChanged\)/);
+    assert.match(nativeLibraryBase, /if \(persistedOrderChanged\) return;/);
     assert.match(nativeLibraryBase, /if \(!persistedOrderChanged\) return/);
     assert.match(nativeLibraryBase, /interactionSnapshot = snapshotBasesViewLayout\(state\.liveView\)/);
     assert.match(nativeLibraryBase, /attempt < 12 && layoutSnapshotsEqual\(snapshot, baseline\)/);
@@ -121,12 +121,15 @@ test('Browse Properties/Sort changes are persisted into library.base', () => {
     assert.match(nativeLibraryBase, /menuOrderAccepted/);
     assert.match(nativeLibraryBase, /baseOrdersEquivalent\(patch\.order, baseline\)/);
     assert.match(nativeLibraryBase, /return;[\s\S]*?originalSet\.call\(config, key, value\)/);
-    assert.match(nativeLibraryBase, /\[0, 16, 50, 120, 250\]\.map/);
+    assert.match(nativeLibraryBase, /\[0, 16, 50, 120, 250, 450, 800\]\.map/);
+    assert.match(nativeLibraryBase, /originalSet\?\.call\(config, 'order', accepted\.slice\(\)\)/);
+    assert.match(nativeLibraryBase, /menuOrderScheduledToken/);
     assert.match(nativeLibraryBase, /activeDocument\.addEventListener\('pointerdown', onDocumentPointerDown, true\)/);
     assert.match(nativeLibraryBase, /activeDocument\.removeEventListener\('pointerdown', onDocumentPointerDown, true\)/);
-    const firstBaseWrite = nativeLibraryBase.indexOf('await plugin.app.vault.create(basePath, yaml);', nativeLibraryBase.indexOf('async function persistLayoutSnapshot'));
     const visibilitySync = nativeLibraryBase.indexOf('syncLibraryProfileVisibilityFromBase(categoryId, authoritativeSnapshot.order)');
-    assert.ok(firstBaseWrite >= 0 && visibilitySync > firstBaseWrite, 'Base YAML must be durable before profile saving can remount the embed');
+    const finalBaseWrite = nativeLibraryBase.indexOf('writeAuthoritativeBaseConfig(plugin, basePath, config)', visibilitySync);
+    assert.ok(visibilitySync >= 0 && finalBaseWrite > visibilitySync, 'Properties changes must update profile visibility before one final Base write');
+    assert.match(nativeLibraryBase, /one final file change instead of old → transient → final/);
 });
 
 test('Library profile and browse rows expose the canonical Base as a native Obsidian view', async () => {

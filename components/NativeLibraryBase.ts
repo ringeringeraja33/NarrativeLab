@@ -63,6 +63,8 @@ interface NativeBaseEmbedState {
     menuOrderBaseline?: string[];
     /** First real order delta produced by that click; stale reversions lose. */
     menuOrderAccepted?: string[];
+    /** Token whose accepted order has already been queued for persistence. */
+    menuOrderScheduledToken?: number;
     /** Short post-click probes used to catch a transient rendered order. */
     menuOrderCaptureTimers?: number[];
 }
@@ -1062,6 +1064,26 @@ async function withPersistLock(basePath: string, fn: () => Promise<void>): Promi
     await pending;
 }
 
+/** Write one settled layout without merging a stale live snapshot back into it. */
+async function writeAuthoritativeBaseConfig(
+    plugin: SceneCardsPlugin,
+    basePath: string,
+    config: Record<string, unknown>,
+): Promise<void> {
+    await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
+    const yaml = stringifyYaml(config);
+    const existing = plugin.app.vault.getAbstractFileByPath(basePath);
+    if (existing instanceof TFile) {
+        await plugin.app.vault.modify(existing, yaml);
+        return;
+    }
+    if (await pathExists(plugin, basePath)) {
+        await plugin.app.vault.adapter.write(basePath, yaml);
+        return;
+    }
+    await plugin.app.vault.create(basePath, yaml);
+}
+
 async function persistLayoutSnapshot(
     plugin: SceneCardsPlugin,
     basePath: string,
@@ -1090,31 +1112,14 @@ async function persistLayoutSnapshot(
         const normalized = normalizeSnapshotPropertyIds(snapshot, config);
         persistedSnapshot = cloneSnapshot(normalized);
         persistedOrderChanged = !stringArrayEqual(view.order, normalized.order);
-        let dirty = applyLayoutSnapshotToView(view, normalized);
-        const profileOrder = getProfileTableOrder(categoryId);
-        if (profileOrder && persistedOrderChanged) {
-            dirty = updateBaseHiddenCustomProperties(
-                view,
-                normalized.order,
-                profileOrder,
-                getProfileManagedPropertyIds(categoryId),
-            ) || dirty;
-        }
+        // A Properties action also changes the shared profile visibility.
+        // Delay its Base write until that setting is updated so the native
+        // embed sees one final file change instead of old → transient → final.
+        if (persistedOrderChanged) return;
+        const dirty = applyLayoutSnapshotToView(view, normalized);
         if (!dirty) return;
         config.views = views;
-        // Bypass writeBaseConfig's live merge — this snapshot is already authoritative.
-        await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
-        const yaml = stringifyYaml(config);
-        const existing = plugin.app.vault.getAbstractFileByPath(basePath);
-        if (existing instanceof TFile) {
-            await plugin.app.vault.modify(existing, yaml);
-            return;
-        }
-        if (await pathExists(plugin, basePath)) {
-            await plugin.app.vault.adapter.write(basePath, yaml);
-            return;
-        }
-        await plugin.app.vault.create(basePath, yaml);
+        await writeAuthoritativeBaseConfig(plugin, basePath, config);
     });
     const authoritativeSnapshot = persistedSnapshot as ViewLayoutSnapshot | null;
     if (!authoritativeSnapshot || !isLatestLayoutRevision(basePath, categoryId, revision)) return;
@@ -1123,13 +1128,15 @@ async function persistLayoutSnapshot(
     // omitted custom fields were deliberately hidden.
     if (!persistedOrderChanged) return;
 
-    // Write the Base first: saving project profile settings may remount this
-    // embed, and a remount must never reopen the layout from before the click.
+    // Saving project profile settings writes only project System data; it does
+    // not remount the native Base. Update it first so the provider can produce
+    // the final canonical visible order for our single Base write below.
     await plugin.syncLibraryProfileVisibilityFromBase(categoryId, authoritativeSnapshot.order);
     if (!isLatestLayoutRevision(basePath, categoryId, revision)) return;
 
-    // With both stores in agreement, restore the shared canonical order while
-    // preserving the exact visibility choice made in the Properties menu.
+    // Commit sort/width/group, Base-only custom visibility, and canonical
+    // column order together. One durable Base modification means one native
+    // repaint, eliminating the visible appear/disappear/appear cycle.
     await withPersistLock(basePath, async () => {
         if (!isLatestLayoutRevision(basePath, categoryId, revision)) return;
         const config = await readBaseConfig(plugin, basePath);
@@ -1138,23 +1145,21 @@ async function persistLayoutSnapshot(
         const view = findViewForCategory(views, categoryId);
         const profileOrder = getProfileTableOrder(categoryId);
         if (!view || !profileOrder) return;
+        const normalized = normalizeSnapshotPropertyIds(authoritativeSnapshot, config);
         const hiddenDirty = updateBaseHiddenCustomProperties(
             view,
-            authoritativeSnapshot.order,
+            normalized.order,
             profileOrder,
             getProfileManagedPropertyIds(categoryId),
         );
         const order = effectiveProfileOrder(view, profileOrder);
-        const orderDirty = !stringArrayEqual(view.order, order);
-        if (!hiddenDirty && !orderDirty) return;
-        if (orderDirty) view.order = order;
+        const layoutDirty = applyLayoutSnapshotToView(view, {
+            ...normalized,
+            order,
+        });
+        if (!hiddenDirty && !layoutDirty) return;
         config.views = views;
-        await ensureVaultFolder(plugin, basePath.split('/').slice(0, -1).join('/'));
-        const yaml = stringifyYaml(config);
-        const existing = plugin.app.vault.getAbstractFileByPath(basePath);
-        if (existing instanceof TFile) await plugin.app.vault.modify(existing, yaml);
-        else if (await pathExists(plugin, basePath)) await plugin.app.vault.adapter.write(basePath, yaml);
-        else await plugin.app.vault.create(basePath, yaml);
+        await writeAuthoritativeBaseConfig(plugin, basePath, config);
     });
 }
 
@@ -1235,6 +1240,7 @@ function hookLiveBasesView(state: NativeBaseEmbedState, view: BasesViewLike): vo
         state.menuOrderToken = (state.menuOrderToken ?? 0) + 1;
         state.menuOrderBaseline = undefined;
         state.menuOrderAccepted = undefined;
+        state.menuOrderScheduledToken = undefined;
         state.lastInteractionAt = Date.now();
         if (state.liveView) state.interactionSnapshot = snapshotBasesViewLayout(state.liveView);
     };
@@ -1250,6 +1256,7 @@ function hookLiveBasesView(state: NativeBaseEmbedState, view: BasesViewLike): vo
         state.interactionSnapshot = snapshotBasesViewLayout(state.liveView);
         state.menuOrderBaseline = state.interactionSnapshot.order.slice();
         state.menuOrderAccepted = undefined;
+        state.menuOrderScheduledToken = undefined;
     };
     const onDocumentPointerUp = (event: Event) => {
         if (!isRecentBaseMenuEvent(event) || !state.liveView) return;
@@ -1259,23 +1266,31 @@ function hookLiveBasesView(state: NativeBaseEmbedState, view: BasesViewLike): vo
             ?? snapshotBasesViewLayout(state.liveView).order;
         const capture = () => {
             if (!state.liveView || state.menuOrderToken !== token) return;
-            if (state.menuOrderAccepted) {
-                clearMenuOrderCaptures();
-                schedulePersistLiveLayout(state, { order: state.menuOrderAccepted.slice() });
+            const order = snapshotBasesViewLayout(state.liveView).order;
+            const accepted = state.menuOrderAccepted;
+            if (accepted) {
+                // Some Obsidian builds repaint query data without calling the
+                // patched config.set(). Keep the first genuine user delta
+                // pinned until the menu transaction and delayed echoes settle.
+                if (!baseOrdersEquivalent(order, accepted)) {
+                    originalSet?.call(config, 'order', accepted.slice());
+                }
+                if (state.menuOrderScheduledToken !== token) {
+                    state.menuOrderScheduledToken = token;
+                    schedulePersistLiveLayout(state, { order: accepted.slice() });
+                }
                 return;
             }
-            const order = snapshotBasesViewLayout(state.liveView).order;
             if (baseOrdersEquivalent(order, baseline)) return;
             state.menuOrderAccepted = order.slice();
-            clearMenuOrderCaptures();
+            state.menuOrderScheduledToken = token;
             schedulePersistLiveLayout(state, { order: order.slice() });
         };
 
-        // Run once after the target's click handler and probe a few early
-        // frames. This preserves even a short-lived rendered column before a
-        // stale configuration echo can remove it again.
+        // Probe through the delayed Base echo window. Once a genuine delta is
+        // captured, later probes actively restore it if query data regresses.
         clearMenuOrderCaptures();
-        state.menuOrderCaptureTimers = [0, 16, 50, 120, 250].map(delay => (
+        state.menuOrderCaptureTimers = [0, 16, 50, 120, 250, 450, 800].map(delay => (
             window.setTimeout(capture, delay)
         ));
         schedulePersistLiveLayout(state);

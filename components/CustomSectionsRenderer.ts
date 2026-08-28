@@ -17,7 +17,11 @@ import { attachTooltip } from './Tooltip';
 import { openConfirmModal } from './ConfirmModal';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
-import { getProfileSectionActions } from '../utils/libraryProfileLayout';
+import {
+    getProfileSectionActions,
+    markProfileSection,
+    profileCustomSectionToken,
+} from '../utils/libraryProfileLayout';
 import { CUSTOM_SECTION_KEY_SEP } from '../utils/libraryProfilePropertyOrder';
 
 /** Composite-key separator used to namespace fields inside custom sections. */
@@ -119,6 +123,8 @@ export interface CustomSectionsHost<TDraft extends { custom?: Record<string, str
     persistSections: () => void;
     /** Trigger a full re-render of the host view. */
     requestRerender: () => void;
+    /** Persist a custom section's shared horizontal/vertical collapse state. */
+    onCollapseChanged?: (sectionKey: string, collapsed: boolean) => void;
     /** Enable and persist vertical resizing for a custom text field. */
     bindCustomTextArea?: (textarea: HTMLTextAreaElement, fieldKey: string, minHeight?: number) => void;
 }
@@ -350,16 +356,18 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
 
     {
         const section = container.createDiv(`${sectionLabel} ${cssPrefix}-section-custom`);
+        markProfileSection(section, profileCustomSectionToken(sec.title));
         const header = section.createDiv(headerLabel);
         const chevron = header.createSpan({ cls: chevronLabel });
 
         const sectionKey = `custom-section::${collapseKeyPrefix}::${sec.title}`;
         const isCollapsed = collapsedSections.has(sectionKey);
+        section.toggleClass('is-collapsed', isCollapsed);
         setIcon(chevron, isCollapsed ? 'chevron-right' : 'chevron-down');
 
         const icon = header.createSpan({ cls: iconLabel });
         setIcon(icon, 'layout-grid');
-        header.createSpan({ cls: titleLabel, text: sec.title });
+        header.createSpan({ cls: `${titleLabel} profile-section-title`, text: sec.title });
 
         // Move up / move down / rename / delete actions — icon-only spans
         // matching the rest of the app (no <button> elements).
@@ -504,8 +512,10 @@ function renderOneSection<T extends { custom?: Record<string, string> }>(
         header.addEventListener('click', () => {
             if (collapsedSections.has(sectionKey)) {
                 collapsedSections.delete(sectionKey);
+                host.onCollapseChanged?.(sectionKey, false);
             } else {
                 collapsedSections.add(sectionKey);
+                host.onCollapseChanged?.(sectionKey, true);
             }
             host.requestRerender();
         });
