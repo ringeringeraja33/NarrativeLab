@@ -2,6 +2,8 @@
 import { AbstractInputSuggest, App, ButtonComponent, DropdownComponent, FileView, FuzzySuggestModal, ItemView, Modal, Notice, Platform, Plugin, Setting, TFile, TFolder, TextComponent, ToggleComponent, WorkspaceLeaf, normalizePath, parseYaml, setIcon, stringifyYaml } from 'obsidian';
 import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './settings';
 import { asRecord, isRecord } from './utils/narrow';
+import { addedMutationRoots, matchingElements } from './utils/mutationRoots';
+import { StartupDiagnostics } from './utils/startupDiagnostics';
 import { countWordRevisionChurn } from './utils/wordcountText';
 import { consumeTextareaUndoKey, isLocalTextUndoTarget, isRedoKey, isUndoKey } from './utils/textareaHistory';
 import {
@@ -355,6 +357,8 @@ type EmbeddedCanvasConstructor = new (app: App, manifest: Plugin['manifest']) =>
  */
 
 export default class SceneCardsPlugin extends Plugin {
+    readonly startupDiagnostics = new StartupDiagnostics();
+    navigatorStartupPending = true;
     settings: SceneCardsSettings = DEFAULT_SETTINGS;
     sceneManager!: SceneManager;
     /** Set to true once System/ migration is confirmed — guards saveSettings stripping */
@@ -488,6 +492,11 @@ export default class SceneCardsPlugin extends Plugin {
     private lastObservedObsidianTheme: 'light' | 'dark' | null = null;
     /** Keeps Obsidian's Files view free of NarrativeLab internals and unreadable files. */
     private fileExplorerVisibilityObserver: MutationObserver | null = null;
+    private observedFileExplorers = new Set<HTMLElement>();
+    private navigatorOpenPromise: Promise<void> | null = null;
+    private navigatorOpenScheduled = false;
+    private navigatorRevealRequested = false;
+    private navigatorDisposed = false;
     private fileExplorerVisibilityRibbonEl: HTMLElement | null = null;
     /** Avoid rewriting every Library note more than once per project session. */
     private customFieldFrontmatterSyncedProjects = new Set<string>();
@@ -525,6 +534,8 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     async onload(): Promise<void> {
+        const endOnload = this.startupDiagnostics.start('plugin.onload');
+        const endLayoutWait = this.startupDiagnostics.start('plugin.entryToLayoutReady');
         await this.loadSettings();
         this.updateFileExplorerVisibilityModeClass();
         this.applyUiTheme();
@@ -620,7 +631,8 @@ export default class SceneCardsPlugin extends Plugin {
             new LocationView(leaf, this, this.sceneManager)
         );
         this.registerView(NAVIGATOR_VIEW_TYPE, (leaf) =>
-            new NavigatorView(leaf, this, this.sceneManager)
+            this.startupDiagnostics.measure('navigator.construct', () =>
+                new NavigatorView(leaf, this, this.sceneManager))
         );
         this.registerView(CODEX_VIEW_TYPE, (leaf) =>
             new CodexView(leaf, this, this.sceneManager)
@@ -658,6 +670,8 @@ export default class SceneCardsPlugin extends Plugin {
         // mounting saved sidebar leaves (navigator / inspector), which makes
         // the left & right sidebars visibly jump into place on startup.
         this.app.workspace.onLayoutReady(async () => {
+            endLayoutWait();
+            const endBootstrap = this.startupDiagnostics.start('layoutReady.bootstrap');
             try {
             // Drop obsolete Help panes left in saved workspace layouts.
             for (const leaf of this.app.workspace.getLeavesOfType('narrative-lab-help')) {
@@ -673,15 +687,15 @@ export default class SceneCardsPlugin extends Plugin {
             // when the toolbar is narrow.
             this.updateToolbarVisibility();
 
-            await this.bootstrapProjects();
+            await this.startupDiagnostics.measureAsync('projects.bootstrap', () => this.bootstrapProjects());
             // Re-initialize scene index now that the active project is set.
             // Views that opened before bootstrapProjects may have scanned a
             // fallback folder and found no scenes.
-            await this.sceneManager.initialize();
+            await this.startupDiagnostics.measureAsync('scenes.initialize', () => this.sceneManager.initialize());
             // Migrate legacy data from data.json into project frontmatter
             await this.migrateProjectDataFromSettings();
             // Load per-project data from System/ files (tagColors, aliases, etc.)
-            await this.loadProjectSystemData();
+            await this.startupDiagnostics.measureAsync('project.systemData', () => this.loadProjectSystemData());
             // These System/ reads do not depend on each other.
             await Promise.all([
                 this.plotlineManager.ensureSeeded(),
@@ -691,7 +705,7 @@ export default class SceneCardsPlugin extends Plugin {
             ]);
             // Load locations and characters for the active project
             try {
-                await this.loadActiveProjectEntities();
+                await this.startupDiagnostics.measureAsync('project.entities', () => this.loadActiveProjectEntities());
             } catch { /* not set yet */ }
             // Scan extra source folders and route by frontmatter type
             try {
@@ -712,7 +726,7 @@ export default class SceneCardsPlugin extends Plugin {
             );
             try {
                 await this.globalWritingTracker.load();
-                await this.globalWritingTracker.reconcileProjectLedgers();
+                await this.startupDiagnostics.measureAsync('tracker.reconcile', () => this.globalWritingTracker.reconcileProjectLedgers());
             } catch (trackErr) {
                 console.warn('[NarrativeLab] Could not load writing tracker:', trackErr);
             }
@@ -761,13 +775,19 @@ export default class SceneCardsPlugin extends Plugin {
             }, 0);
             } catch (startupErr) {
                 console.error('[NarrativeLab] Startup error:', startupErr);
+            } finally {
+                this.navigatorStartupPending = false;
+                for (const leaf of this.app.workspace.getLeavesOfType(NAVIGATOR_VIEW_TYPE)) {
+                    if (leaf.view instanceof NavigatorView) leaf.view.refresh();
+                }
+                endBootstrap();
             }
         });
 
         // Narrative Canvas: wait for idle so first workspace paint is not
         // competing with the bundled runtime. Openers still await ensureCanvasModuleReady().
         const startEmbeddedCanvas = (): void => {
-            void this.loadEmbeddedCanvas().catch((canvasErr: unknown) => {
+            void this.startupDiagnostics.measureAsync('canvas.moduleLoad', () => this.loadEmbeddedCanvas()).catch((canvasErr: unknown) => {
                 console.error('[NarrativeLab] Narrative Canvas failed to load:', canvasErr);
                 new Notice(t('Failed to open Narrative Canvas: {err}', { err: String(canvasErr) }));
             });
@@ -803,6 +823,18 @@ export default class SceneCardsPlugin extends Plugin {
         this.updateFileExplorerVisibilityRibbon();
 
         // Commands
+        this.addCommand({
+            id: 'show-startup-diagnostics',
+            name: t('Show startup diagnostics'),
+            callback: () => {
+                const modal = new Modal(this.app);
+                modal.titleEl.setText(t('Show startup diagnostics'));
+                modal.contentEl.createEl('pre', {
+                    text: JSON.stringify(this.startupDiagnostics.snapshot(), null, 2),
+                });
+                modal.open();
+            },
+        });
         this.addCommand({
             id: 'open-board-view',
             name: t('Open board view'),            callback: () => this.activateView(BOARD_VIEW_TYPE),
@@ -1558,10 +1590,12 @@ export default class SceneCardsPlugin extends Plugin {
         // Re-apply scoped frontmatter visibility when layout changes or files open
         this.registerEvent(
             this.app.workspace.on('layout-change', () => {
+                const endLayout = this.startupDiagnostics.start('layout-change.handler');
                 // CSS hide/show only — do not re-fold (would fight user expanding Properties).
                 this.updateFrontmatterVisibility();
                 this.observeFileExplorerVisibility();
                 this.syncWritingTrackerActivity();
+                endLayout();
             })
         );
         this.registerEvent(
@@ -1574,6 +1608,7 @@ export default class SceneCardsPlugin extends Plugin {
                 }, 120);
             })
         );
+        endOnload();
     }
 
     /** Resolved Properties display mode for NarrativeLab notes. */
@@ -1832,23 +1867,8 @@ export default class SceneCardsPlugin extends Plugin {
 
         const disableIn = (root: ParentNode): void => {
             if (root.instanceOf(Element) && root.closest(EXCLUDE_SELECTOR)) return;
-            // Fields directly inside a NarrativeLab container…
-            root.querySelectorAll(STORYLINE_SELECTOR).forEach(container => {
-                if (container.closest(EXCLUDE_SELECTOR)
-                    || container.matches('.story-line-corkboard-native-host')) {
-                    return;
-                }
-                container.querySelectorAll(SPELL_FIELDS).forEach(field => {
-                    // Skip fields that live inside the manuscript editor / Canvas.
-                    if (field.closest(EXCLUDE_SELECTOR)) return;
-                    const el = field as HTMLElement;
-                    if (el.getAttribute('spellcheck') !== 'false') {
-                        el.setAttribute('spellcheck', 'false');
-                    }
-                });
-            });
-            // …and a NarrativeLab container that is itself a spellable field.
-            root.querySelectorAll(SPELL_FIELDS).forEach(field => {
+            // One traversal per branch, including an inserted input itself.
+            matchingElements(root, SPELL_FIELDS).forEach(field => {
                 if (field.closest(EXCLUDE_SELECTOR)) return;
                 if (field.closest(STORYLINE_SELECTOR)) {
                     const el = field as HTMLElement;
@@ -1866,18 +1886,9 @@ export default class SceneCardsPlugin extends Plugin {
         disableIn(body);
 
         this.spellcheckObserver = new MutationObserver(mutations => {
-            for (const m of mutations) {
-                if (m.type !== 'childList' || m.addedNodes.length === 0) continue;
-                m.addedNodes.forEach(node => {
-                    if (node.nodeType !== Node.ELEMENT_NODE) return;
-                    const el = node as HTMLElement;
-                    if (el.closest?.(EXCLUDE_SELECTOR)
-                        || el.matches?.('.story-line-corkboard-native-host, .canvas-wrapper, [data-type="canvas"]')) {
-                        return;
-                    }
-                    disableIn(el);
-                });
-            }
+            this.startupDiagnostics.measure('observer.spellcheck', () => {
+                for (const root of addedMutationRoots(mutations)) disableIn(root);
+            });
         });
         this.spellcheckObserver.observe(body, {
             childList: true,
@@ -1936,18 +1947,11 @@ export default class SceneCardsPlugin extends Plugin {
         localizePluginSubtree(body);
         const SKIP_LOCALIZE = '.story-line-corkboard-native-host, .canvas-wrapper, [data-type="canvas"]';
         this.uiLanguageObserver = new MutationObserver(mutations => {
-            for (const mutation of mutations) {
-                mutation.addedNodes.forEach(node => {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        const el = node as HTMLElement;
-                        if (el.closest?.(SKIP_LOCALIZE)
-                            || el.matches?.(SKIP_LOCALIZE)) {
-                            return;
-                        }
-                    }
-                    localizePluginSubtree(node);
-                });
-            }
+            this.startupDiagnostics.measure('observer.language', () => {
+                for (const root of addedMutationRoots(mutations)) {
+                    if (!root.closest(SKIP_LOCALIZE)) localizePluginSubtree(root);
+                }
+            });
         });
         this.uiLanguageObserver.observe(body, { childList: true, subtree: true });
     }
@@ -1971,6 +1975,7 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     onunload(): void {
+        this.navigatorDisposed = true;
         this.canvasModule?.unload();
         this.canvasModule = null;
         // Flush writing session into daily history and persist to System/stats.json
@@ -2013,6 +2018,7 @@ export default class SceneCardsPlugin extends Plugin {
             this.fileExplorerVisibilityObserver.disconnect();
             this.fileExplorerVisibilityObserver = null;
         }
+        this.observedFileExplorers.clear();
         activeDocument.querySelectorAll('.sl-narrative-lab-hidden-file-tree-item')
             .forEach(el => el.classList.remove('sl-narrative-lab-hidden-file-tree-item'));
         activeDocument.body?.classList.remove('sl-narrative-lab-hide-file-explorer-internals');
@@ -2124,24 +2130,27 @@ export default class SceneCardsPlugin extends Plugin {
      * Hide only file-tree rows. Nothing is deleted, moved, excluded from search,
      * or made unavailable to NarrativeLab's own readers.
      */
-    public updateFileExplorerVisibility(): void {
+    public updateFileExplorerVisibility(roots?: readonly ParentNode[]): void {
+        const endVisibility = this.startupDiagnostics.start('explorer.filter');
         const hiddenClass = 'sl-narrative-lab-hidden-file-tree-item';
         const enabled = this.settings.hideUnsupportedFilesInExplorer !== false;
         const rules = this.fileExplorerVisibilityRules();
-        this.updateFileExplorerVisibilityModeClass();
-        const explorers = activeDocument.querySelectorAll<HTMLElement>(
+        if (!roots) this.updateFileExplorerVisibilityModeClass();
+        const explorers = roots ?? activeDocument.querySelectorAll<HTMLElement>(
             '.workspace-leaf-content[data-type="file-explorer"]',
         );
 
         for (const explorer of Array.from(explorers)) {
-            for (const title of Array.from(explorer.querySelectorAll<HTMLElement>('.nav-folder-title[data-path]'))) {
+            for (const element of matchingElements(explorer, '.nav-folder-title[data-path]')) {
+                const title = element as HTMLElement;
                 const row = title.closest<HTMLElement>('.nav-folder');
                 if (!row) continue;
                 const path = title.dataset.path ?? '';
                 row.classList.toggle(hiddenClass, enabled && shouldHideFileExplorerFolder(path, rules));
             }
 
-            for (const title of Array.from(explorer.querySelectorAll<HTMLElement>('.nav-file-title[data-path]'))) {
+            for (const element of matchingElements(explorer, '.nav-file-title[data-path]')) {
+                const title = element as HTMLElement;
                 const row = title.closest<HTMLElement>('.nav-file');
                 if (!row) continue;
                 const path = title.dataset.path ?? '';
@@ -2153,7 +2162,8 @@ export default class SceneCardsPlugin extends Plugin {
                 row.classList.toggle(hiddenClass, hidden);
             }
         }
-        this.updateFileExplorerVisibilityRibbon();
+        if (!roots) this.updateFileExplorerVisibilityRibbon();
+        endVisibility();
     }
 
     private updateFileExplorerVisibilityModeClass(): void {
@@ -2203,19 +2213,20 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     private observeFileExplorerVisibility(): void {
-        this.fileExplorerVisibilityObserver?.disconnect();
-        this.updateFileExplorerVisibility();
-        this.fileExplorerVisibilityObserver = new MutationObserver(mutations => {
-            if (mutations.some(mutation => mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
-                // MutationObserver callbacks run before the browser's next
-                // paint. Apply visibility immediately so newly mounted rows do
-                // not appear for one frame when a folder is expanded.
-                this.updateFileExplorerVisibility();
-            }
-        });
         const explorers = activeDocument.querySelectorAll<HTMLElement>(
             '.workspace-leaf-content[data-type="file-explorer"]',
         );
+        if (this.fileExplorerVisibilityObserver
+            && explorers.length === this.observedFileExplorers.size
+            && Array.from(explorers).every(explorer => this.observedFileExplorers.has(explorer))) return;
+        this.fileExplorerVisibilityObserver?.disconnect();
+        this.observedFileExplorers = new Set(Array.from(explorers));
+        this.updateFileExplorerVisibility();
+        this.fileExplorerVisibilityObserver = new MutationObserver(mutations => {
+            // Process new branches before paint, without rescanning existing rows.
+            const roots = addedMutationRoots(mutations);
+            if (roots.length) this.updateFileExplorerVisibility(roots);
+        });
         for (const explorer of Array.from(explorers)) {
             this.fileExplorerVisibilityObserver.observe(explorer, { childList: true, subtree: true });
         }
@@ -5342,38 +5353,55 @@ export default class SceneCardsPlugin extends Plugin {
      * If already open, just reveal it (unless `quiet` — used on startup so we
      * don't expand/reveal sidebars that Obsidian already restored).
      */
-    async openNavigator(opts?: { quiet?: boolean }): Promise<void> {
-        const quiet = opts?.quiet === true;
+    openNavigator(opts?: { quiet?: boolean }): Promise<void> {
+        if (this.navigatorDisposed) return Promise.resolve();
+        if (opts?.quiet !== true) this.navigatorRevealRequested = true;
+        // Do not add a sidebar leaf while Obsidian is deserializing its layout.
+        // In particular, never return a layout-ready promise to a restore hook.
+        if (!this.app.workspace.layoutReady) {
+            if (!this.navigatorOpenScheduled) {
+                this.navigatorOpenScheduled = true;
+                this.app.workspace.onLayoutReady(() => {
+                    this.navigatorOpenScheduled = false;
+                    if (!this.navigatorDisposed) {
+                        void this.openNavigator({ quiet: true }).catch((error: unknown) => {
+                            console.warn('[NarrativeLab] Could not open navigator:', error);
+                        });
+                    }
+                });
+            }
+            return Promise.resolve();
+        }
+        if (!this.navigatorOpenPromise) {
+            this.navigatorOpenPromise = Promise.resolve().then(() => this.performOpenNavigator()).finally(() => {
+                this.navigatorOpenPromise = null;
+            });
+        }
+        return this.navigatorOpenPromise;
+    }
+
+    private async performOpenNavigator(): Promise<void> {
+        if (this.navigatorDisposed) return;
         const { workspace } = this.app;
-        const existing = workspace.getLeavesOfType(NAVIGATOR_VIEW_TYPE);
-        if (existing.length > 0) {
-            if (quiet) return;
-            workspace.revealLeaf(existing[0]);
-            // Ensure the left split is expanded if Obsidian collapsed it
+        const endOpen = this.startupDiagnostics.start('navigator.openLeaf');
+        try {
+            let leaf = workspace.getLeavesOfType(NAVIGATOR_VIEW_TYPE)[0];
+            if (!leaf) {
+                // Public API only; never replace an unrelated existing sidebar tab.
+                const created = workspace.getLeftLeaf(true);
+                if (!created) return;
+                leaf = created;
+                await leaf.setViewState({ type: NAVIGATOR_VIEW_TYPE, active: false });
+            }
+            if (this.navigatorDisposed || !this.navigatorRevealRequested) return;
+            this.navigatorRevealRequested = false;
+            await workspace.revealLeaf(leaf);
             try {
                 const leftSplit = (workspace as unknown as { leftSplit?: { expand?: () => void } }).leftSplit;
                 leftSplit?.expand?.();
             } catch { /* older Obsidian */ }
-            return;
-        }
-
-        // Prefer ensureSideLeaf when available (creates + activates reliably)
-        const ensureSideLeaf = (workspace as unknown as {
-            ensureSideLeaf?: (type: string, side: 'left' | 'right', opts?: { active?: boolean }) => Promise<WorkspaceLeaf>;
-        }).ensureSideLeaf;
-        if (typeof ensureSideLeaf === 'function') {
-            // quiet: create without activating so we don't yank focus / animate splits
-            const leaf = await ensureSideLeaf.call(workspace, NAVIGATOR_VIEW_TYPE, 'left', {
-                active: !quiet,
-            });
-            if (!quiet && leaf) workspace.revealLeaf(leaf);
-            return;
-        }
-
-        const leaf = workspace.getLeftLeaf(false) ?? workspace.getLeftLeaf(true);
-        if (leaf) {
-            await leaf.setViewState({ type: NAVIGATOR_VIEW_TYPE, active: !quiet });
-            if (!quiet) workspace.revealLeaf(leaf);
+        } finally {
+            endOpen();
         }
     }
 

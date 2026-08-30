@@ -1,5 +1,13 @@
 # NarrativeLab — Changelog
 
+## 1.5.2
+
+- Deferred Navigator mounting until layout restoration completes, coalesced concurrent open requests, and preserved focus during automatic opening.
+- Show a loading state immediately while projects initialize; skip redundant disk reads for notes already indexed without frontmatter.
+- Limit file-explorer, language, and spellcheck mutation processing to newly added subtrees and reuse existing file-explorer observers.
+- Coalesce Navigator refreshes and discard stale work after the view closes.
+- Added the Show startup diagnostics command and regression coverage for layout restoration, project discovery, and incremental processing. Diagnostic durations can overlap and must not be added together.
+
 ## 1.5.1
 
 - Removed automatic Concept Grid prewarming during plugin startup. Univer initializes when a grid is first opened, and ExcelJS initializes only when workbook reading or writing is requested.

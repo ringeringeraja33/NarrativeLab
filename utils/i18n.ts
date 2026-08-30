@@ -1,4 +1,5 @@
 import type { App } from 'obsidian';
+import { outermostElements } from './mutationRoots';
 import { MAIN_ZH } from './i18n-main.zh';
 import { VIEWS_ZH } from './i18n-views.zh';
 import { ENTITIES_ZH } from './i18n-entities.zh';
@@ -11,6 +12,7 @@ export type UiLanguageSetting = 'auto' | 'en' | 'zh';
 export type UiLanguage = 'en' | 'zh';
 
 const ZH_CORE: Record<string, string> = {
+    'Show startup diagnostics': '显示启动诊断',
     // Global navigation
     'Board': '白板',
     'Plotgrid': '表格',
@@ -1258,8 +1260,8 @@ export function localizePluginSubtree(node: Node): void {
             const target = root.closest('.modal-container:not(.mod-dim)') ?? root;
             if (isDocumentShell(target) || localized.has(target)) continue;
             localized.add(target);
-            localizeElement(target);
         }
+        for (const target of outermostElements(localized)) localizeElement(target);
         return;
     }
 
@@ -1282,6 +1284,6 @@ export function localizePluginSubtree(node: Node): void {
         const target = root.closest('.modal-container') ?? root;
         if (isDocumentShell(target) || localized.has(target)) continue;
         localized.add(target);
-        localizeElement(target);
     }
+    for (const target of outermostElements(localized)) localizeElement(target);
 }

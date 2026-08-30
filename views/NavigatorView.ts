@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 import { ItemView, WorkspaceLeaf, Menu, Modal, Notice, Setting, TFile, setIcon } from 'obsidian';
 import type SceneCardsPlugin from '../main';
+import { CoalescedTask } from '../utils/coalescedTask';
 import { ManuscriptView } from './ManuscriptView';
 import { resolveTagColor, getPlotlineHSL } from '../settings';
 import { attachTooltip } from '../components/Tooltip';
@@ -82,6 +83,25 @@ export class NavigatorView extends ItemView {
     private selectedScenePath: string | null = null;
     /** Active project when filters/selection were last applied. */
     private lastActiveProjectFile: string | null = null;
+    private refreshClosed = true;
+    private refreshGeneration = 0;
+    private mountTimer: number | null = null;
+    private mounted = false;
+    private readonly queuedRefresh = new CoalescedTask(async () => {
+        if (this.refreshClosed || !this.mounted) return;
+        const generation = this.refreshGeneration;
+        try {
+            await this.plugin.startupDiagnostics.measureAsync('navigator.researchScan', async () => {
+                await this.plugin.researchManager?.scan();
+            });
+        } catch { /* research folder may not exist yet */ }
+        if (this.refreshClosed || generation !== this.refreshGeneration) return;
+        this.plugin.startupDiagnostics.measure('navigator.render', () => {
+            this.syncTransientUiToActiveProject();
+            this.renderList();
+            this.renderProgress();
+        });
+    });
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -103,7 +123,31 @@ export class NavigatorView extends ItemView {
 
     async onOpen(): Promise<void> {
         this.restorePrimarySectionState();
-        const container = this.containerEl.children[1] as HTMLElement;
+        const endOpen = this.plugin.startupDiagnostics.start('navigator.onOpen');
+        this.refreshClosed = false;
+        const generation = ++this.refreshGeneration;
+        this.mounted = false;
+        this.contentEl.empty();
+        this.contentEl.createDiv({ cls: 'sl-nav-empty', text: t('Loading…'), attr: { role: 'status' } });
+        // View restoration must finish without waiting for layout-ready, IO,
+        // or DOM-heavy controls. Mount in a later task after layout is ready.
+        const scheduleMount = () => {
+            if (this.refreshClosed || generation !== this.refreshGeneration) return;
+            if (this.mountTimer !== null) window.clearTimeout(this.mountTimer);
+            this.mountTimer = window.setTimeout(() => {
+                this.mountTimer = null;
+                if (this.refreshClosed || generation !== this.refreshGeneration) return;
+                this.plugin.startupDiagnostics.measure('navigator.mount', () => this.mountNavigator());
+            }, 0);
+        };
+        if (this.app.workspace.layoutReady) scheduleMount();
+        else this.app.workspace.onLayoutReady(scheduleMount);
+        endOpen();
+    }
+
+    private mountNavigator(): void {
+        if (this.mounted || this.refreshClosed) return;
+        const container = this.contentEl;
         container.empty();
         container.addClass('sl-navigator');
 
@@ -197,10 +241,19 @@ export class NavigatorView extends ItemView {
         this.progressBar.createDiv('sl-nav-progress-fill');
         this.progressLabel = bottomBar.createDiv('sl-nav-progress-label');
 
+        this.mounted = true;
+        this.renderList();
         this.refresh();
     }
 
     async onClose(): Promise<void> {
+        this.refreshClosed = true;
+        this.refreshGeneration++;
+        this.mounted = false;
+        if (this.mountTimer !== null) {
+            window.clearTimeout(this.mountTimer);
+            this.mountTimer = null;
+        }
         if (this.filterDebounceTimer !== null) {
             window.clearTimeout(this.filterDebounceTimer);
             this.filterDebounceTimer = null;
@@ -212,16 +265,9 @@ export class NavigatorView extends ItemView {
      * Called by refreshOpenViews() to re-render the navigator.
      */
     refresh(): void {
-        void (async () => {
-            try {
-                await this.plugin.researchManager?.scan();
-            } catch {
-                /* research folder may not exist yet */
-            }
-            this.syncTransientUiToActiveProject();
-            this.renderList();
-            this.renderProgress();
-        })();
+        void this.queuedRefresh.request().catch((error: unknown) => {
+            console.warn('[NarrativeLab] Navigator refresh failed:', error);
+        });
     }
 
     /** Drop search / plotline / scene selection that belonged to another book. */
@@ -636,7 +682,7 @@ export class NavigatorView extends ItemView {
 
         if (projects.length === 0) {
             const empty = this.listEl.createDiv('sl-nav-empty');
-            empty.textContent = t('No active project');
+            empty.textContent = this.plugin.navigatorStartupPending ? t('Loading…') : t('No active project');
             return;
         }
 

@@ -597,7 +597,10 @@ export class SceneManager implements ISceneStore {
         for (const file of indexed) {
             if (next.has(file.path) || isDiscardedPath(file.path) || inSkippedFolder(file.path)) continue;
             const cache = this.app.metadataCache.getFileCache(file);
-            if (cache?.frontmatter) continue;
+            // A populated metadata-cache entry without frontmatter is a known
+            // ordinary note, not an unindexed file. Re-reading every such note
+            // makes startup scan the vault from disk again on cloud drives.
+            if (cache) continue;
             if (rootPath && !(file.path === `${rootPath}.md` || file.path.startsWith(rootPrefix))) continue;
             pendingReads.push(file.path);
         }

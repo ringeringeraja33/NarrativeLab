@@ -111,7 +111,9 @@ test('new file-tree rows are hidden before the next paint', async () => {
         mainTs.indexOf('private enableNativeTooltipSuppression'),
     );
     assert.match(observer, /new MutationObserver\(mutations => \{/);
-    assert.match(observer, /mutations\.some[\s\S]*?this\.updateFileExplorerVisibility\(\)/);
+    assert.match(observer, /addedMutationRoots\(mutations\)/);
+    assert.match(observer, /this\.updateFileExplorerVisibility\(roots\)/);
+    assert.match(observer, /this\.observedFileExplorers\.has\(explorer\)/);
     assert.doesNotMatch(observer, /requestAnimationFrame|scheduleRefresh/);
     assert.doesNotMatch(mainTs, /fileExplorerVisibilityFrame/);
     assert.match(mainTs, /await this\.loadSettings\(\);\s*this\.updateFileExplorerVisibilityModeClass\(\)/);
