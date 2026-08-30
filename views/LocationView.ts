@@ -31,6 +31,7 @@ import {
 } from '../utils/libraryProfileBoardScroll';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
+import { showLibraryEntryContextMenu } from '../components/LibraryEntryContextMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
     attachBuiltinFieldEditControl,
@@ -675,95 +676,18 @@ export class LocationView extends ProjectBoundItemView {
         });
     }
 
-    // ── Tree node context menu (promote/demote, book membership) ───────
+    // ── Profile card context menu ───────
 
     private showItemContextMenu(item: WorldOrLocation, e: MouseEvent): void {
-        const menu = new obsidian.Menu();
-        const sm = this.plugin.sceneManager;
-        const seriesFolder = sm.getSeriesFolder();
-        const seriesLocFolder = seriesFolder
-            ? `${seriesFolder}/Library/Locations`
-            : null;
-        const projectLocFolder = sm.getProjectLocalLocationFolder();
-        const currentBook = sm.getCurrentBookTitle();
-
-        menu.addItem(it => it.setTitle(item.name).setDisabled(true));
-        menu.addSeparator();
-
-        if (seriesFolder && seriesLocFolder && projectLocFolder) {
-            const inSeries = item.filePath.startsWith(seriesLocFolder + '/');
-            if (inSeries) {
-                menu.addItem(it =>
-                    it.setTitle(t('Keep in current project only'))
-                        .setIcon('arrow-down-from-line')
-                        .onClick(() => this.moveItemTo(item, projectLocFolder, 'demoted')));
-            } else {
-                menu.addItem(it =>
-                    it.setTitle(t('Promote to series (shared)'))
-                        .setIcon('arrow-up-from-line')
-                        .onClick(() => this.moveItemTo(item, seriesLocFolder, 'promoted')));
-            }
-            menu.addSeparator();
-        }
-
-        if (seriesFolder && currentBook) {
-            const lower = currentBook.toLowerCase();
-            const allBooks = !item.books || item.books.length === 0;
-            const inBook = allBooks
-                || (item.books?.some(b => b.toLowerCase() === lower) ?? false);
-
-            if (allBooks) {
-                menu.addItem(it =>
-                    it.setTitle(t('Restrict to "{book}" only', { book: currentBook }))
-                        .setIcon('book-marked')
-                        .onClick(() => this.setItemBooks(item, [currentBook])));
-            } else if (inBook) {
-                menu.addItem(it =>
-                    it.setTitle(t('Remove from "{book}"', { book: currentBook }))
-                        .setIcon('book-x')
-                        .onClick(() => this.setItemBooks(item,
-                            (item.books || []).filter(b => b.toLowerCase() !== lower))));
-            } else {
-                menu.addItem(it =>
-                    it.setTitle(t('Add to "{book}"', { book: currentBook }))
-                        .setIcon('book-plus')
-                        .onClick(() => this.setItemBooks(item,
-                            [...(item.books || []), currentBook])));
-            }
-            menu.addItem(it =>
-                it.setTitle(t('Share across all projects'))
-                    .setIcon('books')
-                    .setDisabled(allBooks)
-                    .onClick(() => this.setItemBooks(item, [])));
-        }
-
-        showMenuSafely(menu, e);
-    }
-
-    private async moveItemTo(item: WorldOrLocation, target: string, verb: 'promoted' | 'demoted'): Promise<void> {
-        try {
-            await this.locationManager.moveItem(item, target);
-            new Notice(verb === 'promoted'
-                ? t('Moved "{name}" to the shared series Library', { name: item.name })
-                : t('Moved "{name}" to the current project Library', { name: item.name }));
-            await this.plugin.refreshOpenViews();
-        } catch (err) {
-            new Notice(t('Could not move: {err}', { err: (err as Error).message }));
-        }
-    }
-
-    private async setItemBooks(item: WorldOrLocation, books: string[]): Promise<void> {
-        try {
-            const updated = { ...item, books: books.length ? books : undefined } as WorldOrLocation;
-            if (updated.type === 'world') {
-                await this.locationManager.saveWorld(updated);
-            } else {
-                await this.locationManager.saveLocation(updated);
-            }
-            await this.plugin.refreshOpenViews();
-        } catch (err) {
-            new Notice(t('Could not update project membership: {err}', { err: (err as Error).message }));
-        }
+        showLibraryEntryContextMenu(this.plugin, {
+            filePath: item.filePath,
+            name: item.name,
+            projectFile: this.getBoundProjectFile(),
+            onOpenProfile: () => {
+                this.selectedItem = item.filePath;
+                if (this.rootContainer) this.renderView(this.rootContainer);
+            },
+        }, e);
     }
 
     // ── Detail view ────────────────────────────────────

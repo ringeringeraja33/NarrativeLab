@@ -61,6 +61,7 @@ import { Scene, isWrittenLikeStatus, resolveStatusCfg } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { seedUiLanguage, t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
+import { showLibraryEntryContextMenu } from '../components/LibraryEntryContextMenu';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
 import {
     attachBuiltinFieldEditControl,
@@ -4057,102 +4058,15 @@ export class CharacterView extends ProjectBoundItemView {
         }
     }
 
-    /* ───── Character card context menu (promote/demote, book membership) ───── */
+    /* ───── Character card context menu ───── */
 
     private showCharacterContextMenu(char: Character, e: MouseEvent): void {
-        const menu = new obsidian.Menu();
-        const sm = this.plugin.sceneManager;
-        const seriesFolder = sm.getSeriesFolder();
-        const seriesCharFolder = seriesFolder
-            ? `${seriesFolder}/Library/Characters`
-            : null;
-        const projectCharFolder = sm.getProjectLocalCharacterFolder();
-        const currentBook = sm.getCurrentBookTitle();
-
-        menu.addItem(item =>
-            item.setTitle(char.name).setDisabled(true));
-        menu.addSeparator();
-
-        // Promote / Demote between project and series folder
-        if (seriesFolder && seriesCharFolder && projectCharFolder) {
-            const inSeries = char.filePath.startsWith(seriesCharFolder + '/');
-            if (inSeries) {
-                menu.addItem(item =>
-                    item.setTitle(t('Keep in current project only'))
-                        .setIcon('arrow-down-from-line')
-                        .onClick(() => this.demoteCharacterToProject(char, projectCharFolder)));
-            } else {
-                menu.addItem(item =>
-                    item.setTitle(t('Promote to series (shared)'))
-                        .setIcon('arrow-up-from-line')
-                        .onClick(() => this.promoteCharacterToSeries(char, seriesCharFolder)));
-            }
-            menu.addSeparator();
-        }
-
-        // Toggle current-book membership (only meaningful in series mode)
-        if (seriesFolder && currentBook) {
-            const lower = currentBook.toLowerCase();
-            const inBook = !char.books || char.books.length === 0
-                || char.books.some(b => b.toLowerCase() === lower);
-            const allBooks = !char.books || char.books.length === 0;
-
-            if (allBooks) {
-                menu.addItem(item =>
-                    item.setTitle(t('Restrict to "{book}" only', { book: currentBook }))
-                        .setIcon('book-marked')
-                        .onClick(() => this.setCharacterBooks(char, [currentBook])));
-            } else if (inBook) {
-                menu.addItem(item =>
-                    item.setTitle(t('Remove from "{book}"', { book: currentBook }))
-                        .setIcon('book-x')
-                        .onClick(() => this.setCharacterBooks(char,
-                            (char.books || []).filter(b => b.toLowerCase() !== lower))));
-            } else {
-                menu.addItem(item =>
-                    item.setTitle(t('Add to "{book}"', { book: currentBook }))
-                        .setIcon('book-plus')
-                        .onClick(() => this.setCharacterBooks(char,
-                            [...(char.books || []), currentBook])));
-            }
-            menu.addItem(item =>
-                item.setTitle(t('Share across all projects'))
-                    .setIcon('books')
-                    .setDisabled(allBooks)
-                    .onClick(() => this.setCharacterBooks(char, [])));
-        }
-
-        showMenuSafely(menu, e);
-    }
-
-    private async promoteCharacterToSeries(char: Character, seriesCharFolder: string): Promise<void> {
-        try {
-            await this.characterManager.moveCharacter(char, seriesCharFolder);
-            new Notice(t('"{name}" promoted to series', { name: char.name }));
-            await this.plugin.refreshOpenViews();
-        } catch (err) {
-            new Notice(t('Could not promote: {err}', { err: (err as Error).message }));
-        }
-    }
-
-    private async demoteCharacterToProject(char: Character, projectCharFolder: string): Promise<void> {
-        try {
-            await this.characterManager.moveCharacter(char, projectCharFolder);
-            new Notice(t('"{name}" demoted to project', { name: char.name }));
-            await this.plugin.refreshOpenViews();
-        } catch (err) {
-            new Notice(t('Could not demote: {err}', { err: (err as Error).message }));
-        }
-    }
-
-    private async setCharacterBooks(char: Character, books: string[]): Promise<void> {
-        try {
-            const updated: Character = { ...char, books: books.length ? books : undefined };
-            await this.characterManager.saveCharacter(updated);
-            await this.plugin.refreshOpenViews();
-        } catch (err) {
-            new Notice(t('Could not update project membership: {err}', { err: (err as Error).message }));
-        }
+        showLibraryEntryContextMenu(this.plugin, {
+            filePath: char.filePath,
+            name: char.name,
+            projectFile: this.getBoundProjectFile(),
+            onOpenProfile: () => this.openCharacterDetail(char.filePath),
+        }, e);
     }
 
     /* ───── Tag type override context menu ───── */

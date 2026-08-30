@@ -53,6 +53,7 @@ import {
 import type { UniversalFieldTemplate } from '../services/FieldTemplateService';
 import { t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
+import { showLibraryEntryContextMenu } from '../components/LibraryEntryContextMenu';
 import { preservedNarrativeLabLeafState } from '../utils/narrativeLabLeafState';
 import { bindResizableCustomFieldInput, customFieldInputHeightKey } from '../utils/customFieldInputHeight';
 import { moveMappingEntry } from '../utils/libraryProfilePropertyOrder';
@@ -1038,6 +1039,15 @@ export class CodexView extends ProjectBoundItemView {
         if (this.rootContainer) this.renderView(this.rootContainer);
     }
 
+    private showEntryContextMenu(entry: CodexEntry, event: MouseEvent): void {
+        showLibraryEntryContextMenu(this.plugin, {
+            filePath: entry.filePath,
+            name: entry.name,
+            projectFile: this.getBoundProjectFile(),
+            onOpenProfile: () => this.openEntry(entry),
+        }, event);
+    }
+
     private isProfileOverviewMode(): boolean {
         return getLibraryContentMode(this.plugin, this.getBoundProjectFile()) === 'profile';
     }
@@ -1099,6 +1109,7 @@ export class CodexView extends ProjectBoundItemView {
             const typeVal = this.getTypeField(entry, catDef);
             if (typeVal) card.createSpan({ cls: 'codex-entry-type-badge', text: typeVal });
             card.addEventListener('click', () => this.openEntry(entry));
+            card.addEventListener('contextmenu', event => this.showEntryContextMenu(entry, event));
         }
         if (hasMore) {
             const more = container.createEl('button', {
@@ -1299,6 +1310,7 @@ export class CodexView extends ProjectBoundItemView {
         else window.setTimeout(fillPct, 0);
 
         row.addEventListener('click', () => this.openEntry(entry));
+        row.addEventListener('contextmenu', event => this.showEntryContextMenu(entry, event));
         return row;
     }
 

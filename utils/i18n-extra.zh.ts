@@ -1,5 +1,13 @@
 /** Auto-curated ZH strings for remaining UI chrome. */
 export const EXTRA_ZH: Record<string, string> = {
+    'Open profile': '打开档案',
+    'Open source file in new tab': '在新标签页打开源文件',
+    'Move to shared series Library': '移至系列共享资料库',
+    'Move to "{project}" Library': '移至「{project}」的资料库',
+    'The project changed. Reopen the entry menu and try again.': '项目已切换或不可用，请重新打开档案菜单后再试。',
+    'A file already exists at {path}. Nothing was overwritten.': '目标位置已有同名文件：{path}。未覆盖任何文件。',
+    'Move "{name}" out of the shared Library? Other projects will no longer load this entry from the shared Library. Its contents and properties will be preserved.': '将「{name}」移出系列共享资料库？其他项目将不再从共享资料库加载此档案。正文和属性均会保留。',
+    'Move': '移动',
     'Search notes…': '搜索笔记…',
     ' (custom)': '（自定义）',
     ' Gone for {count} scenes between "{from}" and "{to}"': ' 在「{from}」与「{to}」之间缺席 {count} 个场景',
