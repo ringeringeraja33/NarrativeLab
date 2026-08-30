@@ -5232,6 +5232,14 @@ export default class SceneCardsPlugin extends Plugin {
     async openBoardForProject(project: StoryLineProject): Promise<void> {
         const projectFile = normalizePath(project.filePath);
         const { workspace } = this.app;
+        // View onOpen can render before setState supplies its project binding.
+        // Finish loading the target indexes before creating or activating a leaf.
+        const current = this.sceneManager.activeProject;
+        if (!current || normalizePath(current.filePath) !== projectFile) {
+            await this.sceneManager.setActiveProject(project);
+        } else {
+            await this.refreshOpenViews();
+        }
         const defaultType = this.resolveDefaultProjectViewType();
         const preferred = workspace.getLeavesOfType(defaultType);
         let leaf = preferred.find(item => getLeafNarrativeLabProjectFile(item) === projectFile) ?? null;
@@ -5254,12 +5262,6 @@ export default class SceneCardsPlugin extends Plugin {
             });
         }
 
-        const current = this.sceneManager.activeProject;
-        if (!current || normalizePath(current.filePath) !== projectFile) {
-            await this.sceneManager.setActiveProject(project);
-        } else {
-            await this.refreshOpenViews();
-        }
         workspace.revealLeaf(leaf);
         this.storyLeaf = leaf;
     }

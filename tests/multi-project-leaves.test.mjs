@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
+import vm from 'node:vm';
+import esbuild from 'esbuild';
 
 const [mainTs, boardView, navigatorView, viewSwitcher, leafState, corkboard, codexTabs, projectBoundView, structureSwitcher, codexView, ...projectViews] = await Promise.all([
     readFile(new URL('../main.ts', import.meta.url), 'utf8'),
@@ -30,6 +32,59 @@ test('NarrativeLab leaf state binds tabs to a project file', () => {
     assert.match(leafState, /NARRATIVE_LAB_PROJECT_FILE_STATE_KEY/);
     assert.match(leafState, /getLeafNarrativeLabProjectFile/);
     assert.match(leafState, /preservedNarrativeLabLeafState/);
+});
+
+test('opening a project waits for its data before mounting or revealing any view', async () => {
+    const start = mainTs.indexOf('    async openBoardForProject(');
+    const method = mainTs.slice(start, mainTs.indexOf('    /** If the focused leaf', start));
+    const compiled = await esbuild.transform(`class Probe { ${method} }; globalThis.Probe = Probe;`, { loader: 'ts' });
+    const sandbox = vm.createContext({
+        normalizePath: path => path,
+        narrativeLabLeafState: project => ({ project }),
+        getLeafNarrativeLabProjectFile: leaf => leaf.project,
+    });
+    vm.runInContext(compiled.code, sandbox);
+    for (const existing of [false, true]) {
+        const probe = new sandbox.Probe();
+        let completeLoad;
+        let created = 0;
+        let revealed = 0;
+        let loaded = false;
+        const target = { filePath: 'B/project.md' };
+        const leaf = {
+            project: target.filePath,
+            async setViewState(state) {
+                assert.equal(loaded, true, 'onOpen must not read the previous project');
+                assert.equal(probe.sceneManager.activeProject, target);
+                assert.equal(state.state.project, target.filePath);
+            },
+        };
+        probe.sceneManager = {
+            activeProject: { filePath: 'A/project.md' },
+            async setActiveProject(project) {
+                await new Promise(resolve => { completeLoad = resolve; });
+                this.activeProject = project;
+                loaded = true;
+            },
+        };
+        probe.app = { workspace: {
+            getLeavesOfType: () => existing ? [leaf] : [],
+            getLeaf: () => { created++; assert.equal(loaded, true); return leaf; },
+            revealLeaf: item => { assert.equal(loaded, true); assert.equal(item, leaf); revealed++; },
+        } };
+        probe.resolveDefaultProjectViewType = () => 'board';
+        probe.findProjectScopedLeaf = () => null;
+        probe.countProjectScopedLeaves = () => 1;
+        probe.refreshOpenViews = async () => {};
+        const pending = probe.openBoardForProject(target);
+        assert.equal(created, 0);
+        assert.equal(revealed, 0);
+        completeLoad();
+        await pending;
+        assert.equal(created, existing ? 0 : 1);
+        assert.equal(revealed, 1);
+        assert.equal(probe.storyLeaf, leaf);
+    }
 });
 
 test('Open Project reuses the same project tab and opens a new tab only for another project', () => {
