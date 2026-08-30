@@ -11,7 +11,7 @@
  * that into the sidecar and rewrites a clean xlsx on the next save.
  * A brief-lived `Library/datasheet.nlmeta.json` is also migrated into System/.
  */
-import ExcelJS from 'exceljs';
+import type ExcelJS from 'exceljs';
 
 /** Same ArrayBuffer reused across inspect/decode/count — parse Excel once per open. */
 let _plotGridWorkbookCache: { data: ArrayBuffer | Uint8Array; wb: ExcelJS.Workbook } | null = null;
@@ -20,6 +20,7 @@ async function loadExcelWorkbook(data: ArrayBuffer | Uint8Array): Promise<ExcelJ
     if (_plotGridWorkbookCache && _plotGridWorkbookCache.data === data) {
         return _plotGridWorkbookCache.wb;
     }
+    const { default: ExcelJS } = await import('exceljs');
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(data);
     _plotGridWorkbookCache = { data, wb };
@@ -1417,6 +1418,7 @@ function applyCellStyleToExcel(cell: ExcelJS.Cell, data?: CellData): void {
 /** Encode ConceptGridDocument → xlsx ArrayBuffer. */
 export async function encodePlotGridXlsx(raw: unknown, options: PlotGridXlsxEncodeOptions = {}): Promise<ArrayBuffer> {
     const doc = normalizeConceptGridDocument(raw);
+    const { default: ExcelJS } = await import('exceljs');
     const wb = new ExcelJS.Workbook();
     wb.creator = 'NarrativeLab';
     wb.created = new Date();

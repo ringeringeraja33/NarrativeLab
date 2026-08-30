@@ -1,5 +1,12 @@
 # NarrativeLab — Changelog
 
+## 1.5.1
+
+- Removed automatic Concept Grid prewarming during plugin startup. Univer initializes when a grid is first opened, and ExcelJS initializes only when workbook reading or writing is requested.
+- Spreadsheet dependencies remain bundled in main.js, preserving the standard three-file community installation and mobile compatibility.
+- Added regression checks for deferred dependency initialization and concurrent grid loading, plus a build option to skip automatic local deployment.
+- This change reduces startup initialization work; it does not reduce the download size. First spreadsheet use still incurs initialization cost. End-to-end startup timing has not been measured.
+
 ## 1.5.0
 
 - Library profile sections can be collapsed and reordered in both layouts. Horizontal mode keeps compact collapsed rows, while vertical mode folds sections into narrow side tabs that release their content width.

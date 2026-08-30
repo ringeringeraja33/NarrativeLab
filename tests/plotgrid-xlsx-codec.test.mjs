@@ -1154,7 +1154,7 @@ test('main prefers Library/datasheet.xlsx and migrates legacy System plotgrid', 
     assert.match(mainTs, /peekPlotGridDoc/);
     assert.match(mainTs, /countConceptGridFilledCells\(doc\) === 0/);
     assert.match(mainTs, /rememberPlotGridDocCache/);
-    assert.match(mainTs, /warmupPlotGridUniver/);
+    assert.doesNotMatch(mainTs, /warmupPlotGridUniver/);
     assert.match(mainTs, /\.bak`|jsonPath.*bak|rename\(jsonPath/);
     assert.match(mainTs, /writeVaultBinaryResilient/);
     assert.match(mainTs, /backupCorruptPlotGridXlsx|_invalidPlotGridXlsxPaths/);
@@ -1397,7 +1397,7 @@ test('integrated Univer host receives Obsidian UI through the community main bun
     assert.match(host, /payload\.s = \{ cl: null \}/);
     assert.match(host, /isExternalEditorBusy/);
     assert.match(host, /event\?\.detail/);
-    assert.match(loader, /import \{ createPlotGridUniverHost, warmupPlotGridUniver \}/);
+    assert.match(loader, /return import\('\.\.\/services\/PlotGridUniverHost'\)/);
     assert.doesNotMatch(loader, /window\.require|plotgrid-univer\.js/);
     assert.doesNotMatch(build, /services\/plotgrid-univer-entry|outfile:.*plotgrid-univer/);
 });

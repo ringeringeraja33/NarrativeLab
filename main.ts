@@ -604,9 +604,6 @@ export default class SceneCardsPlugin extends Plugin {
         this.registerView(PLOTGRID_VIEW_TYPE, (leaf) =>
             new PlotgridView(leaf, this)
         );
-        void import('./utils/loadPlotGridUniver').then(mod => {
-            try { mod.warmupPlotGridUniver(activeDocument); } catch { /* first grid open still injects */ }
-        });
         this.registerView(TIMELINE_VIEW_TYPE, (leaf) =>
             new TimelineView(leaf, this, this.sceneManager)
         );

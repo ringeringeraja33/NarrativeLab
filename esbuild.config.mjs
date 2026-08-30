@@ -89,6 +89,7 @@ function discoverDeployDirs() {
 }
 
 function deployPluginFiles() {
+  if (process.env.NARRATIVE_LAB_SKIP_DEPLOY === "1") return;
   const files = ["main.js", "manifest.json", "styles.css"];
   const dirs = discoverDeployDirs();
   if (dirs.length === 0) {

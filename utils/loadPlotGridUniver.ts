@@ -6,7 +6,6 @@
  * runtime chunk and also removes the previous Electron-only require path.
  */
 import type { Plugin } from 'obsidian';
-import { createPlotGridUniverHost, warmupPlotGridUniver } from '../services/PlotGridUniverHost';
 import type {
     PlotGridUniverContextAction,
     PlotGridUniverHost,
@@ -14,14 +13,13 @@ import type {
 } from '../services/PlotGridUniverHost';
 
 export type { PlotGridUniverContextAction, PlotGridUniverHost, PlotGridUniverHostOptions };
-export { warmupPlotGridUniver };
 
 type UniverModule = {
     createPlotGridUniverHost: (opts: PlotGridUniverHostOptions) => PlotGridUniverHost;
 };
 
-const integratedModule: UniverModule = { createPlotGridUniverHost };
-
 export async function loadPlotGridUniverModule(_plugin: Plugin): Promise<UniverModule> {
-    return integratedModule;
+    // esbuild keeps this inside main.js but defers module evaluation until a
+    // grid is opened. Static imports here initialize all presets at startup.
+    return import('../services/PlotGridUniverHost');
 }
