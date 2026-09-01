@@ -2435,23 +2435,8 @@ html[data-narrative-lab-language='zh'] .sl-toggle-wrap input:checked + .sl-toggl
     margin-left: auto;
 }
 
-/* Display-only cleanup for Obsidian's Files view. The underlying vault items
-   remain untouched and available to NarrativeLab. */
-.sl-narrative-lab-hide-system-folder
-    .workspace-leaf-content[data-type="file-explorer"]
-    .nav-folder:has(> .nav-folder-title:is([data-path="System" i], [data-path$="/System" i])),
-.sl-narrative-lab-hide-library-folder
-    .workspace-leaf-content[data-type="file-explorer"]
-    .nav-folder:has(> .nav-folder-title:is([data-path="Library" i], [data-path$="/Library" i])),
-.sl-narrative-lab-hide-canvas-folder
-    .workspace-leaf-content[data-type="file-explorer"]
-    .nav-folder:has(> .nav-folder-title:is([data-path="Canvas" i], [data-path$="/Canvas" i])),
-.sl-narrative-lab-hide-series-metadata
-    .workspace-leaf-content[data-type="file-explorer"]
-    .nav-file:has(> .nav-file-title:is([data-path="series.json" i], [data-path$="/series.json" i])) {
-    display: none !important;
-}
-
+/* Exact NarrativeLab-owned paths receive this class at runtime. Name-only CSS
+   selectors must not hide user-created root folders such as Library/ or Canvas/. */
 .workspace-leaf-content[data-type="file-explorer"] .sl-narrative-lab-hidden-file-tree-item {
     display: none !important;
 }

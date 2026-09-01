@@ -226,6 +226,7 @@ test('actual explorer observer scans only inserted rows and reuses its observer 
         startupDiagnostics = new StartupDiagnostics();
         updateFileExplorerVisibilityModeClass() {} updateFileExplorerVisibilityRibbon() {}
         fileExplorerVisibilityRules() { return {}; } canObsidianOpenExtension() { return true; }
+        fileExplorerVisibilityScope() { return { folderPaths: new Set(), seriesMetadataPaths: new Set() }; }
         ${filter} ${observer}
     }; globalThis.Probe = Probe;`, { loader: 'ts', target: 'es2020' });
     let visits = 0;

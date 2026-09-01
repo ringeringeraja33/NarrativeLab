@@ -39,6 +39,13 @@ export interface FileExplorerVisibilityRules {
     unsupportedFiles: boolean;
 }
 
+export interface FileExplorerVisibilityScope {
+    /** Exact vault-relative folders owned by a NarrativeLab project or series. */
+    folderPaths: ReadonlySet<string>;
+    /** Exact series.json files belonging to a validated NarrativeLab series. */
+    seriesMetadataPaths: ReadonlySet<string>;
+}
+
 export const DEFAULT_FILE_EXPLORER_VISIBILITY_RULES: FileExplorerVisibilityRules = {
     systemFolder: true,
     libraryFolder: true,
@@ -52,6 +59,10 @@ function pathBasename(path: string): string {
     return normalized.slice(normalized.lastIndexOf('/') + 1).toLowerCase();
 }
 
+export function normalizeFileExplorerVisibilityPath(path: string): string {
+    return path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+}
+
 export function fileExtension(path: string): string {
     const basename = pathBasename(path);
     const dot = basename.lastIndexOf('.');
@@ -61,7 +72,9 @@ export function fileExtension(path: string): string {
 export function shouldHideFileExplorerFolder(
     path: string,
     rules: FileExplorerVisibilityRules = DEFAULT_FILE_EXPLORER_VISIBILITY_RULES,
+    managedFolderPaths: ReadonlySet<string> = new Set(),
 ): boolean {
+    if (!managedFolderPaths.has(normalizeFileExplorerVisibilityPath(path))) return false;
     const basename = pathBasename(path);
     return (basename === 'system' && rules.systemFolder)
         || (basename === 'library' && rules.libraryFolder)
@@ -73,8 +86,12 @@ export function shouldHideFileExplorerFile(
     canOpenExtension: (extension: string) => boolean = extension =>
         OBSIDIAN_OPENABLE_EXTENSION_FALLBACK.has(extension),
     rules: FileExplorerVisibilityRules = DEFAULT_FILE_EXPLORER_VISIBILITY_RULES,
+    managedSeriesMetadataPaths: ReadonlySet<string> = new Set(),
 ): boolean {
-    if (pathBasename(path) === 'series.json') return rules.seriesMetadata;
+    if (pathBasename(path) === 'series.json'
+        && managedSeriesMetadataPaths.has(normalizeFileExplorerVisibilityPath(path))) {
+        return rules.seriesMetadata;
+    }
     const extension = fileExtension(path);
     return rules.unsupportedFiles && (!extension || !canOpenExtension(extension));
 }
