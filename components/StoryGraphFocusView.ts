@@ -34,7 +34,6 @@ interface FocusUndoSnapshot {
     rightPos: StoryGraphFocusNodePos;
     selectedId: string | null;
 }
-
 export interface StoryGraphFocusEndpoint {
     name: string;
     filePath: string;
@@ -1947,3 +1946,4 @@ export function openStoryGraphRelationFocus(
     host.querySelectorAll('.story-graph-focus').forEach(el => el.remove());
     return new StoryGraphFocusView(host, plugin, edge, onClosed, onSaved);
 }
+/* eslint-enable @typescript-eslint/no-unsafe-assignment -- End Obsidian DOM exception. */

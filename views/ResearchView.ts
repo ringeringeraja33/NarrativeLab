@@ -554,7 +554,6 @@ export class ResearchView extends ProjectBoundItemView {
                 new Setting(dynamicContainer)
                     .setName(t('URL'))
                     .addText(text => {
-                        // eslint-disable-next-line obsidianmd/ui/sentence-case -- URL schemes are conventionally lowercase.
                         text.setPlaceholder('https://...')
                             .setValue(sourceUrl).onChange(v => { sourceUrl = v; });
                     });
@@ -724,7 +723,6 @@ export class ResearchView extends ProjectBoundItemView {
             new Setting(modal.contentEl)
                 .setName(t('URL'))
                 .addText(text => {
-                    // eslint-disable-next-line obsidianmd/ui/sentence-case -- URL schemes are conventionally lowercase.
                     text.setPlaceholder('https://...')
                         .setValue(sourceUrl).onChange(v => { sourceUrl = v; });
                 });
