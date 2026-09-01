@@ -47,7 +47,7 @@
     "eslint-plugin-obsidianmd": "^0.3.0",
     "obsidian": "latest",
     "tslib": "2.8.1",
-    "typescript": "5.3.3"
+    "typescript": "7.0.2"
   },
   "dependencies": {
     "@univerjs/core": "^0.25.1",
