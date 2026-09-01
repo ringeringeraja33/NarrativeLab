@@ -1,5 +1,11 @@
 # NarrativeLab — Changelog
 
+## 1.5.7
+
+- Files-view hiding now applies only to the exact internal paths of registered NarrativeLab projects and validated series. User-created root or unrelated folders named `Library`, `System`, or `Canvas` remain visible.
+- `series.json` is hidden only for validated NarrativeLab series, and global name-only CSS hiding selectors have been removed.
+- Updated `tslib` to 2.8.1 and `highlight.js` to 11.12.0 with complete regression and startup validation.
+
 ## 1.5.5
 
 - Existing Concept Grid worksheets now remain deleted after autosave and reopen. Explicit sheet-deletion tombstones reject Univer's short-lived stale snapshots without interfering with undo or intentional sheet insertion.
