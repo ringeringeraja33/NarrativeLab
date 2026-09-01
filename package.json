@@ -1,6 +1,6 @@
 {
   "name": "obsidian-narrative-lab",
-  "version": "1.5.2",
+  "version": "1.5.5",
   "description": "Plan, draft, and manage narrative projects in Obsidian",
   "main": "main.js",
   "scripts": {

@@ -360,6 +360,16 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(removed.pages.length, 1);
         assert.equal(removed.pages[0].id, 'page-1');
         assert.deepEqual(removed.explicitlyRemovedPageIds, ['page-2']);
+        const deleteLag = codec.reconcileUniverSheetsIntoDocument(removed, {
+            'page-1': { id: 'page-1', name: 'Act I' },
+            'page-2': { id: 'page-2', name: 'Act II' },
+        }, ['page-1', 'page-2'], 'page-1');
+        assert.deepEqual(
+            deleteLag.pages.map(page => page.id),
+            ['page-1'],
+            'a lagging workbook snapshot must not resurrect an explicitly deleted sheet',
+        );
+        assert.deepEqual(deleteLag.explicitlyRemovedPageIds, ['page-2']);
         const inserted = codec.applyUniverSheetChromeMutation(decoded, {
             id: 'sheet.mutation.insert-sheet',
             params: { index: 1, sheet: { id: 'sheet-new', name: '工作表1' } },
@@ -367,6 +377,12 @@ test('plotgrid xlsx codec preserves cell links via _nl_meta round-trip', async (
         assert.equal(inserted.pages.length, 2);
         assert.equal(inserted.pages[1].id, 'sheet-new');
         assert.equal(inserted.pages[1].title, '工作表1');
+        const restored = codec.applyUniverSheetChromeMutation(deleteLag, {
+            id: 'sheet.mutation.insert-sheet',
+            params: { index: 1, sheet: { id: 'page-2', name: 'Act II' } },
+        });
+        assert.equal(restored.pages.some(page => page.id === 'page-2'), true);
+        assert.deepEqual(restored.explicitlyRemovedPageIds, []);
         const reordered = codec.applyUniverSheetChromeMutation(decodedTwo, {
             id: 'sheet.mutation.set-worksheet-order',
             params: { subUnitId: 'page-2', fromOrder: 1, toOrder: 0 },

@@ -1,5 +1,13 @@
 # NarrativeLab — Changelog
 
+## 1.5.5
+
+- Existing Concept Grid worksheets now remain deleted after autosave and reopen. Explicit sheet-deletion tombstones reject Univer's short-lived stale snapshots without interfering with undo or intentional sheet insertion.
+- Character, Location, and Codex entries share one compact context menu for opening profiles, opening source files, and moving notes between project and shared series Libraries.
+- Library entry moves preserve nested category paths, reject collisions, validate project ownership, and never serialize a stale profile over the destination.
+- Opening another project's Canvas now completes the project switch before mounting its view, preventing the previous project's canvas from flashing briefly.
+- Added regression coverage for delayed worksheet snapshots, safe Library entry moves, and cross-project Canvas opening.
+
 ## 1.5.2
 
 - Deferred Navigator mounting until layout restoration completes, coalesced concurrent open requests, and preserved focus during automatic opening.

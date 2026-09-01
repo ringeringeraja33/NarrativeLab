@@ -2232,11 +2232,18 @@ export function reconcileUniverSheetsIntoDocument(
     activeSheetId?: string,
 ): ConceptGridDocument {
     if (!sheets) return raw;
+    const explicitlyRemoved = new Set(raw.explicitlyRemovedPageIds || []);
     const isMetaSheet = (id: string): boolean => {
         const name = (sheets[id]?.name || id).trim();
         return name.toLowerCase() === NL_META_SHEET.toLowerCase();
     };
-    const snapshotIds = Object.keys(sheets).filter(id => !isMetaSheet(id));
+    // workbook.save() can expose a just-deleted worksheet for several frames.
+    // Treat session delete stamps as tombstones until an explicit insert/undo
+    // clears them; otherwise the lagging tab is mistaken for a newly added sheet
+    // and immediately resurrected.
+    const snapshotIds = Object.keys(sheets).filter(id => (
+        !isMetaSheet(id) && !explicitlyRemoved.has(id)
+    ));
     // Univer insert-sheet snapshots often put new ids in `sheets` before
     // `sheetOrder` catches up (or the reverse). Union both so tabs are not dropped.
     const order: string[] = [];
