@@ -117,7 +117,6 @@ export function showProjectNavigatorMenu(
 
     showMenuSafely(menu, event);
 }
-
 function openCaptureGlobalPresetModal(plugin: SceneCardsPlugin): void {
     const preset: ProjectPresetTemplate = {
         id: '',
@@ -315,3 +314,4 @@ class ProjectTemplatesModal extends Modal {
         }
     }
 }
+/* eslint-enable @typescript-eslint/no-misused-promises -- End Obsidian callback exception. */

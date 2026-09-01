@@ -1421,7 +1421,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             .addDropdown(dropdown => dropdown
                 .addOption('obsidian', t('Follow Obsidian'))
                 .addOption('system', t('System font'))
-                // eslint-disable-next-line obsidianmd/ui/sentence-case -- Font family name.
                 .addOption('cascadia', 'Cascadia Code')
                 .addOption('serif', t('Classic serif'))
                 .setValue(String(bag.contentFont || 'obsidian'))
@@ -1457,7 +1456,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         new Setting(panel)
             .setName(t('Canvas AI endpoint'))
             .addText(text => text
-                // eslint-disable-next-line obsidianmd/ui/sentence-case -- URL placeholder, not UI copy.
                 .setPlaceholder('https://api.example.com/v1/chat/completions')
                 .setValue(String(bag.aiEndpoint || ''))
                 .onChange(async value => {
@@ -1589,7 +1587,6 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             .setName(t('Default scene frontmatter'))
             .setDesc(t('Raw YAML merged into every newly created scene. Useful for companion plugins (e.g. `cssclasses: [fountain]`). NarrativeLab\'s own keys (type, title, act, chapter, sequence, status…) take priority on conflict.'))
             .addTextArea(ta => {
-                // eslint-disable-next-line obsidianmd/ui/sentence-case -- YAML keys are case-sensitive.
                 ta.setPlaceholder('cssclasses:\n  - fountain\n')
                     .setValue(this.plugin.settings.defaultSceneFrontmatter || '')
                     .onChange(async (value) => {

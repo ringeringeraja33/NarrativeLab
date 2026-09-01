@@ -1,4 +1,3 @@
-/* eslint-disable obsidianmd/no-static-styles-assignment -- floating note geometry (position, size, zoom, colour) is live */
 import {
     AbstractInputSuggest,
     App,
@@ -438,12 +437,11 @@ export class FloatingStickyNote extends Component {
             left: this.state.left,
             width: this.state.width,
             height: this.state.height,
-            resize: this.state.isPinned ? 'none' : 'both',
             '--sticky-zoom': String(this.state.zoomLevel || 1),
             '--note-bg-color': this.state.color,
             '--note-bg-color-alpha': hexToRgba(this.state.color, opacity),
             '--note-text-color': this.state.textColor || '#111111',
-            'z-index': String(FloatingStickyNote.frontZ),
+            '--nl-floating-sticky-z': String(FloatingStickyNote.frontZ),
         });
         this.containerEl.toggleClass('is-pinned', this.state.isPinned === true);
     }
@@ -480,7 +478,7 @@ export class FloatingStickyNote extends Component {
 
     private bringToFront(): void {
         FloatingStickyNote.frontZ += 1;
-        this.containerEl.setCssProps({ 'z-index': String(FloatingStickyNote.frontZ) });
+        this.containerEl.setCssProps({ '--nl-floating-sticky-z': String(FloatingStickyNote.frontZ) });
     }
 
     private cleanupDragging(): void {

@@ -29,7 +29,6 @@ export interface StoryGraphRef {
     /** Directed source of a managed association; identical on both mirrored rows. */
     sourcePath?: string;
 }
-
 const FM_KEY = 'storyRefs';
 const managedRelationWriteChains = new Map<string, Promise<unknown>>();
 
@@ -795,3 +794,4 @@ export async function assignStoryGraphLinkCategory(
     plugin.settings.storyGraphLinkRelationAssignments = assignments;
     await plugin.saveSettings();
 }
+/* eslint-enable @typescript-eslint/no-unsafe-member-access -- End Obsidian frontmatter exception. */

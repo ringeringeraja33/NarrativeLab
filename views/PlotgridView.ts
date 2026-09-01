@@ -72,7 +72,6 @@ function makeId(prefix = '') {
 export class PlotgridView extends ProjectBoundItemView {
     plugin: SceneCardsPlugin | undefined;
     /** Full multi-page document persisted to per-project `Library/datasheet-*.xlsx` */
-    // eslint-disable-next-line obsidianmd/prefer-active-doc -- Concept Grid data model, not the browser Document.
     document: ConceptGridDocument = createEmptyConceptGridDocument();
     /** False until loadData finishes — persist must not write the default empty grid. */
     private hasHydratedDocument = false;

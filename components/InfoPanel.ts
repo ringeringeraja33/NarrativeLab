@@ -63,3 +63,4 @@ export class InfoPanelComponent {
         });
     }
 }
+/* eslint-enable @typescript-eslint/no-misused-promises -- End Obsidian callback exception. */

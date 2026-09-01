@@ -125,3 +125,4 @@ export class BeatSheetApplyModal extends Modal {
         this.contentEl.empty();
     }
 }
+/* eslint-enable @typescript-eslint/no-misused-promises -- End Obsidian callback exception. */
