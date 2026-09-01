@@ -17,27 +17,35 @@ const {
     `data:text/javascript;base64,${Buffer.from(result.outputFiles[0].text).toString('base64')}`
 );
 
-test('System folders are hidden by exact name at any depth', () => {
-    assert.equal(shouldHideFileExplorerFolder('System'), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/System'), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/system/'), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Systems'), false);
+const managedFolders = new Set([
+    'novel/system',
+    'novel/library',
+    'novel/canvas',
+    'series/library',
+]);
+const managedSeriesFiles = new Set(['series/series.json']);
+
+test('only registered project System folders are hidden', () => {
+    assert.equal(shouldHideFileExplorerFolder('System', undefined, managedFolders), false);
+    assert.equal(shouldHideFileExplorerFolder('Novel/System', undefined, managedFolders), true);
+    assert.equal(shouldHideFileExplorerFolder('Novel/system/', undefined, managedFolders), true);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Systems', undefined, managedFolders), false);
 });
 
-test('Library folders are hidden by exact name at any depth', () => {
-    assert.equal(shouldHideFileExplorerFolder('Library'), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Library'), true);
-    assert.equal(shouldHideFileExplorerFolder('Series/library/'), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Library Notes'), false);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Libraries'), false);
+test('user-created root Library stays visible while managed Libraries are hidden', () => {
+    assert.equal(shouldHideFileExplorerFolder('Library', undefined, managedFolders), false);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Library', undefined, managedFolders), true);
+    assert.equal(shouldHideFileExplorerFolder('Series/library/', undefined, managedFolders), true);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Library Notes', undefined, managedFolders), false);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Libraries', undefined, managedFolders), false);
 });
 
-test('Canvas folders are hidden by exact name at any depth', () => {
-    assert.equal(shouldHideFileExplorerFolder('Canvas'), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Canvas'), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/canvas/'), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Canvas Notes'), false);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Canvases'), false);
+test('only registered project Canvas folders are hidden', () => {
+    assert.equal(shouldHideFileExplorerFolder('Canvas', undefined, managedFolders), false);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Canvas', undefined, managedFolders), true);
+    assert.equal(shouldHideFileExplorerFolder('Novel/canvas/', undefined, managedFolders), true);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Canvas Notes', undefined, managedFolders), false);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Canvases', undefined, managedFolders), false);
 });
 
 test('folder and file visibility rules can be enabled independently', () => {
@@ -48,17 +56,17 @@ test('folder and file visibility rules can be enabled independently', () => {
         seriesMetadata: false,
         unsupportedFiles: true,
     };
-    assert.equal(shouldHideFileExplorerFolder('Novel/System', rules), false);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Library', rules), true);
-    assert.equal(shouldHideFileExplorerFolder('Novel/Canvas', rules), false);
-    assert.equal(shouldHideFileExplorerFile('Novel/series.json', () => false, rules), false);
+    assert.equal(shouldHideFileExplorerFolder('Novel/System', rules, managedFolders), false);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Library', rules, managedFolders), true);
+    assert.equal(shouldHideFileExplorerFolder('Novel/Canvas', rules, managedFolders), false);
+    assert.equal(shouldHideFileExplorerFile('Series/series.json', () => false, rules, managedSeriesFiles), false);
     assert.equal(shouldHideFileExplorerFile('Novel/export.docx', () => false, rules), true);
     assert.equal(shouldHideFileExplorerFile('Novel/chapter.md', () => true, rules), false);
 });
 
-test('series.json is always hidden even when JSON has a registered view', () => {
-    assert.equal(shouldHideFileExplorerFile('series.json', () => true), true);
-    assert.equal(shouldHideFileExplorerFile('Novel/SERIES.JSON', () => true), true);
+test('only registered series metadata is hidden when JSON has a registered view', () => {
+    assert.equal(shouldHideFileExplorerFile('series.json', () => true, undefined, managedSeriesFiles), false);
+    assert.equal(shouldHideFileExplorerFile('Series/SERIES.JSON', () => true, undefined, managedSeriesFiles), true);
 });
 
 test('registered file types remain visible and unopenable types are hidden', () => {
@@ -118,16 +126,11 @@ test('new file-tree rows are hidden before the next paint', async () => {
     assert.doesNotMatch(mainTs, /fileExplorerVisibilityFrame/);
     assert.match(mainTs, /await this\.loadSettings\(\);\s*this\.updateFileExplorerVisibilityModeClass\(\)/);
     assert.match(mainTs, /sl-narrative-lab-hide-file-explorer-internals/);
-    const classes = {
-        System: 'sl-narrative-lab-hide-system-folder',
-        Library: 'sl-narrative-lab-hide-library-folder',
-        Canvas: 'sl-narrative-lab-hide-canvas-folder',
-    };
-    for (const [folder, className] of Object.entries(classes)) {
-        assert.match(styles, new RegExp(`${className}[\\s\\S]*?nav-folder:has`));
-        assert.match(styles, new RegExp(`data-path="${folder}" i`));
-        assert.match(styles, new RegExp(`data-path\\$="/${folder}" i`));
-    }
-    assert.match(styles, /sl-narrative-lab-hide-series-metadata[\s\S]*?series\.json/);
-    assert.match(styles, /data-path="series\.json" i/);
+    assert.match(mainTs, /fileExplorerVisibilityScope\(\)/);
+    assert.match(mainTs, /scope\.folderPaths/);
+    assert.match(mainTs, /scope\.seriesMetadataPaths/);
+    assert.doesNotMatch(styles, /data-path="Library" i/);
+    assert.doesNotMatch(styles, /data-path\$="\/Library" i/);
+    assert.doesNotMatch(styles, /data-path="series\.json" i/);
+    assert.match(styles, /sl-narrative-lab-hidden-file-tree-item/);
 });

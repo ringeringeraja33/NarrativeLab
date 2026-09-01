@@ -8,9 +8,11 @@ import { countWordRevisionChurn } from './utils/wordcountText';
 import { consumeTextareaUndoKey, isLocalTextUndoTarget, isRedoKey, isUndoKey } from './utils/textareaHistory';
 import {
     OBSIDIAN_OPENABLE_EXTENSION_FALLBACK,
+    normalizeFileExplorerVisibilityPath,
     shouldHideFileExplorerFile,
     shouldHideFileExplorerFolder,
     type FileExplorerVisibilityRules,
+    type FileExplorerVisibilityScope,
 } from './utils/fileExplorerVisibility';
 import {
     getLeafNarrativeLabProjectFile,
@@ -2126,6 +2128,28 @@ export default class SceneCardsPlugin extends Plugin {
         };
     }
 
+    /** Exact internal paths owned by registered projects and validated series. */
+    private fileExplorerVisibilityScope(): FileExplorerVisibilityScope {
+        const folderPaths = new Set<string>();
+        const seriesMetadataPaths = new Set<string>();
+        const addFolder = (path: string): void => {
+            const normalized = normalizeFileExplorerVisibilityPath(path);
+            if (normalized) folderPaths.add(normalized);
+        };
+        for (const project of this.sceneManager?.getProjects() || []) {
+            const folders = deriveProjectFoldersFromFilePath(project.filePath);
+            addFolder(project.codexFolder || folders.codexFolder);
+            addFolder(`${folders.baseFolder}/System`);
+            addFolder(folders.canvasFolder);
+            const seriesFolder = this.sceneManager.getSeriesFolderForProject(project);
+            if (!seriesFolder) continue;
+            const sharedLibrary = normalizePath(`${seriesFolder}/Library`);
+            if (this.app.vault.getAbstractFileByPath(sharedLibrary)) addFolder(sharedLibrary);
+            seriesMetadataPaths.add(normalizeFileExplorerVisibilityPath(`${seriesFolder}/series.json`));
+        }
+        return { folderPaths, seriesMetadataPaths };
+    }
+
     /**
      * Hide only file-tree rows. Nothing is deleted, moved, excluded from search,
      * or made unavailable to NarrativeLab's own readers.
@@ -2135,6 +2159,7 @@ export default class SceneCardsPlugin extends Plugin {
         const hiddenClass = 'sl-narrative-lab-hidden-file-tree-item';
         const enabled = this.settings.hideUnsupportedFilesInExplorer !== false;
         const rules = this.fileExplorerVisibilityRules();
+        const scope = this.fileExplorerVisibilityScope();
         if (!roots) this.updateFileExplorerVisibilityModeClass();
         const explorers = roots ?? activeDocument.querySelectorAll<HTMLElement>(
             '.workspace-leaf-content[data-type="file-explorer"]',
@@ -2146,7 +2171,10 @@ export default class SceneCardsPlugin extends Plugin {
                 const row = title.closest<HTMLElement>('.nav-folder');
                 if (!row) continue;
                 const path = title.dataset.path ?? '';
-                row.classList.toggle(hiddenClass, enabled && shouldHideFileExplorerFolder(path, rules));
+                row.classList.toggle(
+                    hiddenClass,
+                    enabled && shouldHideFileExplorerFolder(path, rules, scope.folderPaths),
+                );
             }
 
             for (const element of matchingElements(explorer, '.nav-file-title[data-path]')) {
@@ -2158,6 +2186,7 @@ export default class SceneCardsPlugin extends Plugin {
                     path,
                     extension => this.canObsidianOpenExtension(extension),
                     rules,
+                    scope.seriesMetadataPaths,
                 );
                 row.classList.toggle(hiddenClass, hidden);
             }
