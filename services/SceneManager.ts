@@ -4494,15 +4494,15 @@ export class SceneManager implements ISceneStore {
         }
 
         // Keep lower (earlier) status
-        const lowestStatus = scenes.reduce((lowest, s) => {
+        const lowestStatus = scenes.reduce<SceneStatus>((lowest, s) => {
             const statusOrder = getStatusOrder();
             const idxCurrent = statusOrder.indexOf(s.status as SceneStatus);
             const idxLowest = statusOrder.indexOf(lowest as SceneStatus);
             // -1 means not found; treat as highest so it doesn't win
             const safeCurrent = idxCurrent >= 0 ? idxCurrent : statusOrder.length;
             const safeLowest = idxLowest >= 0 ? idxLowest : statusOrder.length;
-            return safeCurrent < safeLowest ? s.status : lowest;
-        }, primary.status || 'idea');
+            return safeCurrent < safeLowest ? (s.status ?? lowest) : lowest;
+        }, primary.status ?? 'idea');
 
         // Union locations
         const locSet = new Set<string>();

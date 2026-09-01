@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
 /**
  * Character data model - represents a character profile stored as a markdown file
  * in the project's Characters/ folder.
@@ -850,4 +849,3 @@ export const CHARACTER_ROLES = [
     'Supporting',
     'Minor',
 ];
-/* eslint-enable @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */

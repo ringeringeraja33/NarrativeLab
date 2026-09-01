@@ -22,7 +22,10 @@ async function loadExcelWorkbook(data: ArrayBuffer | Uint8Array): Promise<ExcelJ
     }
     const { default: ExcelJS } = await import('exceljs');
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(data);
+    // ExcelJS accepts ArrayBuffer/Uint8Array in browsers, although its public
+    // declaration still names Node's Buffer as the only input type.
+    type ExcelJsLoadInput = Parameters<ExcelJS.Workbook['xlsx']['load']>[0];
+    await wb.xlsx.load(data as ExcelJsLoadInput);
     _plotGridWorkbookCache = { data, wb };
     return wb;
 }

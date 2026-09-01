@@ -1201,7 +1201,9 @@ ${body}
         }
 
         const filePath = `${exportFolder}/${filename}`;
-        await this.app.vault.adapter.writeBinary(filePath, pdfBytes);
+        // Copy into an owned ArrayBuffer. Electron returns a Uint8Array whose
+        // backing store may be typed as ArrayBufferLike under TypeScript 6.
+        await this.app.vault.adapter.writeBinary(filePath, new Uint8Array(pdfBytes).buffer);
 
         new Notice(t('Exported to {filename}', { filename }), 5000);
         return filePath;

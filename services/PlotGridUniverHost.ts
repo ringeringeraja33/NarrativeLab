@@ -324,9 +324,9 @@ const UNIVER_CONTEXT_MENU_HOST_ID = 'desktop-context-menu';
 
 function hideUniverContextMenu(univer: Univer): void {
     try {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-        const menuService = univer.__getInjector().get('ui.contextmenu.service');
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
+        const menuService: {
+            hideContextMenu?: () => void;
+        } | null = univer.__getInjector().get('ui.contextmenu.service');
         menuService?.hideContextMenu?.();
     } catch {
         // Optional — older builds may not expose the service.
@@ -335,9 +335,9 @@ function hideUniverContextMenu(univer: Univer): void {
 
 function isUniverContextMenuOpen(univer: Univer, doc: Document): boolean {
     try {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-        const menuService = univer.__getInjector().get('ui.contextmenu.service');
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+        const menuService: {
+            visible?: boolean;
+        } | null = univer.__getInjector().get('ui.contextmenu.service');
         if (menuService?.visible) return true;
     } catch {
         // Optional — older builds may not expose the service.
@@ -685,9 +685,7 @@ function moveFinancialFormulaMenuLast(univer: Univer): void {
     try {
         // Univer exposes this menu registry through an internal injector without
         // complete public TypeScript declarations in 0.25.x.
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const menuManager = univer.__getInjector().get(IMenuManagerService);
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         menuManager.mergeMenu({
             [RibbonFormulasGroup.BASIC]: {
                 [`${InsertFunctionOperation.id}.financial`]: {
@@ -703,9 +701,7 @@ function moveFinancialFormulaMenuLast(univer: Univer): void {
 /** Put Data immediately after Start, matching Excel-style ribbon order. */
 function orderRibbonTabs(univer: Univer): void {
     try {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         const menuManager = univer.__getInjector().get(IMenuManagerService);
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
         menuManager.mergeMenu({
             [RibbonPosition.START]: { order: RIBBON_TAB_ORDER.start },
             [RibbonPosition.DATA]: { order: RIBBON_TAB_ORDER.data },

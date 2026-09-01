@@ -99,7 +99,7 @@ export class SLMarkdownToDocxConverter {
     private usedFootnotes: string[] = [];
     private imageCounter: number = 0;
     private imageRelationships: Array<{id: string, data: ArrayBuffer, extension: string}> = [];
-    private md: MarkdownIt.MarkdownIt;
+    private md: ReturnType<typeof MarkdownIt>;
     /** When set, lines whose trimmed content equals this string are rendered
      *  as centered scene-separator paragraphs instead of normal body text. */
     private sceneSeparatorText: string | null = null;

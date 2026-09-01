@@ -3,10 +3,11 @@ import {
     Univer,
     type IUniverConfig,
     type Plugin,
+    type PluginCtor,
 } from '@univerjs/core';
 import { FUniver } from '@univerjs/core/lib/facade';
 
-type NarrativePluginConstructor = (new (options?: unknown) => Plugin) & { pluginName: string };
+type NarrativePluginConstructor = PluginCtor<Plugin>;
 
 interface UniverPreset {
     plugins: unknown[];

@@ -1,5 +1,5 @@
-/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
-import { ItemView, WorkspaceLeaf, WorkspaceSplit, Menu, Notice, TFile, TFolder, Modal, Setting, MarkdownRenderer, normalizePath, type ViewStateResult } from 'obsidian';
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; floating promises are intentional in DOM/event handlers; matching enable at end of file */
+import { ItemView, WorkspaceLeaf, WorkspaceSplit, Menu, Notice, TFile, TFolder, Modal, Setting, MarkdownRenderer, normalizePath, type App, type ViewStateResult } from 'obsidian';
 import * as obsidian from 'obsidian';
 import { Scene, SceneFilter, SortConfig, BoardGroupBy, SceneStatus, SceneTemplate, getStatusOrder, getStatusConfig, resolveStatusCfg } from '../models/Scene';
 import { openConfirmModal } from '../components/ConfirmModal';
@@ -1561,7 +1561,7 @@ export class BoardView extends ItemView {
         host.empty();
 
         const WorkspaceLeafCtor = (obsidian as unknown as {
-            WorkspaceLeaf?: new (app: typeof this.app) => WorkspaceLeaf;
+            WorkspaceLeaf?: new (app: App) => WorkspaceLeaf;
         }).WorkspaceLeaf;
         if (typeof WorkspaceLeafCtor !== 'function') {
             throw new Error('WorkspaceLeaf constructor unavailable');
@@ -5432,4 +5432,4 @@ export class BoardView extends ItemView {
         });
     }
 }
-/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */
+/* eslint-enable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- end of file-wide suppression block opened at line 1 */
