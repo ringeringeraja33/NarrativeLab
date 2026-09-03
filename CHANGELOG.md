@@ -1,5 +1,12 @@
 # NarrativeLab — Changelog
 
+## 1.5.8
+
+- Concept Grid now mirrors active Univer cell edits into a project-scoped recovery journal on every input, so text typed immediately before Obsidian exits is restored on the next launch.
+- Spreadsheet autosave no longer commits, blurs, reloads, or remounts the active cell editor. Heavy document synchronization is coalesced after a short pause and workbook writes remain deferred, keeping continuous typing responsive.
+- Recovery applies only when the stored cell still matches the edit's original value, preventing an old recovery record from overwriting newer workbook content.
+- Updated the TypeScript, ESLint, CodeMirror, Markdown-It, and related development dependencies while retaining full release validation.
+
 ## 1.5.7
 
 - Files-view hiding now applies only to the exact internal paths of registered NarrativeLab projects and validated series. User-created root or unrelated folders named `Library`, `System`, or `Canvas` remain visible.
