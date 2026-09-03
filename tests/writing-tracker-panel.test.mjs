@@ -158,7 +158,8 @@ test('sidebar panel splits vault/project and pins a vertical heatmap for the act
     assert.match(panel, /renderVerticalWordHeatmap/);
     assert.match(panel, /this\.source\(\)\.getFullHistory\(\)/);
     assert.match(widgets, /buildVerticalHeatmapWeeks/);
-    assert.match(styles, /\.nl-tracker-heatmap-vertical \.nl-tracker-heatmap-week \{[^}]*grid-template-columns:\s*repeat\(7, 11px\)/s);
+    assert.match(styles, /\.nl-tracker-heatmap-vertical \.nl-tracker-heatmap-week \{[^}]*grid-template-columns:\s*repeat\(7, 18px\)/s);
+    assert.match(styles, /\.nl-tracker-heatmap-vertical \.nl-tracker-heatmap-dow > span \{[^}]*white-space:\s*nowrap/s);
     assert.match(styles, /\.nl-tracker-heatmap-vertical \.nl-tracker-heat-cell \{[^}]*width:\s*11px/s);
     assert.match(styles, /\.nl-tracker-panel,\s*\n\.nl-tracker-page \{[^}]*text-align:\s*center/s);
     assert.match(styles, /\.nl-tracker-cards,\s*\n\.nl-tracker-page-cards \{[^}]*justify-content:\s*center/s);
