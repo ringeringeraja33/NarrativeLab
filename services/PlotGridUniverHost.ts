@@ -2,7 +2,14 @@
  * Univer Sheets host for the Concept Grid (Plot Grid) view.
  * Instantiated on demand and bundled into the community-distributed main.js.
  */
-import { LocaleType, mergeLocales, type Univer } from '@univerjs/core';
+import {
+    DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY,
+    DOCS_NORMAL_EDITOR_UNIT_ID_KEY,
+    IUniverInstanceService,
+    LocaleType,
+    mergeLocales,
+    type Univer,
+} from '@univerjs/core';
 import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import { UniverSheetsConditionalFormattingPreset } from '@univerjs/preset-sheets-conditional-formatting';
 import { UniverSheetsDataValidationPreset } from '@univerjs/preset-sheets-data-validation';
@@ -15,6 +22,7 @@ import { UniverSheetsSortPreset } from '@univerjs/preset-sheets-sort';
 import { UniverSheetsTablePreset } from '@univerjs/preset-sheets-table';
 import { UniverSheetsThreadCommentPreset } from '@univerjs/preset-sheets-thread-comment';
 import { InsertFunctionOperation } from '@univerjs/sheets-formula-ui';
+import { IEditorBridgeService } from '@univerjs/sheets-ui';
 import { IMenuManagerService, RibbonFormulasGroup, RibbonPosition } from '@univerjs/ui';
 import sheetsCoreEnUS from '@univerjs/preset-sheets-core/locales/en-US';
 import sheetsCoreZhCN from '@univerjs/preset-sheets-core/locales/zh-CN';
@@ -132,6 +140,15 @@ import {
 
 export { cellRequiresMarkdownEditor } from '../utils/plotGridCellEdit';
 
+export type PlotGridUniverEditorDraft = {
+    sheetId: string;
+    row: number;
+    col: number;
+    content: string;
+    formula?: string;
+    updatedAt: number;
+};
+
 export interface PlotGridUniverHostOptions {
     container: HTMLElement;
     initialDocument: ConceptGridDocument;
@@ -162,6 +179,8 @@ export interface PlotGridUniverHostOptions {
     isExternalEditorBusy?: () => boolean;
     /** Fired once the real workbook (not Univer's default blank) is on screen. */
     onReady?: () => void;
+    /** Mirrors the still-open native Univer editor into crash-safe host storage. */
+    onEditorDraftChange?: (draft: PlotGridUniverEditorDraft) => void;
     onDocumentChange: (doc: ConceptGridDocument) => void;
     onSelectionChange?: (info: { sheetId: string; row: number; col: number }) => void;
 }
@@ -421,7 +440,7 @@ const CONNECTED_NOTES_EMPTY_ID = 'narrativelab.plot-grid.connected.empty';
 const CONNECTED_NOTES_SLOT_MAX = 24;
 
 type UniverInjector = {
-    get: (id: string) => unknown;
+    get: (id: unknown) => unknown;
 };
 
 type UniverMenuManager = {
@@ -433,6 +452,25 @@ type UniverCommandService = {
     registerCommand: (command: unknown) => void;
 };
 
+type UniverEditorBridge = {
+    getEditCellState?: () => {
+        sheetId: string;
+        row: number;
+        column: number;
+        editorUnitId?: string;
+    } | null | undefined;
+    getCurrentEditorId?: () => string;
+    getEditorDirty?: () => boolean;
+};
+
+type UniverEditorDocument = {
+    getPlainText?: () => string;
+};
+
+type UniverInstanceRegistry = {
+    getUnit?: (unitId: string) => UniverEditorDocument | null | undefined;
+};
+
 function getUniverInjector(univer: Univer): UniverInjector | null {
     const host = univer as Univer & { __getInjector?: () => unknown };
     const getInjector = host.__getInjector;
@@ -440,7 +478,7 @@ function getUniverInjector(univer: Univer): UniverInjector | null {
     const injector: unknown = getInjector.call(host);
     if (!injector || typeof injector !== 'object') return null;
     const get = (injector as UniverInjector).get;
-    return typeof get === 'function' ? { get } : null;
+    return typeof get === 'function' ? { get: get.bind(injector) } : null;
 }
 
 function registerConnectedNotesHoverSubmenu(
@@ -1293,6 +1331,13 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     let disposing = false;
     let syncEnabled = false;
     let ourUnitId: string | null = null;
+    const internalInjector = getUniverInjector(univerInstance);
+    const getInternalService = <T>(id: unknown): T | null => {
+        try { return (internalInjector?.get(id) as T | undefined) ?? null; }
+        catch { return null; }
+    };
+    const editorBridge = getInternalService<UniverEditorBridge>(IEditorBridgeService);
+    const instanceRegistry = getInternalService<UniverInstanceRegistry>(IUniverInstanceService);
     const recentlyClearedCells = new Set<string>();
     const clearIntents = new Map<string, { content: boolean; format: boolean }>();
     const cellIntentKey = (sheetId: string, row: number | string, col: number | string) =>
@@ -1581,6 +1626,76 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     // Declared before pullFromUniver so the closure never hits a TDZ read.
     let cellEditing = false;
     let composing = false;
+    let editorDraftNotifyTimer = 0;
+    let editorDraftDirty = false;
+
+    const publishPendingEditorDraft = (): void => {
+        if (editorDraftNotifyTimer) {
+            window.clearTimeout(editorDraftNotifyTimer);
+            editorDraftNotifyTimer = 0;
+        }
+        if (!editorDraftDirty || disposed) return;
+        editorDraftDirty = false;
+        contentFp = conceptGridContentFingerprint(liveDoc);
+        opts.onDocumentChange(liveDoc);
+    };
+
+    const scheduleEditorDraftPublish = (): void => {
+        editorDraftDirty = true;
+        if (editorDraftNotifyTimer) window.clearTimeout(editorDraftNotifyTimer);
+        // Keep typing on Univer's native document model. The heavier NL document
+        // normalization and xlsx autosave begin only after a short typing pause.
+        editorDraftNotifyTimer = window.setTimeout(publishPendingEditorDraft, 120);
+    };
+
+    /**
+     * Univer keeps uncommitted keystrokes in an internal document model. Mirror
+     * that model immediately so closing Obsidian does not depend on a later blur.
+     */
+    const capturePendingEditorDraft = (): boolean => {
+        try {
+            const edit = editorBridge?.getEditCellState?.();
+            if (!edit || editorBridge?.getEditorDirty?.() !== true) return false;
+            const editorIds = [
+                editorBridge.getCurrentEditorId?.(),
+                edit.editorUnitId,
+                DOCS_NORMAL_EDITOR_UNIT_ID_KEY,
+                DOCS_FORMULA_BAR_EDITOR_UNIT_ID_KEY,
+            ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+            let editorDoc: UniverEditorDocument | null = null;
+            for (const id of [...new Set(editorIds)]) {
+                const candidate = instanceRegistry?.getUnit?.(id);
+                if (candidate && typeof candidate.getPlainText === 'function') {
+                    editorDoc = candidate;
+                    break;
+                }
+            }
+            if (!editorDoc?.getPlainText) return false;
+            const content = editorDoc.getPlainText();
+            const formula = content.startsWith('=') ? content : undefined;
+            opts.onEditorDraftChange?.({
+                sheetId: edit.sheetId,
+                row: edit.row,
+                col: edit.column,
+                content,
+                formula,
+                updatedAt: Date.now(),
+            });
+            const cellSnapshot = formula
+                ? { f: formula }
+                : { v: content };
+            const next = mergeUniverCellDataIntoDocument(liveDoc, edit.sheetId, {
+                [edit.row]: { [edit.column]: cellSnapshot },
+            });
+            if (next === liveDoc) return true;
+            liveDoc = next;
+            scheduleEditorDraftPublish();
+            return true;
+        } catch (error) {
+            console.warn('[NarrativeLab] Could not capture the active spreadsheet draft:', error);
+            return false;
+        }
+    };
 
     /** Ask Univer to commit the in-cell editor into the worksheet matrix. */
     const tryCommitCellEditor = (): unknown => {
@@ -1848,6 +1963,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
     const onEditorSessionEnd = () => {
         if (disposed || isEditorBusy()) return;
+        publishPendingEditorDraft();
         if (pendingSetDoc) {
             applyPendingSetDoc();
             return;
@@ -2101,6 +2217,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
 
                 if (id === 'doc.command.ime-input') {
                     if (params?.isCompositionStart) composing = true;
+                    capturePendingEditorDraft();
                     if (params?.isCompositionEnd) {
                         composing = false;
                         onEditorSessionEnd();
@@ -2168,7 +2285,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 // Also skip noisy formula/doc mutations until the editor session ends —
                 // polling mid-keystroke causes autosave → vault refresh → workbook remount jumps.
                 if (id.startsWith('doc.mutation.') || id.startsWith('doc.command.')) {
-                    if (isEditorBusy()) {
+                    const captured = capturePendingEditorDraft();
+                    if (captured || isEditorBusy()) {
                         pendingAfterEdit = true;
                         return;
                     }
@@ -2322,6 +2440,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
     suppressUntil = Date.now() + 800;
 
     const flushNow = (): void => {
+        // Capture first: commit/blur can destroy the internal editor model before
+        // workbook.save() publishes the final value.
+        capturePendingEditorDraft();
+        publishPendingEditorDraft();
         // Commit the open editor first so workbook.save() includes typed text.
         tryCommitCellEditor();
         cellEditing = false;
@@ -2386,6 +2508,8 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
         dispose: () => {
             if (disposed || disposing) return;
             disposing = true;
+            capturePendingEditorDraft();
+            publishPendingEditorDraft();
             if (revealFrame) {
                 window.cancelAnimationFrame(revealFrame);
                 revealFrame = 0;
@@ -2398,6 +2522,10 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
             if (suppressDrainTimer) {
                 window.clearTimeout(suppressDrainTimer);
                 suppressDrainTimer = 0;
+            }
+            if (editorDraftNotifyTimer) {
+                window.clearTimeout(editorDraftNotifyTimer);
+                editorDraftNotifyTimer = 0;
             }
             if (dimPullTimer) {
                 window.clearTimeout(dimPullTimer);
@@ -2538,6 +2666,7 @@ export function createPlotGridUniverHost(opts: PlotGridUniverHostOptions): PlotG
                 || pendingAfterEdit
                 || pendingAfterMenu
                 || timer !== 0
+                || editorDraftNotifyTimer !== 0
                 || pendingAfterSuppress
                 || dimNotifyTimer !== 0
                 || dimPullTimer !== 0;

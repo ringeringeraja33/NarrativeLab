@@ -1977,6 +1977,13 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     onunload(): void {
+        // View.onClose is not awaited during application shutdown. Capture any
+        // live spreadsheet editor before Univer and plugin services are disposed.
+        for (const leaf of this.app.workspace.getLeavesOfType(PLOTGRID_VIEW_TYPE)) {
+            try {
+                (leaf.view as PlotgridView).flushForShutdown?.();
+            } catch { /* recovery journal remains available */ }
+        }
         this.navigatorDisposed = true;
         this.canvasModule?.unload();
         this.canvasModule = null;

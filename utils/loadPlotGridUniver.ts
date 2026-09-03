@@ -7,12 +7,18 @@
  */
 import type { Plugin } from 'obsidian';
 import type {
+    PlotGridUniverEditorDraft,
     PlotGridUniverContextAction,
     PlotGridUniverHost,
     PlotGridUniverHostOptions,
 } from '../services/PlotGridUniverHost';
 
-export type { PlotGridUniverContextAction, PlotGridUniverHost, PlotGridUniverHostOptions };
+export type {
+    PlotGridUniverContextAction,
+    PlotGridUniverEditorDraft,
+    PlotGridUniverHost,
+    PlotGridUniverHostOptions,
+};
 
 type UniverModule = {
     createPlotGridUniverHost: (opts: PlotGridUniverHostOptions) => PlotGridUniverHost;

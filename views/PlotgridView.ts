@@ -18,10 +18,12 @@ import { showMenuSafely } from '../utils/obsidianMenu';
 import {
     loadPlotGridUniverModule,
     type PlotGridUniverContextAction,
+    type PlotGridUniverEditorDraft,
     type PlotGridUniverHost,
 } from '../utils/loadPlotGridUniver';
 import {
     conceptGridContentFingerprint,
+    mergeUniverCellDataIntoDocument,
     plotGridXlsxPath,
     serializePlotGridNlMeta,
 } from '../services/PlotGridXlsxCodec';
@@ -68,6 +70,17 @@ function nextPaint(): Promise<void> {
 function makeId(prefix = '') {
     return prefix + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 }
+
+type PlotGridEditorDraftEntry = PlotGridUniverEditorDraft & {
+    baseContent: string;
+    baseFormula?: string;
+};
+
+type PlotGridEditorDraftJournal = {
+    version: 1;
+    projectFile: string;
+    entries: PlotGridEditorDraftEntry[];
+};
 
 export class PlotgridView extends ProjectBoundItemView {
     plugin: SceneCardsPlugin | undefined;
@@ -163,6 +176,10 @@ export class PlotgridView extends ProjectBoundItemView {
             if (leaf === this.leaf) this.univerHost?.relayout();
         }));
 
+        const flushBeforeUnload = () => this.flushForShutdown();
+        window.addEventListener('beforeunload', flushBeforeUnload);
+        this.register(() => window.removeEventListener('beforeunload', flushBeforeUnload));
+
         // Watch for file renames to update linkedSceneId paths AND row sourceIds
         this.registerEvent(this.app.vault.on('rename', (file, oldPath) => {
             if (file instanceof TFile) {
@@ -245,6 +262,19 @@ export class PlotgridView extends ProjectBoundItemView {
             await this.saveBoundDocumentIfChanged(projectFile);
         } catch (error) {
             console.error('[NarrativeLab] Plot Grid persist failed:', error);
+        }
+    }
+
+    /** Capture the live cell synchronously, then start the final vault write. */
+    flushForShutdown(): void {
+        this.closeAllCellEditors();
+        try { this.univerHost?.flush(); } catch { /* recovery journal remains available */ }
+        this.cancelPendingSave();
+        const projectFile = this.loadedProjectFile;
+        if (this.hasHydratedDocument && projectFile) {
+            void this.saveBoundDocumentIfChanged(projectFile).catch(error => {
+                console.error('[NarrativeLab] Plot Grid shutdown save failed:', error);
+            });
         }
     }
 
@@ -501,6 +531,133 @@ export class PlotgridView extends ProjectBoundItemView {
         return serializePlotGridNlMeta(this.document);
     }
 
+    private editorDraftStorageKey(projectFile: string): string {
+        const vault = this.app.vault.getName();
+        return `narrative-lab:plot-grid-draft:${encodeURIComponent(vault)}:${encodeURIComponent(normalizePath(projectFile))}`;
+    }
+
+    private readEditorDraftJournal(projectFile: string): PlotGridEditorDraftJournal | null {
+        try {
+            const raw = window.localStorage.getItem(this.editorDraftStorageKey(projectFile));
+            if (!raw) return null;
+            const parsed = JSON.parse(raw) as Partial<PlotGridEditorDraftJournal>;
+            if (parsed.version !== 1
+                || normalizePath(parsed.projectFile || '') !== normalizePath(projectFile)
+                || !Array.isArray(parsed.entries)) return null;
+            const entries = parsed.entries.filter((entry): entry is PlotGridEditorDraftEntry => Boolean(
+                entry
+                && typeof entry.sheetId === 'string'
+                && Number.isInteger(entry.row) && entry.row >= 0
+                && Number.isInteger(entry.col) && entry.col >= 0
+                && typeof entry.content === 'string'
+                && typeof entry.baseContent === 'string'
+                && typeof entry.updatedAt === 'number',
+            ));
+            return { version: 1, projectFile: normalizePath(projectFile), entries };
+        } catch {
+            return null;
+        }
+    }
+
+    private writeEditorDraftJournal(journal: PlotGridEditorDraftJournal): void {
+        try {
+            const key = this.editorDraftStorageKey(journal.projectFile);
+            if (journal.entries.length === 0) window.localStorage.removeItem(key);
+            else window.localStorage.setItem(key, JSON.stringify(journal));
+        } catch (error) {
+            console.warn('[NarrativeLab] Could not write spreadsheet recovery data:', error);
+        }
+    }
+
+    private cellStateAtCoords(
+        doc: ConceptGridDocument,
+        sheetId: string,
+        row: number,
+        col: number,
+    ): { content: string; formula?: string } | null {
+        const page = doc.pages.find(item => item.id === sheetId);
+        if (!page) return null;
+        const cell = getPlotGridCellAtUniverCoords(page, row, col);
+        const formula = cell?.formula?.trim() || undefined;
+        if (formula) return { content: formula, formula };
+        if (cell) return { content: cell.content || '' };
+        if (row === 0 && col === 0) return { content: page.cornerLabel || '' };
+        if (row === 0) return { content: page.columns[col - 1]?.label || '' };
+        if (col === 0) return { content: page.rows[row - 1]?.label || '' };
+        return { content: '' };
+    }
+
+    private rememberEditorDraft(draft: PlotGridUniverEditorDraft): void {
+        const projectFile = this.loadedProjectFile || this.getTargetProjectFile();
+        if (!projectFile || !this.hasHydratedDocument) return;
+        const current = this.cellStateAtCoords(this.document, draft.sheetId, draft.row, draft.col);
+        if (!current) return;
+        const journal = this.readEditorDraftJournal(projectFile) || {
+            version: 1 as const,
+            projectFile: normalizePath(projectFile),
+            entries: [],
+        };
+        const index = journal.entries.findIndex(entry =>
+            entry.sheetId === draft.sheetId && entry.row === draft.row && entry.col === draft.col,
+        );
+        const previous = index >= 0 ? journal.entries[index] : null;
+        const entry: PlotGridEditorDraftEntry = {
+            ...draft,
+            baseContent: previous?.baseContent ?? current.content,
+            baseFormula: previous?.baseFormula ?? current.formula,
+        };
+        if (index >= 0) journal.entries[index] = entry;
+        else journal.entries.push(entry);
+        journal.entries.sort((a, b) => a.updatedAt - b.updatedAt);
+        journal.entries = journal.entries.slice(-50);
+        this.writeEditorDraftJournal(journal);
+    }
+
+    /** Restore drafts only when the on-disk cell still equals the captured base. */
+    private restoreEditorDrafts(projectFile: string): boolean {
+        const journal = this.readEditorDraftJournal(projectFile);
+        if (!journal?.entries.length) return false;
+        let restored = false;
+        const remaining: PlotGridEditorDraftEntry[] = [];
+        for (const entry of journal.entries) {
+            const current = this.cellStateAtCoords(this.document, entry.sheetId, entry.row, entry.col);
+            if (!current) {
+                remaining.push(entry);
+                continue;
+            }
+            const matchesDraft = current.content === entry.content
+                && current.formula === entry.formula;
+            if (matchesDraft) continue;
+            const matchesBase = current.content === entry.baseContent
+                && current.formula === entry.baseFormula;
+            if (!matchesBase) {
+                remaining.push(entry);
+                continue;
+            }
+            const snapshot = entry.formula ? { f: entry.formula } : { v: entry.content };
+            this.document = normalizeConceptGridDocument(mergeUniverCellDataIntoDocument(
+                this.document,
+                entry.sheetId,
+                { [entry.row]: { [entry.col]: snapshot } },
+            ));
+            remaining.push(entry);
+            restored = true;
+        }
+        journal.entries = remaining;
+        this.writeEditorDraftJournal(journal);
+        return restored;
+    }
+
+    private clearSavedEditorDrafts(projectFile: string, savedDocument: ConceptGridDocument): void {
+        const journal = this.readEditorDraftJournal(projectFile);
+        if (!journal) return;
+        journal.entries = journal.entries.filter(entry => {
+            const saved = this.cellStateAtCoords(savedDocument, entry.sheetId, entry.row, entry.col);
+            return !saved || saved.content !== entry.content || saved.formula !== entry.formula;
+        });
+        this.writeEditorDraftJournal(journal);
+    }
+
     /**
      * Write only a changed document. A rejected safety/conflict save returns
      * false and deliberately leaves the old baseline in place so later edits
@@ -514,12 +671,16 @@ export class PlotgridView extends ProjectBoundItemView {
         if (!plugin || !this.hasHydratedDocument || !projectFile) return false;
         const fingerprint = this.persistedDocumentFingerprint();
         if (!options.force && fingerprint === this.lastPersistedDocumentFingerprint) return true;
-        const saved = await plugin.savePlotGrid(this.document, {
+        const documentToSave = structuredClone(this.document);
+        const saved = await plugin.savePlotGrid(documentToSave, {
             projectFilePath: projectFile,
             fromLiveEditor: true,
             allowEmptyOverwrite: options.allowEmptyOverwrite,
         });
-        if (saved) this.lastPersistedDocumentFingerprint = fingerprint;
+        if (saved) {
+            this.lastPersistedDocumentFingerprint = fingerprint;
+            this.clearSavedEditorDrafts(projectFile, documentToSave);
+        }
         return saved;
     }
 
@@ -563,9 +724,13 @@ export class PlotgridView extends ProjectBoundItemView {
             this.lastPersistedDocumentFingerprint = this.hasHydratedDocument
                 ? this.persistedDocumentFingerprint()
                 : null;
-            this.bindActivePage();
             this.loadedProjectFile = projectFile || this.loadedProjectFile;
             this.loadedSystemFolder = folder || this.loadedSystemFolder;
+            const restoredDrafts = projectFile && this.hasHydratedDocument
+                ? this.restoreEditorDrafts(projectFile)
+                : false;
+            this.bindActivePage();
+            if (restoredDrafts) this.scheduleSave();
             // Auto-repair broken linkedSceneId paths (e.g. after project migration)
             this.repairLinkedScenePaths();
             // Strip legacy auto-sync markers ("✓", "★ POV", "POV: …") that
@@ -673,15 +838,12 @@ export class PlotgridView extends ProjectBoundItemView {
     private scheduleSave() {
         const plugin = this.plugin;
         if (!plugin || !this.hasHydratedDocument) return;
-        if (
-            this.persistedDocumentFingerprint() === this.lastPersistedDocumentFingerprint
-            && !this.univerHost?.hasPendingSync()
-        ) return;
-        // Never autosave while Univer's in-cell editor / IME is live — writing the
-        // vault triggers refreshPlotGridViews and remounts the workbook mid-keystroke.
-        // Closing/switching the view performs an explicit final flush, so autosave
-        // must never force-close a user who is still typing a long cell value.
-        if (this.univerHost?.isEditorBusy()) {
+        const modelIsDirty = this.persistedDocumentFingerprint() !== this.lastPersistedDocumentFingerprint;
+        const editorBusy = this.univerHost?.isEditorBusy() === true;
+        if (!modelIsDirty && !this.univerHost?.hasPendingSync()) return;
+        // The native editor draft is mirrored into this.document before this call.
+        // If Univer has not exposed it yet, wait without pulling a sparse workbook.
+        if (editorBusy && !modelIsDirty) {
             if (this.saveDebounce) window.clearTimeout(this.saveDebounce);
             this.saveDebounce = window.setTimeout(() => this.scheduleSave(), 250);
             return;
@@ -694,7 +856,9 @@ export class PlotgridView extends ProjectBoundItemView {
         const timerId = window.setTimeout(async () => {
             try {
                 if (!this.hasHydratedDocument) return;
-                if (this.univerHost?.isEditorBusy()) {
+                const stillBusy = this.univerHost?.isEditorBusy() === true;
+                const stillDirty = this.persistedDocumentFingerprint() !== this.lastPersistedDocumentFingerprint;
+                if (stillBusy && !stillDirty) {
                     this.scheduleSave();
                     return;
                 }
@@ -703,7 +867,7 @@ export class PlotgridView extends ProjectBoundItemView {
                 // global active project changed, path-scoped save keeps edits in
                 // the bound book instead of aborting or bleeding into another project.
                 void folderAtSchedule;
-                if (this.univerHost && this.cellEditorWindows.size === 0) {
+                if (!stillBusy && this.univerHost && this.cellEditorWindows.size === 0) {
                     this.flushUniverIntoDocument({ acceptCleared: true });
                 }
                 if (typeof plugin.savePlotGrid === 'function') {
@@ -1261,6 +1425,10 @@ export class PlotgridView extends ProjectBoundItemView {
                         menu.addSeparator();
                         add('Reset spreadsheet', 'rotate-ccw', 'reset-grid');
                         showMenuSafely(menu, position);
+                    },
+                    onEditorDraftChange: (draft) => {
+                        if (mountGen !== this.univerMountGeneration) return;
+                        this.rememberEditorDraft(draft);
                     },
                     onDocumentChange: (doc) => {
                         if (mountGen !== this.univerMountGeneration) return;

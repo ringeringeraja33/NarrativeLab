@@ -1332,7 +1332,7 @@ test('PlotgridView lazy-loads Univer host and edits links as Markdown text', asy
     assert.match(view, /lastPersistedDocumentFingerprint/);
     assert.match(view, /serializePlotGridNlMeta\(this\.document\)/);
     assert.match(view, /if \(!options\.force && fingerprint === this\.lastPersistedDocumentFingerprint\) return true/);
-    assert.match(view, /if \(saved\) this\.lastPersistedDocumentFingerprint = fingerprint/);
+    assert.match(view, /if \(saved\) \{[\s\S]*?this\.lastPersistedDocumentFingerprint = fingerprint/);
 });
 
 test('cell editor undo stays in the textarea instead of the workspace stack', async () => {
@@ -1436,6 +1436,7 @@ test('wikilink suggestions follow the textarea caret inside editor modals', asyn
 test('embedded Univer host exposes the NarrativeLab grid controls', async () => {
     const host = await readFile(new URL('../services/PlotGridUniverHost.ts', import.meta.url), 'utf8');
     const view = await readFile(new URL('../views/PlotgridView.ts', import.meta.url), 'utf8');
+    const mainTs = await readFile(new URL('../main.ts', import.meta.url), 'utf8');
     const codecSrc = await readFile(new URL('../services/PlotGridXlsxCodec.ts', import.meta.url), 'utf8');
     const styles = await readFile(new URL('../styles.css', import.meta.url), 'utf8');
     for (const method of ['setZoom', 'setFreeze', 'setActiveCell']) {
@@ -1586,9 +1587,15 @@ test('embedded Univer host exposes the NarrativeLab grid controls', async () => 
     assert.match(host, /scheduleDimensionNotify/);
     assert.match(view, /univerHost\?\.isEditorBusy\(\)/);
     assert.match(view, /hasPendingSync\(\)/);
-    assert.match(view, /Never autosave while Univer/);
     assert.doesNotMatch(view, /saveBusyRetries/);
-    assert.match(view, /must never force-close a user who is still typing/);
+    assert.match(host, /capturePendingEditorDraft/);
+    assert.match(host, /IEditorBridgeService/);
+    assert.match(host, /DOCS_NORMAL_EDITOR_UNIT_ID_KEY/);
+    assert.match(view, /onEditorDraftChange/);
+    assert.match(view, /localStorage/);
+    assert.match(view, /restoreEditorDrafts/);
+    assert.match(view, /flushForShutdown/);
+    assert.match(mainTs, /flushForShutdown/);
     assert.match(view, /host\.flush\(\)/);
     assert.match(view, /flushUniverIntoDocument\(\{ acceptCleared: true \}\)/);
     assert.match(view, /isIncompleteConceptGridPull\(this\.document, next\)/);
