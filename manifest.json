@@ -1,9 +1,9 @@
 {
   "id": "narrative-lab",
-  "name": "NarrativeLab",
-  "version": "1.5.8",
+  "name": "WritingLab",
+  "version": "1.6.0",
   "minAppVersion": "1.12.7",
-  "description": "Plan, draft, and manage narrative projects with structured scenes, a recursive Library, spreadsheets, and Narrative Canvas.",
+  "description": "Plan, draft, and manage writing projects with optional research, narrative, spreadsheet, Library, and Canvas tools.",
   "author": "ringeringeraja33",
   "authorUrl": "https://github.com/ringeringeraja33",
   "isDesktopOnly": false

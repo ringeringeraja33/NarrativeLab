@@ -270,7 +270,7 @@ export const EXTRA_ZH: Record<string, string> = {
     "Don't save": '不保存',
     'Sticky notes hidden': '便签已隐藏',
     'Sticky notes shown': '便签已显示',
-    'Writing tracker': '写作追踪',
+    'Writing tracker': '写作记录',
     'Open tracker panel on startup': '启动时打开追踪侧栏',
     'Open the writing tracker in the right sidebar when Obsidian loads.': 'Obsidian 启动时在右侧边栏打开写作追踪。',
     'Heatmap weeks': '热力图周数',

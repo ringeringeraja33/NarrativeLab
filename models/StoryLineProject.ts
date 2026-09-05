@@ -1,5 +1,6 @@
 
 import { FilterPreset } from './Scene';
+import type { ProjectCapabilities } from './ProjectCapabilities';
 
 /**
  * Represents a NarrativeLab project manifest.
@@ -54,6 +55,8 @@ export interface StoryLineProject {
      * line wrapping. `'auto'` enables script auto-detection from manuscript text.
      */
     locale?: string;
+    /** Project-local feature selection. Missing on legacy projects means full compatibility mode. */
+    capabilities?: ProjectCapabilities;
     /** Derived scene folder path */
     sceneFolder: string;
     /** Derived character folder path */

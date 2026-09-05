@@ -16255,3 +16255,20 @@ body .nl-floating-sticky-save-location input[type="text"] {
         opacity: 1;
     }
 }
+/* Project-local module picker: compact enough for small settings windows. */
+.nl-project-module-choices {
+    max-height: min(46vh, 520px);
+    margin: var(--size-4-2) 0;
+    padding-right: var(--size-4-2);
+    overflow-y: auto;
+    border-block: 1px solid var(--background-modifier-border);
+}
+
+.sl-manuscript-empty .mod-cta {
+    margin-top: 16px;
+}
+
+.sl-manuscript-create-document {
+    margin-left: 4px;
+    white-space: nowrap;
+}

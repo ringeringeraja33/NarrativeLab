@@ -174,6 +174,8 @@ test('both heatmaps render localized weekday labels as one Unicode character', (
 test('project tracker names its project and follows open project files', () => {
     assert.match(panel, /Project: \{title\}/);
     assert.match(panel, /Paused — no project files are open\./);
+    assert.match(panel, /this\.plugin\.getTrackedWordTotal\(\)/);
+    assert.match(page, /this\.plugin\.getTrackedWordTotal\(\)/);
     assert.match(mainTs, /hasOpenFileForProject/);
     assert.match(mainTs, /leaf\.view instanceof FileView/);
     assert.match(mainTs, /setProjectFilesOpen/);
@@ -269,6 +271,17 @@ test('daily net words roll back deletions instead of retaining a high-water mark
     assert.ok(Object.values(tracker.getFullHistory()).includes(0));
     assert.equal(tracker.flushSession(1050).words, 50);
     assert.equal(tracker.getTodayWords(), 50);
+});
+
+test('deletions can reduce net words but never produce a negative writing speed', () => {
+    const tracker = new WritingTracker();
+    tracker.startSession(100, true, 0);
+    assert.equal(tracker.getSessionWords(75), -25);
+    assert.equal(tracker.getWordsPerMinute(75), 0);
+    assert.equal(tracker.startSprint(100, 0), true);
+    assert.equal(tracker.getSprintWords(75), -25);
+    assert.equal(tracker.getSprintWpm(75), 0);
+    assert.equal(tracker.stopSprint(75, 60_000)?.wpm, 0);
 });
 
 test('restarting a session clears the previous flush cursor', () => {

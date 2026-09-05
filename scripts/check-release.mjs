@@ -18,4 +18,4 @@ assert.equal(manifest.isDesktopOnly, false, 'mobile-compatible plugin must not b
 assert.ok(!fs.existsSync('plotgrid-univer.js'), 'obsolete runtime chunk must not ship outside main.js');
 const mainBundle = fs.readFileSync('main.js', 'utf8');
 assert.ok(mainBundle.includes('narrativelab-univer-sheets-css'), 'main.js does not contain the integrated Univer host');
-console.log(`Release metadata is consistent for NarrativeLab ${manifest.version}.`);
+console.log(`Release metadata is consistent for WritingLab ${manifest.version}.`);

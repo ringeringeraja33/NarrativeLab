@@ -885,9 +885,10 @@ export class NavigatorView extends ItemView {
 
     private renderActiveProjectContents(parent: HTMLElement, folderDepth: number): void {
         // Primary binder: Notes → Scenes → Research
-        this.renderNotesFolder(parent, folderDepth);
-        this.renderScenesFolder(parent, folderDepth);
-        this.renderResearchFolder(parent, folderDepth);
+        const active = this.sceneManager.activeProject;
+        if (this.plugin.capabilityService.isEnabled('notes', active)) this.renderNotesFolder(parent, folderDepth);
+        if (this.plugin.capabilityService.isEnabled('scenes', active)) this.renderScenesFolder(parent, folderDepth);
+        if (this.plugin.capabilityService.isEnabled('research', active)) this.renderResearchFolder(parent, folderDepth);
     }
 
     private renderScenesFolder(parent: HTMLElement, folderDepth = 1): void {

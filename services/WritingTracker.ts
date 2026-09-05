@@ -141,7 +141,7 @@ export class WritingTracker {
     getWordsPerMinute(currentTotalWords: number): number {
         const minutes = this.getSessionDuration() / 60_000;
         if (minutes < 0.5) return 0;
-        return Math.round(this.getSessionWords(currentTotalWords) / minutes);
+        return Math.max(0, Math.round(this.getSessionWords(currentTotalWords) / minutes));
     }
 
     // ── Daily history ──────────────────────────────────
@@ -367,7 +367,7 @@ export class WritingTracker {
         this._sprintActiveSince = null;
         const words = Number.isFinite(currentTotalWords) ? currentTotalWords - this._sprintBaseline : 0;
         const minutes = elapsed / 60_000;
-        const wpm = minutes >= 0.5 ? Math.round(words / minutes) : 0;
+        const wpm = minutes >= 0.5 ? Math.max(0, Math.round(words / minutes)) : 0;
         const startDate = this.todayKey(this._sprintStartedAt || now);
         const endDate = this.todayKey(now);
         const entry: SprintLogEntry = {
@@ -416,7 +416,7 @@ export class WritingTracker {
     getSprintWpm(currentTotalWords: number): number {
         const minutes = this.getSprintElapsed() / 60_000;
         if (minutes < 0.5) return 0;
-        return Math.round(this.getSprintWords(currentTotalWords) / minutes);
+        return Math.max(0, Math.round(this.getSprintWords(currentTotalWords) / minutes));
     }
 
     /** Get/set sprint duration (ms) */
@@ -432,7 +432,7 @@ export class WritingTracker {
         if (log.length === 0) return { count: 0, totalWords: 0, avgWpm: 0, totalDurationMs: 0 };
         const totalWords = log.reduce((s, e) => s + e.words, 0);
         const totalMs = log.reduce((s, e) => s + e.durationMs, 0);
-        const avgWpm = totalMs > 30_000 ? Math.round(totalWords / (totalMs / 60_000)) : 0;
+        const avgWpm = totalMs > 30_000 ? Math.max(0, Math.round(totalWords / (totalMs / 60_000))) : 0;
         return { count: log.length, totalWords, avgWpm, totalDurationMs: totalMs };
     }
 

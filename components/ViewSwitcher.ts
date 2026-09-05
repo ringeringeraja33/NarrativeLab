@@ -52,7 +52,7 @@ const STATS_ENTRY: ViewSwitcherEntry = {
 /** Opens the Narrative Canvas manager after Export in the top toolbar. */
 const PLAYMODE_ENTRY: ViewSwitcherEntry = {
     type: NCANVAS_LIBRARY_VIEW_TYPE,
-    label: 'Play in Canvas',
+    label: 'Canvas',
     icon: 'monitor-play',
 };
 
@@ -72,11 +72,13 @@ export function renderViewSwitcher(
     leaf: WorkspaceLeaf
 ): HTMLElement {
     const switcher = container.createDiv('story-line-view-switcher');
+    const projectFile = getLeafNarrativeLabProjectFile(leaf);
 
     // Filter out desktop-only views on mobile
-    const entries = isMobile
+    const platformEntries = isMobile
         ? VIEW_ENTRIES.filter(e => !DESKTOP_ONLY_VIEWS.has(e.type))
         : VIEW_ENTRIES;
+    const entries = platformEntries.filter(entry => plugin.isViewEnabled(entry.type, projectFile));
 
     for (const entry of entries) {
         // The Library tab highlights for its Character and Location views too.
@@ -171,6 +173,7 @@ export function renderViewSwitcher(
         cls: `story-line-view-tab story-line-view-tab-icon${statsActive ? ' active' : ''}`,
         attr: { type: 'button', 'aria-label': t(STATS_ENTRY.label) },
     });
+    statsTab.toggle(plugin.isViewEnabled(STATS_VIEW_TYPE, projectFile));
     attachTooltip(statsTab, t(STATS_ENTRY.label));
     const statsIcon = statsTab.createSpan({ cls: 'view-tab-icon' });
     obsidian.setIcon(statsIcon, STATS_ENTRY.icon);
@@ -208,6 +211,7 @@ export function renderViewSwitcher(
         cls: `story-line-view-tab story-line-view-tab-playmode${playmodeActive ? ' active' : ''}`,
         attr: { type: 'button', 'aria-label': t(PLAYMODE_ENTRY.label) },
     });
+    playmodeTab.toggle(plugin.isViewEnabled(NCANVAS_LIBRARY_VIEW_TYPE, projectFile));
     attachTooltip(playmodeTab, t('Choose, create, or open an ncanvas for this project'));
     const playIcon = playmodeTab.createSpan({ cls: 'view-tab-icon' });
     obsidian.setIcon(playIcon, PLAYMODE_ENTRY.icon);

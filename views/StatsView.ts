@@ -8,12 +8,14 @@ import type { WritingTracker } from '../services/WritingTracker';
 
 import { STATS_VIEW_TYPE } from '../constants';
 import { applyMobileClass } from '../components/MobileAdapter';
-import { WorkspaceLeaf } from 'obsidian';
+import { WorkspaceLeaf, normalizePath } from 'obsidian';
 import { Scene, getStatusOrder, resolveStatusCfg } from '../models/Scene';
 import { getActDisplayLabel } from '../utils/actChapter';
 import { t } from '../utils/i18n';
 import { PlotWarning, Validator } from '../services/Validator';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
+import { deriveProjectFoldersFromFilePath, type StoryLineProject } from '../models/StoryLineProject';
+import { ProjectMarkdownDocumentSource } from '../services/DocumentSourceService';
 import {
     tokenizeWords,
     splitSentences,
@@ -42,6 +44,7 @@ export class StatsView extends ProjectBoundItemView {
     private sprintTimerId: number | null = null;
     private openSections = new Set<string>();
     private initializedSections = new Set<string>();
+    private documentCount = 0;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
         super(leaf);
@@ -72,13 +75,45 @@ export class StatsView extends ProjectBoundItemView {
         applyMobileClass(container);
         this.rootContainer = container;
 
-        await this.sceneManager.ensureInitialized();
+        if (this.usesScenes()) {
+            await this.sceneManager.ensureInitialized();
+        } else {
+            await this.plugin.refreshTrackedDocumentWords();
+            const project = this.getBoundProject();
+            if (project) {
+                const source = new ProjectMarkdownDocumentSource(
+                    this.app,
+                    deriveProjectFoldersFromFilePath(project.filePath).baseFolder,
+                    project.filePath,
+                );
+                this.documentCount = (await source.listDocuments()).length;
+            }
+        }
         if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
     async onClose(): Promise<void> {
         if (this.sprintTimerId) { window.clearInterval(this.sprintTimerId); this.sprintTimerId = null; }
+    }
+
+    private getBoundProject(): StoryLineProject | null {
+        const bound = normalizePath(this.getBoundProjectFile() || '');
+        return this.sceneManager.getProjects().find(project => normalizePath(project.filePath) === bound)
+            ?? this.sceneManager.activeProject
+            ?? null;
+    }
+
+    private usesScenes(): boolean {
+        return this.plugin.capabilityService.isEnabled('scenes', this.getBoundProject());
+    }
+
+    private currentWordTotal(): number {
+        return this.usesScenes()
+            ? this.sceneManager.queryService
+                .getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
+                .totalWords
+            : this.plugin.getTrackedWordTotal();
     }
 
     // ════════════════════════════════════════════════════
@@ -96,11 +131,22 @@ export class StatsView extends ProjectBoundItemView {
         renderViewSwitcher(toolbar, STATS_VIEW_TYPE, this.plugin, this.leaf);
 
         const content = container.createDiv('story-line-stats-content');
-        const stats = this.sceneManager.queryService.getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true);
-        const allScenes = this.sceneManager.getAllScenes().filter(scene => !scene.inactive);
+        const narrativeMode = this.usesScenes();
+        const stats = narrativeMode
+            ? this.sceneManager.queryService.getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
+            : {
+                totalScenes: this.documentCount,
+                statusCounts: {},
+                totalWords: this.plugin.getTrackedWordTotal(),
+                totalTargetWords: 0,
+                actCounts: {}, povCounts: {}, locationCounts: {}, orphanedScenes: 0,
+            };
+        const allScenes = narrativeMode
+            ? this.sceneManager.getAllScenes().filter(scene => !scene.inactive)
+            : [];
 
         // 1. Overview (always open)
-        this.renderOverview(content, stats);
+        this.renderOverview(content, stats, narrativeMode ? t('Scenes') : t('Documents'));
 
         // 2. Writing Sprint (always open)
         this.renderWritingSprint(content, stats.totalWords);
@@ -108,6 +154,8 @@ export class StatsView extends ProjectBoundItemView {
         // 3. Writing History (collapsible, default open)
         this.renderCollapsible(content, 'writing-history', 'calendar', t('Writing History'), true, body =>
             this.renderWritingHistory(body));
+
+        if (!narrativeMode) return;
 
         // 4. Progress Breakdown (collapsible, default open)
         this.renderCollapsible(content, 'progress-breakdown', 'list-checks', t('Progress Breakdown'), true, body =>
@@ -186,12 +234,13 @@ export class StatsView extends ProjectBoundItemView {
     private renderOverview(
         parent: HTMLElement,
         stats: SceneStatistics,
+        contentUnitLabel: string,
     ): void {
         const section = parent.createDiv('stats-section');
         section.createEl('h4', { text: t('Overview') });
 
         const row = section.createDiv('stats-sprint-row');
-        this.createStatCard(row, 'file-text', t('Scenes'), String(stats.totalScenes));
+        this.createStatCard(row, 'file-text', contentUnitLabel, String(stats.totalScenes));
         this.createStatCard(row, 'pen-tool', t('Words'), stats.totalWords.toLocaleString());
 
         // Estimated reading time — multi-language aware. Latin/Cyrillic
@@ -200,7 +249,7 @@ export class StatsView extends ProjectBoundItemView {
         const wpm = getReadingWordsPerMinute(locale);
         const cpm = getReadingCharactersPerMinute(locale);
         let readMinutes: number;
-        if (cpm > 0 && isScriptioContinuaLocale(locale)) {
+        if (this.usesScenes() && cpm > 0 && isScriptioContinuaLocale(locale)) {
             // Sum CJK chars across all scenes (cheaper than re-tokenising).
             const scenes = this.plugin.sceneManager?.getAllScenes?.() ?? [];
             let chars = 0;
@@ -303,9 +352,7 @@ export class StatsView extends ProjectBoundItemView {
         let sprintEndChimePlayed = false;
 
         const updateTimerDisplay = (knownTotalWords?: number) => {
-            const totalNow = knownTotalWords ?? this.sceneManager.queryService
-                .getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
-                .totalWords;
+            const totalNow = knownTotalWords ?? this.currentWordTotal();
             if (tracker.isSprintRunning()) {
                 const remaining = tracker.getSprintRemaining();
                 const mins = Math.floor(remaining / 60_000);
@@ -344,9 +391,7 @@ export class StatsView extends ProjectBoundItemView {
 
         startBtn.addEventListener('click', () => {
             sprintEndChimePlayed = false;
-            const totalNow = this.sceneManager.queryService
-                .getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
-                .totalWords;
+            const totalNow = this.currentWordTotal();
             if (!tracker.startSprint(totalNow)) {
                 new obsidian.Notice(t('Cannot start a sprint until the project word count is ready.'));
                 return;
@@ -358,9 +403,7 @@ export class StatsView extends ProjectBoundItemView {
         });
 
         stopBtn.addEventListener('click', () => {
-            const totalNow = this.sceneManager.queryService
-                .getStatistics(this.plugin.settings.excludeArcAnchorFromWordcount ?? true)
-                .totalWords;
+            const totalNow = this.currentWordTotal();
             const entry = tracker.stopSprint(totalNow);
             if (this.sprintTimerId) { window.clearInterval(this.sprintTimerId); this.sprintTimerId = null; }
             updateTimerDisplay(totalNow);

@@ -12,6 +12,12 @@ import { localizeForLanguage, t } from '../utils/i18n';
 import { coerceString } from '../utils/narrow';
 import { ensureVaultFolder, registerDeletedProjectPathGuard, vaultRelativeFolderPath } from '../utils/vaultFolders';
 import { plotGridXlsxPath } from './PlotGridXlsxCodec';
+import {
+    capabilitiesForPreset,
+    normalizeProjectCapabilities,
+    type ProjectCapabilities,
+    type ProjectPresetId,
+} from '../models/ProjectCapabilities';
 
 /**
  * Normalize a frontmatter `acts` / `chapters` value into a clean sorted
@@ -710,7 +716,12 @@ export class SceneManager implements ISceneStore {
     /**
      * Create a new NarrativeLab project
      */
-    async createProject(title: string, description = '', customBasePath?: string): Promise<StoryLineProject> {
+    async createProject(
+        title: string,
+        description = '',
+        customBasePath?: string,
+        options?: { capabilities?: ProjectCapabilities; preset?: ProjectPresetId },
+    ): Promise<StoryLineProject> {
         const rootPath = vaultRelativeFolderPath(customBasePath ?? this.plugin.settings.storyLineRoot);
         if (rootPath) await this.ensureFolder(rootPath);
 
@@ -723,6 +734,9 @@ export class SceneManager implements ISceneStore {
 
         const defaultLang = (this.plugin.settings as { defaultProjectLanguage?: string }).defaultProjectLanguage ?? DEFAULT_STORYLINE_LOCALE;
         const projectLocale = normalizeStoryLineLocale(defaultLang);
+        const capabilities = options?.capabilities
+            ? normalizeProjectCapabilities(options.capabilities)
+            : capabilitiesForPreset(options?.preset ?? 'full-narrative');
 
         const libraryFolders: Record<string, string> = { ...DEFAULT_PROJECT_LIBRARY_FOLDERS };
 
@@ -731,6 +745,10 @@ export class SceneManager implements ISceneStore {
             title,
             created: now,
             language: projectLocale,
+            capabilitiesVersion: capabilities.version,
+            projectType: capabilities.preset,
+            modules: capabilities.modules,
+            wordCountProfile: capabilities.wordCountProfile,
             drafts: [{ id: 'main', title: 'Primary draft' }],
             activeDraft: 'main',
             libraryFolders,
@@ -744,35 +762,40 @@ export class SceneManager implements ISceneStore {
             // Create project file inside the folder
             await this.app.vault.create(filePath, content);
 
-            // Create the fixed Library folders. Storyline's original preset
-            // categories are seeded on first project load and create their own folders.
-            const libraryFolder = normalizePath(folders.codexFolder);
-            await this.ensureFolder(libraryFolder);
-            for (const folderName of Object.values(libraryFolders)) {
-                const categoryFolder = normalizePath(`${libraryFolder}/${folderName}`);
-                await this.ensureFolder(categoryFolder);
+            // Provision only folders required by the selected project modules.
+            if (capabilities.modules.includes('library')) {
+                const libraryFolder = normalizePath(folders.codexFolder);
+                await this.ensureFolder(libraryFolder);
+                for (const folderName of Object.values(libraryFolders)) {
+                    const categoryFolder = normalizePath(`${libraryFolder}/${folderName}`);
+                    await this.ensureFolder(categoryFolder);
+                }
             }
 
-            // Create System folder for project data files
+            // Create System only when an enabled module owns internal data.
             const systemFolder = normalizePath(`${baseFolder}/System`);
-            await this.ensureFolder(systemFolder);
+            const needsSystemFolder = capabilities.modules.some(module => [
+                'library', 'table', 'timeline', 'board', 'plotlines',
+                'characters', 'writingTracker',
+            ].includes(module));
+            if (needsSystemFolder) await this.ensureFolder(systemFolder);
 
             // Do not inherit Library categories from the previously active
             // project when this project is opened for the first time.
-            await this.app.vault.create(
-                normalizePath(`${systemFolder}/library-categories.json`),
-                JSON.stringify({
-                    enabledCategories: [],
-                    customCategories: [],
-                    categoryOrder: [],
-                    hiddenFixedCategories: [...DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES],
-                    deletedPresetCategories: [],
-                    presetSeedVersion: 0,
-                }, null, 2),
-            );
+            if (capabilities.modules.includes('library')) {
+                await this.app.vault.create(
+                    normalizePath(`${systemFolder}/library-categories.json`),
+                    JSON.stringify({
+                        enabledCategories: [], customCategories: [], categoryOrder: [],
+                        hiddenFixedCategories: [...DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES],
+                        deletedPresetCategories: [], presetSeedVersion: 0,
+                    }, null, 2),
+                );
+            }
 
             // Authored Canvas/ folder + default tiled corkboard file.
-            await this.ensureFolder(normalizePath(folders.canvasFolder));
+            if (capabilities.modules.includes('canvas') || capabilities.modules.includes('board')) {
+                await this.ensureFolder(normalizePath(folders.canvasFolder));
             try {
                 const { corkboardCanvasPathForProject } = await import('./CorkboardCanvasService');
                 const corkboardPath = corkboardCanvasPathForProject(filePath);
@@ -785,10 +808,18 @@ export class SceneManager implements ISceneStore {
             } catch (err) {
                 console.warn('[NarrativeLab] default corkboard.canvas create skipped:', err);
             }
+            }
 
             // Seed empty System files only when missing. Never wipe leftovers
             // from a failed convert, a restored folder, or an unindexed copy.
-            const viewFiles = ['plotgrid.json', 'timeline.json', 'board.json', 'plotlines.json', 'stats.json', 'characters.json'];
+            const viewFiles = [
+                ...(capabilities.modules.includes('table') ? ['plotgrid.json'] : []),
+                ...(capabilities.modules.includes('timeline') ? ['timeline.json'] : []),
+                ...(capabilities.modules.includes('board') ? ['board.json'] : []),
+                ...(capabilities.modules.includes('plotlines') ? ['plotlines.json'] : []),
+                ...(capabilities.modules.includes('writingTracker') ? ['stats.json'] : []),
+                ...(capabilities.modules.includes('characters') ? ['characters.json'] : []),
+            ];
             for (const vf of viewFiles) {
                 const vfPath = normalizePath(`${systemFolder}/${vf}`);
                 if (await this.app.vault.adapter.exists(vfPath)) continue;
@@ -802,6 +833,7 @@ export class SceneManager implements ISceneStore {
                 created: now,
                 description,
                 locale: projectLocale,
+                capabilities,
                 ...folders,
                 characterFolder: normalizePath(`${folders.codexFolder}/${libraryFolders.characters}`),
                 locationFolder: normalizePath(`${folders.codexFolder}/${libraryFolders.locations}`),
@@ -826,6 +858,45 @@ export class SceneManager implements ISceneStore {
         } catch (err) {
             new Notice(t('Failed to create project files or folders: {error}', { error: String(err) }));
             throw err;
+        }
+    }
+
+    /** Create missing storage for newly enabled modules without deleting disabled-module data. */
+    async ensureProjectModuleStorage(project: StoryLineProject, capabilities: ProjectCapabilities): Promise<void> {
+        const folders = deriveProjectFoldersFromFilePath(project.filePath);
+        const systemFolder = normalizePath(`${folders.baseFolder}/System`);
+        const needsSystemFolder = capabilities.modules.some(module => [
+            'library', 'table', 'timeline', 'board', 'plotlines',
+            'characters', 'writingTracker',
+        ].includes(module));
+        if (needsSystemFolder) await this.ensureFolder(systemFolder);
+        const ensureJson = async (filename: string, initial: Record<string, unknown> = {}) => {
+            const path = normalizePath(`${systemFolder}/${filename}`);
+            if (!await this.app.vault.adapter.exists(path)) {
+                await this.app.vault.create(path, JSON.stringify(initial, null, 2));
+            }
+        };
+        if (capabilities.modules.includes('notes')) await this.ensureFolder(folders.notesFolder);
+        if (capabilities.modules.includes('research')) await this.ensureFolder(folders.researchFolder);
+        if (capabilities.modules.includes('scenes')) await this.ensureFolder(folders.sceneFolder);
+        if (capabilities.modules.includes('sceneNotes')) await this.ensureFolder(folders.sceneNotesFolder);
+        if (capabilities.modules.includes('library')) {
+            await this.ensureFolder(folders.codexFolder);
+            for (const folderName of Object.values(project.libraryFolders ?? DEFAULT_PROJECT_LIBRARY_FOLDERS)) {
+                await this.ensureFolder(normalizePath(`${folders.codexFolder}/${folderName}`));
+            }
+            await ensureJson('library-categories.json');
+        }
+        if (capabilities.modules.includes('canvas') || capabilities.modules.includes('board')) {
+            await this.ensureFolder(folders.canvasFolder);
+        }
+        if (capabilities.modules.includes('table')) await ensureJson('plotgrid.json');
+        if (capabilities.modules.includes('timeline')) await ensureJson('timeline.json');
+        if (capabilities.modules.includes('board')) await ensureJson('board.json');
+        if (capabilities.modules.includes('plotlines')) await ensureJson('plotlines.json');
+        if (capabilities.modules.includes('characters')) await ensureJson('characters.json');
+        if (capabilities.modules.includes('writingTracker')) {
+            await ensureJson('stats.json');
         }
     }
 
@@ -866,6 +937,8 @@ export class SceneManager implements ISceneStore {
         this.plugin.suspendWritingTrackerForProjectSwitch();
 
         this._activeProject = project;
+        const has = (module: import('../models/ProjectCapabilities').ProjectModuleId) =>
+            this.plugin.capabilityService.isEnabled(module, project);
         this.plugin.settings.activeProjectFile = project.filePath;
         this.applyActiveProjectLocale();
         // Swap the in-memory plotline registry before any await so a late
@@ -886,35 +959,40 @@ export class SceneManager implements ISceneStore {
             this.plugin.libraryCategoriesStructureEpoch += 1;
         }
         // Reload universal field templates for the new project
-        await this.plugin.fieldTemplates.load();
-        await this.plugin.templateCenter.load();
-        await this.loadCorkboardPositions();
+        if (has('library') || has('scenes')) await this.plugin.fieldTemplates.load();
+        if (has('structure') || has('scenes')) await this.plugin.templateCenter.load();
+        if (has('board')) await this.loadCorkboardPositions();
         if (!fromLeafFocus) {
             await this.plugin.saveSettings();
         }
         const restored = fromLeafFocus && this.plugin.restoreProjectRuntime(project.filePath);
-        if (!restored) {
+        if (!restored && has('scenes')) {
             await this.initialize();
         }
         if (!fromLeafFocus) {
-            await this.migrateDraftFoldersIfNeeded();
-            await this.reconcileDraftFolders();
+            if (has('scenes')) {
+                await this.migrateDraftFoldersIfNeeded();
+                await this.reconcileDraftFolders();
+            }
             // Ensure Library/library.base (migrates System/library.base + Bases/library-*.base)
             try {
+                if (has('library')) {
                 const { migrateNativeLibraryBasesForActiveProject } = await import('../components/NativeLibraryBase');
                 await migrateNativeLibraryBasesForActiveProject(this.plugin);
+                }
             } catch { /* non-fatal */ }
-            await this.plugin.plotlineManager.ensureSeeded();
-            await this.plugin.syncNarrativeCanvasToActiveProject();
+            if (has('plotlines')) await this.plugin.plotlineManager.ensureSeeded();
+            if (has('canvas')) await this.plugin.syncNarrativeCanvasToActiveProject();
         }
         try {
-            if (fromLeafFocus && !restored) {
+            if (fromLeafFocus && !restored && has('library')) {
                 await this.plugin.reloadEntities();
             }
         } catch { /* project may not be set yet */ }
         // Drop the previous book's session caches after this book's indexes
         // are in memory, and before any view reads them.
         this.plugin.isolateProjectTransientState();
+        await this.plugin.refreshTrackedDocumentWords();
         try {
             if (fromLeafFocus) {
                 await this.plugin.refreshViewsOnly();
@@ -1175,7 +1253,12 @@ export class SceneManager implements ISceneStore {
      * Duplicate an existing project (fork a variant).
      */
     async forkProject(source: StoryLineProject, newTitle: string): Promise<StoryLineProject> {
-        const newProject = await this.createProject(newTitle, source.description);
+        const newProject = await this.createProject(
+            newTitle,
+            source.description,
+            undefined,
+            source.capabilities ? { capabilities: source.capabilities } : { preset: 'full-narrative' },
+        );
 
         // Copy all scene files from source to new project
         const sourceFolder = this.app.vault.getAbstractFileByPath(source.sceneFolder);
@@ -1262,6 +1345,14 @@ export class SceneManager implements ISceneStore {
             description,
             locale: (fm.language || fm['storyline-locale'])
                 ? normalizeStoryLineLocale(String(fm.language ?? fm['storyline-locale']))
+                : undefined,
+            capabilities: fm.capabilitiesVersion || fm.modules || fm.projectType
+                ? normalizeProjectCapabilities({
+                    version: fm.capabilitiesVersion,
+                    preset: fm.projectType,
+                    modules: fm.modules,
+                    wordCountProfile: fm.wordCountProfile,
+                })
                 : undefined,
             ...folders,
             characterFolder: normalizePath(`${folders.codexFolder}/${charSeg}`),
@@ -3735,6 +3826,14 @@ export class SceneManager implements ISceneStore {
         existingFm.type = 'storyline';
         existingFm.title = project.title;
         existingFm.created = project.created;
+
+        if (project.capabilities) {
+            const capabilities = normalizeProjectCapabilities(project.capabilities);
+            existingFm.capabilitiesVersion = capabilities.version;
+            existingFm.projectType = capabilities.preset;
+            existingFm.modules = capabilities.modules;
+            existingFm.wordCountProfile = capabilities.wordCountProfile;
+        }
 
         // Multi-language support — persist BCP-47 locale.
         if (project.locale) {

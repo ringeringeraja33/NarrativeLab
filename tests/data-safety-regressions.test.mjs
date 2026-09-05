@@ -851,7 +851,7 @@ test('project scan keeps the previous list until the new map is ready', () => {
 
 test('startup overlaps independent project reads and defers Narrative Canvas', () => {
     assert.match(sceneManager, /Promise\.all\(\[\s*this\.scanFolderAdapter\(sceneFolder\),\s*this\.scanFolderAdapter\(notesFolder\),/s);
-    assert.match(mainTs, /Promise\.all\(\[\s*this\.plotlineManager\.ensureSeeded\(\),\s*this\.fieldTemplates\.load\(\),\s*this\.templateCenter\.load\(\),\s*this\.sceneManager\.loadCorkboardPositions\(\),/s);
+    assert.match(mainTs, /Promise\.all\(\[\s*has\('plotlines'\).*this\.plotlineManager\.ensureSeeded\(\).*\s*has\('library'\).*this\.fieldTemplates\.load\(\).*\s*has\('structure'\).*this\.templateCenter\.load\(\).*\s*has\('board'\).*this\.sceneManager\.loadCorkboardPositions\(\)/s);
     assert.match(mainTs, /locationManager\.loadAll\(locFolder\)/);
     assert.match(mainTs, /characterManager\.loadCharacters\(charFolder\)/);
     assert.match(mainTs, /requestIdleCallback\(startEmbeddedCanvas/);

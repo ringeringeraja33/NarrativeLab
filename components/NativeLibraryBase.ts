@@ -1750,7 +1750,8 @@ export async function renameNativeLibraryBase(
 export async function syncAllNativeLibraryBases(
     plugin: SceneCardsPlugin,
 ): Promise<void> {
-    if (!plugin.sceneManager.activeProject) return;
+    const project = plugin.sceneManager.activeProject;
+    if (!project || !plugin.capabilityService.isEnabled('library', project)) return;
     const basePath = getLibraryBasePath(plugin);
     if (!basePath) return;
     const styleKey = libraryFilterSyncKey(plugin, basePath);
@@ -1772,6 +1773,8 @@ export async function syncAllNativeLibraryBases(
 export async function migrateNativeLibraryBasesForActiveProject(
     plugin: SceneCardsPlugin,
 ): Promise<void> {
+    const project = plugin.sceneManager.activeProject;
+    if (!project || !plugin.capabilityService.isEnabled('library', project)) return;
     try {
         await migrateLegacyNativeBases(plugin);
         await pruneOrphanNativeLibraryBases(plugin);

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-floating-promises, @typescript-eslint/no-misused-promises, @typescript-eslint/no-unnecessary-type-assertion -- Obsidian event handlers intentionally launch async work and use compatibility assertions; matching enable at end of file */
-import { WorkspaceLeaf, WorkspaceSplit, MarkdownRenderer, TFile, setIcon, Notice } from 'obsidian';
+import { WorkspaceLeaf, WorkspaceSplit, MarkdownRenderer, TFile, setIcon, Notice, Modal, Setting, normalizePath } from 'obsidian';
 import { EditorView, Decoration } from '@codemirror/view';
 import { RangeSetBuilder, StateEffect, Compartment, EditorSelection } from '@codemirror/state';
 import { syntaxTree } from '@codemirror/language';
@@ -14,6 +14,9 @@ import SceneCardsPlugin from '../main';
 import { MANUSCRIPT_VIEW_TYPE } from '../constants';
 import { t } from '../utils/i18n';
 import { ProjectBoundItemView } from './ProjectBoundItemView';
+import { deriveProjectFoldersFromFilePath, type StoryLineProject } from '../models/StoryLineProject';
+import { ProjectMarkdownDocumentSource } from '../services/DocumentSourceService';
+import { ensureProjectDocumentBase } from '../services/ProjectDocumentBase';
 
 /**
  * Discussion #183 — module-level cursor/scroll snapshot.
@@ -75,6 +78,8 @@ export class ManuscriptView extends ProjectBoundItemView {
     private _lastFilterKey = '';
     /** Debounce filter-driven remounts so chip clicks stay responsive */
     private _filterRenderTimer: number | null = null;
+    /** Defers the native Base hand-off until this custom view has finished opening. */
+    private _nativeBaseOpenTimer: number | null = null;
     /** CM6 compartment for toggling atomic-link extension */
     private atomicCompartment = new Compartment();
     /** Whether focus mode is active (hides non-writing UI, dims inactive scenes) */
@@ -157,12 +162,50 @@ export class ManuscriptView extends ProjectBoundItemView {
         applyMobileClass(container);
         this.rootContainer = container;
 
-        await this.sceneManager.initialize();
+        if (this.usesScenes()) {
+            await this.sceneManager.initialize();
+        } else {
+            const project = this.getBoundProject();
+            if (project) {
+                try {
+                    const base = await ensureProjectDocumentBase(this.app, project);
+                    container.empty();
+                    container.createDiv({
+                        cls: 'story-line-empty-state',
+                        text: t('Opening project document list...'),
+                    });
+                    const leaf = this.leaf;
+                    this._nativeBaseOpenTimer = window.setTimeout(() => {
+                        this._nativeBaseOpenTimer = null;
+                        void leaf.openFile(base).catch((error: unknown) => {
+                            console.error('[NarrativeLab] Could not open the project document Base:', error);
+                            new Notice(t('Could not open the project document list.'));
+                            if (this.rootContainer === container && container.isConnected) {
+                                void this.plugin.refreshTrackedDocumentWords().finally(() => {
+                                    if (this.rootContainer === container && container.isConnected) {
+                                        this.renderView(container);
+                                    }
+                                });
+                            }
+                        });
+                    }, 0);
+                    return;
+                } catch (error) {
+                    console.error('[NarrativeLab] Could not open the project document Base:', error);
+                    new Notice(t('Could not open the project document list.'));
+                }
+            }
+            await this.plugin.refreshTrackedDocumentWords();
+        }
         if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
     }
 
     async onClose(): Promise<void> {
+        if (this._nativeBaseOpenTimer !== null) {
+            window.clearTimeout(this._nativeBaseOpenTimer);
+            this._nativeBaseOpenTimer = null;
+        }
         // Discussion #183 — capture cursor + scroll to the module-level
         // variable so the next ManuscriptView instance can restore it.
         this.captureCurrentState();
@@ -223,13 +266,20 @@ export class ManuscriptView extends ProjectBoundItemView {
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
         titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
+        if (!this.usesScenes()) {
+            const createButton = titleRow.createEl('button', {
+                cls: 'mod-cta sl-manuscript-create-document',
+                text: t('New document'),
+            });
+            createButton.addEventListener('click', () => this.openCreateDocumentModal());
+        }
 
         // View switcher tabs
         renderViewSwitcher(toolbar, MANUSCRIPT_VIEW_TYPE, this.plugin, this.leaf);
 
         // Filters
         const filterContainer = container.createDiv('story-line-filters-container');
-        this.filtersComponent = new FiltersComponent(
+        if (this.usesScenes()) this.filtersComponent = new FiltersComponent(
             filterContainer,
             this.sceneManager,
             (filter, sort) => {
@@ -243,7 +293,7 @@ export class ManuscriptView extends ProjectBoundItemView {
             },
             this.plugin
         );
-        this.filtersComponent.render();
+        if (this.filtersComponent) this.filtersComponent.render();
 
         // Plain-text toggle (same style as Board view's Scenes on/off)
         const filterBar = filterContainer.querySelector('.story-line-filter-bar');
@@ -316,7 +366,7 @@ export class ManuscriptView extends ProjectBoundItemView {
         // Opened via the editor right-click menu (see main.ts editor-menu
         // handler for MANUSCRIPT_VIEW_TYPE) so it appears alongside
         // Obsidian's own editor menu items.
-        this.buildSearchPanel(container);
+        if (this.usesScenes()) this.buildSearchPanel(container);
 
         // Manuscript scroll area
         this.scrollArea = container.createDiv('sl-manuscript-scroll');
@@ -380,6 +430,11 @@ export class ManuscriptView extends ProjectBoundItemView {
         this.detachAllEmbedded();
         this.scrollArea.empty();
         this.footerEl.empty();
+
+        if (!this.usesScenes()) {
+            await this.renderDocuments();
+            return;
+        }
 
         const filterKey = this.computeFilterKey();
         let scenes: Scene[];
@@ -540,6 +595,102 @@ export class ManuscriptView extends ProjectBoundItemView {
         // scroll position and cursor. On a fresh open (no in-memory state)
         // we fall back to the persisted state on disk.
         this.restoreStateAfterRender();
+    }
+
+    private usesScenes(): boolean {
+        return this.plugin.capabilityService.isEnabled('scenes', this.getBoundProject());
+    }
+
+    private getBoundProject(): StoryLineProject | null {
+        const bound = normalizePath(this.getBoundProjectFile() || '');
+        return this.sceneManager.getProjects().find(project => normalizePath(project.filePath) === bound)
+            ?? this.sceneManager.activeProject
+            ?? null;
+    }
+
+    private async renderDocuments(): Promise<void> {
+        if (!this.scrollArea || !this.footerEl) return;
+        const project = this.getBoundProject();
+        if (!project) return;
+        const source = new ProjectMarkdownDocumentSource(
+            this.app,
+            deriveProjectFoldersFromFilePath(project.filePath).baseFolder,
+            project.filePath,
+        );
+        const documents = await source.listDocuments();
+        if (documents.length === 0) {
+            const empty = this.scrollArea.createDiv('sl-manuscript-empty');
+            empty.createDiv({ text: t('No documents yet.') });
+            const button = empty.createEl('button', { cls: 'mod-cta', text: t('New document') });
+            button.addEventListener('click', () => this.openCreateDocumentModal());
+            this.footerEl.setText(t('0 words'));
+            return;
+        }
+
+        const editorContainers: { el: HTMLElement; path: string }[] = [];
+        for (const document of documents) {
+            const block = this.scrollArea.createDiv('sl-manuscript-scene-block sl-manuscript-document-block');
+            block.dataset.scenePath = document.path;
+            const header = block.createDiv('sl-manuscript-scene-header');
+            const title = header.createSpan({ cls: 'sl-manuscript-scene-title', text: document.label });
+            title.addEventListener('click', () => {
+                const file = this.app.vault.getAbstractFileByPath(document.path);
+                if (file instanceof TFile) void this.app.workspace.getLeaf('tab').openFile(file);
+            });
+            const editorWrap = block.createDiv('sl-manuscript-editor-wrap');
+            editorWrap.dataset.scenePath = document.path;
+            editorWrap.createDiv({ cls: 'sl-manuscript-loading', text: t('Loading…') });
+            editorContainers.push({ el: editorWrap, path: document.path });
+        }
+        this.footerEl.setText(t('{n} documents · {words} words', {
+            n: documents.length,
+            words: this.plugin.getTrackedWordTotal().toLocaleString(),
+        }));
+        this._isMounting = true;
+        for (const document of editorContainers) await this.mountEditor(document.el, document.path);
+        this._isMounting = false;
+    }
+
+    private openCreateDocumentModal(): void {
+        const project = this.getBoundProject();
+        if (!project) return;
+        const baseFolder = normalizePath(project.filePath.split('/').slice(0, -1).join('/'));
+        const app = this.app;
+        const plugin = this.plugin;
+        const render = () => this.renderManuscript();
+        class CreateDocumentModal extends Modal {
+            private name = '';
+            onOpen(): void {
+                this.setTitle(t('New document'));
+                new Setting(this.contentEl)
+                    .setName(t('Document title'))
+                    .addText(text => text
+                        .setPlaceholder(t('Untitled'))
+                        .onChange(value => { this.name = value; }));
+                new Setting(this.contentEl).addButton(button => button
+                    .setButtonText(t('Create'))
+                    .setCta()
+                    .onClick(async () => {
+                        const cleaned = this.name.trim().replace(/[\\/:*?"<>|]/g, '-').replace(/\.+$/g, '');
+                        if (!cleaned) {
+                            new Notice(t('Please enter a document title'));
+                            return;
+                        }
+                        const path = normalizePath([baseFolder, `${cleaned}.md`].filter(Boolean).join('/'));
+                        if (app.vault.getAbstractFileByPath(path)) {
+                            new Notice(t('A document with this title already exists'));
+                            return;
+                        }
+                        const file = await app.vault.create(path, `# ${cleaned}\n\n`);
+                        this.close();
+                        await plugin.refreshTrackedDocumentWords();
+                        await render();
+                        await app.workspace.getLeaf('tab').openFile(file);
+                    }));
+            }
+            onClose(): void { this.contentEl.empty(); }
+        }
+        new CreateDocumentModal(this.app).open();
     }
 
     /** Mount a real Obsidian MarkdownView (Live Preview) inside the given container */
@@ -742,7 +893,8 @@ export class ManuscriptView extends ProjectBoundItemView {
     ): Promise<void> {
         if (mountGeneration !== this.editorMountGeneration || !container.isConnected) return;
         const scene = this.sceneManager.getScene(filePath);
-        const text = (scene?.body ?? '').trim();
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        const text = (scene?.body ?? (file instanceof TFile ? await this.app.vault.cachedRead(file) : '')).trim();
         if (text) {
             const previewEl = container.createDiv('sl-manuscript-preview');
             await MarkdownRenderer.render(this.app, text, previewEl, filePath, this);
@@ -1413,6 +1565,7 @@ export class ManuscriptView extends ProjectBoundItemView {
      * an Obsidian restart).
      */
     private captureAndPersistState(): void {
+        if (!this.usesScenes()) return;
         this.captureCurrentState();
         try {
             const adapter = this.app.vault.adapter;
@@ -1437,6 +1590,7 @@ export class ManuscriptView extends ProjectBoundItemView {
      * (Obsidian restart case).
      */
     private restoreStateAfterRender(): void {
+        if (!this.usesScenes()) return;
         if (_lastManuscriptState) {
             // In-memory state from a view switch — restore immediately.
             this.applyRestore(_lastManuscriptState);

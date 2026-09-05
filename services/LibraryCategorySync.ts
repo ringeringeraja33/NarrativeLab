@@ -810,7 +810,8 @@ export async function reconcileLibraryCategoriesForActiveProject(
     plugin: SceneCardsPlugin,
     options: { createMissingRegistered?: boolean } = {},
 ): Promise<boolean> {
-    if (!plugin.sceneManager.activeProject) return false;
+    const project = plugin.sceneManager.activeProject;
+    if (!project || !plugin.capabilityService.isEnabled('library', project)) return false;
     const adopted = await adoptLibraryCategoriesFromFolders(plugin);
     const removed = options.createMissingRegistered
         ? false

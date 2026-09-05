@@ -67,9 +67,7 @@ export class WritingTrackerPanel extends ItemView {
 
     private currentTotalWords(): number {
         try {
-            return this.plugin.sceneManager.queryService.getStatistics(
-                this.plugin.settings.excludeArcAnchorFromWordcount ?? true,
-            ).totalWords;
+            return this.plugin.getTrackedWordTotal();
         } catch {
             return 0;
         }

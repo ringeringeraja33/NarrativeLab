@@ -3,6 +3,7 @@ import type SceneCardsPlugin from '../main';
 import { SeriesMetadata, StoryLineProject, deriveProjectFoldersFromFilePath } from '../models/StoryLineProject';
 import { t } from '../utils/i18n';
 import { isProjectScopedLibraryArtifact, isUntrackedLibraryNoise, vaultRelativeFolderPath } from '../utils/vaultFolders';
+import type { ProjectCapabilities } from '../models/ProjectCapabilities';
 
 interface LibraryTransferJournal {
     movedFiles: Array<{ from: string; to: string }>;
@@ -133,6 +134,7 @@ export class SeriesManager {
         projectTitle: string,
         description = '',
         customParentPath?: string,
+        capabilities?: ProjectCapabilities,
     ): Promise<StoryLineProject> {
         const safeSeriesName = seriesName.replace(/[\\/:*?"<>|]/g, '-');
         const parentPath = vaultRelativeFolderPath(
@@ -160,6 +162,7 @@ export class SeriesManager {
                 projectTitle,
                 description,
                 seriesFolder,
+                capabilities ? { capabilities } : { preset: 'full-narrative' },
             );
 
             const meta: SeriesMetadata = {

@@ -94,9 +94,7 @@ export class WritingTrackerView extends ItemView {
         let wpm = 0;
         let minutes = 0;
         try {
-            const total = this.plugin.sceneManager.queryService.getStatistics(
-                this.plugin.settings.excludeArcAnchorFromWordcount ?? true,
-            ).totalWords;
+            const total = this.plugin.getTrackedWordTotal();
             sessionWords = session.getSessionWords(total);
             wpm = session.getWordsPerMinute(total);
             minutes = Math.floor(session.getSessionDuration() / 60_000);

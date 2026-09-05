@@ -1192,16 +1192,22 @@ export class SceneCardsSettingTab extends PluginSettingTab {
         containerEl.empty();
         containerEl.addClass('narrative-lab-settings');
 
+        const hasProject = Boolean(this.plugin.sceneManager.activeProject);
+        const enabled = (module: import('./models/ProjectCapabilities').ProjectModuleId): boolean =>
+            !hasProject || this.plugin.capabilityService.isEnabled(module);
         const tabs: Array<{ id: NarrativeLabSettingsTabId; label: string }> = [
             { id: 'general', label: 'General' },
-            { id: 'canvas', label: 'Canvas' },
-            { id: 'scenes', label: 'Scenes' },
-            { id: 'templates', label: 'Template Center' },
+            ...(enabled('canvas') ? [{ id: 'canvas' as const, label: 'Canvas' }] : []),
+            ...(enabled('scenes') ? [
+                { id: 'scenes' as const, label: 'Scenes' },
+                { id: 'templates' as const, label: 'Template Center' },
+            ] : []),
             { id: 'display', label: 'Display' },
-            { id: 'colors', label: 'Colors' },
-            { id: 'tracking', label: 'Tracking' },
+            ...(enabled('board') || enabled('scenes') ? [{ id: 'colors' as const, label: 'Colors' }] : []),
+            ...(enabled('writingTracker') ? [{ id: 'tracking' as const, label: 'Tracking' }] : []),
             { id: 'export', label: 'Converter / Export & Import' },
         ];
+        if (!tabs.some(tab => tab.id === this.settingsTabId)) this.settingsTabId = 'general';
         const tabBar = containerEl.createDiv('nl-settings-tabs');
         for (const tab of tabs) {
             const btn = tabBar.createEl('button', {

@@ -17,6 +17,7 @@ import {
     StructureTemplateEditorModal,
     TemplateEditorModal,
 } from '../settings';
+import { ProjectModulesModal } from './ProjectModulesModal';
 
 /**
  * Right-click / overflow menu for a project row in the Navigator.
@@ -80,6 +81,14 @@ export function showProjectNavigatorMenu(
     });
 
     menu.addSeparator();
+
+    menu.addItem(item => {
+        item.setTitle(t('Project modules…'));
+        item.setIcon('blocks');
+        item.onClick(() => {
+            void run(() => { new ProjectModulesModal(plugin.app, plugin, project).open(); });
+        });
+    });
 
     menu.addItem(item => {
         item.setTitle(t('Use project-specific colors'));
