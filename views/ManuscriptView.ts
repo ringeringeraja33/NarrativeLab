@@ -58,6 +58,8 @@ export class ManuscriptView extends ProjectBoundItemView {
     private focusObserver: IntersectionObserver | null = null;
     private lazyObserver: IntersectionObserver | null = null;
     private embeddedLeaves: Map<string, WorkspaceLeaf> = new Map();
+    private documentFolds: Record<string, boolean> = {};
+    private documentFoldOwner = '';
     private editorResizeObservers: Map<string, ResizeObserver> = new Map();
     /** Paths currently being mounted (prevents duplicate async mounts) */
     private mountingPaths: Set<string> = new Set();
@@ -78,8 +80,6 @@ export class ManuscriptView extends ProjectBoundItemView {
     private _lastFilterKey = '';
     /** Debounce filter-driven remounts so chip clicks stay responsive */
     private _filterRenderTimer: number | null = null;
-    /** Defers the native Base hand-off until this custom view has finished opening. */
-    private _nativeBaseOpenTimer: number | null = null;
     /** CM6 compartment for toggling atomic-link extension */
     private atomicCompartment = new Compartment();
     /** Whether focus mode is active (hides non-writing UI, dims inactive scenes) */
@@ -163,37 +163,13 @@ export class ManuscriptView extends ProjectBoundItemView {
         this.rootContainer = container;
 
         if (this.usesScenes()) {
-            await this.sceneManager.initialize();
+            await this.sceneManager.ensureInitialized();
         } else {
             const project = this.getBoundProject();
             if (project) {
-                try {
-                    const base = await ensureProjectDocumentBase(this.app, project);
-                    container.empty();
-                    container.createDiv({
-                        cls: 'story-line-empty-state',
-                        text: t('Opening project document list...'),
-                    });
-                    const leaf = this.leaf;
-                    this._nativeBaseOpenTimer = window.setTimeout(() => {
-                        this._nativeBaseOpenTimer = null;
-                        void leaf.openFile(base).catch((error: unknown) => {
-                            console.error('[NarrativeLab] Could not open the project document Base:', error);
-                            new Notice(t('Could not open the project document list.'));
-                            if (this.rootContainer === container && container.isConnected) {
-                                void this.plugin.refreshTrackedDocumentWords().finally(() => {
-                                    if (this.rootContainer === container && container.isConnected) {
-                                        this.renderView(container);
-                                    }
-                                });
-                            }
-                        });
-                    }, 0);
-                    return;
-                } catch (error) {
-                    console.error('[NarrativeLab] Could not open the project document Base:', error);
-                    new Notice(t('Could not open the project document list.'));
-                }
+                void ensureProjectDocumentBase(this.app, project).catch((error: unknown) => {
+                    console.error('[NarrativeLab] Could not create the project document Base:', error);
+                });
             }
             await this.plugin.refreshTrackedDocumentWords();
         }
@@ -202,10 +178,6 @@ export class ManuscriptView extends ProjectBoundItemView {
     }
 
     async onClose(): Promise<void> {
-        if (this._nativeBaseOpenTimer !== null) {
-            window.clearTimeout(this._nativeBaseOpenTimer);
-            this._nativeBaseOpenTimer = null;
-        }
         // Discussion #183 — capture cursor + scroll to the module-level
         // variable so the next ManuscriptView instance can restore it.
         this.captureCurrentState();
@@ -266,13 +238,6 @@ export class ManuscriptView extends ProjectBoundItemView {
         const toolbar = container.createDiv('story-line-toolbar');
         const titleRow = toolbar.createDiv('story-line-title-row');
         titleRow.createEl('h3', { cls: 'story-line-view-title', text: this.plugin.getProjectDisplayName(this.getBoundProjectFile()) });
-        if (!this.usesScenes()) {
-            const createButton = titleRow.createEl('button', {
-                cls: 'mod-cta sl-manuscript-create-document',
-                text: t('New document'),
-            });
-            createButton.addEventListener('click', () => this.openCreateDocumentModal());
-        }
 
         // View switcher tabs
         renderViewSwitcher(toolbar, MANUSCRIPT_VIEW_TYPE, this.plugin, this.leaf);
@@ -355,6 +320,29 @@ export class ManuscriptView extends ProjectBoundItemView {
             });
         }
 
+        const foldControls = container.createDiv('nl-manuscript-fold-controls');
+        if (!this.usesScenes()) {
+            foldControls.addClass('nl-manuscript-doc-actions');
+            foldControls.hidden = true;
+            const createButton = foldControls.createEl('button', {
+                cls: 'mod-cta sl-manuscript-create-document',
+                text: t('New document'),
+            });
+            createButton.addEventListener('click', () => this.openCreateDocumentModal());
+            const tableButton = foldControls.createEl('button', {
+                cls: 'sl-manuscript-open-base',
+                text: t('Open as table'),
+            });
+            tableButton.addEventListener('click', () => void this.openDocumentBase());
+        }
+        for (const [expanded, label] of [[false, t('Collapse all documents')], [true, t('Expand all documents')]] as const) {
+            const button = foldControls.createEl('button', { text: label, attr: { type: 'button' } });
+            button.addClass('nl-manuscript-fold-btn');
+            button.addEventListener('click', () => {
+                this.scrollArea?.querySelectorAll<HTMLDetailsElement>('details.sl-manuscript-scene-block').forEach(block => { block.open = expanded; });
+            });
+        }
+
         // Formatting toolbar (hidden until an editor is focused)
         if (this.plugin.settings.showFormattingToolbar) {
             this.fmtToolbar = container.createDiv('sl-fmt-toolbar');
@@ -427,6 +415,7 @@ export class ManuscriptView extends ProjectBoundItemView {
 
     private async renderManuscript(): Promise<void> {
         if (!this.scrollArea || !this.footerEl) return;
+        this.loadDocumentFolds();
         this.detachAllEmbedded();
         this.scrollArea.empty();
         this.footerEl.empty();
@@ -488,7 +477,7 @@ export class ManuscriptView extends ProjectBoundItemView {
                     if (entry.isIntersecting) {
                         const el = entry.target as HTMLElement;
                         const path = el.dataset.scenePath;
-                        if (path && !this.embeddedLeaves.has(path) && !this.mountingPaths.has(path)) {
+                        if (path && !el.closest('details:not([open])') && !this.embeddedLeaves.has(path) && !this.mountingPaths.has(path)) {
                             this.mountEditor(el, path);
                         }
                     }
@@ -537,18 +526,22 @@ export class ManuscriptView extends ProjectBoundItemView {
             }
 
             // Scene block
-            const block = this.scrollArea.createDiv('sl-manuscript-scene-block');
+            const block = this.scrollArea.createEl('details', {cls:'sl-manuscript-scene-block'});
+            this.installDocumentFold(block, scene.filePath);
             prevBlock = block;
             block.dataset.scenePath = scene.filePath;
             if (this.focusObserver) this.focusObserver.observe(block);
 
             // Scene header: title + status badge
-            const header = block.createDiv('sl-manuscript-scene-header');
+            const header = block.createEl('summary', {cls:'sl-manuscript-scene-header'});
             const titleEl = header.createEl('span', {
                 cls: 'sl-manuscript-scene-title',
                 text: scene.title,
             });
-            titleEl.addEventListener('click', () => {
+            titleEl.setAttr('title', scene.filePath);
+            const openFile = header.createEl('button', {cls:'nl-manuscript-open-file', text:'↗', attr:{type:'button','aria-label':t('Open file in new tab')}});
+            openFile.addEventListener('click', event => {
+                event.preventDefault(); event.stopPropagation();
                 const file = this.app.vault.getAbstractFileByPath(scene.filePath);
                 if (file instanceof TFile) {
                     this.app.workspace.getLeaf('tab').openFile(file);
@@ -597,6 +590,41 @@ export class ManuscriptView extends ProjectBoundItemView {
         this.restoreStateAfterRender();
     }
 
+    private loadDocumentFolds(): void {
+        const owner = this.getBoundProjectFile() || '';
+        if (this.documentFoldOwner === owner) return;
+        this.documentFoldOwner = owner;
+        try {
+            const parsed: unknown = JSON.parse(window.localStorage.getItem(`writinglab-manuscript-folds:${owner}`) || '{}');
+            const folds: Record<string, boolean> = {};
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+                for (const [key, val] of Object.entries(parsed)) {
+                    if (typeof val === 'boolean') folds[key] = val;
+                }
+            }
+            this.documentFolds = folds;
+        } catch { this.documentFolds = {}; }
+    }
+
+    private installDocumentFold(block: HTMLDetailsElement, path: string): void {
+        block.open = this.documentFolds[path] !== false;
+        let wasOpen = block.open;
+        block.addEventListener('toggle', () => {
+            if (wasOpen === block.open || !block.isConnected) return;
+            wasOpen = block.open;
+            this.documentFolds[path] = block.open;
+            try { window.localStorage.setItem(`writinglab-manuscript-folds:${this.documentFoldOwner}`, JSON.stringify(this.documentFolds)); } catch { /* optional local preference */ }
+            if (block.open) {
+                const editor = block.querySelector<HTMLElement>('.sl-manuscript-editor-wrap');
+                if (editor) {
+                    if (this.lazyObserver) this.lazyObserver.observe(editor);
+                    else void this.mountEditor(editor, path);
+                }
+            }
+            // Keep mounted editors alive on collapse so pending edits and undo survive.
+        });
+    }
+
     private usesScenes(): boolean {
         return this.plugin.capabilityService.isEnabled('scenes', this.getBoundProject());
     }
@@ -618,9 +646,16 @@ export class ManuscriptView extends ProjectBoundItemView {
             project.filePath,
         );
         const documents = await source.listDocuments();
+        const chrome = this.rootContainer?.querySelector('.nl-manuscript-fold-controls') as HTMLElement | null;
+        if (chrome) chrome.hidden = documents.length === 0;
         if (documents.length === 0) {
             const empty = this.scrollArea.createDiv('sl-manuscript-empty');
             empty.createDiv({ text: t('No documents yet.') });
+            if (this.plugin.capabilityService.isEnabled('library', project)) {
+                empty.createEl('p', {
+                    text: t('Open Library to add literature, claims, arguments, and facts.'),
+                });
+            }
             const button = empty.createEl('button', { cls: 'mod-cta', text: t('New document') });
             button.addEventListener('click', () => this.openCreateDocumentModal());
             this.footerEl.setText(t('0 words'));
@@ -629,11 +664,15 @@ export class ManuscriptView extends ProjectBoundItemView {
 
         const editorContainers: { el: HTMLElement; path: string }[] = [];
         for (const document of documents) {
-            const block = this.scrollArea.createDiv('sl-manuscript-scene-block sl-manuscript-document-block');
+            const block = this.scrollArea.createEl('details', {cls:'sl-manuscript-scene-block sl-manuscript-document-block'});
+            this.installDocumentFold(block, document.path);
             block.dataset.scenePath = document.path;
-            const header = block.createDiv('sl-manuscript-scene-header');
+            const header = block.createEl('summary', {cls:'sl-manuscript-scene-header'});
             const title = header.createSpan({ cls: 'sl-manuscript-scene-title', text: document.label });
-            title.addEventListener('click', () => {
+            title.setAttr('title', document.path);
+            const openFile = header.createEl('button', {cls:'nl-manuscript-open-file', text:'↗', attr:{type:'button','aria-label':t('Open file in new tab')}});
+            openFile.addEventListener('click', event => {
+                event.preventDefault(); event.stopPropagation();
                 const file = this.app.vault.getAbstractFileByPath(document.path);
                 if (file instanceof TFile) void this.app.workspace.getLeaf('tab').openFile(file);
             });
@@ -649,6 +688,18 @@ export class ManuscriptView extends ProjectBoundItemView {
         this._isMounting = true;
         for (const document of editorContainers) await this.mountEditor(document.el, document.path);
         this._isMounting = false;
+    }
+
+    private async openDocumentBase(): Promise<void> {
+        const project = this.getBoundProject();
+        if (!project) return;
+        try {
+            const base = await ensureProjectDocumentBase(this.app, project);
+            await this.app.workspace.getLeaf('tab').openFile(base);
+        } catch (error) {
+            console.error('[NarrativeLab] Could not open the project document Base:', error);
+            new Notice(t('Could not open the project document list.'));
+        }
     }
 
     private openCreateDocumentModal(): void {
@@ -695,6 +746,7 @@ export class ManuscriptView extends ProjectBoundItemView {
 
     /** Mount a real Obsidian MarkdownView (Live Preview) inside the given container */
     private async mountEditor(container: HTMLElement, filePath: string): Promise<void> {
+        if (container.closest('details:not([open])')) return;
         if (this.embeddedLeaves.has(filePath) || this.mountingPaths.has(filePath)) return;
         this.mountingPaths.add(filePath);
         const mountGeneration = this.editorMountGeneration;
@@ -1288,6 +1340,8 @@ export class ManuscriptView extends ProjectBoundItemView {
     private async scrollToMatch(idx: number): Promise<void> {
         if (idx < 0 || idx >= this.searchMatches.length) return;
         const match = this.searchMatches[idx];
+        const foldedBlock = this.scrollArea?.querySelector<HTMLDetailsElement>(`details[data-scene-path="${CSS.escape(match.path)}"]`);
+        if (foldedBlock) foldedBlock.open = true;
         // Ensure the scene editor is mounted so we can highlight the match.
         if (!this.embeddedLeaves.has(match.path)) {
             const block = this.scrollArea?.querySelector(

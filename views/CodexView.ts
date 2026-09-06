@@ -5,7 +5,7 @@ import type SceneCardsPlugin from '../main';
 import type { LibraryProfileEmbedOptions } from './CanvasLibraryProfileHost';
 import { SceneManager } from '../services/SceneManager';
 import { CodexManager } from '../services/CodexManager';
-import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID, getBuiltinCodexCategory, makeCustomCodexCategory, makeProfileCodexCategory, makeUncategorizedCodexCategory, CODEX_ICON_OPTIONS, withLinkingSection } from '../models/Codex';
+import { CodexEntry, CodexCategoryDef, CodexFieldCategory, CodexFieldDef, PRESET_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID, getBuiltinCodexCategory, makeCustomCodexCategory, makeProfileCodexCategory, makeUncategorizedCodexCategory, CODEX_ICON_OPTIONS, withLinkingSection } from '../models/Codex';
 import { CHARACTER_CATEGORIES } from '../models/Character';
 import { LOCATION_CATEGORIES, WORLD_CATEGORIES } from '../models/Location';
 import { CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE } from '../constants';
@@ -91,12 +91,14 @@ import {
     ensureSeededLibraryCategoryLabels,
     findCategoryIdForFolderName,
     isSeedLibraryCategoryLabel,
+    libraryPresetCategoriesForPack,
     reconcileLibraryCategoriesForActiveProject,
     renameLibraryCategory,
     resolveLibraryCategoryLabel,
     resolveLibraryFolderName,
     sanitizeLibraryFolderName,
 } from '../services/LibraryCategorySync';
+import { libraryCategoryPack } from '../models/ProjectCapabilities';
 import { VirtualScroller } from '../components/VirtualScroller';
 import {
     ALL_LIBRARY_CATEGORY_ID,
@@ -3014,7 +3016,7 @@ export class CodexView extends ProjectBoundItemView {
             categories: (this.plugin.settings.codexCustomCategories || []).map(category => ({ ...category })),
             deletedPresets: new Set(this.plugin.settings.codexDeletedPresetCategories || []),
         };
-        const presetIds = new Set(BUILTIN_CODEX_CATEGORIES.map(category => category.id));
+        const presetIds = new Set(PRESET_CODEX_CATEGORIES.map(category => category.id));
         const fixedIds = new Set<string>(FIXED_LIBRARY_CATEGORY_IDS);
         const deletedPresetIds = state.deletedPresets;
 
@@ -3075,7 +3077,7 @@ export class CodexView extends ProjectBoundItemView {
                     [...WORLD_CATEGORIES, ...LOCATION_CATEGORIES],
                 ),
             },
-            ...BUILTIN_CODEX_CATEGORIES
+            ...PRESET_CODEX_CATEGORIES
                 .filter(category => !deletedPresetIds.has(category.id))
                 .map(category => {
                     const override = state.categories.find(item => item.id === category.id);
@@ -3293,7 +3295,7 @@ export class CodexView extends ProjectBoundItemView {
                             return;
                         }
                         if (
-                            BUILTIN_CODEX_CATEGORIES.some(c => c.id === id)
+                            PRESET_CODEX_CATEGORIES.some(c => c.id === id)
                             || state.categories.some(c => c.id === id)
                             || fixedIds.has(id)
                         ) {
@@ -3365,10 +3367,14 @@ export class CodexView extends ProjectBoundItemView {
             FIXED_LIBRARY_CATEGORY_IDS.filter(id => !state.enabled.has(id));
         this.plugin.settings.codexDeletedPresetCategories = Array.from(state.deletedPresets);
         // Hidden presets stay registered so Library/ folders cannot resurrect their tabs.
-        for (const preset of BUILTIN_CODEX_CATEGORIES) {
+        const packIds = new Set(
+            libraryPresetCategoriesForPack(libraryCategoryPack(project.capabilities)).map(preset => preset.id),
+        );
+        for (const preset of PRESET_CODEX_CATEGORIES) {
             if (state.deletedPresets.has(preset.id)) continue;
             if (this.plugin.settings.codexEnabledCategories.includes(preset.id)) continue;
             if (this.plugin.settings.codexCustomCategories.some(category => category.id === preset.id)) continue;
+            if (!packIds.has(preset.id)) continue;
             this.plugin.settings.codexCustomCategories.push({
                 id: preset.id,
                 label: preset.label,

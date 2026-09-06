@@ -4,7 +4,6 @@ import * as obsidian from 'obsidian';
 import { Scene } from '../models/Scene';
 import { SceneManager } from '../services/SceneManager';
 import { renderViewSwitcher } from '../components/ViewSwitcher';
-import { renderStructureModeSwitcher, rememberStructureMode } from '../components/StructureModeSwitcher';
 import type SceneCardsPlugin from '../main';
 
 import { STORYLINE_VIEW_TYPE } from '../constants';
@@ -43,20 +42,21 @@ export class StorylineView extends ProjectBoundItemView {
     /** Whether subway scene nodes show plotline pills under the title. */
     private showSubwayTagPills = true;
 
-    constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
+    constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager,
+        private readonly pageType: string = STORYLINE_VIEW_TYPE, mode: PlotlineViewMode = 'list') {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
         this.ensureProjectBinding(sceneManager.activeProject?.filePath);
         // Restore last used Storyline view state
         const s = plugin.settings;
-        this.plotlineViewMode = s.lastStorylineViewMode || 'subway';
+        this.plotlineViewMode = mode;
         this.sortMode = s.lastStorylineSortMode || 'reading-order';
         this.showSubwayTagPills = s.lastStorylineShowTagPills !== false;
     }
 
     getViewType(): string {
-        return STORYLINE_VIEW_TYPE;
+        return this.pageType;
     }
 
     getDisplayText(): string {
@@ -99,14 +99,6 @@ export class StorylineView extends ProjectBoundItemView {
         this.refresh();
     }
 
-    /** Update plotline view mode (list/subway), persist, and refresh. */
-    private setViewMode(mode: PlotlineViewMode): void {
-        if (this.plotlineViewMode === mode) return;
-        this.plotlineViewMode = mode;
-        rememberStructureMode(this.plugin, mode === 'list' ? 'plot-list' : 'subway');
-        this.refresh();
-    }
-
     private renderView(container: HTMLElement): void {
         container.empty();
 
@@ -117,21 +109,10 @@ export class StorylineView extends ProjectBoundItemView {
         // project name shown in top-center only; no inline project selector here
 
         // View switcher tabs
-        renderViewSwitcher(toolbar, STORYLINE_VIEW_TYPE, this.plugin, this.leaf);
+        renderViewSwitcher(toolbar, this.getViewType(), this.plugin, this.leaf);
 
         // Controls row
         const controls = toolbar.createDiv('story-line-toolbar-controls');
-
-        renderStructureModeSwitcher(
-            controls,
-            this.plotlineViewMode === 'list' ? 'plot-list' : 'subway',
-            this.plugin,
-            this.leaf,
-            {
-                onPlotList: () => this.setViewMode('list'),
-                onSubway: () => this.setViewMode('subway'),
-            },
-        );
 
         // Sort button
         const sortBtn = controls.createEl('button', {

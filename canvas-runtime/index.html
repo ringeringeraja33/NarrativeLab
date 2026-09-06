@@ -4,8 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#101010">
-    <meta name="apple-mobile-web-app-title" content="Narrative Canvas">
-    <title>Narrative Canvas</title>
+    <meta name="apple-mobile-web-app-title" content="Node-based presentation canvas">
+    <title>Node-based presentation canvas</title>
     <link rel="icon" type="image/svg+xml" href="./assets/icons/favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="./assets/icons/favicon-32x32.png">
     <link rel="apple-touch-icon" sizes="180x180" href="./assets/icons/apple-touch-icon.png">
@@ -17,7 +17,7 @@
       <aside class="sidebar sidebar-left" data-sidebar="left">
         <header class="pane-header">
           <div class="pane-title">
-            <span class="pane-kicker">Narrative Canvas</span>
+            <span class="pane-kicker">Node-based presentation canvas</span>
             <h1 id="vaultProjectTitle">Sample</h1>
           </div>
           <div class="header-actions">
@@ -61,9 +61,9 @@
             <span class="file-dot muted"></span>
             <span class="nc-file-item-label">Events Sheet.csv</span>
           </button>
-          <button class="nc-file-item" data-file-id="characters">
+          <button class="nc-file-item" data-file-id="characters" hidden>
             <span class="file-dot muted"></span>
-            <span class="nc-file-item-label">Library.md</span>
+            <span class="nc-file-item-label">Referenced materials</span>
           </button>
           <button class="nc-file-item nc-advanced-only" data-file-id="variables">
             <span class="file-dot muted"></span>
@@ -72,7 +72,7 @@
         </section>
 
         <section class="nav-section palette">
-          <h2>Node Library</h2>
+          <h2>Node Templates</h2>
           <div id="nodePalette" class="palette-list"></div>
           <details class="custom-node-form node-type-form nc-advanced-only">
             <summary>Manage node types</summary>
@@ -94,6 +94,11 @@
       <div class="sidebar-resizer sidebar-resizer-left" data-sidebar-resizer="left" role="separator" aria-orientation="vertical" aria-label="Resize left sidebar"></div>
 
       <main class="canvas-workspace">
+        <nav class="web-project-tabs" data-web-only aria-label="Project tabs">
+          <button type="button" data-action="open-project-library" data-web-only><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3v18M9 3v18M14 3v18M18 3l4 18"/></svg><span>Project Library</span></button>
+          <button type="button" data-file-id="adventure"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="m10 7 5 3-5 3ZM12 17v4M8 21h8"/></svg><span>Node-based presentation canvas</span></button>
+          <button type="button" class="web-library-toggle" data-action="toggle-project-library">Disable project Library</button>
+        </nav>
         <header class="workspace-global-bar">
           <div class="workspace-file-label">
             <span class="pane-kicker">File</span>
@@ -159,7 +164,7 @@
             <div id="minimap" class="minimap" role="button" aria-label="Move canvas viewport"></div>
           </div>
         </section>
-        <section id="charactersPanel" class="canvas-workspace-view document-panel" aria-label="Narrative Library"></section>
+        <section id="charactersPanel" class="canvas-workspace-view document-panel" aria-label="Referenced materials"></section>
         <section id="variablesPanel" class="canvas-workspace-view document-panel" aria-label="Variables"></section>
         <section id="eventsPanel" class="canvas-workspace-view document-panel event-sheet-panel" aria-label="Events Sheet"></section>
         <section id="documentPanel" class="canvas-workspace-view document-panel document-source-panel" aria-label="Document"></section>

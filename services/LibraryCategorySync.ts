@@ -16,9 +16,11 @@
  *    only the folder basename / tab label does.
  */
 import { Notice, TFile, TFolder, normalizePath } from 'obsidian';
-import { BUILTIN_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
+import { BUILTIN_CODEX_CATEGORIES, ACADEMIC_CODEX_CATEGORIES, PRESET_CODEX_CATEGORIES, UNCATEGORIZED_CATEGORY_ID } from '../models/Codex';
 import type { StoryLineProject } from '../models/StoryLineProject';
+import { DEFAULT_PROJECT_LIBRARY_FOLDERS, DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES } from '../models/StoryLineProject';
 import type SceneCardsPlugin from '../main';
+import { libraryCategoryPack, moduleEnabled, type ProjectCapabilities } from '../models/ProjectCapabilities';
 import { localizeForLanguage, t } from '../utils/i18n';
 import {
     allocateLibraryCategoryId,
@@ -46,62 +48,133 @@ import {
 export const DEFAULT_LIBRARY_FOLDER_NAMES: Record<string, string> = {
     characters: 'Characters',
     locations: 'Locations',
-    ...Object.fromEntries(BUILTIN_CODEX_CATEGORIES.map(c => [c.id, c.folder])),
+    ...Object.fromEntries(PRESET_CODEX_CATEGORIES.map(c => [c.id, c.folder])),
 };
 
 const BUILTIN_LIBRARY_ICONS: Record<string, string> = {
     characters: 'users',
     locations: 'map-pin',
-    ...Object.fromEntries(BUILTIN_CODEX_CATEGORIES.map(c => [c.id, c.icon])),
+    ...Object.fromEntries(PRESET_CODEX_CATEGORIES.map(c => [c.id, c.icon])),
 };
 
-/** Version 1 restores Storyline's six original Codex presets to each project once. */
-export const STORYLINE_PRESET_SEED_VERSION = 1;
+/** Version 2 seeds academic Library packs for research projects. */
+export const STORYLINE_PRESET_SEED_VERSION = 2;
 
-/**
- * Restore the original Storyline preset categories for projects created before
- * they became opt-in. Explicitly deleted presets keep their tombstones and are
- * never recreated. The version marker means later user hide/show choices stick.
- */
-export function seedStorylinePresetCategories(plugin: SceneCardsPlugin): boolean {
-    if ((plugin.settings.codexPresetSeedVersion || 0) >= STORYLINE_PRESET_SEED_VERSION) {
-        return false;
-    }
+export function libraryPresetCategoriesForPack(pack: 'narrative' | 'academic') {
+    return pack === 'academic' ? ACADEMIC_CODEX_CATEGORIES : BUILTIN_CODEX_CATEGORIES;
+}
 
+function presetCategoryRecord(preset: { id: string; label: string; icon: string }) {
+    return {
+        id: preset.id,
+        label: preset.label,
+        icon: preset.icon,
+        preset: true,
+        hasProfilePage: true,
+        showInSidebar: true,
+    };
+}
+
+function registerPresetCategory(
+    plugin: SceneCardsPlugin,
+    preset: { id: string; label: string; icon: string },
+    options: { enable: boolean },
+): void {
     const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
+    if (deleted.has(preset.id)) return;
     const enabled = new Set(plugin.settings.codexEnabledCategories || []);
     const order = [...(plugin.settings.libraryCategoryOrder || [])];
     const categories = plugin.settings.codexCustomCategories || [];
-
-    for (const fixedId of ['characters', 'locations']) {
-        if (!order.includes(fixedId)) order.push(fixedId);
+    if (options.enable) enabled.add(preset.id);
+    if (options.enable && !order.includes(preset.id)) order.push(preset.id);
+    const existing = categories.find(category => category.id === preset.id);
+    if (existing) {
+        existing.preset = true;
+        existing.hasProfilePage = true;
+        existing.showInSidebar = true;
+        if (!existing.label?.trim()) existing.label = preset.label;
+        if (!existing.icon) existing.icon = preset.icon;
+    } else {
+        categories.push(presetCategoryRecord(preset));
     }
-    for (const preset of BUILTIN_CODEX_CATEGORIES) {
-        if (deleted.has(preset.id)) continue;
-        enabled.add(preset.id);
-        if (!order.includes(preset.id)) order.push(preset.id);
-        const existing = categories.find(category => category.id === preset.id);
-        if (existing) {
-            existing.preset = true;
-            existing.hasProfilePage = true;
-            existing.showInSidebar = true;
-            if (!existing.label?.trim()) existing.label = preset.label;
-            if (!existing.icon) existing.icon = preset.icon;
-        } else {
-            categories.push({
-                id: preset.id,
-                label: preset.label,
-                icon: preset.icon,
-                preset: true,
-                hasProfilePage: true,
-                showInSidebar: true,
-            });
-        }
-    }
-
     plugin.settings.codexEnabledCategories = Array.from(enabled);
     plugin.settings.codexCustomCategories = categories;
     plugin.settings.libraryCategoryOrder = order;
+}
+
+export function initialLibraryCategorySettings(capabilities: ProjectCapabilities | undefined): LibraryCategorySettingsPayload {
+    const pack = libraryCategoryPack(capabilities);
+    const presets = libraryPresetCategoriesForPack(pack);
+    const ids = presets.map(preset => preset.id);
+    return {
+        enabledCategories: [...ids],
+        customCategories: presets.map(presetCategoryRecord),
+        categoryOrder: pack === 'academic' ? [...ids] : ['characters', 'locations', ...ids],
+        hiddenFixedCategories: pack === 'academic'
+            ? ['uncategorized', 'characters', 'locations']
+            : [...DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES],
+        deletedPresetCategories: [],
+        presetSeedVersion: STORYLINE_PRESET_SEED_VERSION,
+    };
+}
+
+/** Vault subfolders to create for a project's Library pack. Skips Characters / Locations when those modules are off. */
+export function defaultLibraryFoldersForCapabilities(capabilities: ProjectCapabilities | undefined): Record<string, string> {
+    const folders: Record<string, string> = {};
+    if (moduleEnabled(capabilities, 'characters')) {
+        folders.characters = DEFAULT_PROJECT_LIBRARY_FOLDERS.characters;
+    }
+    if (moduleEnabled(capabilities, 'locations')) {
+        folders.locations = DEFAULT_PROJECT_LIBRARY_FOLDERS.locations;
+    }
+    if (moduleEnabled(capabilities, 'library')) {
+        for (const preset of libraryPresetCategoriesForPack(libraryCategoryPack(capabilities))) {
+            folders[preset.id] = preset.folder;
+        }
+    }
+    return folders;
+}
+
+/** Add missing pack members. Does not re-enable a category the user hid or deleted. */
+export function ensureLibraryPackCategories(plugin: SceneCardsPlugin, pack?: 'narrative' | 'academic'): boolean {
+    const resolved = pack ?? libraryCategoryPack(plugin.sceneManager?.activeProject?.capabilities);
+    const before = JSON.stringify(readLibraryCategorySettings(plugin.settings));
+    const registered = new Set((plugin.settings.codexCustomCategories || []).map(category => category.id));
+    for (const preset of libraryPresetCategoriesForPack(resolved)) {
+        if (registered.has(preset.id)) continue;
+        registerPresetCategory(plugin, preset, { enable: true });
+    }
+    return JSON.stringify(readLibraryCategorySettings(plugin.settings)) !== before;
+}
+
+/**
+ * Restore the original Storyline preset categories for projects created before
+ * they became opt-in. Research projects get literature / claims / arguments / facts
+ * instead of the fiction pack. Explicitly deleted presets keep their tombstones.
+ */
+export function seedStorylinePresetCategories(plugin: SceneCardsPlugin): boolean {
+    const current = plugin.settings.codexPresetSeedVersion || 0;
+    const pack = libraryCategoryPack(plugin.sceneManager?.activeProject?.capabilities);
+    if (current >= STORYLINE_PRESET_SEED_VERSION) {
+        return ensureLibraryPackCategories(plugin, pack);
+    }
+
+    const presets = libraryPresetCategoriesForPack(pack);
+    if (current === 0) {
+        applyLibraryCategorySettings(plugin, initialLibraryCategorySettings(
+            plugin.sceneManager?.activeProject?.capabilities,
+        ));
+        return true;
+    }
+
+    for (const preset of presets) registerPresetCategory(plugin, preset, { enable: true });
+    if (pack === 'academic') {
+        const hidden = new Set(plugin.settings.libraryHiddenFixedCategories || []);
+        hidden.add('uncategorized');
+        hidden.add('characters');
+        hidden.add('locations');
+        plugin.settings.libraryHiddenFixedCategories = Array.from(hidden);
+    }
     plugin.settings.codexPresetSeedVersion = STORYLINE_PRESET_SEED_VERSION;
     return true;
 }
@@ -290,7 +363,7 @@ function setLibraryCategoryDisplayMetadata(
         id: categoryId,
         label,
         icon: BUILTIN_LIBRARY_ICONS[categoryId] || 'file-text',
-        preset: BUILTIN_CODEX_CATEGORIES.some(category => category.id === categoryId) || undefined,
+        preset: PRESET_CODEX_CATEGORIES.some(category => category.id === categoryId) || undefined,
     });
 }
 
@@ -303,10 +376,14 @@ export async function ensureSeededLibraryCategoryLabels(plugin: SceneCardsPlugin
     const enabled = new Set(plugin.settings.codexEnabledCategories || []);
     const registered = new Set(plugin.settings.codexCustomCategories.map(category => category.id));
 
+    const hiddenFixed = new Set(plugin.settings.libraryHiddenFixedCategories || []);
     const ids = [
-        'characters',
-        'locations',
-        ...BUILTIN_CODEX_CATEGORIES.map(c => c.id).filter(id =>
+        ...(['characters', 'locations'] as const).filter(id =>
+            !hiddenFixed.has(id)
+            || enabled.has(id)
+            || registered.has(id)
+            || !!project?.libraryFolders?.[id]),
+        ...PRESET_CODEX_CATEGORIES.map(c => c.id).filter(id =>
             !deleted.has(id)
             && (enabled.has(id) || registered.has(id) || !!project?.libraryFolders?.[id])),
     ];
@@ -384,7 +461,10 @@ export function applyCategoryFolderLabels(plugin: SceneCardsPlugin): void {
  * does not create a folder.
  */
 export function getManagedLibraryCategoryIds(plugin: SceneCardsPlugin): string[] {
-    const ids = new Set<string>(['characters', 'locations']);
+    const hiddenFixed = new Set(plugin.settings.libraryHiddenFixedCategories || []);
+    const ids = new Set<string>(
+        (['characters', 'locations'] as const).filter(id => !hiddenFixed.has(id)),
+    );
     for (const custom of plugin.settings.codexCustomCategories || []) {
         if (!custom.id || custom.id === UNCATEGORIZED_CATEGORY_ID) continue;
         ids.add(custom.id);
@@ -410,7 +490,7 @@ function removeLibraryCategoryState(
     }
     plugin.settings.codexCustomCategories =
         (plugin.settings.codexCustomCategories || []).filter(category => category.id !== categoryId);
-    if (BUILTIN_CODEX_CATEGORIES.some(category => category.id === categoryId)) {
+    if (PRESET_CODEX_CATEGORIES.some(category => category.id === categoryId)) {
         const deleted = new Set(plugin.settings.codexDeletedPresetCategories || []);
         deleted.add(categoryId);
         plugin.settings.codexDeletedPresetCategories = Array.from(deleted);
@@ -711,9 +791,9 @@ export async function ensureLibraryCategoryFolders(plugin: SceneCardsPlugin): Pr
         }
     }
 
+    const hiddenFixed = new Set(plugin.settings.libraryHiddenFixedCategories || []);
     const ids = new Set<string>([
-        'characters',
-        'locations',
+        ...(['characters', 'locations'] as const).filter(id => !hiddenFixed.has(id)),
         ...(plugin.settings.codexEnabledCategories || []),
     ]);
     // Prefer the series Library when present — that's where shared categories live.
@@ -1292,7 +1372,7 @@ function resolveCategoryIdForLibraryFolder(
     if (byProject) {
         const id = byProject[0];
         if (FIXED_LIBRARY_FOLDER_IDS.has(id)) return null;
-        const builtin = BUILTIN_CODEX_CATEGORIES.find(category => category.id === id);
+        const builtin = PRESET_CODEX_CATEGORIES.find(category => category.id === id);
         const custom = plugin.settings.codexCustomCategories?.find(category => category.id === id);
         return {
             id,
@@ -1302,7 +1382,7 @@ function resolveCategoryIdForLibraryFolder(
         };
     }
 
-    for (const builtin of BUILTIN_CODEX_CATEGORIES) {
+    for (const builtin of PRESET_CODEX_CATEGORIES) {
         if (
             builtin.folder === normalized
             || builtin.id === normalized.toLowerCase()
@@ -1317,8 +1397,8 @@ function resolveCategoryIdForLibraryFolder(
         }
     }
 
-    // Localized seed labels (e.g. 生物 → creatures) still map to builtins.
-    for (const builtin of BUILTIN_CODEX_CATEGORIES) {
+    // Localized seed labels (e.g. 生物 → creatures, 文献 → literature) still map to builtins.
+    for (const builtin of PRESET_CODEX_CATEGORIES) {
         if (
             isSeedLibraryCategoryLabel(builtin.id, normalized)
             || localizeForLanguage('zh', builtin.folder) === normalized

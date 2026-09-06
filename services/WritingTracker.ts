@@ -104,6 +104,13 @@ export class WritingTracker {
         return Number.isFinite(currentTotalWords) ? currentTotalWords - this.baselineWords : 0;
     }
 
+    /** Inventory changes (imports, moves, refreshes) are not authored words. */
+    rebaseInventory(delta: number): void {
+        if (!Number.isFinite(delta)) return;
+        if (this.baselineWords !== null) this.baselineWords += delta;
+        if (this._sprintRunning) this._sprintBaseline += delta;
+    }
+
     /** How long the session has been running (ms) */
     getSessionDuration(now = Date.now()): number {
         return this.sessionElapsedMs

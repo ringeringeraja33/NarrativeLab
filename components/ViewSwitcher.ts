@@ -6,15 +6,10 @@ import { ConverterModal } from './ConverterModal';
 import { isMobile, DESKTOP_ONLY_VIEWS } from './MobileAdapter';
 import { attachTooltip } from './Tooltip';
 import {
-    BOARD_VIEW_TYPE,
-    TIMELINE_VIEW_TYPE,
-    STORYLINE_VIEW_TYPE,
     CHARACTER_VIEW_TYPE,
     STATS_VIEW_TYPE,
-    PLOTGRID_VIEW_TYPE,
     LOCATION_VIEW_TYPE,
     CODEX_VIEW_TYPE,
-    MANUSCRIPT_VIEW_TYPE,
     NARRATIVE_CANVAS_VIEW_TYPE,
     NCANVAS_LIBRARY_VIEW_TYPE,
 } from '../constants';
@@ -26,21 +21,24 @@ import {
     getLeafNarrativeLabProjectFile,
 } from '../utils/narrativeLabLeafState';
 import { getRememberedLibraryCategory, resolveLibraryViewType } from './LibraryModeBar';
-import { resolveStructureViewType } from './StructureModeSwitcher';
+import {
+    PROJECT_PAGES,
+    PROJECT_TAB_GROUPS,
+    flattenTabGroupOrder,
+    sortByProjectPageOrder,
+    sortTabGroups,
+} from '../models/ProjectPages';
+import { ProjectModulesModal } from './ProjectModulesModal';
+import { showMenuSafely } from '../utils/obsidianMenu';
 
 export interface ViewSwitcherEntry {
     type: string;
     label: string;
     icon: string;  // Lucide icon name
+    module?: import('../models/ProjectCapabilities').ProjectModuleId;
 }
 
-export const VIEW_ENTRIES: ViewSwitcherEntry[] = [
-    { type: BOARD_VIEW_TYPE, label: 'Board', icon: 'layout-grid' },
-    { type: PLOTGRID_VIEW_TYPE, label: 'Table', icon: 'table' },
-    { type: TIMELINE_VIEW_TYPE, label: 'Structure', icon: 'git-branch' },
-    { type: MANUSCRIPT_VIEW_TYPE, label: 'Manuscript', icon: 'book-open-text' },
-    { type: CODEX_VIEW_TYPE, label: 'Library', icon: 'library-big' },
-];
+export const VIEW_ENTRIES: readonly ViewSwitcherEntry[] = PROJECT_PAGES;
 
 /** Stats sits with the other top-toolbar actions (not a primary planning tab). */
 const STATS_ENTRY: ViewSwitcherEntry = {
@@ -49,16 +47,52 @@ const STATS_ENTRY: ViewSwitcherEntry = {
     icon: 'bar-chart-2',
 };
 
-/** Opens the Narrative Canvas manager after Export in the top toolbar. */
-const PLAYMODE_ENTRY: ViewSwitcherEntry = {
-    type: NCANVAS_LIBRARY_VIEW_TYPE,
-    label: 'Canvas',
-    icon: 'monitor-play',
-};
-
 /** View types that are considered "inside" the Codex umbrella */
 const CODEX_FAMILY = new Set([CODEX_VIEW_TYPE, CHARACTER_VIEW_TYPE, LOCATION_VIEW_TYPE]);
-const STRUCTURE_FAMILY = new Set([STORYLINE_VIEW_TYPE, TIMELINE_VIEW_TYPE]);
+
+const lastPageByGroup = new Map<string, string>();
+
+function groupMemoryKey(projectFile: string | null | undefined, groupId: string): string {
+    return `${projectFile || ''}::${groupId}`;
+}
+
+function rememberGroupPage(projectFile: string | null | undefined, groupId: string, type: string): void {
+    lastPageByGroup.set(groupMemoryKey(projectFile, groupId), type);
+}
+
+function preferredGroupPage(
+    projectFile: string | null | undefined,
+    groupId: string,
+    pages: readonly ViewSwitcherEntry[],
+    activeViewType: string,
+): ViewSwitcherEntry {
+    const current = pages.find(page => page.type === activeViewType);
+    if (current) return current;
+    const remembered = lastPageByGroup.get(groupMemoryKey(projectFile, groupId));
+    return pages.find(page => page.type === remembered) ?? pages[0];
+}
+
+function groupIsActive(groupId: string, pages: readonly ViewSwitcherEntry[], activeViewType: string): boolean {
+    if (groupId === 'library') return CODEX_FAMILY.has(activeViewType);
+    if (groupId === 'presentation') {
+        return activeViewType === NARRATIVE_CANVAS_VIEW_TYPE || activeViewType === NCANVAS_LIBRARY_VIEW_TYPE;
+    }
+    return pages.some(page => page.type === activeViewType);
+}
+
+async function switchLeafView(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, type: string): Promise<void> {
+    try {
+        await leaf.setViewState({
+            type,
+            active: true,
+            state: preservedNarrativeLabLeafState(leaf),
+        });
+        plugin.app.workspace.revealLeaf(leaf);
+    } catch (err) {
+        console.error('NarrativeLab: view switch failed, falling back', err);
+        plugin.activateView(type);
+    }
+}
 
 /**
  * Renders view-switcher tabs into a toolbar container.
@@ -71,36 +105,78 @@ export function renderViewSwitcher(
     plugin: SceneCardsPlugin,
     leaf: WorkspaceLeaf
 ): HTMLElement {
+    container.querySelectorAll(':scope > .story-line-view-switcher, :scope > .story-line-view-actions').forEach(el => el.remove());
     const switcher = container.createDiv('story-line-view-switcher');
     const projectFile = getLeafNarrativeLabProjectFile(leaf);
+    const project = plugin.sceneManager.getProjects().find(project => project.filePath === projectFile);
+    const navigation = plugin.capabilityService.get(project).navigation;
 
-    // Filter out desktop-only views on mobile
-    const platformEntries = isMobile
-        ? VIEW_ENTRIES.filter(e => !DESKTOP_ONLY_VIEWS.has(e.type))
-        : VIEW_ENTRIES;
-    const entries = platformEntries.filter(entry => plugin.isViewEnabled(entry.type, projectFile));
+    const hiddenTypes = new Set(PROJECT_PAGES.filter(page => navigation?.hidden.includes(page.module)).map(page => page.type));
+    const groups = sortTabGroups([...PROJECT_TAB_GROUPS], navigation?.order);
+    const strip: { group: (typeof PROJECT_TAB_GROUPS)[number]; pages: ViewSwitcherEntry[]; userHidden: boolean }[] = [];
+    for (const group of groups) {
+        const pages = sortByProjectPageOrder(
+            PROJECT_PAGES.filter(entry =>
+                group.modules.includes(entry.module)
+                && plugin.isViewEnabled(entry.type, projectFile)
+                && (!isMobile || !DESKTOP_ONLY_VIEWS.has(entry.type))),
+            navigation?.order,
+        );
+        if (!pages.length) continue;
+        strip.push({ group, pages, userHidden: pages.every(page => hiddenTypes.has(page.type)) });
+    }
 
-    for (const entry of entries) {
-        // The Library tab highlights for its Character and Location views too.
-        const isCodexEntry = entry.type === CODEX_VIEW_TYPE;
-        const isActive = isCodexEntry
-            ? CODEX_FAMILY.has(activeViewType)
-            : entry.type === TIMELINE_VIEW_TYPE
-                ? STRUCTURE_FAMILY.has(activeViewType)
-                : entry.type === activeViewType;
-
+    for (const item of strip) {
+        const { group, pages } = item;
+        const isActive = groupIsActive(group.id, pages, activeViewType);
+        if (isActive && pages.some(page => page.type === activeViewType)) {
+            rememberGroupPage(projectFile, group.id, activeViewType);
+        }
+        const hasMenu = group.id !== 'manuscript';
         const tab = switcher.createEl('button', {
             cls: `story-line-view-tab ${isActive ? 'active' : ''}`,
+            attr: {
+                type: 'button',
+                'aria-current': isActive ? 'page' : 'false',
+                'data-group': group.id,
+                ...(hasMenu ? { 'aria-haspopup': 'menu' } : {}),
+            },
         });
-        attachTooltip(tab, t(entry.label));
+        attachTooltip(tab, t(group.label));
         const iconSpan = tab.createSpan({ cls: 'view-tab-icon' });
-        obsidian.setIcon(iconSpan, entry.icon);
-        tab.createSpan({ cls: 'view-tab-label', text: t(entry.label) });
+        obsidian.setIcon(iconSpan, group.icon);
+        tab.createSpan({ cls: 'view-tab-label', text: t(group.label) });
 
-        if (isCodexEntry) {
+        if (group.id === 'presentation') {
             const chevron = tab.createSpan({ cls: 'codex-dropdown-chevron' });
             obsidian.setIcon(chevron, 'chevron-down');
-
+            tab.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                if ((event.target as HTMLElement).closest('.codex-dropdown-chevron')) {
+                    const project = plugin.sceneManager.getProjects().find(p => p.filePath === projectFile);
+                    if (!project) return;
+                    const menu = new obsidian.Menu();
+                    for (const path of plugin.getNcanvasPathsForProject(project).candidates) {
+                        menu.addItem(item => item.setTitle(path.split('/').pop()!.replace(/\.n(?:arrative)?canvas$/i, ''))
+                            .setIcon('monitor-play').onClick(() => plugin.openProjectCanvasTab(project.filePath, leaf, path)));
+                    }
+                    menu.addSeparator();
+                    menu.addItem(item => item.setTitle(t('New canvas')).setIcon('plus').onClick(async () => {
+                        const { openNewProjectCanvasModal } = await import('../views/NCanvasLibraryView');
+                        openNewProjectCanvasModal(plugin, project.filePath, leaf);
+                    }));
+                    menu.addItem(item => item.setTitle(t('Manage canvases')).setIcon('settings')
+                        .onClick(() => plugin.openNCanvasLibrary(project.filePath, leaf)));
+                    const rect = tab.getBoundingClientRect();
+                    showMenuSafely(menu, { x: rect.left, y: rect.bottom + 4 });
+                    return;
+                }
+                if (activeViewType !== NARRATIVE_CANVAS_VIEW_TYPE) void plugin.openProjectCanvasTab(projectFile, leaf);
+            });
+        } else if (group.id === 'library') {
+            const chevron = tab.createSpan({ cls: 'codex-dropdown-chevron' });
+            obsidian.setIcon(chevron, 'chevron-down');
             tab.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -108,8 +184,8 @@ export function renderViewSwitcher(
                     showCodexDropdown(tab, plugin, leaf, activeViewType);
                     return;
                 }
-                const projectFile = getLeafNarrativeLabProjectFile(leaf);
-                const targetType = resolveLibraryViewType(plugin, projectFile);
+                const boundProject = getLeafNarrativeLabProjectFile(leaf);
+                const targetType = resolveLibraryViewType(plugin, boundProject);
                 void leaf.setViewState({
                     type: targetType,
                     active: true,
@@ -118,7 +194,7 @@ export function renderViewSwitcher(
                     plugin.app.workspace.revealLeaf(leaf);
                     if (targetType === CODEX_VIEW_TYPE) {
                         window.setTimeout(() => {
-                            const remembered = getRememberedLibraryCategory(plugin, projectFile);
+                            const remembered = getRememberedLibraryCategory(plugin, boundProject);
                             if (!remembered || remembered === 'characters' || remembered === 'locations') return;
                             const view = leaf.view as unknown as { setActiveCategory?: (id: string) => void };
                             view.setActiveCategory?.(remembered);
@@ -126,47 +202,54 @@ export function renderViewSwitcher(
                     }
                 }).catch(() => plugin.activateView(targetType));
             });
-        } else if (entry.type === TIMELINE_VIEW_TYPE) {
-            // Structure umbrella: restore the last sub-tab (timeline/tracks/plot-list/subway).
-            tab.addEventListener('click', async (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const targetType = resolveStructureViewType(plugin);
-                if (targetType === activeViewType) return;
-                try {
-                    await leaf.setViewState({
-                        type: targetType,
-                        active: true,
-                        state: preservedNarrativeLabLeafState(leaf),
-                    });
-                    plugin.app.workspace.revealLeaf(leaf);
-                } catch (err) {
-                    console.error('NarrativeLab: structure view switch failed, falling back', err);
-                    plugin.activateView(targetType);
+        } else if (hasMenu) {
+            const chevron = tab.createSpan({ cls: 'codex-dropdown-chevron' });
+            obsidian.setIcon(chevron, 'chevron-down');
+            const menuPages = pages.filter(page => !hiddenTypes.has(page.type) || page.type === activeViewType);
+            const openable = menuPages.length ? menuPages : pages;
+            tab.addEventListener('click', event => {
+                event.preventDefault();
+                event.stopPropagation();
+                if ((event.target as HTMLElement).closest('.codex-dropdown-chevron')) {
+                    const menu = new obsidian.Menu();
+                    for (const page of openable) {
+                        menu.addItem(item => item.setTitle(t(page.label)).setIcon(page.icon).onClick(() => {
+                            rememberGroupPage(projectFile, group.id, page.type);
+                            void switchLeafView(leaf, plugin, page.type);
+                        }));
+                    }
+                    const rect = tab.getBoundingClientRect();
+                    showMenuSafely(menu, { x: rect.left, y: rect.bottom + 4 });
+                    return;
                 }
+                if (isActive) return;
+                const target = preferredGroupPage(projectFile, group.id, openable, activeViewType);
+                rememberGroupPage(projectFile, group.id, target.type);
+                void switchLeafView(leaf, plugin, target.type);
             });
-        } else if (entry.type !== activeViewType) {
-            tab.addEventListener('click', async (e) => {
-                e.preventDefault();
-                try {
-                    await leaf.setViewState({
-                        type: entry.type,
-                        active: true,
-                        state: preservedNarrativeLabLeafState(leaf),
-                    });
-                    plugin.app.workspace.revealLeaf(leaf);
-                } catch (err) {
-                    console.error('NarrativeLab: view switch failed, falling back', err);
-                    plugin.activateView(entry.type);
-                }
+        } else if (!isActive) {
+            tab.addEventListener('click', event => {
+                event.preventDefault();
+                void switchLeafView(leaf, plugin, pages[0].type);
             });
         }
     }
+
+    if (project) attachProjectTabReordering(switcher, plugin, project);
 
     // Stats / Converter / Playmode — sibling of the tab strip (not nested),
     // so they never collide with primary tabs or the filter row below.
     container.querySelectorAll(':scope > .story-line-view-actions').forEach((el) => el.remove());
     const actions = container.createDiv('story-line-view-actions');
+    const settings = actions.createEl('button', {
+        cls: 'story-line-view-tab nl-project-settings-button',
+        text: t('Project settings'),
+        attr: { type: 'button' },
+    });
+    settings.addEventListener('click', () => {
+        const project = plugin.sceneManager.getProjects().find(p => p.filePath === projectFile);
+        if (project) new ProjectModulesModal(plugin.app, plugin, project).open();
+    });
 
     const statsActive = activeViewType === STATS_VIEW_TYPE;
     const statsTab = actions.createEl('button', {
@@ -205,43 +288,122 @@ export function renderViewSwitcher(
         new ConverterModal(plugin).open();
     });
 
-    const playmodeActive = activeViewType === NARRATIVE_CANVAS_VIEW_TYPE
-        || activeViewType === NCANVAS_LIBRARY_VIEW_TYPE;
-    const playmodeTab = actions.createEl('button', {
-        cls: `story-line-view-tab story-line-view-tab-playmode${playmodeActive ? ' active' : ''}`,
-        attr: { type: 'button', 'aria-label': t(PLAYMODE_ENTRY.label) },
-    });
-    playmodeTab.toggle(plugin.isViewEnabled(NCANVAS_LIBRARY_VIEW_TYPE, projectFile));
-    attachTooltip(playmodeTab, t('Choose, create, or open an ncanvas for this project'));
-    const playIcon = playmodeTab.createSpan({ cls: 'view-tab-icon' });
-    obsidian.setIcon(playIcon, PLAYMODE_ENTRY.icon);
-    playmodeTab.createSpan({ cls: 'view-tab-label', text: t(PLAYMODE_ENTRY.label) });
-    playmodeTab.addEventListener('click', (e) => {
-        e.preventDefault();
-        if (activeViewType === NCANVAS_LIBRARY_VIEW_TYPE) return;
-        void plugin.openNCanvasLibrary(getLeafNarrativeLabProjectFile(leaf), leaf);
-    });
-
-    // Collapse primary-tab labels when the toolbar is too narrow.
-    // Opt-out: `autoHideViewLabels = false`.
-    if (plugin.settings.autoHideViewLabels !== false) {
-        installAutoHideLabels(switcher);
-    }
+    placeSwitcher(container, switcher, actions);
+    installTabOverflow(
+        switcher,
+        strip.map(item => ({ label: item.group.label, icon: item.group.icon })),
+        leaf,
+        strip.map(item => item.userHidden),
+    );
 
     return switcher;
+}
+
+function placeSwitcher(container: HTMLElement, switcher: HTMLElement, actions: HTMLElement): void {
+    const titleRow = container.querySelector(':scope > .story-line-title-row');
+    const title = container.querySelector(':scope > .story-line-view-title');
+    const controls = container.querySelector(':scope > .story-line-toolbar-controls');
+    const anchor = titleRow?.nextSibling ?? title?.nextSibling ?? controls;
+    if (anchor && anchor !== switcher) container.insertBefore(switcher, anchor);
+    if (switcher.nextSibling !== actions) container.insertBefore(actions, switcher.nextSibling);
+}
+
+function attachProjectTabReordering(
+    switcher: HTMLElement,
+    plugin: SceneCardsPlugin,
+    project: import('../models/StoryLineProject').StoryLineProject,
+): void {
+    const tabs = Array.from(switcher.querySelectorAll<HTMLButtonElement>(':scope > button[data-group]'));
+    if (tabs.length < 2) return;
+    let dragged: HTMLButtonElement | null = null;
+    let suppressClickUntil = 0;
+    const clearIndicators = () => {
+        for (const tab of tabs) tab.removeClass('is-drag-over-before', 'is-drag-over-after');
+    };
+    const groupIds = () => Array.from(switcher.querySelectorAll<HTMLButtonElement>(':scope > button[data-group]'))
+        .map(item => item.dataset.group)
+        .filter((id): id is string => Boolean(id));
+
+    for (const tab of tabs) {
+        tab.draggable = true;
+        tab.addClass('is-reorderable');
+        tab.addEventListener('click', event => {
+            if (Date.now() >= suppressClickUntil) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }, true);
+        tab.addEventListener('dragstart', event => {
+            dragged = tab;
+            tab.addClass('is-dragging');
+            event.dataTransfer?.setData('text/plain', tab.dataset.group || '');
+            if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
+            event.stopPropagation();
+        });
+        tab.addEventListener('dragover', event => {
+            if (!dragged || dragged === tab) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+            clearIndicators();
+            const rect = tab.getBoundingClientRect();
+            tab.addClass(event.clientX < rect.left + rect.width / 2 ? 'is-drag-over-before' : 'is-drag-over-after');
+        });
+        tab.addEventListener('drop', event => {
+            if (!dragged || dragged === tab) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const before = groupIds();
+            const rect = tab.getBoundingClientRect();
+            const insertAfter = event.clientX >= rect.left + rect.width / 2;
+            switcher.insertBefore(dragged, insertAfter ? tab.nextSibling : tab);
+            const ordered = groupIds();
+            suppressClickUntil = Date.now() + 250;
+            clearIndicators();
+            if (ordered.join('\0') === before.join('\0')) return;
+            const previous = plugin.capabilityService.get(project).navigation?.order;
+            void plugin.updateProjectTabOrder(project, flattenTabGroupOrder(ordered, previous))
+                .catch(error => new obsidian.Notice(String(error)));
+        });
+        tab.addEventListener('dragend', () => {
+            tab.removeClass('is-dragging');
+            clearIndicators();
+            dragged = null;
+        });
+    }
 }
 
 /**
  * Toggle `sl-collapsed` on the tab strip when primary labels would overflow
  * the free space between the title and the trailing action cluster.
  */
-function installAutoHideLabels(switcher: HTMLElement): void {
+function installTabOverflow(
+    switcher: HTMLElement,
+    entries: readonly { label: string; icon: string }[],
+    leaf: WorkspaceLeaf,
+    initiallyHidden: readonly boolean[],
+): void {
     const parent = switcher.parentElement;
     if (!parent) return;
+    const tabs = Array.from(switcher.querySelectorAll<HTMLButtonElement>(':scope > button'));
+    const more = switcher.createEl('button', { cls: 'story-line-view-tab nl-tab-more', text: t('More views') + ' ▾', attr: { type: 'button' } });
+    more.addEventListener('click', event => {
+        event.stopPropagation();
+        const menu = new obsidian.Menu();
+        tabs.forEach((tab, index) => {
+            if (!tab.hidden) return;
+            const entry = entries[index];
+            if (!entry) return;
+            menu.addItem(item => item.setTitle(t(entry.label)).setIcon(entry.icon).onClick(() => tab.click()));
+        });
+        const rect = more.getBoundingClientRect();
+        showMenuSafely(menu, { x: rect.left, y: rect.bottom + 4 });
+    });
 
     const measure = () => {
         switcher.classList.remove('sl-collapsed');
         parent.classList.remove('sl-toolbar-compact');
+        tabs.forEach((tab, index) => { tab.hidden = Boolean(initiallyHidden[index]) && !tab.classList.contains('active'); });
+        more.hidden = !tabs.some(tab => tab.hidden);
 
         let reserved = 0;
         let sameRowSiblings = 0;
@@ -257,12 +419,13 @@ function installAutoHideLabels(switcher: HTMLElement): void {
         const gap = parseFloat(styles.columnGap || styles.gap || '0') || 0;
         // title + actions (+ gaps) leave this much room for primary tabs
         const available = parent.clientWidth - reserved - gap * sameRowSiblings - 8;
-        if (switcher.scrollWidth > Math.max(0, available)) {
-            switcher.classList.add('sl-collapsed');
-        }
-        // If icon-only tabs + Playmode label still overflow, compact Playmode too.
-        if (switcher.scrollWidth > Math.max(0, available)) {
-            parent.classList.add('sl-toolbar-compact');
+        const width = () => tabs.reduce((total, tab) => total + (tab.hidden ? 0 : tab.offsetWidth + 4), more.hidden ? 0 : more.offsetWidth + 4);
+        if (width() > Math.max(100, available)) {
+            more.hidden = false;
+            for (const tab of [...tabs].reverse()) {
+                if (width() <= Math.max(100, available)) break;
+                if (!tab.classList.contains('active')) tab.hidden = true;
+            }
         }
     };
 
@@ -271,16 +434,12 @@ function installAutoHideLabels(switcher: HTMLElement): void {
     const ro = new ResizeObserver(() => measure());
     ro.observe(parent);
 
-    const cleanup = () => ro.disconnect();
-    const mo = new MutationObserver(() => {
-        if (!switcher.isConnected) {
-            cleanup();
-            mo.disconnect();
-        }
-    });
-    if (switcher.parentNode) {
-        mo.observe(switcher.parentNode, { childList: true });
-    }
+    // Toolbar refresh replaces the entire subtree. Observe the stable view root
+    // and also register unload cleanup, so detached toolbars cannot leak observers.
+    const cleanup = () => { ro.disconnect(); mo.disconnect(); };
+    const mo = new MutationObserver(() => { if (!switcher.isConnected) cleanup(); });
+    mo.observe(leaf.view.containerEl, { childList: true, subtree: true });
+    leaf.view.register(cleanup);
 }
 
 // ── Library dropdown ───────────────────────────────────

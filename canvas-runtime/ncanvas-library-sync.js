@@ -22,6 +22,13 @@ const KIND_TO_CATEGORY_ID = {
   systems: "systems",
   skill: "skills",
   skills: "skills",
+  literature: "literature",
+  claim: "claims",
+  claims: "claims",
+  argument: "arguments",
+  arguments: "arguments",
+  fact: "facts",
+  facts: "facts",
 };
 
 const KIND_FOLDER_ALIASES = {
@@ -41,6 +48,13 @@ const KIND_FOLDER_ALIASES = {
   systems: ["Systems", "体系", "系统"],
   skill: ["Skills", "技能"],
   skills: ["Skills", "技能"],
+  literature: ["Literature", "文献"],
+  claim: ["Claims", "论点", "Claim"],
+  claims: ["Claims", "论点", "Claim"],
+  argument: ["Arguments", "论据", "Argument"],
+  arguments: ["Arguments", "论据", "Argument"],
+  fact: ["Facts", "事实", "Fact"],
+  facts: ["Facts", "事实", "Fact"],
 };
 
 function normalizeVaultishPath(value) {
@@ -100,6 +114,21 @@ function libraryCategoryAliases(category = {}) {
   } else if (id === "lore") {
     aliases.add("lore");
     aliases.add("设定");
+  } else if (id === "literature") {
+    aliases.add("literature");
+    aliases.add("文献");
+  } else if (id === "claims") {
+    aliases.add("claim");
+    aliases.add("claims");
+    aliases.add("论点");
+  } else if (id === "arguments") {
+    aliases.add("argument");
+    aliases.add("arguments");
+    aliases.add("论据");
+  } else if (id === "facts") {
+    aliases.add("fact");
+    aliases.add("facts");
+    aliases.add("事实");
   }
   return aliases;
 }

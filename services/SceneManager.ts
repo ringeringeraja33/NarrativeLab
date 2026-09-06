@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unnecessary-type-assertion, @typescript-eslint/no-unused-vars -- Obsidian's API surface and several untyped third-party libraries force dynamic dispatch; matching enable at end of file */
-import { StoryLineProject, ProjectDraft, SeriesMetadata, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER, DEFAULT_CANVAS_FOLDER, DEFAULT_PROJECT_LIBRARY_FOLDERS, DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES, LIBRARY_BASE_PREFIX } from '../models/StoryLineProject';
-import { MetadataParser, setWordcountLocale, setSceneTitleToStemMap } from './MetadataParser';
+import { StoryLineProject, ProjectDraft, SeriesMetadata, deriveProjectFolders, deriveProjectFoldersFromFilePath, DEFAULT_ATTACHMENT_FOLDER, DEFAULT_CANVAS_FOLDER, DEFAULT_PROJECT_LIBRARY_FOLDERS, LIBRARY_BASE_PREFIX } from '../models/StoryLineProject';
+import { MetadataParser, setWordcountLocale, setWordcountProfile, setSceneTitleToStemMap } from './MetadataParser';
 import { normalizeStoryLineLocale, resolveLocale, DEFAULT_STORYLINE_LOCALE, AUTO_DETECT_LOCALE, type StoryLineLocale } from '../utils/locale';
 import { UndoManager } from './UndoManager';
 import { SceneQueryService, ISceneStore } from './SceneQueryService';
@@ -12,12 +12,18 @@ import { localizeForLanguage, t } from '../utils/i18n';
 import { coerceString } from '../utils/narrow';
 import { ensureVaultFolder, registerDeletedProjectPathGuard, vaultRelativeFolderPath } from '../utils/vaultFolders';
 import { plotGridXlsxPath } from './PlotGridXlsxCodec';
+import { projectDocumentBasePath, renameProjectDocumentBase } from './ProjectDocumentBase';
 import {
     capabilitiesForPreset,
     normalizeProjectCapabilities,
+    moduleEnabled,
     type ProjectCapabilities,
     type ProjectPresetId,
 } from '../models/ProjectCapabilities';
+import {
+    defaultLibraryFoldersForCapabilities,
+    initialLibraryCategorySettings,
+} from './LibraryCategorySync';
 
 /**
  * Normalize a frontmatter `acts` / `chapters` value into a clean sorted
@@ -115,6 +121,7 @@ export class SceneManager implements ISceneStore {
     private projects: Map<string, StoryLineProject> = new Map();
     /** Project roots removed outside NarrativeLab. Writes beneath these paths stay blocked until a manifest is discovered again. */
     private deletedProjectRoots = new Set<string>();
+    private managedProjectRenameRoots = new Set<string>();
     private initialized = false;
     private initializePromise: Promise<void> | null = null;
     private _activeProject: StoryLineProject | null = null;
@@ -711,6 +718,7 @@ export class SceneManager implements ISceneStore {
         const settingsDefault = (this.plugin.settings as { defaultProjectLanguage?: string }).defaultProjectLanguage;
         const stored = projectLocale ?? settingsDefault ?? DEFAULT_STORYLINE_LOCALE;
         setWordcountLocale(normalizeStoryLineLocale(stored));
+        setWordcountProfile(this._activeProject?.capabilities?.wordCountProfile);
     }
 
     /**
@@ -738,7 +746,7 @@ export class SceneManager implements ISceneStore {
             ? normalizeProjectCapabilities(options.capabilities)
             : capabilitiesForPreset(options?.preset ?? 'full-narrative');
 
-        const libraryFolders: Record<string, string> = { ...DEFAULT_PROJECT_LIBRARY_FOLDERS };
+        const libraryFolders: Record<string, string> = defaultLibraryFoldersForCapabilities(capabilities);
 
         const frontmatter: Record<string, unknown> = {
             type: 'narrative-lab',
@@ -752,6 +760,7 @@ export class SceneManager implements ISceneStore {
             drafts: [{ id: 'main', title: 'Primary draft' }],
             activeDraft: 'main',
             libraryFolders,
+            ...(capabilities.navigation ? { projectNavigation: capabilities.navigation } : {}),
         };
         const content = `---\n${stringifyYaml(frontmatter)}---\n${description}\n`;
 
@@ -761,6 +770,17 @@ export class SceneManager implements ISceneStore {
 
             // Create project file inside the folder
             await this.app.vault.create(filePath, content);
+
+            // Scene-less projects need a writing file besides the manifest,
+            // otherwise Manuscript opens on an empty document list.
+            if (!capabilities.modules.includes('scenes')) {
+                const draftName = projectLocale === 'zh' || projectLocale.toLowerCase().startsWith('zh-')
+                    ? '草稿' : 'Draft';
+                const draftPath = normalizePath(`${baseFolder}/${draftName}.md`);
+                if (draftPath !== filePath && !this.app.vault.getAbstractFileByPath(draftPath)) {
+                    await this.app.vault.create(draftPath, `# ${title}\n\n`);
+                }
+            }
 
             // Provision only folders required by the selected project modules.
             if (capabilities.modules.includes('library')) {
@@ -775,7 +795,7 @@ export class SceneManager implements ISceneStore {
             // Create System only when an enabled module owns internal data.
             const systemFolder = normalizePath(`${baseFolder}/System`);
             const needsSystemFolder = capabilities.modules.some(module => [
-                'library', 'table', 'timeline', 'board', 'plotlines',
+                'library', 'table', 'timeline', 'trackComparison', 'chapterTemplates', 'flatCanvas', 'columnBoard', 'plotList', 'subwayMap',
                 'characters', 'writingTracker',
             ].includes(module));
             if (needsSystemFolder) await this.ensureFolder(systemFolder);
@@ -785,16 +805,12 @@ export class SceneManager implements ISceneStore {
             if (capabilities.modules.includes('library')) {
                 await this.app.vault.create(
                     normalizePath(`${systemFolder}/library-categories.json`),
-                    JSON.stringify({
-                        enabledCategories: [], customCategories: [], categoryOrder: [],
-                        hiddenFixedCategories: [...DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES],
-                        deletedPresetCategories: [], presetSeedVersion: 0,
-                    }, null, 2),
+                    JSON.stringify(initialLibraryCategorySettings(capabilities), null, 2),
                 );
             }
 
             // Authored Canvas/ folder + default tiled corkboard file.
-            if (capabilities.modules.includes('canvas') || capabilities.modules.includes('board')) {
+            if (capabilities.modules.includes('canvas') || moduleEnabled(capabilities, 'board')) {
                 await this.ensureFolder(normalizePath(folders.canvasFolder));
             try {
                 const { corkboardCanvasPathForProject } = await import('./CorkboardCanvasService');
@@ -814,9 +830,9 @@ export class SceneManager implements ISceneStore {
             // from a failed convert, a restored folder, or an unindexed copy.
             const viewFiles = [
                 ...(capabilities.modules.includes('table') ? ['plotgrid.json'] : []),
-                ...(capabilities.modules.includes('timeline') ? ['timeline.json'] : []),
-                ...(capabilities.modules.includes('board') ? ['board.json'] : []),
-                ...(capabilities.modules.includes('plotlines') ? ['plotlines.json'] : []),
+                ...(moduleEnabled(capabilities, 'structure') ? ['timeline.json'] : []),
+                ...(moduleEnabled(capabilities, 'board') ? ['board.json'] : []),
+                ...(moduleEnabled(capabilities, 'plotlines') ? ['plotlines.json'] : []),
                 ...(capabilities.modules.includes('writingTracker') ? ['stats.json'] : []),
                 ...(capabilities.modules.includes('characters') ? ['characters.json'] : []),
             ];
@@ -835,8 +851,8 @@ export class SceneManager implements ISceneStore {
                 locale: projectLocale,
                 capabilities,
                 ...folders,
-                characterFolder: normalizePath(`${folders.codexFolder}/${libraryFolders.characters}`),
-                locationFolder: normalizePath(`${folders.codexFolder}/${libraryFolders.locations}`),
+                characterFolder: normalizePath(`${folders.codexFolder}/${libraryFolders.characters ?? DEFAULT_PROJECT_LIBRARY_FOLDERS.characters}`),
+                locationFolder: normalizePath(`${folders.codexFolder}/${libraryFolders.locations ?? DEFAULT_PROJECT_LIBRARY_FOLDERS.locations}`),
                 libraryFolders,
                 definedActs: [],
                 definedChapters: [],
@@ -866,7 +882,7 @@ export class SceneManager implements ISceneStore {
         const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const systemFolder = normalizePath(`${folders.baseFolder}/System`);
         const needsSystemFolder = capabilities.modules.some(module => [
-            'library', 'table', 'timeline', 'board', 'plotlines',
+            'library', 'table', 'timeline', 'trackComparison', 'chapterTemplates', 'flatCanvas', 'columnBoard', 'plotList', 'subwayMap',
             'characters', 'writingTracker',
         ].includes(module));
         if (needsSystemFolder) await this.ensureFolder(systemFolder);
@@ -882,18 +898,29 @@ export class SceneManager implements ISceneStore {
         if (capabilities.modules.includes('sceneNotes')) await this.ensureFolder(folders.sceneNotesFolder);
         if (capabilities.modules.includes('library')) {
             await this.ensureFolder(folders.codexFolder);
-            for (const folderName of Object.values(project.libraryFolders ?? DEFAULT_PROJECT_LIBRARY_FOLDERS)) {
+            const libraryFolders = {
+                ...defaultLibraryFoldersForCapabilities(capabilities),
+                ...(project.libraryFolders ?? {}),
+            };
+            for (const folderName of Object.values(libraryFolders)) {
+                if (!folderName?.trim()) continue;
                 await this.ensureFolder(normalizePath(`${folders.codexFolder}/${folderName}`));
             }
-            await ensureJson('library-categories.json');
+            const categoriesPath = normalizePath(`${systemFolder}/library-categories.json`);
+            if (!await this.app.vault.adapter.exists(categoriesPath)) {
+                await this.app.vault.create(
+                    categoriesPath,
+                    JSON.stringify(initialLibraryCategorySettings(capabilities), null, 2),
+                );
+            }
         }
-        if (capabilities.modules.includes('canvas') || capabilities.modules.includes('board')) {
+        if (capabilities.modules.includes('canvas') || moduleEnabled(capabilities, 'board')) {
             await this.ensureFolder(folders.canvasFolder);
         }
         if (capabilities.modules.includes('table')) await ensureJson('plotgrid.json');
-        if (capabilities.modules.includes('timeline')) await ensureJson('timeline.json');
-        if (capabilities.modules.includes('board')) await ensureJson('board.json');
-        if (capabilities.modules.includes('plotlines')) await ensureJson('plotlines.json');
+        if (moduleEnabled(capabilities, 'structure')) await ensureJson('timeline.json');
+        if (moduleEnabled(capabilities, 'board')) await ensureJson('board.json');
+        if (moduleEnabled(capabilities, 'plotlines')) await ensureJson('plotlines.json');
         if (capabilities.modules.includes('characters')) await ensureJson('characters.json');
         if (capabilities.modules.includes('writingTracker')) {
             await ensureJson('stats.json');
@@ -966,7 +993,7 @@ export class SceneManager implements ISceneStore {
             await this.plugin.saveSettings();
         }
         const restored = fromLeafFocus && this.plugin.restoreProjectRuntime(project.filePath);
-        if (!restored && has('scenes')) {
+        if (!restored) {
             await this.initialize();
         }
         if (!fromLeafFocus) {
@@ -1022,14 +1049,50 @@ export class SceneManager implements ISceneStore {
      * Uses fileManager.renameFile() so all vault links stay valid.
      */
     async renameProject(project: StoryLineProject, newTitle: string): Promise<StoryLineProject> {
+        // Keep the original paths: folder rename watchers can mutate project during await.
+        const oldProject = { ...project };
+        const oldFilePath = normalizePath(project.filePath);
+        const originalSeriesFolder = this.getSeriesFolderForProject(project);
         const wasActive = this._activeProject === project
             || normalizePath(this.plugin.settings.activeProjectFile || '') === normalizePath(project.filePath);
-        const safeName = newTitle.replace(/[\\/:*?"<>|]/g, '-');
+        newTitle = newTitle.trim();
+        const safeName = newTitle.replace(/[\\/:*?"<>|]/g, '-').replace(/[. ]+$/g, '');
+        if (!safeName || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safeName)) {
+            throw new Error(t('Please enter a valid project name.'));
+        }
         const folders = deriveProjectFoldersFromFilePath(project.filePath);
         const oldBaseFolder = folders.baseFolder;
-        const parentDir = oldBaseFolder.substring(0, oldBaseFolder.lastIndexOf('/'));
-        const newBaseFolder = normalizePath(`${parentDir}/${safeName}`);
+        const parentDir = oldBaseFolder.includes('/') ? oldBaseFolder.slice(0, oldBaseFolder.lastIndexOf('/')) : '';
+        const newBaseFolder = normalizePath([parentDir, safeName].filter(Boolean).join('/'));
         const newFilePath = normalizePath(`${newBaseFolder}/${safeName}.md`);
+        const manifest = this.app.vault.getAbstractFileByPath(oldFilePath);
+        if (!(manifest instanceof TFile)) throw new Error(t('Could not find project "{name}".', { name: project.title }));
+        const adapter = this.app.vault.adapter;
+        const rejectCollision = async (path: string, source: string): Promise<void> => {
+            if (path !== source && await adapter.exists(path)) {
+                throw new Error(t('Cannot rename project because this path already exists: {path}', { path }));
+            }
+        };
+        // Check all predictable conflicts before moving any user data.
+        await rejectCollision(newBaseFolder, normalizePath(oldBaseFolder));
+        await rejectCollision(normalizePath(`${oldBaseFolder}/${safeName}.md`), oldFilePath);
+        const plannedProject = { ...project, title: newTitle, filePath: newFilePath };
+        const oldBasePath = projectDocumentBasePath(oldProject);
+        const legacyBasePath = normalizePath(`${oldBaseFolder}/writing.base`);
+        if (await adapter.exists(oldBasePath) || await adapter.exists(legacyBasePath)) {
+            const targetBase = normalizePath(`${oldBaseFolder}/${projectDocumentBasePath(plannedProject).split('/').pop()}`);
+            await rejectCollision(targetBase, oldBasePath);
+        }
+
+        const renamedFiles = {
+            [oldFilePath]: newFilePath,
+            [oldBasePath]: projectDocumentBasePath(plannedProject),
+            [legacyBasePath]: projectDocumentBasePath(plannedProject),
+        };
+        const resumeLeaves = await this.plugin.quiesceProjectLeavesForFolderMove(oldBaseFolder, newBaseFolder, renamedFiles);
+        this.managedProjectRenameRoots.add(oldBaseFolder);
+        this.managedProjectRenameRoots.add(newBaseFolder);
+        try {
 
         // Rename the project folder first (moves everything inside it)
         if (normalizePath(oldBaseFolder) !== newBaseFolder) {
@@ -1040,13 +1103,26 @@ export class SceneManager implements ISceneStore {
         }
 
         // Rename the project .md file inside the folder
-        const oldFileInNewFolder = normalizePath(`${newBaseFolder}/${oldBaseFolder.split('/').pop()}.md`);
-        if (normalizePath(oldFileInNewFolder) !== newFilePath) {
-            const mdFile = this.app.vault.getAbstractFileByPath(oldFileInNewFolder);
-            if (mdFile) {
-                await this.app.fileManager.renameFile(mdFile, newFilePath);
+        // TFile.path follows the folder move; it also handles legacy sibling manifests.
+        try {
+            if (manifest.path !== newFilePath) {
+                await ensureVaultFolder(this.app, newBaseFolder);
+                await this.app.fileManager.renameFile(manifest, newFilePath);
             }
+        } catch (error) {
+            // A failed manifest rename must not strand the whole project in a half-renamed folder.
+            if (oldBaseFolder !== newBaseFolder && !await adapter.exists(oldBaseFolder)) {
+                const movedFolder = this.app.vault.getAbstractFileByPath(newBaseFolder);
+                if (movedFolder) await this.app.fileManager.renameFile(movedFolder, oldBaseFolder);
+            }
+            throw error;
         }
+
+        // A transient NewFolder/OldTitle.md must never be treated as a legacy
+        // project root. Rebase once, after both filesystem renames have finished.
+        this.managedProjectRenameRoots.delete(oldBaseFolder);
+        this.managedProjectRenameRoots.delete(newBaseFolder);
+        await this.handleProjectTreeFolderRename(oldBaseFolder, newBaseFolder, renamedFiles);
 
         // Remove old project entry and add new one
         // A folder-level rename watcher may already have re-keyed this same
@@ -1064,11 +1140,15 @@ export class SceneManager implements ISceneStore {
         project.locationFolder = newFolders.locationFolder;
         project.codexFolder = newFolders.codexFolder;
         project.notesFolder = newFolders.notesFolder;
+        project.sceneNotesFolder = newFolders.sceneNotesFolder;
+        project.researchFolder = newFolders.researchFolder;
         project.archiveFolder = newFolders.archiveFolder;
         this.projects.set(newFilePath, project);
 
         // Update frontmatter
         await this.saveProjectFrontmatter(project);
+
+        await renameProjectDocumentBase(this.app, oldProject, project);
 
         // Keep tiled corkboard at Canvas/corkboard.canvas after the folder move.
         try {
@@ -1139,7 +1219,7 @@ export class SceneManager implements ISceneStore {
 
         // If in a series, update bookOrder in series.json
         if (project.seriesId) {
-            const seriesFolder = this.getSeriesFolder();
+            const seriesFolder = originalSeriesFolder;
             if (seriesFolder) {
                 const meta = await this.plugin.seriesManager.loadSeriesMetadata(seriesFolder);
                 if (meta) {
@@ -1154,6 +1234,11 @@ export class SceneManager implements ISceneStore {
         }
 
         return project;
+        } finally {
+            this.managedProjectRenameRoots.delete(oldBaseFolder);
+            this.managedProjectRenameRoots.delete(newBaseFolder);
+            await resumeLeaves(this.app.vault.getAbstractFileByPath(newFilePath) === manifest);
+        }
     }
 
     /**
@@ -1352,6 +1437,7 @@ export class SceneManager implements ISceneStore {
                     preset: fm.projectType,
                     modules: fm.modules,
                     wordCountProfile: fm.wordCountProfile,
+                    navigation: fm.projectNavigation,
                 })
                 : undefined,
             ...folders,
@@ -1424,9 +1510,10 @@ export class SceneManager implements ISceneStore {
         this.scenes.clear();
         const sceneFolder = this.getSceneFolder();
         const notesFolder = this.getNotesFolder();
+        const capabilities = this._activeProject?.capabilities;
         await Promise.all([
-            this.scanFolderAdapter(sceneFolder),
-            this.scanFolderAdapter(notesFolder),
+            moduleEnabled(capabilities, 'scenes') ? this.scanFolderAdapter(sceneFolder) : Promise.resolve(),
+            moduleEnabled(capabilities, 'notes') ? this.scanFolderAdapter(notesFolder) : Promise.resolve(),
         ]);
         this.initialized = true;
         this.bumpVersion();
@@ -2670,14 +2757,20 @@ export class SceneManager implements ISceneStore {
      * so keeping the old manifest path would make the next refresh recreate
      * the former System/Library/Bases tree.
      */
-    async handleProjectTreeFolderRename(oldPath: string, newPath: string): Promise<boolean> {
+    async handleProjectTreeFolderRename(
+        oldPath: string,
+        newPath: string,
+        renamedFiles: Readonly<Record<string, string>> = {},
+    ): Promise<boolean> {
         const from = normalizePath(oldPath);
         const to = normalizePath(newPath);
         if (!from || from === to) return false;
+        if (this.managedProjectRenameRoots.has(from) || this.managedProjectRenameRoots.has(to)) return true;
 
         const fromPrefix = `${from}/`;
         const rebase = (path: string): string => {
             const normalized = normalizePath(path);
+            if (renamedFiles[normalized]) return renamedFiles[normalized];
             if (normalized === from) return to;
             if (!normalized.startsWith(fromPrefix)) return normalized;
             return normalizePath(`${to}/${normalized.slice(fromPrefix.length)}`);
@@ -3833,6 +3926,7 @@ export class SceneManager implements ISceneStore {
             existingFm.projectType = capabilities.preset;
             existingFm.modules = capabilities.modules;
             existingFm.wordCountProfile = capabilities.wordCountProfile;
+            if (capabilities.navigation) existingFm.projectNavigation = capabilities.navigation;
         }
 
         // Multi-language support — persist BCP-47 locale.

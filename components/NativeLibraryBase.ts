@@ -10,7 +10,7 @@ import {
     setIcon,
     stringifyYaml,
 } from 'obsidian';
-import { BUILTIN_CODEX_CATEGORIES } from '../models/Codex';
+import { PRESET_CODEX_CATEGORIES } from '../models/Codex';
 import { t } from '../utils/i18n';
 import {
     DEFAULT_BASES_FOLDER,
@@ -149,7 +149,7 @@ function getNativeBaseDisplayLabel(plugin: SceneCardsPlugin, categoryId: string)
     const defaults: Record<string, string> = {
         characters: 'Characters',
         locations: 'Locations',
-        ...Object.fromEntries(BUILTIN_CODEX_CATEGORIES.map(category => [category.id, category.folder])),
+        ...Object.fromEntries(PRESET_CODEX_CATEGORIES.map(category => [category.id, category.folder])),
     };
     const mapped = plugin.sceneManager.activeProject?.libraryFolders?.[categoryId]?.trim();
     if (mapped) return mapped;
@@ -237,7 +237,7 @@ function collectAliasBaseKeys(plugin: SceneCardsPlugin, categoryId: string): str
     const custom = plugin.settings.codexCustomCategories?.find(c => c.id === categoryId);
     if (custom?.label?.trim()) add(custom.label);
 
-    const builtin = BUILTIN_CODEX_CATEGORIES.find(c => c.id === categoryId);
+    const builtin = PRESET_CODEX_CATEGORIES.find(c => c.id === categoryId);
     if (builtin?.folder) add(builtin.folder);
     if (builtin?.label) add(builtin.label);
 

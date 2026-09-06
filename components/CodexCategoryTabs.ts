@@ -84,7 +84,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     };
 
     // ── Characters pseudo-tab ──
-    if (!hiddenFixed.has('characters')) {
+    if (!hiddenFixed.has('characters') && plugin.isViewEnabled(CHARACTER_VIEW_TYPE, projectFile)) {
         const charTab = tabs.createEl('button', {
             cls: `codex-tab codex-pseudo-tab ${activeId === 'characters-pseudo' ? 'active' : ''}`,
             attr: { 'aria-label': charName, type: 'button', 'data-category-id': 'characters' },
@@ -103,7 +103,7 @@ export function renderCodexCategoryTabs(parent: HTMLElement, opts: CodexTabsOpti
     }
 
     // ── Locations pseudo-tab ──
-    if (!hiddenFixed.has('locations')) {
+    if (!hiddenFixed.has('locations') && plugin.isViewEnabled(LOCATION_VIEW_TYPE, projectFile)) {
         const locTab = tabs.createEl('button', {
             cls: `codex-tab codex-pseudo-tab ${activeId === 'locations-pseudo' ? 'active' : ''}`,
             attr: { 'aria-label': locName, type: 'button', 'data-category-id': 'locations' },

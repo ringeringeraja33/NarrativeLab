@@ -80,6 +80,8 @@ import {
 import { localizeForLanguage, seedUiLanguage, t } from '../utils/i18n';
 import { showMenuSafely } from '../utils/obsidianMenu';
 import { resolveLibraryEntityName } from '../utils/libraryEntityName';
+import { libraryCategoryPack } from '../models/ProjectCapabilities';
+import { mergeAcademicStoryGraphLinkCategories } from '../utils/storyGraphAcademicRelations';
 import {
     buildProjectFileGraphQuery,
     buildProjectGraphQuery,
@@ -125,6 +127,41 @@ export function resolveLibraryUiProjectFile(
 ): string {
     return normalizeLibraryProjectFile(projectFile)
         || normalizeLibraryProjectFile(plugin.sceneManager?.activeProject?.filePath);
+}
+
+function storyGraphBoundProject(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+) {
+    const bound = resolveLibraryUiProjectFile(plugin, projectFile);
+    return plugin.sceneManager.getProjects().find(project =>
+        normalizeLibraryProjectFile(project.filePath) === bound)
+        ?? plugin.sceneManager.activeProject
+        ?? null;
+}
+
+function storyGraphShowsScenes(plugin: SceneCardsPlugin, projectFile?: string | null): boolean {
+    return plugin.capabilityService.isEnabled('scenes', storyGraphBoundProject(plugin, projectFile));
+}
+
+function storyGraphShowsCharacters(plugin: SceneCardsPlugin, projectFile?: string | null): boolean {
+    return plugin.capabilityService.isEnabled('characters', storyGraphBoundProject(plugin, projectFile));
+}
+
+function storyGraphShowsLocations(plugin: SceneCardsPlugin, projectFile?: string | null): boolean {
+    return plugin.capabilityService.isEnabled('locations', storyGraphBoundProject(plugin, projectFile));
+}
+
+function storyGraphLinkCategories(
+    plugin: SceneCardsPlugin,
+    projectFile?: string | null,
+): StoryGraphRelationCategory[] {
+    const saved = (plugin.settings.storyGraphRelationCategories || [])
+        .map(category => normalizeStoryGraphRelationCategory(category))
+        .filter((category): category is StoryGraphRelationCategory => !!category);
+    const project = storyGraphBoundProject(plugin, projectFile);
+    if (libraryCategoryPack(plugin.capabilityService.get(project)) !== 'academic') return saved;
+    return mergeAcademicStoryGraphLinkCategories(saved);
 }
 
 function readLibraryUi(
@@ -370,29 +407,33 @@ function collectStoryGraphDocuments(
             entityType: 'scene',
         });
     }
-    for (const character of characters) {
-        add({
-            filePath: character.filePath,
-            label: resolveLibraryEntityName(character.name, character.filePath),
-            entityType: 'character',
-            image: libraryCoverPath(character),
-        });
+    if (storyGraphShowsCharacters(plugin)) {
+        for (const character of characters) {
+            add({
+                filePath: character.filePath,
+                label: resolveLibraryEntityName(character.name, character.filePath),
+                entityType: 'character',
+                image: libraryCoverPath(character),
+            });
+        }
     }
-    for (const world of plugin.locationManager.getAllWorlds()) {
-        add({
-            filePath: world.filePath,
-            label: resolveLibraryEntityName(world.name, world.filePath),
-            entityType: 'location',
-            image: libraryCoverPath(world),
-        });
-    }
-    for (const location of plugin.locationManager.getAllLocations()) {
-        add({
-            filePath: location.filePath,
-            label: resolveLibraryEntityName(location.name, location.filePath),
-            entityType: 'location',
-            image: libraryCoverPath(location),
-        });
+    if (storyGraphShowsLocations(plugin)) {
+        for (const world of plugin.locationManager.getAllWorlds()) {
+            add({
+                filePath: world.filePath,
+                label: resolveLibraryEntityName(world.name, world.filePath),
+                entityType: 'location',
+                image: libraryCoverPath(world),
+            });
+        }
+        for (const location of plugin.locationManager.getAllLocations()) {
+            add({
+                filePath: location.filePath,
+                label: resolveLibraryEntityName(location.name, location.filePath),
+                entityType: 'location',
+                image: libraryCoverPath(location),
+            });
+        }
     }
     for (const entry of plugin.codexManager.getAllEntries()) {
         add({
@@ -427,16 +468,20 @@ export function collectStoryGraphLegendLibraryCategories(
         items.push(item);
     };
 
-    push({
-        id: 'characters',
-        label: resolveLibraryCategoryLabel(plugin, 'characters', 'Characters'),
-        focus: 'character',
-    });
-    push({
-        id: 'locations',
-        label: resolveLibraryCategoryLabel(plugin, 'locations', 'Locations'),
-        focus: 'location',
-    });
+    if (storyGraphShowsCharacters(plugin)) {
+        push({
+            id: 'characters',
+            label: resolveLibraryCategoryLabel(plugin, 'characters', 'Characters'),
+            focus: 'character',
+        });
+    }
+    if (storyGraphShowsLocations(plugin)) {
+        push({
+            id: 'locations',
+            label: resolveLibraryCategoryLabel(plugin, 'locations', 'Locations'),
+            focus: 'location',
+        });
+    }
 
     const pushLibraryCategory = (id: string, fallbackLabel: string) => {
         if (
@@ -625,12 +670,11 @@ function collectStoryGraphWikilinks(
     return links;
 }
 
-/** Native Graph `path:` scope: this project's Library + Scenes folders. */
+/** Native Graph `path:` scope: this project's Library (+ Scenes when enabled). */
 function projectNativeGraphFolders(plugin: SceneCardsPlugin): string[] {
-    return [
-        plugin.sceneManager.getCodexFolder(),
-        plugin.sceneManager.getSceneFolder(),
-    ].filter(folder => folder.trim().length > 0);
+    const folders = [plugin.sceneManager.getCodexFolder()];
+    if (storyGraphShowsScenes(plugin)) folders.push(plugin.sceneManager.getSceneFolder());
+    return folders.filter(folder => folder.trim().length > 0);
 }
 
 /**
@@ -650,19 +694,28 @@ export function renderLibraryStoryGraph(
         .forEach(element => element.remove());
     const page = container.createDiv('library-story-graph-host story-graph-page');
     page.createEl('h3', { cls: 'story-graph-title', text: t('Story Graph') });
+    const academicGraph = libraryCategoryPack(
+        plugin.capabilityService.get(storyGraphBoundProject(plugin, projectFile)),
+    ) === 'academic';
     page.createEl('p', {
         cls: 'setting-item-description story-graph-description',
-        text: t('Profile associations and body wikilinks both appear here. Right-click an edge to set its category, edit focus strands, or remove that relationship.'),
+        text: academicGraph
+            ? t('Wikilinks between Library notes appear here. Right-click an edge to mark cites, supports, or refutes.')
+            : t('Profile associations and body wikilinks both appear here. Right-click an edge to set its category, edit focus strands, or remove that relationship.'),
     });
 
-    const scenes = plugin.sceneManager.getAllScenes().filter(s => !s.inactive);
-    const characters = plugin.characterManager.getAllCharacters();
+    const includeScenes = storyGraphShowsScenes(plugin, projectFile);
+    const includeCharacters = storyGraphShowsCharacters(plugin, projectFile);
+    const scenes = includeScenes
+        ? plugin.sceneManager.getAllScenes().filter(s => !s.inactive)
+        : [];
+    const characters = includeCharacters ? plugin.characterManager.getAllCharacters() : [];
     const scanner = plugin.linkScanner;
     scanner.rebuildLookups(plugin.settings.characterAliases);
     const scanResults = scanner.scanAll(scenes);
     const documents = collectStoryGraphDocuments(plugin, scenes, characters);
     const wikilinks = collectStoryGraphWikilinks(plugin, documents);
-    const relationCategories = plugin.settings.storyGraphRelationCategories || [];
+    const relationCategories = storyGraphLinkCategories(plugin, projectFile);
     const wikilinkKeys = new Set(wikilinks.map(l => `${l.sourcePath}=>${l.targetPath}`));
     const docPaths = documents.map(d => d.filePath);
     const { assignments: relationAssignments, settingsDirty: assignmentsDirty } =
@@ -711,13 +764,16 @@ export function renderLibraryStoryGraph(
     }
 
     const seedLang = seedUiLanguage(plugin.app);
-    // Fire-and-forget persist on first empty install; merge uses Obsidian seed lang.
-    void ensureSeededCharacterRelationTypes(plugin, characters);
-    const characterRelationTypes = mergeCharacterRelationTypes(
-        plugin.settings.storyGraphCharacterRelationTypes,
-        characters,
-        seedLang,
-    );
+    if (includeCharacters) {
+        void ensureSeededCharacterRelationTypes(plugin, characters);
+    }
+    const characterRelationTypes = includeCharacters
+        ? mergeCharacterRelationTypes(
+            plugin.settings.storyGraphCharacterRelationTypes,
+            characters,
+            seedLang,
+        )
+        : [];
 
     const openFocusFromRelation = (edge: RelationshipEdgeInfo) => {
         const from = characters.find(c => c.name === edge.from)
@@ -823,6 +879,7 @@ export function renderLibraryStoryGraph(
             onPickNodeImage: async (_node, current) => pickImage(plugin.app, attachmentFolder, current),
             focusBundles,
             characterRelationTypes,
+            includeScenes,
             entityColors: plugin.settings.storyGraphEntityColors || {},
             libraryCategoryColors: plugin.settings.storyGraphLibraryCategoryColors || {},
             libraryCategories: collectStoryGraphLegendLibraryCategories(plugin),
@@ -877,11 +934,13 @@ function showStoryGraphLegendAddMenu(
         item.setIcon('link');
         item.onClick(() => openAddStoryGraphRelationModal(plugin, onDone, { kind: 'wikilink', lockKind: true }));
     });
-    menu.addItem(item => {
-        item.setTitle(t('Add character relation'));
-        item.setIcon('heart-handshake');
-        item.onClick(() => openAddStoryGraphRelationModal(plugin, onDone, { kind: 'character', lockKind: true }));
-    });
+    if (storyGraphShowsCharacters(plugin)) {
+        menu.addItem(item => {
+            item.setTitle(t('Add character relation'));
+            item.setIcon('heart-handshake');
+            item.onClick(() => openAddStoryGraphRelationModal(plugin, onDone, { kind: 'character', lockKind: true }));
+        });
+    }
     menu.addSeparator();
     menu.addItem(item => {
         item.setTitle(t('Manage all…'));
@@ -931,7 +990,8 @@ function openAddStoryGraphRelationModal(
     const modal = new Modal(plugin.app);
     modal.titleEl.setText(t('Add relation'));
     const seedLang = seedUiLanguage(plugin.app);
-    let kind: AddStoryGraphRelationKind = options.kind === 'character' ? 'character' : 'wikilink';
+    let kind: AddStoryGraphRelationKind = options.kind === 'character' && storyGraphShowsCharacters(plugin)
+        ? 'character' : 'wikilink';
     let label = localizeForLanguage(seedLang, 'New relation');
     let color = '#6C7AE0';
     let arrow: StoryGraphRelationArrow = kind === 'character' ? 'double' : 'single';
@@ -941,7 +1001,7 @@ function openAddStoryGraphRelationModal(
     const renderFields = () => {
         body.empty();
 
-        if (!options.lockKind) {
+        if (!options.lockKind && storyGraphShowsCharacters(plugin)) {
             new Setting(body)
                 .setName(t('Relation kind'))
                 .setDesc(t('Character relations sync to character notes; wikilink categories label Obsidian links.'))
@@ -1173,12 +1233,12 @@ export function showStoryGraphLinkEdgeMenu(
     onFocus?: (edge: StoryGraphLinkEdgeInfo) => void,
 ): void {
     const menu = new Menu();
-    const categories = plugin.settings.storyGraphRelationCategories || [];
+    const categories = storyGraphLinkCategories(plugin);
     const assignments = plugin.settings.storyGraphLinkRelationAssignments || {};
     const current = assignments[edge.key];
     const fromChar = plugin.characterManager.findByName(edge.from);
     const toChar = plugin.characterManager.findByName(edge.to);
-    const bothCharacters = !!(fromChar && toChar);
+    const bothCharacters = storyGraphShowsCharacters(plugin) && !!(fromChar && toChar);
     const charStyles = bothCharacters
         ? mergeCharacterRelationTypes(
             plugin.settings.storyGraphCharacterRelationTypes,
@@ -1347,15 +1407,19 @@ export function openStoryGraphRelationCategoriesModal(
     const modal = new Modal(plugin.app);
     modal.titleEl.setText(t('Relation categories'));
     const seedLang = seedUiLanguage(plugin.app);
-    void ensureSeededCharacterRelationTypes(plugin, plugin.characterManager.getAllCharacters());
-    let charDraft: StoryGraphCharacterRelationType[] = mergeCharacterRelationTypes(
-        plugin.settings.storyGraphCharacterRelationTypes,
-        plugin.characterManager.getAllCharacters(),
-        seedLang,
-    );
-    let linkDraft: StoryGraphRelationCategory[] = (plugin.settings.storyGraphRelationCategories || [])
-        .map(category => normalizeStoryGraphRelationCategory(category))
-        .filter((category): category is StoryGraphRelationCategory => !!category);
+    const showCharacters = storyGraphShowsCharacters(plugin);
+    const showScenes = storyGraphShowsScenes(plugin);
+    if (showCharacters) {
+        void ensureSeededCharacterRelationTypes(plugin, plugin.characterManager.getAllCharacters());
+    }
+    let charDraft: StoryGraphCharacterRelationType[] = showCharacters
+        ? mergeCharacterRelationTypes(
+            plugin.settings.storyGraphCharacterRelationTypes,
+            plugin.characterManager.getAllCharacters(),
+            seedLang,
+        )
+        : [];
+    let linkDraft: StoryGraphRelationCategory[] = storyGraphLinkCategories(plugin);
     const entityDraft: StoryGraphEntityColorMap = {};
     {
         const resolved = resolveStoryGraphEntityColors(plugin.settings.storyGraphEntityColors);
@@ -1418,7 +1482,9 @@ export function openStoryGraphRelationCategoriesModal(
         content.createEl('h4', { text: t('Node colors') });
         content.createEl('p', {
             cls: 'setting-item-description',
-            text: t('Scenes plus Library categories (same as tabs / Library subfolders). New Library categories appear here automatically.'),
+            text: showScenes
+                ? t('Scenes plus Library categories (same as tabs / Library subfolders). New Library categories appear here automatically.')
+                : t('Library categories (same as tabs / Library subfolders). New Library categories appear here automatically.'),
         });
         const nodeColorList = content.createDiv('story-graph-entity-color-list');
         const nodeHeader = nodeColorList.createDiv(
@@ -1476,15 +1542,17 @@ export function openStoryGraphRelationCategoriesModal(
         };
 
         // Same order as the graph legend: Scenes → Library categories (manager order)
-        addColorRow(
-            t('Scenes'),
-            entityDraft.scene || {
-                fill: DEFAULT_STORY_GRAPH_ENTITY_FILLS.scene,
-                border: '#FFFFFF',
-            },
-            DEFAULT_STORY_GRAPH_ENTITY_FILLS.scene,
-            (style) => { entityDraft.scene = style; },
-        );
+        if (showScenes) {
+            addColorRow(
+                t('Scenes'),
+                entityDraft.scene || {
+                    fill: DEFAULT_STORY_GRAPH_ENTITY_FILLS.scene,
+                    border: '#FFFFFF',
+                },
+                DEFAULT_STORY_GRAPH_ENTITY_FILLS.scene,
+                (style) => { entityDraft.scene = style; },
+            );
+        }
         legendLibraryCats.forEach((category, index) => {
             if (category.focus === 'character') {
                 addColorRow(
@@ -1542,6 +1610,7 @@ export function openStoryGraphRelationCategoriesModal(
                     render();
                 }));
 
+        if (showCharacters) {
         content.createEl('h4', { text: t('Character relations') });
         content.createEl('p', {
             cls: 'setting-item-description',
@@ -1638,6 +1707,7 @@ export function openStoryGraphRelationCategoriesModal(
                     last?.focus();
                     last?.select();
                 }));
+        }
 
         content.createEl('h4', { text: t('Wikilink categories') });
         content.createEl('p', {

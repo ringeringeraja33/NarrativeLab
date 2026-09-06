@@ -168,6 +168,8 @@ export interface StoryGraphHostOptions {
     focusBundles?: Record<string, StoryGraphFocusBundle>;
     /** Character relation styles (synced with character data). */
     characterRelationTypes?: StoryGraphCharacterRelationType[];
+    /** When false, Scene nodes and the Scene legend chip stay off. */
+    includeScenes?: boolean;
     /** Per-entity fill/border colors for nodes. */
     entityColors?: StoryGraphEntityColorMap;
     /** Per Library-category node colors (Skills, Items, …). */
@@ -648,6 +650,7 @@ export class StoryGraph {
     private onPanUp: (() => void) | null = null;
 
     /** Visibility filters — toggled by the toolbar */
+    private includeScenes = true;
     private showScenes = true;
     private showCharacters = true;
     private showLocations = true;
@@ -813,9 +816,11 @@ export class StoryGraph {
         this.onLayoutChange = host?.onLayoutChange;
         this.onPickNodeImage = host?.onPickNodeImage;
         this.focusBundles = host?.focusBundles || {};
-        this.characterRelationTypes = host?.characterRelationTypes?.length
+        this.characterRelationTypes = host?.characterRelationTypes !== undefined
             ? host.characterRelationTypes
             : mergeCharacterRelationTypes(undefined, characters, 'en');
+        this.includeScenes = host?.includeScenes !== false;
+        this.showScenes = this.includeScenes;
         this.entityColorMap = host?.entityColors || {};
         this.libraryCategoryColors = host?.libraryCategoryColors || {};
         this.libraryCategories = host?.libraryCategories || [];
@@ -2040,7 +2045,7 @@ export class StoryGraph {
     }
 
     private anyEntityFilterOn(): boolean {
-        return this.showScenes
+        return (this.includeScenes && this.showScenes)
             || this.showCharacters
             || this.showLocations
             || this.showCodex
@@ -2049,7 +2054,7 @@ export class StoryGraph {
     }
 
     private allEntityFiltersOn(): boolean {
-        return this.showScenes
+        return (this.includeScenes ? this.showScenes : true)
             && this.showCharacters
             && this.showLocations
             && this.showCodex
@@ -2072,7 +2077,9 @@ export class StoryGraph {
             });
         } else {
             empty.createEl('p', {
-                text: t('No links detected in Library files or scene text. Add an Obsidian wikilink such as [[Character]] to see it here.'),
+                text: this.includeScenes
+                    ? t('No links detected in Library files or scene text. Add an Obsidian wikilink such as [[Character]] to see it here.')
+                    : t('No links detected in Library files. Add an Obsidian wikilink such as [[Source]] to see it here.'),
             });
             return;
         }
@@ -2208,7 +2215,7 @@ export class StoryGraph {
         const requiresRebuild = !this.allEntityFiltersOn() || !this.svgBuilt;
         this.legendNodeKeys.clear();
         this.legendEdgeKeys.clear();
-        this.showScenes = true;
+        this.showScenes = this.includeScenes;
         this.showCharacters = true;
         this.showLocations = true;
         this.showCodex = true;
@@ -2221,7 +2228,7 @@ export class StoryGraph {
 
     private enableAllEntityFiltersForFocus(): void {
         // Build the full graph first; both legend selections filter afterwards.
-        this.showScenes = true;
+        this.showScenes = this.includeScenes;
         this.showCharacters = true;
         this.showLocations = true;
         this.showCodex = true;
@@ -2421,9 +2428,9 @@ export class StoryGraph {
         this.legendNodeButtons.clear();
         this.legendEdgeButtons.clear();
 
-        // Row 1: Scenes (graph-only) + Library categories in manager/tab order
+        // Row 1: Scenes (when the project uses scenes) + Library categories in manager/tab order
         const nodeRow = legend.createDiv('story-graph-legend-row is-nodes');
-        {
+        if (this.includeScenes) {
             const type: EntityType = 'scene';
             const active = this.isNodeLegendSelected('entity:scene');
             const item = nodeRow.createEl('button', {

@@ -508,7 +508,7 @@ function createSampleProject(language = "en") {
       lf1: { title: "你的工作区", body: "这是场景框（位置框）。可用于圈定相关节点，整理画布。场景框不会进入事件表，只用于画布分区。点击框架标题栏的框架画布按钮（▣），可把该框架作为聚焦画布单独打开，只显示并编辑框内节点。", customFields: { region: "画布分区", mood: "先搭结构，正文随后" } },
       e1: { title: "第一章：节点和连线", body: "这是会进入事件表的章节框。把同一段内容的节点放入框内，事件表会按幕、章、节拍、地点、状态等字段列出它们。", beatList: "入口 / 自定义节点 / 第一个选择", eventType: "上手导览", eventDescription: "认识内容节点、自定义节点类型和选择分支。", location: "画布工作区", timeWeather: "上手阶段", questEpisode: "导览-01", status: "可浏览" },
       n1: { title: "内容节点", body: "这是常用内容节点。可用于正文、场景说明或设计笔记。连线决定默认阅读顺序；节点标题用于搜索和跳转。", cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
-      n2: { title: "自定义节点和变量", body: "这是自定义节点类型。可在左侧节点库新建类型并添加字段；字段会出现在节点检查器和对应事件表列中。正文中的花括号会显示变量值，例如项目名「{project_file}」、当前功能「{active_feature}」。", customFields: { evidence: "变量 / 模板 / 自定义字段", owner: "演示设置", outcome: "花括号在正文里读取变量" }, cast: [{ characterId: "c4", role: "Owner" }] },
+      n2: { title: "自定义节点和变量", body: "这是自定义节点类型。可在左侧节点模板新建类型并添加字段；字段会出现在节点检查器和对应事件表列中。正文中的花括号会显示变量值，例如项目名「{project_file}」、当前功能「{active_feature}」。", customFields: { evidence: "变量 / 模板 / 自定义字段", owner: "演示设置", outcome: "花括号在正文里读取变量" }, cast: [{ characterId: "c4", role: "Owner" }] },
       n3: { title: "演示设置是什么", body: "演示设置管理运行时变量、脚本构建、选项逻辑、变量动作、演示规则和校验。脚本构建与右侧节点检查器编辑的是同一份节点条件、效果和路线；高级 JSON 用于精确检查底层配置。文档（Document）把同一份有效叙事显示为纯文本、Ink、Yarn 或 Twee，可直接编辑并增量写回项目。", customFields: { recorder: "脚本构建", reliability: "与节点检查器和文档同步" }, cast: [{ characterId: "c1", role: "Mentioned" }, { characterId: "c4", role: "Mentioned" }] },
       n4: { title: "选择节点", body: "三个选项分别进入变量、对话和演示设置的独立反馈节点，随后再收束到主线。这样既能看到不同后果，也能控制分支规模。卡片会自动编号，无需在选项文字里手写序号。", choices: ["先看变量如何变化", "先看对话与角色", "先看演示设置如何门控选项"], choiceOptions: [
         { id: "opt_map_story", label: "先看变量如何变化", requires: "", effects: [{ trigger: "onChoose", op: "add", key: "workflow_progress", value: "1" }, { trigger: "onChoose", op: "add", key: "review_pressure", value: "1" }, { trigger: "onChoose", op: "set", key: "route", value: "state_branch" }] },
@@ -653,7 +653,7 @@ function createSampleProject(language = "en") {
       lf1: { title: "Your Workspace", body: "This is a Scene Frame (location frame). Use it to group related nodes and organize the canvas. This frame type stays out of the Events Sheet; it is only a canvas region. Click the frame-canvas button (▣) on the frame header to open it as a focused frame canvas that shows and edits only the nodes inside.", customFields: { region: "Canvas region", mood: "Structure first, prose later" } },
       e1: { title: "Chapter 1: Nodes and Links", body: "This chapter frame appears in the Events Sheet. Place one section's nodes inside it; the sheet lists them by act, chapter, beat, location, and status.", beatList: "Entry / custom node / first choice", eventType: "Walkthrough", eventDescription: "Meet the Content node, custom node types, and choice branches.", location: "Canvas workspace", timeWeather: "Getting started", questEpisode: "Tour-01", status: "Browsable" },
       n1: { title: "The Content Node", body: "This is the standard Content node. Use it for prose, scene notes, or design notes. Links set default reading order; node titles support search and routing.", cast: [{ characterId: "c0", role: "POV" }, { characterId: "c1", role: "Present" }] },
-      n2: { title: "Custom Nodes and Variables", body: "This is a custom node type. Add types and fields in the Node Library on the left; those fields appear in the Events Sheet. Braces render variable values in body text, such as project {project_file} and active feature {active_feature}.", customFields: { evidence: "Variables / templates / custom fields", owner: "Playbook", outcome: "Braces read variables in body text" }, cast: [{ characterId: "c4", role: "Owner" }] },
+      n2: { title: "Custom Nodes and Variables", body: "This is a custom node type. Add types and fields in the Node Templates on the left; those fields appear in the Events Sheet. Braces render variable values in body text, such as project {project_file} and active feature {active_feature}.", customFields: { evidence: "Variables / templates / custom fields", owner: "Playbook", outcome: "Braces read variables in body text" }, cast: [{ characterId: "c4", role: "Owner" }] },
       n3: { title: "What Playbook Is", body: "Playbook manages runtime variables, Script Builder rows, choice logic, variable actions, preview rules, and validation. Script Builder and the node inspector edit the same conditions, effects, and routing; Advanced JSON exposes the exact configuration. The Document shows the same effective narrative as Plain text, Ink, Yarn, or Twee and incrementally syncs edits back to the project.", customFields: { recorder: "Script Builder", reliability: "Synced with the node inspector and Document" }, cast: [{ characterId: "c1", role: "Mentioned" }, { characterId: "c4", role: "Mentioned" }] },
       n4: { title: "The Choice Node", body: "These options lead to separate feedback about variables, dialog, and Playbook, then fold back into the main route. This preserves visible consequences without multiplying the rest of the walkthrough. Cards number options automatically.", choices: ["See a variable change", "See dialog and characters", "See Playbook gate an option"], choiceOptions: [
         { id: "opt_map_story", label: "See a variable change", requires: "", effects: [{ trigger: "onChoose", op: "add", key: "workflow_progress", value: "1" }, { trigger: "onChoose", op: "add", key: "review_pressure", value: "1" }, { trigger: "onChoose", op: "set", key: "route", value: "state_branch" }] },
@@ -1017,15 +1017,15 @@ function moveActiveSuggestion(options, direction) {
 
 const fileViews = {
   adventure: "Narrative.canvas",
-  characters: "Library.md",
+  characters: "Referenced materials",
   events: "Events Sheet.csv",
   variables: PLAYBOOK_FILE_NAME,
   document: "Document.md"
 };
 
 const fileViewLabels = {
-  adventure: "Narrative canvas",
-  characters: "Narrative Library",
+  adventure: "Node-based presentation canvas",
+  characters: "Referenced materials",
   events: "Events sheet",
   variables: "Playbook",
   document: "Edit document"
@@ -1170,6 +1170,44 @@ const uiTranslations = {
     "Add entry": "新增资料条目",
     "Cancel": "取消",
     "Canvas": "画布",
+    "Node-based presentation canvas": "节点式演示画布",
+    "Referenced materials": "引用资料",
+    "Associated materials": "关联资料",
+    "Open original": "打开原文",
+    "Remove association": "移除关联",
+    "No associated materials yet.": "还没有关联资料",
+    "Search files or materials": "搜索文件或资料",
+    "Advanced settings": "高级设置",
+    "Association removed. The original was kept.": "已移除关联，原文已保留。",
+    "Material associated.": "已关联资料。",
+    "Already associated.": "该资料已关联。",
+    "Project tabs": "项目页签",
+    "No Library entries found": "未找到资料条目",
+    "Project Library": "项目资料库",
+    "Only references used by this canvas are shown. Original materials are managed in the project Library.": "这里只显示本画布使用的资料引用，原资料在项目资料库中统一管理。",
+    "Add from project Library": "从项目资料库添加",
+    "Open project Library": "打开项目资料库",
+    "Disable project Library": "停用项目资料库",
+    "Enable project Library": "启用项目资料库",
+    "Project Library is disabled. Nodes, connections and Markdown links remain available. Existing references are kept.": "项目资料库已停用。节点、连线和 Markdown 文件链接仍可使用，已有引用会保留。",
+    "Project Library reference": "项目资料引用",
+    "Legacy canvas material": "画布内旧资料",
+    "Source file is unavailable. This reference has been kept.": "源文件暂不可用，已保留此引用。",
+    "View original": "查看原资料",
+    "View or edit legacy material": "查看或编辑旧资料",
+    "Move into project Library": "迁入项目资料库",
+    "Remove reference": "移除引用",
+    "No referenced materials. Add a reference from the project Library.": "暂无引用资料，可从项目资料库添加。",
+    "Preserved legacy copies": "保留的旧资料副本",
+    "These copies preserve earlier canvas material. They do not overwrite the project Library.": "这些副本保留了画布中的早期资料，不会覆盖项目资料库。",
+    "Remove this canvas reference and its node associations? The source material and node text will be kept.": "移除本画布中的资料引用及节点关联？原资料和节点正文会保留。",
+    "Matching Library entry found": "发现同名资料",
+    "Link to the existing entry without overwriting it? The legacy canvas material will be preserved as a copy.": "关联已有条目且保留原条目内容？画布内的旧资料将另外保留为副本。",
+    "Link existing entry": "关联已有条目",
+    "Enable the project Library before migrating entries.": "请先启用项目资料库，再迁移条目。",
+    "Project changed. Please try again.": "项目已切换，请重新操作。",
+    "Could not migrate the library entry.": "无法迁移资料条目。",
+    "Could not save the current canvas. Navigation was cancelled.": "当前画布保存失败，已取消切换。",
     "Canvas box": "画布盒",
     "Back to canvas box": "返回画布盒",
     "Canvas quick menu": "画布快捷菜单",
@@ -1291,9 +1329,9 @@ const uiTranslations = {
     "the Events Sheet schema": "事件表结构",
     "Hide only hides the column and keeps data. Delete removes \"{label}\" from {scope} and clears that value from its frame nodes. Other frame types keep the column.": "隐藏只会隐藏该列并保留数据。删除会从{scope}中移除“{label}”，并清除该类型框架节点中的对应值；其他框架类型仍保留该列。",
     "Cannot delete {label}": "无法删除 {label}",
-    "\"{label}\" is still used by {count} canvas nodes, so it cannot be deleted. Hide it from the Node Library instead, or change those nodes to another type first.": "“{label}” 仍被 {count} 个画布节点使用，无法删除。可将其从节点库隐藏，或将这些节点改为其他类型后再删除。",
-    "Default node type \"{label}\" cannot be deleted. Hide it from the Node Library if you do not need it right now.": "默认节点类型 “{label}” 不能删除。如暂不需要，可将其从节点库隐藏。",
-    "Delete \"{label}\" from the Node Library schema? {recovery}": "从节点库结构中删除 “{label}”？{recovery}",
+    "\"{label}\" is still used by {count} canvas nodes, so it cannot be deleted. Hide it from the Node Templates instead, or change those nodes to another type first.": "“{label}” 仍被 {count} 个画布节点使用，无法删除。可将其从节点模板隐藏，或将这些节点改为其他类型后再删除。",
+    "Default node type \"{label}\" cannot be deleted. Hide it from the Node Templates if you do not need it right now.": "默认节点类型 “{label}” 不能删除。如暂不需要，可将其从节点模板隐藏。",
+    "Delete \"{label}\" from the Node Templates schema? {recovery}": "从节点模板结构中删除 “{label}”？{recovery}",
     "Restore default types can bring this template back.": "通过“恢复默认类型”可恢复该模板。",
     "Custom deleted types can only come back by importing or recreating them.": "自定义删除的类型只能通过导入或重新创建找回。",
     "Delete selected nodes": "删除选中的节点",
@@ -1571,7 +1609,7 @@ const uiTranslations = {
     "Template": "模板",
     "Node choose": "节点选择时",
     "Node color": "节点颜色",
-    "Node Library": "节点库",
+    "Node Templates": "节点模板",
     "Manage node types": "管理节点类型",
     "More node actions": "更多节点操作",
     "Node visit": "节点进入时",
@@ -1788,7 +1826,7 @@ const uiTranslations = {
     "Check missing keys, expression problems, and export risks before handing files off.": "交付前校验缺失 key、表达式错误和导出风险。",
     "Edit the raw Playbook.json when you need an exact JSON change.": "需要精确修改时，编辑演示设置的高级 JSON（Playbook.json）。",
     "Change canvas links, node positions, or layout.": "修改画布连线、节点位置或布局。",
-    "Change node type fields; edit the Node Library schema instead.": "修改节点类型字段；这类结构设置应在节点库中完成。",
+    "Change node type fields; edit the Node Templates schema instead.": "修改节点类型字段；这类结构设置应在节点模板中完成。",
     "Act as a game engine. Complex runtime logic still belongs in the target engine.": "替代游戏引擎；复杂运行逻辑应由目标引擎实现。",
     "Put state in Variables when it needs to be read by conditions, effects, text templates, or exports.": "需要被条件、效果、文本模板或导出读取的状态，应在变量定义中声明。",
     "Use lower-case underscore keys such as inventory_coins.": "变量名使用小写下划线，例如 inventory_coins。",
@@ -1836,7 +1874,7 @@ const uiTranslations = {
     "Decide how gated choices appear in Play.": "设置条件未满足选项在 Play 中的显示方式。",
     "Delete effect": "删除效果",
     "Delete play rule": "删除演示规则",
-    "Delete node fields directly. Use Node Library for schema changes.": "直接增删节点字段。字段结构应在节点库中维护。",
+    "Delete node fields directly. Use Node Templates for schema changes.": "直接增删节点字段。字段结构应在节点模板中维护。",
     "Discard": "放弃",
     "Discard unsaved changes?": "放弃未保存改动？",
     "Open another project and discard unsaved changes?": "打开其他项目并放弃未保存改动？",
@@ -2102,7 +2140,7 @@ const uiTranslations = {
     "Events Sheet": "事件表",
     "Fields": "字段",
     "Hide frame rows from Events Sheet": "从事件表隐藏框架行",
-    "Hide from library": "从节点库隐藏",
+    "Hide from library": "从节点模板隐藏",
     "History": "历史",
     "Image resolution": "图片规格",
     "Move canvas viewport": "移动画布视口",
@@ -2299,8 +2337,8 @@ const uiTranslations = {
     "{label} node type added.": "{label} 节点类型已添加。",
     "{label} is a system type and cannot be deleted.": "{label} 是系统类型，不能删除。",
     "{label} node type deleted.": "{label} 节点类型已删除。",
-    "{label} hidden from Node Library. Data kept.": "{label} 已从节点库隐藏，数据已保留。",
-    "{label} restored to Node Library.": "{label} 已恢复到节点库。",
+    "{label} hidden from Node Templates. Data kept.": "{label} 已从节点模板隐藏，数据已保留。",
+    "{label} restored to Node Templates.": "{label} 已恢复到节点模板。",
     "Updated {count} references.": "已更新 {count} 个引用。",
     "{rule} rule added from selected node.": "已基于选中节点添加 {rule} 规则。",
     "{label} deleted.": "{label} 已删除。",
@@ -2571,6 +2609,7 @@ function createInitialRuntimeState() {
   eventColumnResize: null,
   mention: null,
   vaultFileSuggestions: null,
+  associatedMaterialSuggestions: null,
   vaultFileSuggestionRequestId: 0,
   vaultFileSuggestionSuppressedTargets: new WeakSet(),
   vaultFilePreviewCache: new Map(),
@@ -2610,6 +2649,7 @@ window.NarrativeCanvasApp = {
   init: initNarrativeCanvas,
   destroy: destroyNarrativeCanvas,
   save: saveCurrentState,
+  prepareForNavigation,
   getSavedState: buildSavedState,
   canExecuteCommand: canExecuteCanvasCommand,
   executeCommand: executeCanvasCommand,
@@ -2637,6 +2677,8 @@ window.NarrativeCanvasApp = {
   focusLibraryNode,
   closeLibraryProfile: closeCodexEntryDetail,
   refreshLibraryCategories: () => {
+    if (!isProjectLibraryEnabled()) { state.libraryScope = "references"; state.codexSelectedEntryId = ""; }
+    renderShellState();
     if (state.activeFileId === "characters") renderCharactersPage();
   }
 };
@@ -4210,6 +4252,7 @@ function restoreHistorySnapshot(snapshot, label) {
   state.selectedLinkId = getValidSavedLinkId(payload.selectedLinkId);
   state.panel = getValidSavedPanel(payload.panel, state.selectedNodeId);
   state.activeFileId = fileViews[payload.activeFileId] ? payload.activeFileId : "adventure";
+  if (state.activeFileId === "characters" && state.libraryScope !== "project") state.activeFileId = "adventure";
   state.view = normalizeView(payload.view);
   state.characterFocusId = payload.characterFocusId && getCharacterById(payload.characterFocusId) ? payload.characterFocusId : null;
   state.characterSearch = typeof payload.characterSearch === "string" ? payload.characterSearch : "";
@@ -4259,6 +4302,8 @@ function shouldRecordAction(action) {
     "add-codex-template-field",
     "remove-codex-template-field",
     "add-node-cast",
+    "add-associated-material",
+    "remove-associated-material",
     "delete-node-cast",
     "add-node-effect",
     "add-node-condition-clause",
@@ -4415,6 +4460,15 @@ function toggleUiMode() {
 }
 
 function renderShellState() {
+  const libraryEnabled = isProjectLibraryEnabled();
+  dom.scope.querySelectorAll('[data-action="toggle-project-library"]').forEach(button => {
+    button.textContent = t(libraryEnabled ? "Disable project Library" : "Enable project Library");
+    button.setAttribute("aria-pressed", String(libraryEnabled));
+  });
+  dom.scope.querySelectorAll('.web-project-tabs button').forEach(button => {
+    button.classList.toggle("active", state.activeFileId === "characters" && state.libraryScope === "project"
+      ? button.dataset.action === "open-project-library" : button.dataset.fileId === "adventure");
+  });
   dom.root?.setAttribute("data-theme", state.theme);
   dom.root?.setAttribute("data-ui-mode", isAdvancedUiMode() ? "advanced" : "basic");
   dom.root?.setAttribute("lang", state.language === "zh" ? "zh-CN" : "en");
@@ -4462,12 +4516,14 @@ function renderShellState() {
     const isActive = button.dataset.fileId === state.activeFileId;
     button.classList.toggle("active", isActive);
     button.setAttribute("aria-pressed", String(isActive));
+    if (button.dataset.fileId === "characters") button.hidden = true;
     const label = button.querySelector(".nc-file-item-label");
     if (label) label.textContent = getFileViewLabel(button.dataset.fileId);
   });
 
   if (dom.activeFileTab) {
-  dom.activeFileTab.textContent = getFileViewLabel(state.activeFileId);
+    dom.activeFileTab.textContent = state.activeFileId === "characters" && state.libraryScope === "project"
+      ? t("Project Library") : getFileViewLabel(state.activeFileId);
   }
 
   dom.workspaceToolbar.hidden = state.activeFileId !== "adventure";
@@ -4477,11 +4533,16 @@ function renderShellState() {
     const files = String(button.dataset.files || "").split(/\s+/);
     button.hidden = !files.includes(state.activeFileId);
   });
-  dom.webOnlyActions.forEach((element) => {
-    element.hidden = Boolean(window.NarrativeCanvasHost);
-  });
+  updateWebOnlyActionVisibility(libraryEnabled);
   renderFrameCanvasScopeState();
   renderHistoryButtons();
+}
+
+function updateWebOnlyActionVisibility(libraryEnabled) {
+  dom.webOnlyActions.forEach(element => {
+    element.hidden = Boolean(window.NarrativeCanvasHost)
+      || (element.dataset.action === "open-project-library" && !libraryEnabled);
+  });
 }
 
 function localizeText(selector, key, root = dom.scope) {
@@ -4522,11 +4583,17 @@ function localizeSelectOptions(selector, labels, root = dom.scope) {
 
 function localizeStaticShell() {
   if (!dom.scope) return;
+  if (!window.NarrativeCanvasHost) {
+    document.title = t("Node-based presentation canvas");
+  }
 
   [
+    [".sidebar-left > .pane-header .pane-kicker", "Node-based presentation canvas"],
     [".project-file-section h2", "Project File"],
     [".sidebar-left .nav-section:nth-of-type(2) h2", "Workspace"],
-    [".palette h2", "Node Library"],
+    [".palette h2", "Node Templates"],
+    [".web-project-tabs [data-action='open-project-library'] span", "Project Library"],
+    [".web-project-tabs [data-file-id='adventure'] span", "Node-based presentation canvas"],
     [".custom-node-form > summary", "Manage node types"],
     [".workspace-file-label .pane-kicker", "File"],
     [".sidebar-right .pane-kicker", "Inspector"],
@@ -4622,7 +4689,8 @@ function localizeStaticShell() {
     [".export-image-controls", "aria-label", "Image export"],
     ["#canvasViewport", "aria-label", "Node canvas"],
     ["#minimap", "aria-label", "Move canvas viewport"],
-    ["#charactersPanel", "aria-label", "Narrative Library"],
+    ["#charactersPanel", "aria-label", "Referenced materials"],
+    [".web-project-tabs", "aria-label", "Project tabs"],
     ["#variablesPanel", "aria-label", "Variables"],
     ["#eventsPanel", "aria-label", "Events Sheet"],
     ["#documentPanel", "aria-label", "Document"],
@@ -4756,7 +4824,7 @@ function getPlaybookHelpPages() {
             heading: "不适合放在演示设置中的内容",
             items: [
               "节点位置、框架尺寸、连线形状和画布布局。",
-              "节点类型字段结构；这些应在节点库维护。",
+              "节点类型字段结构；这些应在节点模板维护。",
               "任意 JavaScript 运行逻辑；条件表达式只用于安全求值。",
               "工具外部运行系统中的复杂逻辑。"
             ]
@@ -4937,7 +5005,7 @@ function getPlaybookHelpPages() {
           heading: "Keep outside Playbook",
           items: [
             "Node positions, frame sizes, link shapes, and canvas layout.",
-            "Node type field schemas; edit those in Node Library.",
+            "Node type field schemas; edit those in Node Templates.",
             "Arbitrary JavaScript execution. Conditions are evaluated as safe expressions.",
             "Complex external runtime systems."
           ]
@@ -6026,7 +6094,202 @@ function renderDocumentLimitNotice(fileId, shown, total) {
   `;
 }
 
+function isProjectLibraryEnabled() {
+  return window.NarrativeCanvasHost?.isProjectLibraryEnabled?.() ?? state.project.libraryEnabled !== false;
+}
+
+async function prepareForNavigation() {
+  await state.libraryMigrationTask;
+  return state.hasUnsavedChanges ? saveCurrentState({ silent: true }) : true;
+}
+
+function isProjectLibraryEntry(entry) {
+  return !!entry.codexFile || (state.project.libraryEntryIds || []).includes(entry.id);
+}
+
+function canvasReferenceEntries() {
+  const included = new Set(state.project.canvasReferenceIds || []);
+  const excluded = new Set(state.project.canvasExcludedReferenceIds || []);
+  return getCharacters().filter(entry => !excluded.has(entry.id) && (
+    !isProjectLibraryEntry(entry) || !!entry.codexFile || included.has(entry.id)
+    || getCharacterBacklinkGroups(entry).some(group => group.items?.length)
+  ));
+}
+
+function renderCanvasReferences() {
+  const enabled = isProjectLibraryEnabled();
+  const entries = canvasReferenceEntries();
+  const query = String(state.characterSearch || "").trim().toLocaleLowerCase();
+  const visible = entries.filter(entry => !query || `${entry.name} ${entry.kind}`.toLocaleLowerCase().includes(query));
+  dom.charactersPanel.innerHTML = `<div class="document-shell canvas-references-shell">
+    <header class="document-header"><div><h2>${t("Referenced materials")}</h2>
+      <p>${t("Only references used by this canvas are shown. Original materials are managed in the project Library.")}</p></div>
+      <div class="document-actions">
+        <button class="small-button" data-action="add-library-reference" ${enabled ? "" : "disabled"}>${t("Add from project Library")}</button>
+        <button class="small-button" data-action="open-project-library" ${enabled ? "" : "disabled"}>${t("Open project Library")}</button>
+      </div></header>
+    ${enabled ? "" : `<p class="canvas-reference-notice">${t("Project Library is disabled. Nodes, connections and Markdown links remain available. Existing references are kept.")}</p>`}
+    ${visible.length ? visible.map(entry => `<article class="canvas-reference-card">
+      <header><strong>${escapeHtml(entry.name)}</strong><span>${escapeHtml(t(isProjectLibraryEntry(entry) ? "Project Library reference" : "Legacy canvas material"))}</span></header>
+      ${entry.referenceMissing ? `<p>${t("Source file is unavailable. This reference has been kept.")}</p>` : ""}
+      ${entry.codexFile ? `<small>${escapeHtml(entry.codexFile)}</small>` : ""}
+      <div class="document-actions">
+        <button class="small-button" data-action="view-reference-source" data-character-id="${escapeAttr(entry.id)}">${t(isProjectLibraryEntry(entry) ? "View original" : "View or edit legacy material")}</button>
+        ${!isProjectLibraryEntry(entry) ? `<button class="small-button" data-action="migrate-library-reference" data-character-id="${escapeAttr(entry.id)}" ${enabled ? "" : "disabled"}>${t("Move into project Library")}</button>` : ""}
+        <button class="small-button" data-action="remove-library-reference" data-character-id="${escapeAttr(entry.id)}">${t("Remove reference")}</button>
+      </div>
+      ${renderCharacterBacklinkSections(getCharacterBacklinkGroups(entry), entry.id)}
+    </article>`).join("") : `<p>${t("No referenced materials. Add a reference from the project Library.")}</p>`}
+    ${(state.project.legacyLibraryEntries || []).length ? `<details><summary>${t("Preserved legacy copies")}</summary><p>${t("These copies preserve earlier canvas material. They do not overwrite the project Library.")}</p><pre class="canvas-legacy-copies">${escapeHtml(JSON.stringify(state.project.legacyLibraryEntries, null, 2))}</pre></details>` : ""}
+  </div>`;
+}
+
+function openProjectLibrary() {
+  if (!isProjectLibraryEnabled()) return;
+  const host = window.NarrativeCanvasHost;
+  if (host?.openProjectLibrary) { void host.openProjectLibrary(); return; }
+  state.libraryScope = "project";
+  state.codexSelectedEntryId = "";
+  state.activeFileId = "characters";
+  invalidateDocumentSurfaces();
+  renderDocumentFileSwitch();
+}
+
+async function showLibraryReferencePicker() {
+  if (!isProjectLibraryEnabled()) return;
+  const project = state.project;
+  const host = window.NarrativeCanvasHost;
+  const path = host?.getCurrentProjectPath?.();
+  let entries;
+  try {
+    entries = host?.loadCodexEntries ? await host.loadCodexEntries({ all: true })
+      : getCharacters().filter(isProjectLibraryEntry);
+  } catch (error) { setStatus(String(error.message || error)); return; }
+  if (state.project !== project || host?.getCurrentProjectPath?.() !== path || !isProjectLibraryEnabled()) return;
+  const dialog = document.createElement("dialog");
+  dialog.className = "canvas-reference-picker";
+  dialog.innerHTML = `<h3>${t("Add from project Library")}</h3><input type="search" placeholder="${escapeAttr(t("Search"))}"><div class="canvas-reference-picker-list"></div><form method="dialog"><button>${t("Cancel")}</button></form>`;
+  dom.root.appendChild(dialog);
+  const list = dialog.querySelector(".canvas-reference-picker-list");
+  const search = dialog.querySelector("input");
+  const render = () => {
+    const query = search.value.trim().toLocaleLowerCase();
+    list.innerHTML = entries.filter(entry => `${entry.name} ${entry.kind}`.toLocaleLowerCase().includes(query)).map(entry =>
+      `<button type="button" data-reference-id="${escapeAttr(entry.id)}">${escapeHtml(entry.name)} <small>${escapeHtml(entry.codexFile || entry.kind)}</small></button>`).join("") || `<p>${t("No Library entries found")}</p>`;
+  };
+  search.addEventListener("input", render);
+  list.addEventListener("click", event => {
+    const id = event.target.closest("[data-reference-id]")?.dataset.referenceId;
+    const entry = entries.find(item => item.id === id);
+    if (!entry || state.project !== project || host?.getCurrentProjectPath?.() !== path || !isProjectLibraryEnabled()) { dialog.close(); return; }
+    const before = getHistorySnapshot();
+    if (!getCharacterById(entry.id)) state.project.characters.push(normalizeCharacter(entry, state.project.characters.length));
+    state.project.canvasReferenceIds = [...new Set([...(state.project.canvasReferenceIds || []), entry.id])];
+    state.project.canvasExcludedReferenceIds = (state.project.canvasExcludedReferenceIds || []).filter(id => id !== entry.id);
+    // Adding to this panel does not modify a previously selected node. Node
+    // associations are edited explicitly through the node's reference controls.
+    invalidateCharacterRenderContext(); setProjectDirty(true); commitHistoryFromSnapshot(before);
+    renderCharacterAwareSurfaces(); dialog.close();
+  });
+  dialog.addEventListener("close", () => dialog.remove(), { once: true });
+  render(); dialog.showModal(); search.focus();
+}
+
+function preserveLegacyLibraryEntry(entry) {
+  const copies = state.project.legacyLibraryEntries || [];
+  if (!copies.some(item => item.id === entry.id)) copies.push(JSON.parse(JSON.stringify(entry)));
+  state.project.legacyLibraryEntries = copies;
+}
+
+function removeCanvasReference(id) {
+  const entry = getCharacterById(id);
+  if (!entry) return;
+  const project = state.project;
+  showGenericConfirm({
+    title: t("Remove reference"), message: t("Remove this canvas reference and its node associations? The source material and node text will be kept."),
+    confirmLabel: "Remove reference", recordHistory: false,
+    onConfirm: () => {
+      if (state.project !== project) return;
+      const before = getHistorySnapshot();
+      if (!isProjectLibraryEntry(entry)) preserveLegacyLibraryEntry(entry);
+      state.project.canvasReferenceIds = (state.project.canvasReferenceIds || []).filter(value => value !== id);
+      state.project.canvasExcludedReferenceIds = [...new Set([...(state.project.canvasExcludedReferenceIds || []), id])];
+      if (window.NarrativeCanvasHost || !isProjectLibraryEntry(entry)) state.project.characters = getCharacters().filter(item => item.id !== id);
+      state.project.nodes.forEach(node => { node.cast = normalizeNodeCast(node.cast).filter(item => item.characterId !== id); });
+      state.codexSelectedEntryId = "";
+      invalidateCharacterRenderContext(); setProjectDirty(true); commitHistoryFromSnapshot(before); renderCharacterAwareSurfaces();
+    }
+  });
+}
+
+async function migrateCanvasLibraryEntry(id, reuseId = "") {
+  if (state.libraryMigrationTask) return state.libraryMigrationTask;
+  const task = performCanvasLibraryMigration(id, reuseId);
+  state.libraryMigrationTask = task;
+  try { await task; } finally { if (state.libraryMigrationTask === task) state.libraryMigrationTask = null; }
+}
+
+async function performCanvasLibraryMigration(id, reuseId = "") {
+  const entry = getCharacterById(id);
+  if (!entry || isProjectLibraryEntry(entry) || !isProjectLibraryEnabled()) return;
+  const project = state.project;
+  const host = window.NarrativeCanvasHost;
+  try {
+    let result;
+    if (host?.migrateLibraryEntry) result = await host.migrateLibraryEntry(entry, { reuseId });
+    else {
+      const conflict = getCharacters().find(item => isProjectLibraryEntry(item) && item.name.trim().toLocaleLowerCase() === entry.name.trim().toLocaleLowerCase());
+      result = conflict && conflict.id !== reuseId ? { conflict } : { entry: conflict || entry };
+    }
+    if (state.project !== project) return;
+    if (result.conflict) {
+      showGenericConfirm({ title: t("Matching Library entry found"), message: t("Link to the existing entry without overwriting it? The legacy canvas material will be preserved as a copy."),
+        confirmLabel: "Link existing entry", recordHistory: false,
+        onConfirm: () => { if (state.project === project) return migrateCanvasLibraryEntry(id, result.conflict.id); } });
+      return;
+    }
+    const before = getHistorySnapshot();
+    const source = normalizeCharacter(result.entry, 0);
+    preserveLegacyLibraryEntry(entry);
+    state.project.characters = getCharacters().filter(item => item.id !== id && item.id !== source.id);
+    state.project.characters.push(source);
+    if (!host) state.project.libraryEntryIds = [...new Set([...(state.project.libraryEntryIds || []), source.id])];
+    state.project.canvasReferenceIds = [...new Set([...(state.project.canvasReferenceIds || []).filter(value => value !== id), source.id])];
+    state.project.nodes.forEach(node => { node.cast = normalizeNodeCast(node.cast).map(item => item.characterId === id ? { ...item, characterId: source.id } : item); });
+    state.codexSelectedEntryId = "";
+    invalidateCharacterRenderContext(); setProjectDirty(true); commitHistoryFromSnapshot(before); renderCharacterAwareSurfaces();
+  } catch (error) { setStatus(String(error.message || error)); }
+}
+
+function viewReferenceSource(id) {
+  const entry = getCharacterById(id);
+  if (!entry) return;
+  if (entry.codexFile && window.NarrativeCanvasHost?.openVaultFile) { void window.NarrativeCanvasHost.openVaultFile(entry.codexFile); return; }
+  if (isProjectLibraryEntry(entry)) state.libraryScope = "project";
+  void openCodexEntryDetail(id);
+}
+
 function renderCharactersPage() {
+  if (state.libraryScope !== "project" && !state.codexSelectedEntryId) {
+    if (isProjectLibraryEnabled()) {
+      const host = window.NarrativeCanvasHost;
+      if (host?.openProjectLibrary) {
+        void host.openProjectLibrary();
+        if (state.activeFileId === "characters") {
+          state.activeFileId = "adventure";
+          renderCanvasFileSwitch();
+        }
+        return;
+      }
+      openProjectLibrary();
+      return;
+    }
+    dom.charactersPanel.innerHTML = `<div class="document-shell canvas-references-shell">
+      <header class="document-header"><div><h2>${t("Associated materials")}</h2>
+      <p>${t("Project Library is disabled. Nodes, connections and Markdown links remain available. Existing references are kept.")}</p></div></header>
+    </div>`;
+    return;
+  }
   const model = buildCharacterDocumentModel(getCharacterRenderContext());
   const selectedEntry = state.codexSelectedEntryId
     ? model.characters.find((entry) => entry.id === state.codexSelectedEntryId)
@@ -6050,7 +6313,7 @@ function renderCharactersPage() {
       <header class="document-header">
         <div>
           <span class="pane-kicker">Library</span>
-          <h2>${t("Narrative Library")}</h2>
+          <h2>${t("Project Library")}</h2>
           <div class="document-meta" data-character-search-meta>${escapeHtml(formatCharacterMeta(model))}</div>
         </div>
         <div class="document-actions">
@@ -6105,7 +6368,9 @@ function renderCodexEntryDetail(character, context = getCharacterRenderContext()
 }
 
 function buildCharacterDocumentModel(context = getCharacterRenderContext()) {
-  const characters = context.characters;
+  const characters = state.libraryScope === "project" && !window.NarrativeCanvasHost
+    ? context.characters.filter(entry => (state.project.libraryEntryIds || []).includes(entry.id))
+    : context.characters;
   const hidden = characters.filter((character) => character.hidden);
   const visibleCharacters = characters.filter((character) => !character.hidden);
   const focusedCharacter = getActiveCharacterFocus();
@@ -6138,7 +6403,7 @@ function buildCharacterDocumentModel(context = getCharacterRenderContext()) {
     tagCounts,
     kindCounts,
     hasFilters: Boolean(query || tagFilter || kindFilter !== CODEX_ALL_FILTER),
-    linkCount: context.linkCount,
+    linkCount: characters.reduce((count, entry) => count + getCharacterBacklinkGroups(entry).reduce((sum, group) => sum + group.items.length, 0), 0),
     totalCount: characters.length,
     hiddenCount: hidden.length,
     visibleCount: visible.length
@@ -12171,6 +12436,7 @@ function renderProjectPanel() {
 
 function renderNodePanel(node) {
   hideVaultFileSuggestions();
+  hideAssociatedMaterialSuggestions();
   dom.nodePanel.classList.remove("is-empty");
   if (!node) {
     dom.nodePanel.replaceChildren();
@@ -12199,12 +12465,12 @@ function renderNodePanel(node) {
           <input data-node-field="title" value="${escapeAttr(node.title || "")}">
         </label>
         ${renderNodeBodyField(node)}
-        ${renderNodeVaultFileField(node)}
+        ${renderNodeAssociatedMaterialsField(node)}
         ${isDialogNode(node) ? renderNodeDialogTurnsField(node) : ""}
-        ${renderNodeCastFields(node)}
         ${!isFrameNode(node) ? renderNodeStateLogicFields(node) : ""}
         ${renderTypeFields(node)}
         ${renderCustomFields(node)}
+        ${renderNodeAdvancedSettings(node)}
       `}
       ${isFrameNode(node) ? `<div class="button-row"><button class="small-button" data-action="open-frame-canvas" data-node-id="${escapeAttr(node.id)}">${t("Open frame canvas")}</button></div>` : ""}
       <details class="node-secondary-actions nc-disclosure">
@@ -12310,44 +12576,121 @@ function renderNodeBodyField(node) {
   `;
 }
 
-function renderNodeVaultFileField(node) {
-  // Frames organize the canvas; they do not carry vault file links.
+function normalizeAssociatedMaterialPath(path) {
+  return normalizeNodeVaultFileReference(path).replaceAll("\\", "/").toLowerCase();
+}
+
+function findLibraryEntryByPath(path) {
+  const key = normalizeAssociatedMaterialPath(path);
+  if (!key) return null;
+  return getCharacters().find((entry) => normalizeAssociatedMaterialPath(entry.codexFile) === key) || null;
+}
+
+function getNodeAssociatedMaterials(node) {
+  const vaultFiles = getNodeVaultFiles(node);
+  const cast = normalizeNodeCast(node.cast);
+  const items = [];
+  const seenPaths = new Set();
+  cast.forEach((entry, castIndex) => {
+    const character = getCharacterById(entry.characterId);
+    const path = character?.codexFile || "";
+    const key = normalizeAssociatedMaterialPath(path);
+    items.push({
+      kind: "library",
+      id: entry.characterId,
+      path,
+      label: character?.name || t("Unnamed Character"),
+      detail: path || getCodexKindLabel(character?.kind || "Character"),
+      castIndex
+    });
+    if (key) seenPaths.add(key);
+  });
+  vaultFiles.forEach((file, vaultIndex) => {
+    const key = normalizeAssociatedMaterialPath(file.path);
+    if (key && seenPaths.has(key)) return;
+    items.push({
+      kind: "vault",
+      path: file.path,
+      label: (file.path.split("/").pop() || file.path),
+      detail: file.path,
+      vaultIndex
+    });
+    if (key) seenPaths.add(key);
+  });
+  return items;
+}
+
+function renderNodeAssociatedMaterialsField(node) {
   if (isFrameNode(node)) return "";
   const host = window.NarrativeCanvasHost;
-  if (!host?.searchVaultFiles) return "";
-  const references = getNodeVaultFiles(node);
-  const expanded = isNodeSectionExpanded("vaultFile");
-  const summary = references.length ? String(references.length) : t("Not linked");
+  const canSearchVault = Boolean(host?.searchVaultFiles);
+  const items = getNodeAssociatedMaterials(node);
+  if (!canSearchVault && !items.length && !getCharacters().length) return "";
+  const expanded = isNodeSectionExpanded("associatedMaterials");
+  const summary = items.length ? String(items.length) : t("Not linked");
   return `
-    <section class="node-vault-file-field nc-collapsible${expanded ? " expanded" : ""}">
-      <header class="node-vault-file-header nc-collapsible-header">
-        ${renderNodeSectionToggle("vaultFile", t("Vault file"), expanded)}
+    <section class="node-associated-materials nc-collapsible${expanded ? " expanded" : ""}">
+      <header class="node-associated-header nc-collapsible-header">
+        ${renderNodeSectionToggle("associatedMaterials", t("Associated materials"), expanded)}
         <span class="nc-section-count">${escapeHtml(summary)}</span>
       </header>
       ${expanded ? `
-      <div class="node-vault-file-content">
-      <div class="node-vault-file-list">
-        ${references.map((entry, index) => `
-          <div class="node-vault-file-item" data-node-vault-row-index="${index}">
-            <div class="node-vault-file-input-row">
-              <button class="cast-drag-handle vault-drag-handle" type="button" data-node-vault-drag="${index}" title="${escapeAttr(t("Drag to reorder linked file"))}" aria-label="${escapeAttr(t("Drag to reorder linked file"))}">::</button>
-              <div class="node-vault-file-input-wrap">
-                <input data-node-vault-file-index="${index}" value="${escapeAttr(entry.path)}" placeholder="${escapeAttr(t("Search or choose a vault file"))}" spellcheck="false" autocomplete="off" role="combobox" aria-label="${escapeAttr(t("Vault file"))}" aria-autocomplete="list" aria-expanded="false">
-                <div class="vault-file-suggestions" data-vault-file-suggestions hidden role="listbox" aria-label="${escapeAttr(t("Vault file suggestions"))}"></div>
-              </div>
-              <button class="icon-button vault-row-icon-button" type="button" data-action="open-node-vault-file" data-node-vault-file-index="${index}" title="${escapeAttr(t("Open vault file"))}" aria-label="${escapeAttr(t("Open vault file"))}">↗</button>
-              <button class="icon-button danger-button vault-row-icon-button" type="button" data-action="clear-node-vault-file" data-node-vault-file-index="${index}" title="${escapeAttr(t("Remove vault file"))}" aria-label="${escapeAttr(t("Remove vault file"))}">×</button>
-            </div>
+      <div class="node-associated-content">
+        ${items.length ? `<div class="node-associated-list">${items.map((item) => renderAssociatedMaterialRow(item)).join("")}</div>` : ""}
+        <div class="node-associated-add">
+          <div class="node-associated-search-wrap">
+            <input data-associated-material-search value="" placeholder="${escapeAttr(t("Search files or materials"))}" spellcheck="false" autocomplete="off" role="combobox" aria-label="${escapeAttr(t("Associated materials"))}" aria-autocomplete="list" aria-expanded="false">
+            <div class="associated-material-suggestions" data-associated-material-suggestions hidden role="listbox" aria-label="${escapeAttr(t("Associated materials"))}"></div>
           </div>
-        `).join("")}
-        <div class="node-vault-file-item is-add">
-          <div class="node-vault-file-input-wrap">
-            <input data-node-vault-file-index="${references.length}" value="" placeholder="${escapeAttr(t("Search or choose a vault file"))}" spellcheck="false" autocomplete="off" role="combobox" aria-label="${escapeAttr(t("Add vault file"))}" aria-autocomplete="list" aria-expanded="false">
-            <div class="vault-file-suggestions" data-vault-file-suggestions hidden role="listbox" aria-label="${escapeAttr(t("Vault file suggestions"))}"></div>
-          </div>
+          <button class="small-button" type="button" data-action="add-associated-material">${t("Add")}</button>
         </div>
       </div>
-      <small>${escapeHtml(t("Link this node to notes or other files in the vault."))}</small>
+      ` : ""}
+    </section>
+  `;
+}
+
+function renderAssociatedMaterialRow(item) {
+  return `
+    <div class="node-associated-item" data-associated-kind="${escapeAttr(item.kind)}" data-associated-id="${escapeAttr(item.id || "")}" data-associated-path="${escapeAttr(item.path || "")}" data-associated-cast-index="${item.castIndex ?? ""}" data-associated-vault-index="${item.vaultIndex ?? ""}">
+      <div class="node-associated-item-copy">
+        <strong class="node-associated-item-name">${escapeHtml(item.label)}</strong>
+        ${item.detail && item.detail !== item.label ? `<small>${escapeHtml(item.detail)}</small>` : ""}
+      </div>
+      <div class="node-associated-item-actions">
+        <button class="small-button" type="button" data-action="open-associated-material" title="${escapeAttr(t("Open original"))}">${t("Open original")}</button>
+        <button class="small-button" type="button" data-action="remove-associated-material" title="${escapeAttr(t("Remove association"))}">${t("Remove association")}</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderNodeAdvancedSettings(node) {
+  if (isFrameNode(node)) return "";
+  const cast = normalizeNodeCast(node.cast);
+  const autoLinks = getNodeCharacterLinks(node, { includeCast: false, includeEventAggregate: false });
+  if (!cast.length && !autoLinks.length) return "";
+  const expanded = isNodeSectionExpanded("advancedSettings");
+  return `
+    <section class="node-advanced-settings nc-collapsible${expanded ? " expanded" : ""}">
+      <header class="nc-collapsible-header">
+        ${renderNodeSectionToggle("advancedSettings", t("Advanced settings"), expanded)}
+      </header>
+      ${expanded ? `
+      <div class="node-advanced-settings-body">
+        ${cast.length ? `
+          <div class="cast-row-list">
+            ${cast.map((entry, index) => renderNodeCastRow(entry, index)).join("")}
+          </div>
+        ` : ""}
+        ${autoLinks.length ? `
+          <div class="cast-auto-row">
+            <span>${t("Auto references")}</span>
+            <div class="cast-auto-chips">
+              ${autoLinks.map((link) => renderCastChip(link)).join("")}
+            </div>
+          </div>
+        ` : ""}
       </div>
       ` : ""}
     </section>
@@ -12381,47 +12724,6 @@ function renderNodeSectionToggle(sectionKey, label, expanded) {
       <span class="nc-section-caret" aria-hidden="true">${expanded ? "▾" : "▸"}</span>
       <span class="nc-section-title">${escapeHtml(label)}</span>
     </button>
-  `;
-}
-
-function renderNodeCastFields(node) {
-  const entries = getCharacters();
-  const cast = normalizeNodeCast(node.cast);
-  const autoLinks = getNodeCharacterLinks(node, { includeCast: false, includeEventAggregate: false });
-  const expanded = isNodeSectionExpanded("cast");
-  const summary = entries.length
-    ? `${cast.length} ${t("manual")}, ${autoLinks.length} ${t("auto")}`
-    : t("No library entries yet");
-  const body = !entries.length
-    ? `<button class="small-button" data-action="add-codex-entry">${t("Add entry")}</button>`
-    : `
-      <div class="cast-row-list">
-        ${cast.map((entry, index) => renderNodeCastRow(entry, index)).join("") || `<div class="cast-empty">${t("No manual library references.")}</div>`}
-      </div>
-      <div class="cast-add-row">
-        ${renderCastEntryPicker("", "new")}
-        <select data-new-cast-role aria-label="${escapeAttr(t("Relation"))}">
-          ${renderCastRelationOptions("Present")}
-        </select>
-        <button class="small-button" data-action="add-node-cast">${t("Add")}</button>
-      </div>
-      ${autoLinks.length ? `
-        <div class="cast-auto-row">
-          <span>${t("Auto references")}</span>
-          <div class="cast-auto-chips">
-            ${autoLinks.map((link) => renderCastChip(link)).join("")}
-          </div>
-        </div>
-      ` : ""}
-    `;
-  return `
-    <section class="cast-editor nc-collapsible${expanded ? " expanded" : ""}">
-      <div class="cast-editor-header nc-collapsible-header">
-        ${renderNodeSectionToggle("cast", t("Library references"), expanded)}
-        <span>${escapeHtml(summary)}</span>
-      </div>
-      ${expanded ? body : ""}
-    </section>
   `;
 }
 
@@ -14149,6 +14451,23 @@ function handleAction(target) {
   if (action === "reload-project-file") reloadProjectFileFromUi();
   if (action === "clear-browser-storage") clearBrowserStorageFromUi();
   if (action === "open-sample-project") openSampleProjectFromUi();
+  if (action === "open-project-library") { openProjectLibrary(); return; }
+  if (action === "add-associated-material") { void addAssociatedMaterialFromSearch(); return; }
+  if (action === "open-associated-material") { void openAssociatedMaterial(target.closest(".node-associated-item")); return; }
+  if (action === "remove-associated-material") { removeAssociatedMaterial(target.closest(".node-associated-item")); return; }
+  if (action === "select-associated-material-suggestion") { selectAssociatedMaterialSuggestion(target); return; }
+  if (action === "add-library-reference") { void showLibraryReferencePicker(); return; }
+  if (action === "remove-library-reference") { removeCanvasReference(target.dataset.characterId); return; }
+  if (action === "migrate-library-reference") { void migrateCanvasLibraryEntry(target.dataset.characterId); return; }
+  if (action === "view-reference-source") { viewReferenceSource(target.dataset.characterId); return; }
+  if (action === "toggle-project-library") {
+    if (!window.NarrativeCanvasHost) {
+      state.project.libraryEnabled = !isProjectLibraryEnabled();
+      state.libraryScope = "references"; state.codexSelectedEntryId = "";
+      setProjectDirty(true); renderAll();
+    }
+    return;
+  }
   if (action === "add-character") addCharacter();
   if (action === "add-codex-entry") addCodexEntry();
   if (action === "hide-character") hideCharacter(target.dataset.characterId);
@@ -14816,7 +15135,7 @@ function showCanvasRadialMenu(clientX, clientY) {
       </g>
     </svg>
     <button class="radial-hub" type="button" data-radial-close="true" title="${escapeAttr(t("Close"))}" aria-label="${escapeAttr(t("Close"))}">×</button>
-    <div class="radial-add-list" role="menu" aria-label="${escapeAttr(t("Node Library"))}" hidden>${renderCanvasRadialAddList(spawn)}</div>
+    <div class="radial-add-list" role="menu" aria-label="${escapeAttr(t("Node Templates"))}" hidden>${renderCanvasRadialAddList(spawn)}</div>
   `;
   positionCanvasRadialMenu(clientX, clientY);
 }
@@ -15060,6 +15379,10 @@ function reparentChildrenOfDeletedFrames(deletedIds) {
 
 function selectFile(fileId) {
   if (!fileViews[fileId]) return;
+  if (fileId === "characters") {
+    openProjectLibrary();
+    return;
+  }
   if (["document", "variables"].includes(fileId)) state.uiMode = "advanced";
   if (state.activeFileId === fileId) {
     if (fileId === "characters" && state.codexSelectedEntryId) closeCodexEntryDetail();
@@ -15077,10 +15400,8 @@ function selectFile(fileId) {
   }
 
   if (fileId === "characters") {
-    // Keep the last-opened entry detail when returning from another file;
-    // re-clicking the Library tab while already there returns to the overview (see above).
     renderDocumentFileSwitch();
-    setStatus("Library.md opened.");
+    setStatus(t("Project Library"));
     return;
   }
 
@@ -15138,6 +15459,9 @@ function handleEditFocusIn(event) {
     event.target.select?.();
     openCastEntrySuggestions(event.target);
   }
+  if (event.target?.hasAttribute?.("data-associated-material-search")) {
+    void updateAssociatedMaterialSuggestions(event.target, { force: true });
+  }
   beginNodeTitleReferenceEdit(event.target);
   if (event.target?.dataset?.nodeVaultSizeSlider == null
     && (event.target?.dataset?.nodeVaultFileIndex != null || event.target?.dataset?.characterImageFile || event.target?.dataset?.characterImagePickerInput || event.target?.dataset?.characterVaultFileInput != null || event.target?.dataset?.characterIconInput != null)) {
@@ -15180,6 +15504,10 @@ function handleEditFocusOut(event) {
       restoreCastEntryInputValue(target);
     }
     return;
+  }
+  if (target?.hasAttribute?.("data-associated-material-search")
+    && !event.relatedTarget?.closest?.("[data-associated-material-suggestions]")) {
+    hideAssociatedMaterialSuggestions();
   }
   if (target?.dataset?.projectField === "variables") {
     setProjectField("variables", target.value);
@@ -15247,6 +15575,11 @@ function handleInput(event) {
   if (target.dataset?.nodeVaultFileIndex != null) {
     setNodeVaultFile(Number(target.dataset.nodeVaultFileIndex), target.value);
     void updateVaultFileSuggestions(target);
+    return;
+  }
+
+  if (target.hasAttribute?.("data-associated-material-search")) {
+    void updateAssociatedMaterialSuggestions(target, { force: true });
     return;
   }
 
@@ -15807,6 +16140,7 @@ function handleKeyDown(event) {
     return;
   }
   if (handleVaultFileSuggestionKeyDown(event)) return;
+  if (handleAssociatedMaterialSuggestionKeyDown(event)) return;
   if (handleMentionKeyDown(event)) return;
   if (handleDocumentSourceKeyDown(event)) return;
   if (handleObsidianMarkdownShortcut(event)) return;
@@ -17705,9 +18039,9 @@ function deleteCustomNodeType(type) {
   }
   if (isProtectedNodeType(type)) {
     showGenericConfirm({
-      kicker: "Node Library",
+      kicker: "Node Templates",
       title: t("Cannot delete {label}", { label }),
-      message: t("Default node type \"{label}\" cannot be deleted. Hide it from the Node Library if you do not need it right now.", { label }),
+      message: t("Default node type \"{label}\" cannot be deleted. Hide it from the Node Templates if you do not need it right now.", { label }),
       confirmLabel: "Hide node type",
       danger: false,
       recordHistory: true,
@@ -17716,12 +18050,12 @@ function deleteCustomNodeType(type) {
     return;
   }
   const isDefault = isRestorableDefaultNodeType(type);
-  const message = t("Delete \"{label}\" from the Node Library schema? {recovery}", {
+  const message = t("Delete \"{label}\" from the Node Templates schema? {recovery}", {
     label,
     recovery: t(isDefault ? "Restore default types can bring this template back." : "Custom deleted types can only come back by importing or recreating them.")
   });
   showGenericConfirm({
-    kicker: "Node Library",
+    kicker: "Node Templates",
     title: t("Delete {label}?", { label }),
     message,
     confirmLabel: "Delete",
@@ -17735,9 +18069,9 @@ function showNodeTypeInUseDialog(typeDef, nodesInUse) {
   const type = typeDef.type;
   const label = typeDef.label || type;
   showGenericConfirm({
-    kicker: "Node Library",
+    kicker: "Node Templates",
     title: t("Cannot delete {label}", { label }),
-    message: t("\"{label}\" is still used by {count} canvas nodes, so it cannot be deleted. Hide it from the Node Library instead, or change those nodes to another type first.", { label, count: nodesInUse }),
+    message: t("\"{label}\" is still used by {count} canvas nodes, so it cannot be deleted. Hide it from the Node Templates instead, or change those nodes to another type first.", { label, count: nodesInUse }),
     confirmLabel: "Hide node type",
     danger: false,
     recordHistory: true,
@@ -17773,7 +18107,7 @@ function hideNodeType(type) {
   markProjectStructureChanged({ nodeTypes: true });
   renderPalette();
   renderInspector();
-  setStatus(`${typeDef.label || type} hidden from Node Library. Data kept.`);
+  setStatus(`${typeDef.label || type} hidden from Node Templates. Data kept.`);
 }
 
 function restoreDefaultNodeTypes() {
@@ -17811,7 +18145,7 @@ function restoreNodeType(type) {
   markProjectStructureChanged({ nodeTypes: true });
   renderPalette();
   renderInspector();
-  setStatus(`${typeDef.label || type} restored to Node Library.`);
+  setStatus(`${typeDef.label || type} restored to Node Templates.`);
 }
 
 function defaultBody(type) {
@@ -17843,6 +18177,9 @@ function applyNodeTypeDefaults(node) {
 }
 
 function addCharacter(kind = "Character", codexMode = false) {
+  if (window.NarrativeCanvasHost) { openProjectLibrary(); return; }
+  if (!isProjectLibraryEnabled()) return;
+  state.libraryScope = "project";
   const characters = getCharacters();
   const wasEmpty = characters.length === 0;
   const normalizedKind = normalizeCodexKind(kind);
@@ -17864,6 +18201,7 @@ function addCharacter(kind = "Character", codexMode = false) {
   applyCodexTemplateToCharacter(character);
   characters.push(character);
   state.project.characters = characters;
+  state.project.libraryEntryIds = [...new Set([...(state.project.libraryEntryIds || []), character.id])];
   state.codexSelectedEntryId = character.id;
   invalidateCharacterRenderContext();
   if (wasEmpty) {
@@ -18225,20 +18563,7 @@ function focusCharacter(id) {
 }
 
 function openCharacterSearch(id) {
-  const character = getCharacters().find((item) => item.id === id);
-  if (!character) return;
-  state.characterFocusId = null;
-  state.codexSelectedEntryId = "";
-  state.characterSearch = character.name;
-  state.characterSearchIndex = -1;
-  resetDocumentRenderLimit("characters");
-  state.activeFileId = "characters";
-  renderDocumentFileSwitch();
-  runAfterRender(() => {
-    dom.characterSearchInput?.focus?.({ preventScroll: true });
-    dom.charactersPanel?.querySelector(`[data-character-card-id="${CSS.escape(character.id)}"]`)?.scrollIntoView?.({ behavior: "smooth", block: "center" });
-  });
-  setStatus(t("Search library: {name}", { name: character.name }));
+  viewReferenceSource(id);
 }
 
 function clearCharacterFocus() {
@@ -18286,10 +18611,14 @@ function clearCodexTagFilter() {
 async function openCodexEntryDetail(id) {
   const character = getCharacters().find((entry) => entry.id === id);
   if (!character) return;
+  if (character.codexFile && window.NarrativeCanvasHost?.openVaultFile) {
+    await window.NarrativeCanvasHost.openVaultFile(character.codexFile);
+    return;
+  }
   state.codexSelectedEntryId = id;
   state.codexImagePickerCharacterId = "";
   const host = window.NarrativeCanvasHost;
-  if (typeof host?.mountLibraryProfile === "function") {
+  if (character.codexFile && typeof host?.mountLibraryProfile === "function") {
     if (!String(character.codexFile || "").trim()) {
       await seedMissingLibraryFiles();
     }
@@ -18361,26 +18690,29 @@ function toggleCharacterBacklinkGroup(characterId, groupId) {
   setStatus(expanded ? "Library links expanded." : "Library links collapsed.");
 }
 
-function addNodeCast() {
+function addNodeCast(characterId = "", requestedRole = "") {
   const node = getNode(state.selectedNodeId);
-  if (!node) return;
-  const characterId = dom.nodePanel?.querySelector("[data-cast-entry-context='new']")?.dataset?.castEntryId || "";
-  if (!characterId) {
+  if (!node) return false;
+  const id = characterId || dom.nodePanel?.querySelector("[data-cast-entry-context='new']")?.dataset?.castEntryId || "";
+  if (!id) {
     setStatus("Select a library entry first.");
-    return;
+    return false;
   }
-  const codexEntry = getCharacterById(characterId);
-  if (!codexEntry) return;
-  const requestedRole = dom.nodePanel?.querySelector("[data-new-cast-role]")?.value;
-  const allowedRoles = getCodexRelationsForEntry(characterId);
+  const codexEntry = getCharacterById(id);
+  if (!codexEntry) return false;
+  const allowedRoles = getCodexRelationsForEntry(id);
   const role = allowedRoles.includes(requestedRole) ? requestedRole : getDefaultCodexRelation(codexEntry);
   const cast = normalizeNodeCast(node.cast);
-  if (!cast.some((entry) => entry.characterId === characterId && entry.role === role)) {
-    cast.push({ characterId, role });
+  if (cast.some((entry) => entry.characterId === id)) {
+    setStatus(t("Already associated."));
+    return false;
   }
+  cast.push({ characterId: id, role });
   node.cast = cast;
+  setNodeSectionExpanded("associatedMaterials", true);
   renderCharacterAwareSurfaces(node);
-  setStatus("Library reference added.");
+  setStatus(t("Material associated."));
+  return true;
 }
 
 function deleteNodeCast(index) {
@@ -18393,6 +18725,127 @@ function deleteNodeCast(index) {
   else delete node.cast;
   renderCharacterAwareSurfaces(node);
   setStatus("Library reference removed.");
+}
+
+function associatedMaterialFromRow(row) {
+  if (!row) return null;
+  const kind = row.dataset.associatedKind || "";
+  const castIndex = Number(row.dataset.associatedCastIndex);
+  const vaultIndex = Number(row.dataset.associatedVaultIndex);
+  return {
+    kind,
+    id: row.dataset.associatedId || "",
+    path: row.dataset.associatedPath || "",
+    castIndex: Number.isInteger(castIndex) ? castIndex : -1,
+    vaultIndex: Number.isInteger(vaultIndex) ? vaultIndex : -1
+  };
+}
+
+function nodeHasAssociatedPath(node, path) {
+  const key = normalizeAssociatedMaterialPath(path);
+  if (!key) return false;
+  return getNodeAssociatedMaterials(node).some((item) => normalizeAssociatedMaterialPath(item.path) === key);
+}
+
+function nodeHasAssociatedLibrary(node, id) {
+  return normalizeNodeCast(node?.cast).some((entry) => entry.characterId === id);
+}
+
+function associateLibraryMaterial(id) {
+  const historyBefore = getHistorySnapshot();
+  if (!addNodeCast(id)) return;
+  commitHistoryFromSnapshot(historyBefore);
+}
+
+function associateVaultMaterial(path) {
+  const node = getNode(state.selectedNodeId);
+  const reference = normalizeNodeVaultFileReference(path);
+  if (!node || !reference) return;
+  if (nodeHasAssociatedPath(node, reference)) {
+    setStatus(t("Already associated."));
+    return;
+  }
+  const match = findLibraryEntryByPath(reference);
+  const historyBefore = getHistorySnapshot();
+  if (match) {
+    addNodeCast(match.id);
+    commitHistoryFromSnapshot(historyBefore);
+    return;
+  }
+  setNodeVaultFile(getNodeVaultFiles(node).length, reference);
+  setNodeSectionExpanded("associatedMaterials", true);
+  renderCharacterAwareSurfaces(node);
+  commitHistoryFromSnapshot(historyBefore);
+  setStatus(t("Material associated."));
+}
+
+function addAssociatedMaterialFromSearch() {
+  const current = state.associatedMaterialSuggestions;
+  const item = current?.items?.[current.activeIndex];
+  if (item) {
+    selectAssociatedMaterialSuggestion({ dataset: { associatedKind: item.kind, associatedId: item.id || "", associatedPath: item.path || "" } });
+    return;
+  }
+  const input = dom.nodePanel?.querySelector("[data-associated-material-search]");
+  const query = String(input?.value || "").trim();
+  if (!query) {
+    setStatus(t("Search files or materials"));
+    return;
+  }
+  const entry = getCharacters().find((character) => (character.name || "").toLocaleLowerCase() === query.toLocaleLowerCase());
+  if (entry) {
+    associateLibraryMaterial(entry.id);
+    return;
+  }
+  associateVaultMaterial(query);
+}
+
+function openAssociatedMaterial(row) {
+  const item = associatedMaterialFromRow(row);
+  if (!item) return;
+  if (item.kind === "library" && item.id) {
+    viewReferenceSource(item.id);
+    return;
+  }
+  void openNodeVaultFile(state.selectedNodeId, item.vaultIndex);
+}
+
+function removeAssociatedMaterial(row) {
+  const item = associatedMaterialFromRow(row);
+  const node = getNode(state.selectedNodeId);
+  if (!item || !node) return;
+  const historyBefore = getHistorySnapshot();
+  if (item.kind === "library") {
+    const cast = normalizeNodeCast(node.cast).filter((_, index) => index !== item.castIndex);
+    if (cast.length) node.cast = cast;
+    else delete node.cast;
+    const pathKey = normalizeAssociatedMaterialPath(item.path);
+    if (pathKey) {
+      const files = getNodeVaultFiles(node).filter((file) => normalizeAssociatedMaterialPath(file.path) !== pathKey);
+      if (files.length) node.vaultFiles = files;
+      else {
+        delete node.vaultFiles;
+        delete node.vaultFile;
+        delete node.vaultFilePreview;
+      }
+    }
+  } else if (item.vaultIndex >= 0) {
+    const files = getNodeVaultFiles(node);
+    if (!files[item.vaultIndex]) return;
+    files.splice(item.vaultIndex, 1);
+    if (files.length) node.vaultFiles = files;
+    else {
+      delete node.vaultFiles;
+      delete node.vaultFile;
+      delete node.vaultFilePreview;
+    }
+  } else {
+    return;
+  }
+  setProjectDirty(true);
+  renderCharacterAwareSurfaces(node);
+  setStatus(t("Association removed. The original was kept."));
+  commitHistoryFromSnapshot(historyBefore);
 }
 
 function setNodeCastField(index, field, value, rerender) {
@@ -21056,6 +21509,7 @@ function setNodeVaultFile(index, value) {
   renderMinimap();
   scheduleStoryPanelRender();
   updateStatus();
+  if (state.panel === "node" && state.selectedNodeId === node.id) renderNodePanel(node);
 }
 
 function normalizeNodeVaultFileReference(value) {
@@ -21184,13 +21638,163 @@ function hideVaultFileSuggestions() {
   state.vaultFileSuggestions = null;
 }
 
+function hideAssociatedMaterialSuggestions() {
+  const target = state.associatedMaterialSuggestions?.target;
+  const container = target?.closest?.(".node-associated-search-wrap")?.querySelector("[data-associated-material-suggestions]");
+  if (container) {
+    container.hidden = true;
+    container.replaceChildren();
+  }
+  target?.setAttribute?.("aria-expanded", "false");
+  state.associatedMaterialSuggestions = null;
+}
+
+function associatedMaterialSuggestionItems(query) {
+  const text = String(query || "").trim().toLocaleLowerCase();
+  const node = getNode(state.selectedNodeId);
+  const items = [];
+  const seenPaths = new Set();
+  const seenIds = new Set();
+  getCharacters().forEach((entry) => {
+    const name = entry.name || t("Unnamed Character");
+    const path = entry.codexFile || "";
+    const haystack = `${name} ${path} ${entry.kind || ""}`.toLocaleLowerCase();
+    if (text && !haystack.includes(text)) return;
+    if (nodeHasAssociatedLibrary(node, entry.id)) return;
+    items.push({
+      kind: "library",
+      id: entry.id,
+      path,
+      label: name,
+      detail: path || getCodexKindLabel(entry.kind || "Character")
+    });
+    seenIds.add(entry.id);
+    const key = normalizeAssociatedMaterialPath(path);
+    if (key) seenPaths.add(key);
+  });
+  return { items, seenPaths, seenIds, text, node };
+}
+
+async function updateAssociatedMaterialSuggestions(target, options = {}) {
+  if (!target?.isConnected || !target.hasAttribute?.("data-associated-material-search")) {
+    hideAssociatedMaterialSuggestions();
+    return;
+  }
+  const source = String(target.value || "").trim();
+  if (!source && !options.force) {
+    hideAssociatedMaterialSuggestions();
+    return;
+  }
+  const requestId = ++state.vaultFileSuggestionRequestId;
+  const collected = associatedMaterialSuggestionItems(source);
+  const host = window.NarrativeCanvasHost;
+  if (host?.searchVaultFiles) {
+    try {
+      const result = await host.searchVaultFiles(normalizeVaultFileSuggestionQuery(source), 40);
+      if (requestId !== state.vaultFileSuggestionRequestId || !target.isConnected) return;
+      (Array.isArray(result) ? result : []).forEach((path) => {
+        const reference = normalizeNodeVaultFileReference(path);
+        const key = normalizeAssociatedMaterialPath(reference);
+        if (!reference || (key && collected.seenPaths.has(key)) || nodeHasAssociatedPath(collected.node, reference)) return;
+        const match = findLibraryEntryByPath(reference);
+        if (match) {
+          if (collected.seenIds.has(match.id) || nodeHasAssociatedLibrary(collected.node, match.id)) return;
+          collected.items.push({
+            kind: "library",
+            id: match.id,
+            path: reference,
+            label: match.name || (reference.split("/").pop() || reference),
+            detail: reference
+          });
+          collected.seenIds.add(match.id);
+          if (key) collected.seenPaths.add(key);
+          return;
+        }
+        collected.items.push({
+          kind: "vault",
+          id: "",
+          path: reference,
+          label: reference.split("/").pop() || reference,
+          detail: reference
+        });
+        if (key) collected.seenPaths.add(key);
+      });
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  if (requestId !== state.vaultFileSuggestionRequestId || !target.isConnected) return;
+  if (!collected.items.length) {
+    hideAssociatedMaterialSuggestions();
+    return;
+  }
+  state.associatedMaterialSuggestions = { target, items: collected.items, activeIndex: 0 };
+  renderAssociatedMaterialSuggestions();
+}
+
+function renderAssociatedMaterialSuggestions() {
+  const current = state.associatedMaterialSuggestions;
+  const target = current?.target;
+  const container = target?.closest?.(".node-associated-search-wrap")?.querySelector("[data-associated-material-suggestions]");
+  if (!current || !target?.isConnected || !container) {
+    hideAssociatedMaterialSuggestions();
+    return;
+  }
+  container.innerHTML = current.items.map((item, index) => `
+    <button class="vault-file-suggestion${index === current.activeIndex ? " active" : ""}" type="button" role="option" aria-selected="${index === current.activeIndex ? "true" : "false"}" data-action="select-associated-material-suggestion" data-associated-kind="${escapeAttr(item.kind)}" data-associated-id="${escapeAttr(item.id || "")}" data-associated-path="${escapeAttr(item.path || "")}">
+      <span>
+        <strong>${escapeHtml(item.label)}</strong>
+        ${item.detail ? `<small>${escapeHtml(item.detail)}</small>` : ""}
+      </span>
+    </button>
+  `).join("");
+  container.hidden = false;
+  target.setAttribute("aria-expanded", "true");
+  container.querySelector(".vault-file-suggestion.active")?.scrollIntoView?.({ block: "nearest" });
+}
+
+function handleAssociatedMaterialSuggestionKeyDown(event) {
+  const current = state.associatedMaterialSuggestions;
+  if (!current || event.target !== current.target) return false;
+  if (event.key === "Escape") {
+    hideAssociatedMaterialSuggestions();
+    event.preventDefault();
+    return true;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    current.activeIndex = (current.activeIndex + direction + current.items.length) % current.items.length;
+    renderAssociatedMaterialSuggestions();
+    event.preventDefault();
+    return true;
+  }
+  if (event.key === "Enter") {
+    const item = current.items[current.activeIndex];
+    if (item) {
+      selectAssociatedMaterialSuggestion({ dataset: { associatedKind: item.kind, associatedId: item.id || "", associatedPath: item.path || "" } });
+      event.preventDefault();
+      return true;
+    }
+  }
+  return false;
+}
+
+function selectAssociatedMaterialSuggestion(target) {
+  const kind = target?.dataset?.associatedKind || "";
+  const id = target?.dataset?.associatedId || "";
+  const path = target?.dataset?.associatedPath || "";
+  hideAssociatedMaterialSuggestions();
+  if (kind === "library" && id) associateLibraryMaterial(id);
+  else if (path) associateVaultMaterial(path);
+}
+
 function getVaultFileSuggestionContainer(target) {
   return target?.closest?.(".node-vault-file-input-wrap, .codex-image-picker, .codex-vault-file-input-wrap")
     ?.querySelector?.("[data-vault-file-suggestions]") || null;
 }
 
 function handleVaultFileSuggestionPointerDown(event) {
-  if (!event.target.closest?.("[data-vault-file-path]")) return;
+  if (!event.target.closest?.("[data-vault-file-path], [data-action='select-associated-material-suggestion']")) return;
   event.preventDefault();
 }
 
@@ -22843,9 +23447,13 @@ function applyCodexFilePaths(updates) {
 
 async function reloadCodexFiles(options = {}) {
   const host = window.NarrativeCanvasHost;
-  if (!host?.loadCodexEntries) return false;
+  if (!host?.loadCodexEntries || !isProjectLibraryEnabled()) return false;
+  const project = state.project;
+  const path = host.getCurrentProjectPath?.();
   try {
-    const loaded = await host.loadCodexEntries();
+    const references = getCharacters().filter(entry => entry.codexFile);
+    const loaded = await host.loadCodexEntries({ references });
+    if (state.project !== project || host.getCurrentProjectPath?.() !== path || !isProjectLibraryEnabled()) return false;
     if (!Array.isArray(loaded)) return false;
     const diskEntries = [];
     const diskIds = new Set();
@@ -22858,11 +23466,12 @@ async function reloadCodexFiles(options = {}) {
     const pendingNew = getCharacters().filter((entry) => {
       const id = String(entry?.id || "").trim();
       if (!id || diskIds.has(id)) return false;
-      // Keep embeds that were never written. Drop entries whose managed file
-      // was deleted — those keep a codexFile path pointing at a missing note.
+      // Unmigrated material stays local. Missing external sources are preserved
+      // separately as unresolved references; they must never be recreated.
       return !String(entry?.codexFile || "").trim();
     });
-    const next = normalizeCharacters([...diskEntries, ...pendingNew]);
+    const missing = references.filter(entry => !diskIds.has(entry.id)).map(entry => ({ ...entry, referenceMissing: true }));
+    const next = normalizeCharacters([...diskEntries, ...pendingNew, ...missing]);
     const before = JSON.stringify(getCharacters());
     const after = JSON.stringify(next);
     if (before === after) return false;
@@ -22952,10 +23561,17 @@ function buildSavedState() {
 }
 
 function buildSavedStateForProject(project, uiOverrides = {}) {
+  const savedProject = cloneProject(normalizeProject(project));
+  savedProject.libraryReferencesVersion = 1;
+  if (window.NarrativeCanvasHost) {
+    savedProject.characters = savedProject.characters.map(entry => entry.codexFile
+      ? { id: entry.id, name: entry.name, kind: entry.kind, codexFile: entry.codexFile }
+      : entry);
+  }
   return {
     version: SAVED_STATE_VERSION,
     savedAt: new Date().toISOString(),
-    project: cloneProject(normalizeProject(project)),
+    project: savedProject,
     ui: {
       selectedNodeId: null,
       selectedLinkId: null,
@@ -22985,6 +23601,12 @@ function applySavedState(saved) {
   if (!payload) return false;
   const projectSource = payload.project || payload;
   state.project = normalizeProject(projectSource);
+  state.libraryScope = "references";
+  if (!projectSource.libraryReferencesVersion) {
+    for (const entry of projectSource.characters || []) {
+      if (entry.codexFile) preserveLegacyLibraryEntry(entry);
+    }
+  }
   markProjectStructureChanged({ nodeTypes: true });
   invalidateCharacterRenderContext();
 
@@ -22993,6 +23615,7 @@ function applySavedState(saved) {
   state.selectedLinkId = getValidSavedLinkId(ui.selectedLinkId);
   state.panel = getValidSavedPanel(ui.panel, state.selectedNodeId);
   state.activeFileId = fileViews[ui.activeFileId] ? ui.activeFileId : "adventure";
+  if (state.activeFileId === "characters" && state.libraryScope !== "project") state.activeFileId = "adventure";
   // When embedded in NarrativeLab, project uiTheme is the source of truth.
   const hostTheme = getHostTheme();
   state.theme = hostTheme || (ui.theme === "light" ? "light" : "dark");
@@ -23127,20 +23750,23 @@ function ensureOfficialSampleLibraryEntries() {
 }
 
 async function seedMissingLibraryFiles() {
-  const host = window.NarrativeCanvasHost;
-  if (!host?.syncLibraryFromCanvas) return false;
-  if (!getCharacters().some((entry) => !String(entry.codexFile || "").trim())) return false;
-  await host.syncLibraryFromCanvas(JSON.stringify(buildSavedState(), null, 2));
-  await reloadCodexFiles({ render: false, silent: true, markDirty: false });
-  return true;
+  // Legacy canvas material is preserved until the user explicitly migrates it.
+  return false;
 }
 
 async function loadFromVault(announce = true) {
-  if (!window.NarrativeCanvasHost?.loadProject) return null;
+  const host = window.NarrativeCanvasHost;
+  if (!host?.loadProject) return null;
+  const path = host.getCurrentProjectPath?.();
+  const epoch = (state.vaultLoadEpoch || 0) + 1;
+  state.vaultLoadEpoch = epoch;
+  const isCurrent = () => window.NarrativeCanvasHost === host && state.vaultLoadEpoch === epoch && host.getCurrentProjectPath?.() === path;
   state.codexSelectedEntryId = "";
-  await window.NarrativeCanvasHost?.unmountLibraryProfile?.();
+  await host.unmountLibraryProfile?.();
+  if (!isCurrent()) return null;
   try {
-    const saved = await window.NarrativeCanvasHost.loadProject();
+    const saved = await host.loadProject();
+    if (!isCurrent()) return null;
     if (!saved) return null;
     const payload = parseSavedPayload(saved);
     if (!payload) throw new Error("Vault project JSON could not be parsed.");
@@ -23150,6 +23776,7 @@ async function loadFromVault(announce = true) {
     setProjectDirty(false);
     ensureOfficialSampleLibraryEntries();
     await reloadCodexFiles({ render: false, silent: true, markDirty: false });
+    if (!isCurrent()) return null;
     await seedMissingLibraryFiles();
     if (announce) setStatus(`Loaded ${getHostProjectFileLabel()}.`);
     return restoredView;
@@ -27417,6 +28044,12 @@ function normalizeProject(project) {
     codexFieldTemplates: normalizeCodexFieldTemplates(project.codexFieldTemplates),
     customCodexKinds: normalizeCustomCodexKinds(project.customCodexKinds),
     characters: normalizeProjectCharacters(project),
+    libraryEnabled: project.libraryEnabled !== false,
+    libraryReferencesVersion: Number(project.libraryReferencesVersion || 0),
+    libraryEntryIds: Array.isArray(project.libraryEntryIds) ? project.libraryEntryIds.filter(id => typeof id === "string") : [],
+    canvasReferenceIds: Array.isArray(project.canvasReferenceIds) ? project.canvasReferenceIds.filter(id => typeof id === "string") : [],
+    canvasExcludedReferenceIds: Array.isArray(project.canvasExcludedReferenceIds) ? project.canvasExcludedReferenceIds.filter(id => typeof id === "string") : [],
+    legacyLibraryEntries: Array.isArray(project.legacyLibraryEntries) ? project.legacyLibraryEntries : [],
     deletedNodes: Array.isArray(project.deletedNodes) ? project.deletedNodes : [],
     nodes: Array.isArray(project.nodes) ? project.nodes.map((node) => normalizeNode(node, eventFrameTypes, eventSheet.columns, nodeTypeTemplates)) : [],
     links: normalizeLinks(project.links)
@@ -30445,6 +31078,7 @@ function normalizeCharacter(character, index) {
     canvasFile: normalizeNodeVaultFileReference(character.canvasFile ?? character.canvas ?? ""),
     icon: normalizeNodeVaultFileReference(character.icon ?? ""),
     codexFile: normalizeNodeVaultFileReference(character.codexFile || ""),
+    referenceMissing: Boolean(character.referenceMissing),
     images,
     imageFile: images[0]?.path || "",
     imagePreview: images.length ? Boolean(character.imagePreview ?? true) : false,
@@ -30688,7 +31322,7 @@ function hasHostLibraryCategoryBridge() {
 }
 
 function getHostLibraryCategories() {
-  if (!hasHostLibraryCategoryBridge()) return [];
+  if (!hasHostLibraryCategoryBridge() || !isProjectLibraryEnabled()) return [];
   let list = [];
   try {
     list = window.NarrativeCanvasHost.getLibraryCategories();
@@ -32677,7 +33311,9 @@ function updateStatus() {
   if (!dom.statusText) return;
   if (!state.statusOverride) {
     if (state.activeFileId === "characters") {
-      dom.statusText.textContent = `${getFileViewLabel("characters")} - ${t("{entries} library entries, {links} node links", { entries: getCharacters().length, links: getTotalCharacterLinkCount() })}`;
+      const entries = state.libraryScope === "project" ? getCharacters().filter(isProjectLibraryEntry) : canvasReferenceEntries();
+      const links = entries.reduce((count, entry) => count + getCharacterBacklinkGroups(entry).reduce((sum, group) => sum + group.items.length, 0), 0);
+      dom.statusText.textContent = `${t(state.libraryScope === "project" ? "Project Library" : "Referenced materials")} - ${t("{entries} library entries, {links} node links", { entries: entries.length, links })}`;
       return;
     }
     if (state.activeFileId === "variables") {
@@ -32733,8 +33369,8 @@ const statusTranslationRules = [
   { pattern: /^(.+) node type added\.$/, key: "{label} node type added.", names: ["label"], translateValues: true },
   { pattern: /^(.+) is a system type and cannot be deleted\.$/, key: "{label} is a system type and cannot be deleted.", names: ["label"], translateValues: true },
   { pattern: /^(.+) node type deleted\.$/, key: "{label} node type deleted.", names: ["label"], translateValues: true },
-  { pattern: /^(.+) hidden from Node Library\. Data kept\.$/, key: "{label} hidden from Node Library. Data kept.", names: ["label"], translateValues: true },
-  { pattern: /^(.+) restored to Node Library\.$/, key: "{label} restored to Node Library.", names: ["label"], translateValues: true },
+  { pattern: /^(.+) hidden from Node Templates\. Data kept\.$/, key: "{label} hidden from Node Templates. Data kept.", names: ["label"], translateValues: true },
+  { pattern: /^(.+) restored to Node Templates\.$/, key: "{label} restored to Node Templates.", names: ["label"], translateValues: true },
   { pattern: /^Updated (\d+) references?\.$/, key: "Updated {count} references.", names: ["count"] },
   { pattern: /^(.+) rule added from selected node\.$/, key: "{rule} rule added from selected node.", names: ["rule"], translateValues: true },
   { pattern: /^(.+) is a system rule\.$/, key: "{rule} is a system rule.", names: ["rule"], translateValues: true },

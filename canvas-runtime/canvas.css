@@ -1,5 +1,47 @@
+.web-project-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border, #8884);
+  padding: 8px 12px;
+  flex-wrap: wrap;
+}
+.web-project-tabs button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 8px;
+  border-bottom: 2px solid transparent;
+}
+.web-project-tabs button[hidden] { display: none; }
+.web-project-tabs svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; }
+.web-project-tabs button.active { border-bottom-color: var(--accent, #4b8ad1); }
+.web-project-tabs .web-library-toggle { margin-left: auto; font-size: 12px; }
+.canvas-reference-card {
+  border: 1px solid var(--border, #8884);
+  border-radius: 8px;
+  padding: 16px;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.canvas-reference-card > header { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.canvas-reference-card > header span { opacity: .65; font-size: 12px; }
+.canvas-reference-card .document-actions { margin: 12px 0; flex-wrap: wrap; }
+.canvas-legacy-copies { white-space: pre-wrap; max-height: 300px; overflow: auto; }
+.canvas-reference-picker { width: min(560px, 90vw); max-height: 75vh; border-radius: 12px; color: var(--text-normal); background: var(--background-primary); border: 1px solid var(--background-modifier-border); padding: 20px; }
+.canvas-reference-picker::backdrop { background: #0007; }
+.canvas-reference-picker input { width: 100%; }
+.canvas-reference-picker-list { display: grid; gap: 8px; max-height: 45vh; overflow: auto; margin: 12px 0; }
+.canvas-reference-picker-list button { text-align: left; padding: 10px; }
+.canvas-reference-picker-list small { display: block; opacity: .65; overflow-wrap: anywhere; }
+
 :root {
   --nc-font-interface: system-ui, "Segoe UI", sans-serif;
+  --nc-ui-font-size: 13px;
+  --nc-ui-line-height: 1.45;
   --nc-font-text: system-ui, "Segoe UI", sans-serif;
   --nc-font-monospace: "Cascadia Code", "Cascadia Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --background-primary: #1f1f1f;
@@ -142,7 +184,8 @@ body {
   background: var(--background-primary);
   color: var(--text-normal);
   font-family: var(--nc-font-interface);
-  font-size: 14px;
+  font-size: var(--nc-ui-font-size);
+  line-height: var(--nc-ui-line-height);
 }
 
 .startup-error {
@@ -177,8 +220,20 @@ button {
   color: inherit;
 }
 
+/* Top-layer dialogs are siblings of the shell in the embedded app. */
+dialog {
+  font-family: var(--nc-font-interface);
+  font-size: var(--nc-ui-font-size);
+  line-height: var(--nc-ui-line-height);
+}
+
 .app-shell {
   position: relative;
+  /* Applies inside Shadow DOM as well as the standalone page. Never inherit
+     the host editor's font size into navigation, controls or inspector fields. */
+  font-family: var(--nc-font-interface);
+  font-size: var(--nc-ui-font-size);
+  line-height: var(--nc-ui-line-height);
   --sidebar-left-width: 280px;
   --sidebar-right-width: 340px;
   --play-panel-width: clamp(300px, 27vw, 420px);
@@ -1517,6 +1572,122 @@ button {
   text-overflow: ellipsis;
 }
 
+.node-associated-materials,
+.node-advanced-settings {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--background-secondary) 92%, transparent);
+}
+
+.node-associated-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.node-associated-header .nc-section-count {
+  min-width: 0;
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-associated-content,
+.node-associated-list,
+.node-advanced-settings-body {
+  display: grid;
+  gap: 8px;
+}
+
+.node-associated-materials .nc-empty-state {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  display: block;
+  text-align: start;
+  font-size: 12px;
+}
+
+.node-associated-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary-alt);
+}
+
+.node-associated-item-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.node-associated-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.node-associated-item-copy small {
+  color: var(--text-faint);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-associated-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.node-associated-add {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.node-associated-search-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.associated-material-suggestions {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  display: grid;
+  max-height: 220px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  background: var(--background-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.associated-material-suggestions[hidden] {
+  display: none;
+}
+
 .node-vault-file-field {
   display: grid;
   gap: 8px;
@@ -2697,6 +2868,8 @@ button {
 
 .node {
   position: absolute;
+  /* Card content has its own reading size, independent of the UI chrome. */
+  font-size: 14px;
   width: 200px;
   min-width: 140px;
   min-height: 96px;

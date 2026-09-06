@@ -58,3 +58,36 @@ export async function ensureProjectDocumentBase(app: App, project: StoryLineProj
     }
     return app.vault.create(path, buildProjectDocumentBase(project));
 }
+
+/** Rebase quoted paths without replacing the user's columns, views or filters. */
+export function rebaseDocumentBasePaths(content: string, oldProject: StoryLineProject, project: StoryLineProject): string {
+    const oldRoot = normalizePath(deriveProjectFoldersFromFilePath(oldProject.filePath).baseFolder);
+    const newRoot = normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
+    const oldManifest = normalizePath(oldProject.filePath);
+    return content.replace(/"(?:\\.|[^"\\])*"/g, literal => {
+        let value: string;
+        try { value = JSON.parse(literal) as string; } catch { return literal; }
+        if (value === oldManifest) return JSON.stringify(normalizePath(project.filePath));
+        if (value === oldRoot) return JSON.stringify(newRoot);
+        if (value.startsWith(`${oldRoot}/`)) return JSON.stringify(`${newRoot}${value.slice(oldRoot.length)}`);
+        return literal;
+    });
+}
+
+/** Only migrate a Base that already exists; disabled modules create no files. */
+export async function renameProjectDocumentBase(app: App, oldProject: StoryLineProject, project: StoryLineProject): Promise<void> {
+    const oldName = projectDocumentBasePath(oldProject).split('/').pop()!;
+    const newRoot = deriveProjectFoldersFromFilePath(project.filePath).baseFolder;
+    const destination = projectDocumentBasePath(project);
+    const candidates = [normalizePath(`${newRoot}/${oldName}`), legacyProjectDocumentBasePath(project)];
+    const source = candidates.map(path => app.vault.getAbstractFileByPath(path))
+        .find((file): file is TFile => file instanceof TFile);
+    if (!source) return;
+    if (source.path !== destination) {
+        if (await app.vault.adapter.exists(destination)) {
+            throw new Error(t('Cannot rename project because this path already exists: {path}', { path: destination }));
+        }
+        await app.fileManager.renameFile(source, destination);
+    }
+    await app.vault.process(source, content => rebaseDocumentBasePaths(content, oldProject, project));
+}

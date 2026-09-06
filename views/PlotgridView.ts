@@ -265,6 +265,14 @@ export class PlotgridView extends ProjectBoundItemView {
         }
     }
 
+    async prepareForModuleDisable(): Promise<void> {
+        this.closeAllCellEditors();
+        if (!this.hasHydratedDocument || !this.loadedProjectFile) return;
+        await this.flushUniverIntoDocumentSettled(true);
+        this.cancelPendingSave();
+        await this.saveBoundDocumentIfChanged(this.loadedProjectFile);
+    }
+
     /** Capture the live cell synchronously, then start the final vault write. */
     flushForShutdown(): void {
         this.closeAllCellEditors();
@@ -381,7 +389,7 @@ export class PlotgridView extends ProjectBoundItemView {
     }
 
     /** Lifecycle-safe flush used before switching/closing a spreadsheet tab. */
-    private async flushUniverIntoDocumentSettled(): Promise<void> {
+    private async flushUniverIntoDocumentSettled(throwOnError = false): Promise<void> {
         const host = this.univerHost;
         if (!host) return;
         try {
@@ -389,6 +397,7 @@ export class PlotgridView extends ProjectBoundItemView {
             this.adoptUniverHostDocument(host);
         } catch (error) {
             console.warn('[NarrativeLab] Could not settle spreadsheet state before save:', error);
+            if (throwOnError) throw error;
         }
     }
 

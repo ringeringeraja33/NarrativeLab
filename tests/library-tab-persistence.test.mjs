@@ -85,18 +85,17 @@ test('Library category hide keeps folders without resurrecting tabs', async () =
 });
 
 test('Library view switcher and category tabs restore the last category', () => {
-    assert.match(viewSwitcher, /resolveLibraryViewType\(plugin, projectFile\)/);
+    assert.match(viewSwitcher, /resolveLibraryViewType\(plugin, boundProject\)/);
     assert.match(categoryTabs, /switchTo\(leaf, plugin, CHARACTER_VIEW_TYPE, 'characters'\)/);
     assert.match(categoryTabs, /switchTo\(leaf, plugin, LOCATION_VIEW_TYPE, 'locations'\)/);
     assert.match(categoryTabs, /rememberLibraryCategory\(plugin, categoryId, projectFile\)/);
     assert.match(categoryTabs, /activateCategory\(cat\.id\)/);
 });
 
-test('Structure top tab restores the last Structure sub-tab', async () => {
-    const modes = await readFile(new URL('../components/StructureModeSwitcher.ts', import.meta.url), 'utf8');
-    assert.match(modes, /export function rememberStructureMode/);
-    assert.match(modes, /export function resolveStructureViewType/);
-    assert.match(modes, /export function getRememberedStructureMode/);
-    assert.match(viewSwitcher, /resolveStructureViewType\(plugin\)/);
-    assert.match(viewSwitcher, /entry\.type === TIMELINE_VIEW_TYPE/);
+test('Independent structure tabs use page identity instead of a global remembered subview', async () => {
+    const pages = await readFile(new URL('../models/ProjectPages.ts', import.meta.url), 'utf8');
+    for (const id of ['timeline', 'trackComparison', 'plotList', 'subwayMap']) assert.ok(pages.includes(`module: '${id}'`));
+    assert.ok(!pages.includes("module: 'chapterTemplates'"));
+    assert.doesNotMatch(viewSwitcher, /resolveStructureViewType\(plugin\)/);
+    assert.match(viewSwitcher, /page\.type === activeViewType/);
 });

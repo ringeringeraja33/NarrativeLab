@@ -4,7 +4,10 @@ import { SceneCardsSettings, SceneCardsSettingTab, DEFAULT_SETTINGS } from './se
 import { asRecord, isRecord } from './utils/narrow';
 import { addedMutationRoots, matchingElements } from './utils/mutationRoots';
 import { StartupDiagnostics } from './utils/startupDiagnostics';
-import { countWordRevisionChurn } from './utils/wordcountText';
+import { deferWorkspaceView } from './utils/deferWorkspaceView';
+import { countWordRevisionChurn, wordcountOptionsForProfile } from './utils/wordcountText';
+import { FolderWritingTracker } from './services/FolderWritingTracker';
+import { FolderTrackerPicker } from './components/FolderTrackerControls';
 import { consumeTextareaUndoKey, isLocalTextUndoTarget, isRedoKey, isUndoKey } from './utils/textareaHistory';
 import {
     OBSIDIAN_OPENABLE_EXTENSION_FALLBACK,
@@ -23,15 +26,19 @@ import { SceneManager } from './services/SceneManager';
 import { ProjectCapabilityService } from './services/ProjectCapabilityService';
 import { DocumentSourceService, ProjectMarkdownDocumentSource } from './services/DocumentSourceService';
 import {
-    PROJECT_MODULE_IDS,
     PROJECT_PRESETS,
     capabilitiesForPreset,
+    libraryCategoryPack,
     moduleEnabled,
     resolveModuleDependencies,
     type ProjectModuleId,
     type ProjectPresetId,
+    type ProjectCapabilities,
 } from './models/ProjectCapabilities';
-import { PROJECT_MODULE_LABELS } from './components/ProjectModulesModal';
+import { ProjectModulesModal } from './components/ProjectModulesModal';
+import { PROJECT_MODULE_LABELS, renderProjectModulePicker } from './components/ProjectModulePicker';
+import { PROJECT_PAGES, mergeProjectPageOrder } from './models/ProjectPages';
+import { ProjectOverviewView } from './views/ProjectOverviewView';
 import { registerCustomStatuses } from './models/Scene';
 import { setWriteSceneFieldsAsWikilinks, setWordcountExclusions, setWordcountLocale } from './services/MetadataParser';
 import { normalizeStoryLineLocale } from './utils/locale';
@@ -48,6 +55,11 @@ import { ensureSeededCharacterRelationTypes } from './utils/storyGraphCharacterR
 import { setActiveTemplatesProvider, setTopLevelMirrorEnabled, mirrorUniversalFieldsToTopLevel, hydrateUniversalFieldsFromTopLevel, isReservedTopLevelKey, type FieldTemplateChange } from './services/FieldTemplateService';
 import {
     BOARD_VIEW_TYPE,
+    COLUMN_BOARD_VIEW_TYPE,
+    TRACK_COMPARISON_VIEW_TYPE,
+    SUBWAY_VIEW_TYPE,
+    CHAPTER_TEMPLATES_VIEW_TYPE,
+    PROJECT_OVERVIEW_VIEW_TYPE,
     TIMELINE_VIEW_TYPE,
     STORYLINE_VIEW_TYPE,
     CHARACTER_VIEW_TYPE,
@@ -211,6 +223,7 @@ import {
 } from './services/LibraryEntityBoardService';
 import { buildFormattingToolbar } from './components/FormattingToolbar';
 import { setupMobileKeyboardHandling } from './components/MobileAdapter';
+import { renderViewSwitcher } from './components/ViewSwitcher';
 
 function plotGridBinaryDigest(data: ArrayBuffer | Uint8Array): string {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -252,12 +265,17 @@ function plotGridWriteJournalPath(metaPath: string): string {
     return `${metaPath}.write-journal`;
 }
 
+type CanvasProjectView = { containerEl: HTMLElement; contentEl: HTMLElement; leaf: WorkspaceLeaf; file?: string };
 type EmbeddedCanvasModule = Plugin & {
     onload: () => Promise<void>;
     unload: () => void;
-    openProjectFile?: (path: string) => Promise<void>;
+    openProjectFile?: (path: string, leaf?: WorkspaceLeaf | null) => Promise<void>;
     openCanvas?: () => Promise<void>;
-    openOrCreateProjectAtPath?: (path: string, title: string) => Promise<string>;
+    openOrCreateProjectAtPath?: (path: string, title: string, leaf?: WorkspaceLeaf | null) => Promise<string>;
+    getNarrativeLabProjectFile?: (path: string) => string | null;
+    isNarrativeLabLibraryEnabled?: (path: string) => boolean;
+    renderNarrativeLabProjectToolbar?: (view: CanvasProjectView) => void;
+    openNarrativeLabProjectLibrary?: (path: string, leaf?: WorkspaceLeaf) => Promise<void>;
     writeAndOpenProjectAtPath?: (path: string, savedStateJson: string) => Promise<string>;
     createSampleProjectAtPath?: (path: string, language?: string) => Promise<string>;
     /** Overridden by NarrativeLab to share Library ↔ Canvas/<Name>.canvas creation. */
@@ -373,6 +391,8 @@ type EmbeddedCanvasConstructor = new (app: App, manifest: Plugin['manifest']) =>
 export default class SceneCardsPlugin extends Plugin {
     readonly startupDiagnostics = new StartupDiagnostics();
     navigatorStartupPending = true;
+    private resolveProjectStartup!: () => void;
+    readonly projectStartupReady = new Promise<void>(resolve => { this.resolveProjectStartup = resolve; });
     settings: SceneCardsSettings = DEFAULT_SETTINGS;
     sceneManager!: SceneManager;
     capabilityService!: ProjectCapabilityService;
@@ -395,6 +415,7 @@ export default class SceneCardsPlugin extends Plugin {
     characterManager!: CharacterManager;
     codexManager!: CodexManager;
     writingTracker: WritingTracker = new WritingTracker();
+    folderWritingTracker!: FolderWritingTracker;
     /** Blocks delayed refresh/file events while a different project ledger is loading. */
     private _writingTrackerProjectSwitching = false;
     globalWritingTracker!: GlobalWritingTracker;
@@ -614,6 +635,8 @@ export default class SceneCardsPlugin extends Plugin {
         this.researchManager = new ResearchManager(this.app, this);
         this.floatingStickyNotes = new FloatingStickyNoteManager(this);
         this.globalWritingTracker = new GlobalWritingTracker(this);
+        this.folderWritingTracker = new FolderWritingTracker(this);
+        this.folderWritingTracker.initialize();
         const writingTrackerCheckpoint = window.setInterval(() => {
             if (this.writingTracker.isSprintRunning()) this.scheduleWritingTrackerSave();
         }, 30_000);
@@ -630,16 +653,25 @@ export default class SceneCardsPlugin extends Plugin {
 
         // Register views
         this.registerView(BOARD_VIEW_TYPE, (leaf) =>
-            new BoardView(leaf, this, this.sceneManager)
+            deferWorkspaceView(new BoardView(leaf, this, this.sceneManager), this.app.workspace, this.projectStartupReady, t('Loading...'))
         );
+        this.registerView(COLUMN_BOARD_VIEW_TYPE, leaf =>
+            deferWorkspaceView(new BoardView(leaf, this, this.sceneManager, COLUMN_BOARD_VIEW_TYPE, 'kanban'), this.app.workspace, this.projectStartupReady, t('Loading...')));
+        this.registerView(TRACK_COMPARISON_VIEW_TYPE, leaf =>
+            deferWorkspaceView(new TimelineView(leaf, this, this.sceneManager, TRACK_COMPARISON_VIEW_TYPE, 'tracks'), this.app.workspace, this.projectStartupReady, t('Loading...')));
+        this.registerView(SUBWAY_VIEW_TYPE, leaf =>
+            deferWorkspaceView(new StorylineView(leaf, this, this.sceneManager, SUBWAY_VIEW_TYPE, 'subway'), this.app.workspace, this.projectStartupReady, t('Loading...')));
+        this.registerView(CHAPTER_TEMPLATES_VIEW_TYPE, leaf =>
+            deferWorkspaceView(new TimelineView(leaf, this, this.sceneManager, CHAPTER_TEMPLATES_VIEW_TYPE, 'templates'), this.app.workspace, this.projectStartupReady, t('Loading...')));
+        this.registerView(PROJECT_OVERVIEW_VIEW_TYPE, leaf => new ProjectOverviewView(leaf, this));
         this.registerView(PLOTGRID_VIEW_TYPE, (leaf) =>
-            new PlotgridView(leaf, this)
+            deferWorkspaceView(new PlotgridView(leaf, this), this.app.workspace, this.projectStartupReady, t('Loading...'))
         );
         this.registerView(TIMELINE_VIEW_TYPE, (leaf) =>
-            new TimelineView(leaf, this, this.sceneManager)
+            deferWorkspaceView(new TimelineView(leaf, this, this.sceneManager), this.app.workspace, this.projectStartupReady, t('Loading...'))
         );
         this.registerView(STORYLINE_VIEW_TYPE, (leaf) =>
-            new StorylineView(leaf, this, this.sceneManager)
+            deferWorkspaceView(new StorylineView(leaf, this, this.sceneManager), this.app.workspace, this.projectStartupReady, t('Loading...'))
         );
         this.registerView(CHARACTER_VIEW_TYPE, (leaf) =>
             new CharacterView(leaf, this, this.sceneManager)
@@ -670,7 +702,7 @@ export default class SceneCardsPlugin extends Plugin {
             new DetailsView(leaf, this, this.sceneManager)
         );
         this.registerView(MANUSCRIPT_VIEW_TYPE, (leaf) =>
-            new ManuscriptView(leaf, this, this.sceneManager)
+            deferWorkspaceView(new ManuscriptView(leaf, this, this.sceneManager), this.app.workspace, this.projectStartupReady, t('Loading...'))
         );
         this.registerView(RESEARCH_VIEW_TYPE, (leaf) =>
             new ResearchView(leaf, this, this.researchManager)
@@ -813,6 +845,7 @@ export default class SceneCardsPlugin extends Plugin {
                 console.error('[NarrativeLab] Startup error:', startupErr);
             } finally {
                 this.navigatorStartupPending = false;
+                this.resolveProjectStartup();
                 for (const leaf of this.app.workspace.getLeavesOfType(NAVIGATOR_VIEW_TYPE)) {
                     if (leaf.view instanceof NavigatorView) leaf.view.refresh();
                 }
@@ -900,14 +933,14 @@ export default class SceneCardsPlugin extends Plugin {
         });
         this.addCommand({
             id: 'open-board-view',
-            name: t('Open board view'),
-            checkCallback: moduleCommand('board', () => this.activateView(BOARD_VIEW_TYPE)),
+            name: t('Open flat canvas'),
+            checkCallback: moduleCommand('flatCanvas', () => this.activateView(BOARD_VIEW_TYPE)),
         });
 
         this.addCommand({
             id: 'open-timeline-view',
-            name: t('Open structure view'),
-            checkCallback: moduleCommand('structure', () => this.activateView(TIMELINE_VIEW_TYPE)),
+            name: t('Open timeline'),
+            checkCallback: moduleCommand('timeline', () => this.activateView(TIMELINE_VIEW_TYPE)),
         });
 
         this.addCommand({
@@ -919,8 +952,18 @@ export default class SceneCardsPlugin extends Plugin {
         this.addCommand({
             id: 'open-plotlines-view',
             name: t('Open plotlines view'),
-            checkCallback: moduleCommand('plotlines', () => this.activateView(STORYLINE_VIEW_TYPE)),
+            checkCallback: moduleCommand('plotList', () => this.activateView(STORYLINE_VIEW_TYPE)),
         });
+
+        for (const page of PROJECT_PAGES.filter(page => ['columnBoard', 'trackComparison', 'subwayMap'].includes(page.module))) {
+            this.addCommand({ id: `open-${page.module}`, name: t('Open {view}', { view: t(page.label) }),
+                checkCallback: moduleCommand(page.module, () => this.activateView(page.type)) });
+        }
+        this.addCommand({ id:'open-chapterTemplates', name:t('Open {view}', {view:t('Chapter templates')}),
+            checkCallback:moduleCommand('chapterTemplates', () => {
+                const project = this.sceneManager.activeProject;
+                return project ? this.openChapterTemplates(project) : undefined;
+            }) });
 
         this.addCommand({
             id: 'open-character-view',
@@ -982,13 +1025,13 @@ export default class SceneCardsPlugin extends Plugin {
 
         this.addCommand({
             id: 'manage-ncanvas-files',
-            name: t('Manage Canvas files'),
+            name: t('Manage node-based presentation canvases'),
             checkCallback: moduleCommand('canvas', () => this.openNCanvasManager()),
         });
 
         this.addCommand({
             id: 'open-narrative-canvas',
-            name: t('Open Narrative Canvas (last used)'),
+            name: t('Open node-based presentation canvas (last used)'),
             checkCallback: moduleCommand('canvas', () => { void this.openNarrativeCanvas(); }),
         });
 
@@ -1085,6 +1128,7 @@ export default class SceneCardsPlugin extends Plugin {
             const viewType = view.getViewType();
             if (typeof viewType !== 'string') return;
             const slViewTypes = [
+                COLUMN_BOARD_VIEW_TYPE, TRACK_COMPARISON_VIEW_TYPE, SUBWAY_VIEW_TYPE, CHAPTER_TEMPLATES_VIEW_TYPE,
                 BOARD_VIEW_TYPE, PLOTGRID_VIEW_TYPE, TIMELINE_VIEW_TYPE,
                 STORYLINE_VIEW_TYPE, CHARACTER_VIEW_TYPE, STATS_VIEW_TYPE,
                 LOCATION_VIEW_TYPE, CODEX_VIEW_TYPE, SCENE_INSPECTOR_VIEW_TYPE,
@@ -1144,15 +1188,27 @@ export default class SceneCardsPlugin extends Plugin {
             id: 'open-writing-tracker',
             name: t('Open writing tracker'),
             icon: 'activity',
-            checkCallback: moduleCommand('writingTracker', () => { void this.openWritingTracker(); }),
+            callback: () => { void this.openWritingTracker(); },
         });
 
         this.addCommand({
             id: 'open-writing-tracker-panel',
             name: t('Open writing tracker panel'),
             icon: 'activity',
-            checkCallback: moduleCommand('writingTracker', () => { void this.openWritingTrackerPanel(); }),
+            callback: () => { void this.openWritingTrackerPanel(); },
         });
+
+        this.addCommand({
+            id: 'track-folder-writing', name: t('Track writing in a folder'),
+            callback: () => new FolderTrackerPicker(this.app, folder => {
+                void this.openFolderWritingTracker(folder.path);
+            }).open(),
+        });
+        this.registerEvent(this.app.workspace.on('file-menu', (menu, file) => {
+            if (!(file instanceof TFolder)) return;
+            menu.addItem(item => item.setTitle(t('Track writing in this folder')).setIcon('activity')
+                .onClick(() => { void this.openFolderWritingTracker(file.path); }));
+        }));
 
         this.addCommand({
             id: 'create-floating-sticky-note',
@@ -1389,10 +1445,7 @@ export default class SceneCardsPlugin extends Plugin {
                                 previousSceneBody,
                                 nextSceneBody,
                                 normalizeStoryLineLocale(this.sceneManager.getEffectiveLocale()),
-                                {
-                                    excludeComments: this.settings.excludeCommentsFromWordcount !== false,
-                                    excludeChecklists: this.settings.excludeChecklistFromWordcount === true,
-                                },
+                                this.wordcountPrepareOptions(),
                             );
                             this.writingTracker.recordRevisionWords(churn, revisionChangedAt);
                             this.flushWritingTrackers(undefined, revisionChangedAt);
@@ -1444,10 +1497,7 @@ export default class SceneCardsPlugin extends Plugin {
                                         '',
                                         createdBody,
                                         normalizeStoryLineLocale(this.sceneManager.getEffectiveLocale()),
-                                        {
-                                            excludeComments: this.settings.excludeCommentsFromWordcount !== false,
-                                            excludeChecklists: this.settings.excludeChecklistFromWordcount === true,
-                                        },
+                                        this.wordcountPrepareOptions(),
                                     );
                                     this.writingTracker.recordRevisionWords(churn, createdAt);
                                     this.flushWritingTrackers(undefined, createdAt);
@@ -1516,10 +1566,7 @@ export default class SceneCardsPlugin extends Plugin {
                             deletedSceneBody,
                             '',
                             normalizeStoryLineLocale(this.sceneManager.getEffectiveLocale()),
-                            {
-                                excludeComments: this.settings.excludeCommentsFromWordcount !== false,
-                                excludeChecklists: this.settings.excludeChecklistFromWordcount === true,
-                            },
+                            this.wordcountPrepareOptions(),
                         );
                         this.writingTracker.recordRevisionWords(churn, deletedAt);
                         this.flushWritingTrackers(undefined, deletedAt);
@@ -5082,6 +5129,8 @@ export default class SceneCardsPlugin extends Plugin {
 
     /** Main-area NarrativeLab view types that can carry a per-project leaf binding. */
     private static readonly PROJECT_SCOPED_VIEW_TYPES: string[] = [
+        COLUMN_BOARD_VIEW_TYPE, TRACK_COMPARISON_VIEW_TYPE, SUBWAY_VIEW_TYPE,
+        CHAPTER_TEMPLATES_VIEW_TYPE, PROJECT_OVERVIEW_VIEW_TYPE,
         BOARD_VIEW_TYPE,
         PLOTGRID_VIEW_TYPE,
         TIMELINE_VIEW_TYPE,
@@ -5106,6 +5155,7 @@ export default class SceneCardsPlugin extends Plugin {
     async quiesceProjectLeavesForFolderMove(
         sourceFolder: string,
         destinationFolder: string,
+        renamedFiles: Readonly<Record<string, string>> = {},
     ): Promise<(moved: boolean) => Promise<void>> {
         const source = normalizePath(sourceFolder);
         const destination = normalizePath(destinationFolder);
@@ -5196,6 +5246,8 @@ export default class SceneCardsPlugin extends Plugin {
                 const rebaseMovedPath = (value: string): string => {
                     const normalized = normalizePath(value);
                     if (!moved) return normalized;
+                    const renamed = renamedFiles[normalized];
+                    if (renamed && this.app.vault.getAbstractFileByPath(renamed)) return renamed;
                     if (normalized === source) return destination;
                     if (normalized.startsWith(sourcePrefix)) {
                         return normalizePath(`${destination}/${normalized.slice(sourcePrefix.length)}`);
@@ -5351,6 +5403,9 @@ export default class SceneCardsPlugin extends Plugin {
 
     /** Map the Default view setting to a registered workspace view type. */
     private resolveDefaultProjectViewType(): string {
+        const navigation = this.capabilityService.get(this.sceneManager.activeProject).navigation;
+        const configured = PROJECT_PAGES.find(page => page.module === navigation?.defaultPage);
+        if (configured && this.isViewEnabled(configured.type)) return configured.type;
         const bySetting: Record<ViewType, string> = {
             board: BOARD_VIEW_TYPE,
             manuscript: MANUSCRIPT_VIEW_TYPE,
@@ -5364,23 +5419,32 @@ export default class SceneCardsPlugin extends Plugin {
         };
         const preferred = bySetting[this.settings.defaultView] || BOARD_VIEW_TYPE;
         if (this.isViewEnabled(preferred)) return preferred;
-        for (const fallback of [MANUSCRIPT_VIEW_TYPE, NOTES_VIEW_TYPE, BOARD_VIEW_TYPE]) {
+        if (
+            this.isViewEnabled(CODEX_VIEW_TYPE)
+            && libraryCategoryPack(this.capabilityService.get(this.sceneManager.activeProject)) === 'academic'
+        ) {
+            return CODEX_VIEW_TYPE;
+        }
+        const ordered = navigation?.order.map(id => PROJECT_PAGES.find(page => page.module === id)?.type).filter((type): type is string => Boolean(type)) ?? [];
+        for (const fallback of [...ordered, ...PROJECT_PAGES.map(page => page.type)]) {
             if (this.isViewEnabled(fallback)) return fallback;
         }
-        return MANUSCRIPT_VIEW_TYPE;
+        return PROJECT_OVERVIEW_VIEW_TYPE;
     }
 
     private moduleForView(viewType: string): ProjectModuleId | null {
+        const page = PROJECT_PAGES.find(page => page.type === viewType);
+        if (page) return page.module;
         const map: Record<string, ProjectModuleId> = {
             [BOARD_VIEW_TYPE]: 'board', [PLOTGRID_VIEW_TYPE]: 'table',
             [TIMELINE_VIEW_TYPE]: 'structure', [STORYLINE_VIEW_TYPE]: 'plotlines',
             [CHARACTER_VIEW_TYPE]: 'characters', [LOCATION_VIEW_TYPE]: 'locations',
             [CODEX_VIEW_TYPE]: 'library', [STATS_VIEW_TYPE]: 'writingStats',
             [MANUSCRIPT_VIEW_TYPE]: 'manuscript', [RESEARCH_VIEW_TYPE]: 'research',
-            [NOTES_VIEW_TYPE]: 'notes', [SCENE_INSPECTOR_VIEW_TYPE]: 'sceneDetails',
+            [NOTES_VIEW_TYPE]: 'sceneNotes', [SCENE_INSPECTOR_VIEW_TYPE]: 'sceneDetails',
             [SYNOPSIS_VIEW_TYPE]: 'synopsis', [DETAILS_VIEW_TYPE]: 'sceneDetails',
             [NARRATIVE_CANVAS_VIEW_TYPE]: 'canvas', [NCANVAS_LIBRARY_VIEW_TYPE]: 'canvas',
-            [WRITING_TRACKER_PANEL_TYPE]: 'writingTracker', [WRITING_TRACKER_VIEW_TYPE]: 'writingTracker',
+            [CHAPTER_TEMPLATES_VIEW_TYPE]: 'chapterTemplates',
         };
         return map[viewType] ?? null;
     }
@@ -5395,13 +5459,82 @@ export default class SceneCardsPlugin extends Plugin {
         return moduleEnabled(project?.capabilities, required);
     }
 
+    private moduleUpdateInProgress = false;
+
+    async updateProjectModules(project: StoryLineProject, next: ProjectCapabilities): Promise<void> {
+        if (this.moduleUpdateInProgress) throw new Error(t('Project settings are being saved. Please wait.'));
+        this.moduleUpdateInProgress = true;
+        const suspended: { leaf: WorkspaceLeaf; state: ReturnType<WorkspaceLeaf['getViewState']> }[] = [];
+        try {
+            const closing: WorkspaceLeaf[] = [];
+            this.app.workspace.iterateAllLeaves(leaf => {
+                if (getLeafNarrativeLabProjectFile(leaf) !== normalizePath(project.filePath)) return;
+                const required = this.moduleForView(leaf.view.getViewType());
+                if (required && !moduleEnabled(next, required)) closing.push(leaf);
+            });
+            for (const leaf of closing) {
+                const view = leaf.view as unknown as { prepareForModuleDisable?: () => Promise<void> };
+                await view.prepareForModuleDisable?.();
+            }
+            for (const leaf of closing) {
+                suspended.push({ leaf, state: leaf.getViewState() });
+                // Keep old capabilities while onClose flushes module-owned data.
+                await leaf.setViewState({ type: 'empty', state: {}, active: false });
+            }
+            if (this.sceneManager.activeProject?.filePath === project.filePath) {
+                this.flushWritingTrackers();
+                await this.settleWritingTrackerChanges();
+                await this.saveProjectSystemData();
+            }
+            await this.capabilityService.apply(project, next);
+        } catch (error) {
+            for (const item of suspended) await item.leaf.setViewState(item.state);
+            throw error;
+        } finally {
+            this.moduleUpdateInProgress = false;
+        }
+        for (const item of suspended) {
+            await item.leaf.setViewState({ type: PROJECT_OVERVIEW_VIEW_TYPE, state: narrativeLabLeafState(project.filePath, { moduleDisabled: true }) });
+        }
+        if (this.sceneManager.activeProject?.filePath === project.filePath) {
+            await this.sceneManager.setActiveProject(project);
+        } else {
+            await this.refreshOpenViews();
+        }
+    }
+
+    async updateProjectTabOrder(project: StoryLineProject, visual: ProjectModuleId[]): Promise<void> {
+        const current = this.capabilityService.get(project);
+        const order = mergeProjectPageOrder(current.navigation?.order, visual);
+        if (order.join('\0') === (current.navigation?.order ?? []).join('\0')) return;
+        try {
+            await this.capabilityService.applyNavigation(project, {
+                order,
+                hidden: current.navigation?.hidden ?? [],
+                ...(current.navigation?.defaultPage ? { defaultPage: current.navigation.defaultPage } : {}),
+            });
+        } finally {
+            this.refreshProjectTabBars(project.filePath);
+        }
+    }
+
+    private refreshProjectTabBars(projectFile: string): void {
+        const path = normalizePath(projectFile);
+        this.app.workspace.iterateAllLeaves(leaf => {
+            if (getLeafNarrativeLabProjectFile(leaf) !== path) return;
+            const toolbar = leaf.view.containerEl.querySelector('.story-line-toolbar');
+            if (!(toolbar instanceof HTMLElement)) return;
+            renderViewSwitcher(toolbar, leaf.view.getViewType(), this, leaf);
+        });
+    }
+
     closeDisabledProjectViews(project: StoryLineProject): void {
         const projectFile = normalizePath(project.filePath);
         this.app.workspace.iterateAllLeaves(leaf => {
             if (getLeafNarrativeLabProjectFile(leaf) !== projectFile) return;
             const viewType = leaf.view?.getViewType?.();
             if (typeof viewType === 'string' && !this.isViewEnabled(viewType, projectFile)) {
-                leaf.detach();
+                void leaf.setViewState({ type: PROJECT_OVERVIEW_VIEW_TYPE, state: narrativeLabLeafState(projectFile, { moduleDisabled: true }) });
             }
         });
     }
@@ -5411,7 +5544,7 @@ export default class SceneCardsPlugin extends Plugin {
             const projectFile = getLeafNarrativeLabProjectFile(leaf);
             const viewType = leaf.view?.getViewType?.();
             if (projectFile && typeof viewType === 'string' && !this.isViewEnabled(viewType, projectFile)) {
-                leaf.detach();
+                void leaf.setViewState({ type: PROJECT_OVERVIEW_VIEW_TYPE, state: narrativeLabLeafState(projectFile, { moduleDisabled: true }) });
             }
         });
     }
@@ -5421,6 +5554,13 @@ export default class SceneCardsPlugin extends Plugin {
      * Prefer its Default-view tab; otherwise focus any main-area tab already bound to it.
      * A new tab is created only when that project has no open tab.
      */
+    async openChapterTemplates(project: StoryLineProject): Promise<void> {
+        if (!this.capabilityService.isEnabled('chapterTemplates', project)) return;
+        if (this.sceneManager.activeProject?.filePath !== project.filePath) await this.sceneManager.setActiveProject(project);
+        const { ProjectStructureTools } = await import('./components/ProjectStructureTools');
+        new ProjectStructureTools(this.app, this, this.sceneManager).open();
+    }
+
     async openBoardForProject(project: StoryLineProject): Promise<void> {
         const projectFile = normalizePath(project.filePath);
         const { workspace } = this.app;
@@ -5682,7 +5822,7 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     async openWritingTrackerPanel(opts?: { quiet?: boolean }): Promise<void> {
-        if (!this.capabilityService.isEnabled('writingTracker')) {
+        if (opts?.quiet && !this.capabilityService.isEnabled('writingTracker')) {
             new Notice(t('This module is disabled for the project. Enable it from Project modules.'));
             return;
         }
@@ -5708,10 +5848,6 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     async openWritingTracker(): Promise<void> {
-        if (!this.capabilityService.isEnabled('writingTracker')) {
-            new Notice(t('This module is disabled for the project. Enable it from Project modules.'));
-            return;
-        }
         const { workspace } = this.app;
         const existing = workspace.getLeavesOfType(WRITING_TRACKER_VIEW_TYPE);
         if (existing.length > 0) {
@@ -5722,6 +5858,16 @@ export default class SceneCardsPlugin extends Plugin {
         const leaf = workspace.getLeaf('tab');
         await leaf.setViewState({ type: WRITING_TRACKER_VIEW_TYPE, active: true });
         workspace.revealLeaf(leaf);
+    }
+
+    async openFolderWritingTracker(path: string): Promise<void> {
+        try {
+            await this.openWritingTrackerPanel();
+            for (const leaf of this.app.workspace.getLeavesOfType(WRITING_TRACKER_PANEL_TYPE)) {
+                (leaf.view as WritingTrackerPanel).setScope('folder');
+            }
+            await this.folderWritingTracker.select(path);
+        } catch (error) { new Notice(String(error)); }
     }
 
     /** Refresh the Markdown source used by projects without the Scenes module. */
@@ -5743,10 +5889,7 @@ export default class SceneCardsPlugin extends Plugin {
         const locale = normalizeStoryLineLocale(this.sceneManager.getEffectiveLocale());
         const counts = await Promise.all(documents.map(async document => countWordRevisionChurn(
             '', await source.readText(document), locale,
-            {
-                excludeComments: this.settings.excludeCommentsFromWordcount !== false,
-                excludeChecklists: this.settings.excludeChecklistFromWordcount === true,
-            },
+            this.wordcountPrepareOptions(),
         )));
         if (normalizePath(this.sceneManager.activeProject?.filePath || '') !== owner) return this.documentWordTotal;
         this.documentWordOwner = owner;
@@ -5817,6 +5960,17 @@ export default class SceneCardsPlugin extends Plugin {
             window.clearTimeout(this._writingTrackerSaveTimer);
             this._writingTrackerSaveTimer = null;
         }
+    }
+
+    /** Counting rules for the active project's word-count profile. */
+    wordcountPrepareOptions() {
+        return wordcountOptionsForProfile(
+            this.sceneManager.activeProject?.capabilities?.wordCountProfile,
+            {
+                excludeComments: this.settings.excludeCommentsFromWordcount !== false,
+                excludeChecklists: this.settings.excludeChecklistFromWordcount === true,
+            },
+        );
     }
 
     /** Whether an async text event still belongs to the project that queued it. */
@@ -6122,13 +6276,9 @@ export default class SceneCardsPlugin extends Plugin {
             canvas.getProjectAttachmentFolderName = () =>
                 (this.settings.projectAttachmentFolder || 'Attachments').trim() || 'Attachments';
             canvas.getNarrativeLabLibraryFolderMap = (projectPath = '') => {
-                const project = this.sceneManager.activeProject;
-                if (!project?.libraryFolders) return {};
-                const canvasPath = normalizePath(String(projectPath || ''));
-                if (!canvasPath) return project.libraryFolders;
-                const base = normalizePath(deriveProjectFoldersFromFilePath(project.filePath).baseFolder);
-                if (canvasPath === base || canvasPath.startsWith(`${base}/`)) return project.libraryFolders;
-                return {};
+                const projectFile = this.findProjectFileForVaultPath(projectPath);
+                const project = this.sceneManager.getProjects().find(item => item.filePath === projectFile);
+                return project && this.isViewEnabled(CODEX_VIEW_TYPE, project.filePath) ? project.libraryFolders || {} : {};
             };
             canvas.getNarrativeLabInterfaceLanguage = () => this.getEffectiveInterfaceLanguage();
             canvas.getNarrativeLabUiTheme = () => this.getEffectiveUiTheme();
@@ -6143,6 +6293,25 @@ export default class SceneCardsPlugin extends Plugin {
             canvas.openNarrativeLabCanvasLibrary = (canvasPath?: string) =>
                 this.openNCanvasLibraryForCanvasPath(canvasPath);
             canvas.getNarrativeLabLibraryCategories = () => listVisibleLibraryCategories(this);
+            canvas.getNarrativeLabProjectFile = path => this.findProjectFileForVaultPath(path);
+            canvas.isNarrativeLabLibraryEnabled = path => {
+                const projectFile = this.findProjectFileForVaultPath(path);
+                return !!projectFile && this.isViewEnabled(CODEX_VIEW_TYPE, projectFile);
+            };
+            canvas.renderNarrativeLabProjectToolbar = view => {
+                view.containerEl.querySelector(':scope > .nl-canvas-project-toolbar')?.remove();
+                const projectFile = this.findProjectFileForVaultPath(view.file || '');
+                if (!projectFile) return;
+                const toolbar = view.containerEl.createDiv({ cls: 'story-line-toolbar nl-canvas-project-toolbar' });
+                view.containerEl.insertBefore(toolbar, view.contentEl);
+                toolbar.createEl('h3', { cls: 'story-line-view-title', text: this.getProjectDisplayName(projectFile) });
+                renderViewSwitcher(toolbar, NARRATIVE_CANVAS_VIEW_TYPE, this, view.leaf);
+            };
+            canvas.openNarrativeLabProjectLibrary = async (path, leaf) => {
+                const projectFile = this.findProjectFileForVaultPath(path);
+                if (!projectFile || !this.isViewEnabled(CODEX_VIEW_TYPE, projectFile)) return;
+                if (leaf) await leaf.setViewState({ type: CODEX_VIEW_TYPE, active: true, state: narrativeLabLeafState(projectFile) });
+            };
             canvas.resolveNarrativeLabLibraryCategoryLabel = (kind: string) =>
                 resolveLibraryCategoryLabelForKind(this, kind);
             canvas.openNarrativeLabLibraryCategoryManager = (onDone) => {
@@ -6455,8 +6624,8 @@ export default class SceneCardsPlugin extends Plugin {
         await this.saveSettings();
     }
 
-    private requireActiveProjectNcanvas(path: string): { project: StoryLineProject; file: TFile } {
-        const project = this.sceneManager.activeProject;
+    private requireActiveProjectNcanvas(path: string, projectFile?: string | null): { project: StoryLineProject; file: TFile } {
+        const project = projectFile ? this.sceneManager.getProjects().find(item => item.filePath === projectFile) : this.sceneManager.activeProject;
         const normalized = normalizePath(path);
         const allowed = project && this.getNcanvasPathsForProject(project).candidates
             .some(candidate => normalizePath(candidate) === normalized);
@@ -6468,8 +6637,8 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /** Rename a project canvas without overwriting another file. */
-    async renameNcanvasInActiveProject(path: string, requestedName: string): Promise<string> {
-        const { project, file } = this.requireActiveProjectNcanvas(path);
+    async renameNcanvasInActiveProject(path: string, requestedName: string, projectFile?: string | null): Promise<string> {
+        const { project, file } = this.requireActiveProjectNcanvas(path, projectFile);
         const title = String(requestedName || '').trim();
         if (!title) throw new Error(t('Enter a canvas name.'));
         const safeTitle = title.replace(/[\\/:*?"<>|]/g, '-').replace(/\.n(?:arrative)?canvas$/i, '').trim();
@@ -6488,8 +6657,8 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /** Move one project canvas to Obsidian's configured trash and forget stale selection state. */
-    async deleteNcanvasInActiveProject(path: string): Promise<void> {
-        const { project, file } = this.requireActiveProjectNcanvas(path);
+    async deleteNcanvasInActiveProject(path: string, projectFile?: string | null): Promise<void> {
+        const { project, file } = this.requireActiveProjectNcanvas(path, projectFile);
         const normalized = normalizePath(file.path);
         const matchingLeaves = this.app.workspace.getLeavesOfType(NARRATIVE_CANVAS_VIEW_TYPE)
             .filter(leaf => {
@@ -6525,12 +6694,13 @@ export default class SceneCardsPlugin extends Plugin {
     }
 
     /** Create a blank .ncanvas in the active project's NCanvas folder and open it. */
-    async createBlankNcanvasInActiveProject(name?: string): Promise<string | null> {
-        const project = this.sceneManager.activeProject;
+    async createBlankNcanvasInActiveProject(name?: string, projectFile?: string | null, targetLeaf?: WorkspaceLeaf): Promise<string | null> {
+        const project = projectFile ? this.sceneManager.getProjects().find(p => p.filePath === projectFile) : this.sceneManager.activeProject;
         if (!project) {
             new Notice(t('No active project. Open a project first.'));
             return null;
         }
+        if (!this.isViewEnabled(NCANVAS_LIBRARY_VIEW_TYPE, project.filePath)) return null;
         const canvas = await this.ensureCanvasModuleReady();
         if (!canvas?.openOrCreateProjectAtPath) {
             new Notice(t('Narrative Canvas is still loading.'));
@@ -6541,7 +6711,7 @@ export default class SceneCardsPlugin extends Plugin {
         const title = String(name || '').trim() || t('Untitled Canvas');
         const safeTitle = title.replace(/[\\/:*?"<>|]/g, '-');
         const path = await this.uniqueNcanvasPath(canvasFolder, `${safeTitle}.ncanvas`);
-        await canvas.openOrCreateProjectAtPath(path, title);
+        await canvas.openOrCreateProjectAtPath(path, title, targetLeaf);
         await this.rememberNcanvasPath(project, path);
         new Notice(t('Created ncanvas: {name}', { name: path.split('/').pop() || path }));
         return path;
@@ -6569,6 +6739,20 @@ export default class SceneCardsPlugin extends Plugin {
             name: (created || path).split('/').pop() || path,
         }));
         return created || path;
+    }
+
+    async openProjectCanvasTab(projectFile?: string | null, leaf?: WorkspaceLeaf | null, preferredPath?: string): Promise<void> {
+        const project = projectFile ? this.sceneManager.getProjects().find(p => p.filePath === projectFile) : this.sceneManager.activeProject;
+        if (!project || !this.isViewEnabled(NCANVAS_LIBRARY_VIEW_TYPE, project.filePath)) return;
+        const { candidates } = this.getNcanvasPathsForProject(project);
+        const remembered = this.settings.narrativeCanvasPathByProject?.[project.filePath];
+        const path = [preferredPath, remembered, candidates[0]].find(value => value && candidates.includes(value));
+        if (!path) { await this.openNCanvasLibrary(project.filePath, leaf); return; }
+        const canvas = await this.ensureCanvasModuleReady();
+        if (!this.isViewEnabled(NCANVAS_LIBRARY_VIEW_TYPE, project.filePath)) return;
+        if (!canvas?.openProjectFile) { new Notice(t('Narrative Canvas is still loading.')); return; }
+        await canvas.openProjectFile(path, leaf);
+        await this.rememberNcanvasPath(project, path);
     }
 
     async openNarrativeCanvas(preferredPath?: string): Promise<void> {
@@ -6982,6 +7166,8 @@ export default class SceneCardsPlugin extends Plugin {
         this.flushWritingTrackers();
 
         const viewTypes = [
+            COLUMN_BOARD_VIEW_TYPE, TRACK_COMPARISON_VIEW_TYPE, SUBWAY_VIEW_TYPE,
+            CHAPTER_TEMPLATES_VIEW_TYPE, PROJECT_OVERVIEW_VIEW_TYPE,
             BOARD_VIEW_TYPE,
             PLOTGRID_VIEW_TYPE,
             TIMELINE_VIEW_TYPE,
@@ -6999,6 +7185,8 @@ export default class SceneCardsPlugin extends Plugin {
             DETAILS_VIEW_TYPE,
             NOTES_VIEW_TYPE,
             SYNOPSIS_VIEW_TYPE,
+            NCANVAS_LIBRARY_VIEW_TYPE,
+            NARRATIVE_CANVAS_VIEW_TYPE,
         ];
 
         const activePath = this.sceneManager.activeProject?.filePath
@@ -7541,6 +7729,14 @@ export default class SceneCardsPlugin extends Plugin {
         return new Promise<StoryLineProject | null>((resolve) => {
             const modal = new Modal(this.app);
             modal.titleEl.setText(t('New NarrativeLab Project'));
+            modal.modalEl.addClass('nl-project-settings-modal');
+            const progress = modal.contentEl.createEl('p', { cls: 'nl-creation-progress', attr: { 'aria-live': 'polite' } });
+            const basicPage = modal.contentEl.createDiv('nl-creation-step');
+            const modulesPage = modal.contentEl.createDiv('nl-creation-step');
+            const reviewPage = modal.contentEl.createDiv('nl-creation-step');
+            let step = 0;
+            let createButton: ButtonComponent;
+            let creating = false;
             let title = '';
             // null = configured default; empty string = explicit vault root.
             let customFolder: string | null = null;
@@ -7553,7 +7749,7 @@ export default class SceneCardsPlugin extends Plugin {
             let wordCountProfile = capabilitiesForPreset(projectPreset).wordCountProfile;
             let renderModuleChoices = (): void => undefined;
 
-            new Setting(modal.contentEl)
+            new Setting(modulesPage)
                 .setName(t('Project preset'))
                 .setDesc(t('Choose an initial module set. Modules can be changed later without deleting data.'))
                 .addDropdown(dropdown => {
@@ -7574,24 +7770,18 @@ export default class SceneCardsPlugin extends Plugin {
                     });
                 });
 
-            const moduleChoices = modal.contentEl.createDiv('nl-project-module-choices');
+            const moduleChoices = modulesPage.createDiv('nl-project-module-choices');
             renderModuleChoices = () => {
-                moduleChoices.empty();
-                moduleChoices.createEl('p', { cls: 'setting-item-description', text: t('Enabled modules') });
-                for (const module of PROJECT_MODULE_IDS) {
-                    new Setting(moduleChoices).setName(t(PROJECT_MODULE_LABELS[module])).addToggle(toggle => {
-                        toggle.setValue(selectedModules.has(module));
-                        toggle.onChange(enabled => {
-                            if (enabled) selectedModules.add(module); else selectedModules.delete(module);
-                            projectPreset = 'custom';
-                        });
-                    });
-                }
+                renderProjectModulePicker(moduleChoices, selectedModules, next => {
+                    selectedModules = next;
+                    projectPreset = 'custom';
+                    modal.contentEl.querySelector<HTMLSelectElement>('select')!.value = 'custom';
+                });
             };
             renderModuleChoices();
 
             // Series toggle at the top
-            const seriesNameSetting = new Setting(modal.contentEl)
+            const seriesNameSetting = new Setting(basicPage)
                 .setName(t('Series name'))
                 .setDesc(t('Characters, locations, and Library entries will be shared across all projects in this series.'))
                 .addText((text: TextComponent) => {
@@ -7600,7 +7790,7 @@ export default class SceneCardsPlugin extends Plugin {
                 });
             seriesNameSetting.settingEl.setCssStyles({ display: 'none' });
 
-            new Setting(modal.contentEl)
+            new Setting(basicPage)
                 .setName(t('Create as series'))
                 .setDesc(t('Wrap this project in a series folder with a shared Library.'))
                 .addToggle((toggle: ToggleComponent) => {
@@ -7612,7 +7802,7 @@ export default class SceneCardsPlugin extends Plugin {
                 });
 
             // Project title
-            new Setting(modal.contentEl)
+            new Setting(basicPage)
                 .setName(t('Project title'))
                 .setDesc(t('The title of this project. Each project gets its own workspace folder.'))
                 .addText((text: TextComponent) => {
@@ -7620,7 +7810,7 @@ export default class SceneCardsPlugin extends Plugin {
                     text.onChange((v: string) => (title = v));
                 });
 
-            new Setting(modal.contentEl)
+            new Setting(basicPage)
                 .setName(t('Project location'))
                 .setDesc(t('Leave empty to use {target}, or enter any vault folder path.', {
                     target: this.settings.storyLineRoot ? t('the default ({path})', { path: this.settings.storyLineRoot }) : t('the vault root'),
@@ -7640,17 +7830,22 @@ export default class SceneCardsPlugin extends Plugin {
                     );
                 });
 
-            new Setting(modal.contentEl)
+            const footer = new Setting(modal.contentEl)
                 .addButton((btn: ButtonComponent) => {
+                    createButton = btn;
+                    btn.buttonEl.addClass('nl-create-submit');
                     btn.buttonEl.addEventListener('pointerdown', () => {
                         locationSuggest?.close();
                     });
                     btn.setButtonText(t('Create')).setCta().onClick(async () => {
+                        if (creating) return;
                         if (!title.trim()) return;
                         if (createAsSeries && !seriesName.trim()) {
                             new Notice(t('Please enter a series name.'));
                             return;
                         }
+                        creating = true;
+                        btn.setDisabled(true);
                         try {
                             const typed = (locationInput?.value ?? '').trim();
                             const chosen = typed !== '' ? (typed === '/' ? '' : typed) : customFolder;
@@ -7680,11 +7875,13 @@ export default class SceneCardsPlugin extends Plugin {
                             this.refreshOpenViews();
                             if (this.settings.autoOpenNavigator) this.openNavigator();
                             try { await this.activateView(this.resolveDefaultProjectViewType()); } catch { /* non-critical */ }
-                            modal.close();
                             resolve(project);
+                            modal.close();
                         } catch (err: unknown) {
                             new Notice((err instanceof Error ? err.message : String(err)), 10000);
-                            resolve(null);
+                        } finally {
+                            creating = false;
+                            btn.setDisabled(false);
                         }
                     });
                 })
@@ -7695,6 +7892,44 @@ export default class SceneCardsPlugin extends Plugin {
                     });
                 });
 
+            let backButton: ButtonComponent;
+            let nextButton: ButtonComponent;
+            const showStep = () => {
+                const labels = [t('Project basics'), t('Choose modules'), t('Review and create')];
+                progress.setText(`${step + 1} / 3 · ${labels[step]}`);
+                [basicPage, modulesPage, reviewPage].forEach((page, index) => { page.hidden = step !== index; });
+                backButton.buttonEl.hidden = step === 0;
+                nextButton.buttonEl.hidden = step === 2;
+                createButton.buttonEl.hidden = step !== 2;
+                if (step === 2) {
+                    reviewPage.empty();
+                    reviewPage.createEl('h3', { text: title.trim() });
+                    reviewPage.createEl('p', { text: (customFolder ?? this.settings.storyLineRoot) || '/', cls: 'setting-item-description' });
+                    const list = reviewPage.createEl('ul');
+                    for (const module of resolveModuleDependencies([...selectedModules, ...(createAsSeries ? ['series' as const] : [])])) {
+                        list.createEl('li', { text: t(PROJECT_MODULE_LABELS[module]) });
+                    }
+                    reviewPage.createEl('p', { text: t('Disabling a module keeps its files. Re-enable it to restore access.') });
+                }
+                modal.contentEl.scrollTop = 0;
+            };
+            footer.settingEl.addClass('nl-creation-footer');
+            footer.addButton(button => {
+                backButton = button.setButtonText(t('Previous step')).onClick(() => { if (creating) return; step--; showStep(); });
+                button.buttonEl.addClass('nl-create-back');
+            }).addButton(button => {
+                nextButton = button.setButtonText(t('Next step')).setCta().onClick(() => {
+                    if (step === 0 && (!title.trim() || (createAsSeries && !seriesName.trim()))) {
+                        new Notice(t('Enter the project title and, if applicable, the series name.'));
+                        return;
+                    }
+                    step++;
+                    showStep();
+                });
+                button.buttonEl.addClass('nl-create-next');
+            });
+            modal.onClose = () => { locationSuggest?.close(); resolve(null); };
+            showStep();
             modal.open();
         });
     }
@@ -8048,7 +8283,7 @@ class ProjectSelectModal extends Modal {
         };
 
         const actions = contentEl.createDiv({ cls: 'project-actions project-actions-primary' });
-        const openSelected = async (destination: 'board' | 'canvas'): Promise<void> => {
+        const openSelected = async (): Promise<void> => {
             const val = select.value;
             const projects = this.plugin.sceneManager.getProjects();
             const selected = projects.find((p: StoryLineProject) => p.filePath === val);
@@ -8058,13 +8293,6 @@ class ProjectSelectModal extends Modal {
             }
             try {
                 if (this.plugin.settings.autoOpenNavigator) this.plugin.openNavigator();
-                if (destination === 'canvas') {
-                    await this.plugin.sceneManager.setActiveProject(selected);
-                    this.plugin.refreshOpenViews();
-                    this.close();
-                    this.plugin.openNCanvasManager();
-                    return;
-                }
                 await this.plugin.openBoardForProject(selected);
                 this.close();
             } catch (err) {
@@ -8075,22 +8303,12 @@ class ProjectSelectModal extends Modal {
         const openBtn = actions.createEl('button', { text: t('Open Project'), cls: 'mod-cta' });
         openBtn.setAttr('type', 'button');
         openBtn.addEventListener('click', () => {
-            void openSelected('board');
+            void openSelected();
         });
 
-        const canvasBtn = actions.createEl('button', { text: t('Open Canvas'), cls: 'mod-cta' });
-        canvasBtn.setAttr('type', 'button');
-        canvasBtn.setAttr('title', t('Choose, create, or open an ncanvas for this project'));
-        canvasBtn.addEventListener('click', () => {
-            void openSelected('canvas');
-        });
-
-        const managementActions = contentEl.createDiv({ cls: 'project-actions project-actions-secondary' });
-
-        const createBtn = managementActions.createEl('button', { text: t('New Project'), cls: 'mod-cta' });
+        const createBtn = actions.createEl('button', { text: t('New Project') });
         createBtn.setAttr('type', 'button');
         createBtn.addEventListener('click', async () => {
-            // open project creation modal and refresh list if a new project was created
             const created = await this.plugin.openNewProjectModal();
             if (created) {
                 this.close();
@@ -8099,100 +8317,16 @@ class ProjectSelectModal extends Modal {
             await refreshSelect(true);
         });
 
-        const cancel = managementActions.createEl('button', { text: t('Cancel'), cls: 'mod-quiet project-actions-cancel' });
-        cancel.setAttr('type', 'button');
-        cancel.addEventListener('click', () => this.close());
-
-        const seriesBtn = managementActions.createEl('button', { text: t('Manage Series…'), cls: 'mod-cta' });
+        const seriesBtn = actions.createEl('button', { text: t('Manage projects') });
         seriesBtn.setAttr('type', 'button');
         seriesBtn.addEventListener('click', async () => {
             const seriesModal = new SeriesManagementModal(this.app, this.plugin);
             seriesModal.open();
         });
 
-        // "Browse" button — manually pick a .md file as a NarrativeLab project
-        const browseBtn = managementActions.createEl('button', { text: t('Browse Project…'), cls: 'mod-cta' });
-        browseBtn.setAttr('type', 'button');
-        browseBtn.addEventListener('click', async () => {
-            // Build a list of all .md files in the vault for the user to pick from
-            const browseModal = new Modal(this.app);
-            browseModal.titleEl.setText(t('Select a NarrativeLab project file'));
-            const container = browseModal.contentEl.createDiv({ cls: 'project-browse-list' });
-            const fileList = container.createDiv();
-            fileList.setCssStyles({
-                maxHeight: '300px',
-                overflowY: 'auto',
-            });
-            fileList.createDiv({ text: t('Scanning…') });
-
-            const projectFiles: { path: string; title: string }[] = [];
-            try {
-                const known = this.plugin.sceneManager.getProjects();
-                if (known.length > 0) {
-                    for (const p of known) projectFiles.push({ path: p.filePath, title: p.title });
-                } else {
-                    for (const file of this.app.vault.getMarkdownFiles()) {
-                        const cache = this.app.metadataCache.getFileCache(file);
-                        const type = cache?.frontmatter?.type;
-                        if (type !== 'narrative-lab' && type !== 'storyline') continue;
-                        const title = typeof cache?.frontmatter?.title === 'string' && cache.frontmatter.title
-                            ? cache.frontmatter.title
-                            : file.basename;
-                        projectFiles.push({ path: file.path, title });
-                    }
-                }
-            } catch { /* vault index may still be loading */ }
-            projectFiles.sort((a, b) => a.title.localeCompare(b.title));
-
-            // Render the project list
-            fileList.empty();
-            if (projectFiles.length === 0) {
-                fileList.createDiv({ text: t('No NarrativeLab projects found.') });
-            }
-            for (const pf of projectFiles) {
-                const row = fileList.createDiv({ cls: 'project-browse-row' });
-                row.setCssStyles({
-                    padding: '4px 8px',
-                    cursor: 'pointer',
-                    borderRadius: '4px',
-                });
-                row.textContent = `${pf.title}  (${pf.path})`;
-                row.addEventListener('mouseenter', () => { row.setCssStyles({ background: 'var(--background-modifier-hover)' }); });
-                row.addEventListener('mouseleave', () => { row.setCssStyles({ background: '' }); });
-                row.addEventListener('click', async () => {
-                    try {
-                        const adapter = this.app.vault.adapter;
-                        const content = await adapter.read(pf.path);
-                        // Re-scan and try to find / adopt this project
-                        await this.plugin.sceneManager.scanProjects();
-                        let project = this.plugin.sceneManager.getProjects().find((p: StoryLineProject) => p.filePath === pf.path);
-                        if (!project) {
-                            const sm = this.plugin.sceneManager as unknown as {
-                                parseProjectContent: (content: string, path: string) => StoryLineProject | null;
-                                projects: Map<string, StoryLineProject>;
-                            };
-                            const parsed = sm.parseProjectContent(content, pf.path);
-                            if (parsed) {
-                                sm.projects.set(pf.path, parsed);
-                                project = parsed;
-                            }
-                        }
-                        if (project) {
-                            if (this.plugin.settings.autoOpenNavigator) this.plugin.openNavigator();
-                            try { await this.plugin.openBoardForProject(project); } catch { /* */ }
-                            browseModal.close();
-                            this.close();
-                        } else {
-                            new Notice(t('Could not parse file as a NarrativeLab project'));
-                        }
-                    } catch (err) {
-                        new Notice(t('Failed to open project: ') + String(err));
-                    }
-                });
-            }
-
-            browseModal.open();
-        });
+        const cancel = actions.createEl('button', { text: t('Cancel'), cls: 'mod-quiet project-actions-cancel' });
+        cancel.setAttr('type', 'button');
+        cancel.addEventListener('click', () => this.close());
 
         // Paint the already-scanned list immediately; refresh in the background.
         const cached = this.plugin.sceneManager.getProjects();
@@ -8226,7 +8360,7 @@ class SeriesManagementModal extends Modal {
     constructor(app: App, plugin: SceneCardsPlugin) {
         super(app);
         this.plugin = plugin;
-        this.titleEl.setText(t('Manage Series'));
+        this.titleEl.setText(t('Manage projects'));
     }
 
     onOpen() {
@@ -8265,7 +8399,26 @@ class SeriesManagementModal extends Modal {
                     text: deriveProjectFoldersFromFilePath(project.filePath).baseFolder,
                     cls: 'sl-series-project-path',
                 });
-                const convertBtn = row.createEl('button', {
+                const actions = row.createDiv({ cls: 'sl-series-project-actions' });
+                const openBtn = actions.createEl('button', { text: t('Open Project'), attr: { type: 'button' } });
+                openBtn.addEventListener('click', () => { void this.plugin.openBoardForProject(project); this.close(); });
+                const settingsBtn = actions.createEl('button', { text: t('Project settings'), attr: { type: 'button' } });
+                settingsBtn.addEventListener('click', () => new ProjectModulesModal(this.app, this.plugin, project).open());
+                const more = actions.createEl('details', { cls: 'nl-project-actions-more' });
+                more.createEl('summary', { text: '⋯', attr: { 'aria-label': t('More project actions') } });
+                const secondaryActions = more.createDiv('nl-project-actions-menu');
+                const renameBtn = secondaryActions.createEl('button', {
+                    text: t('Rename'),
+                    attr: { type: 'button' },
+                });
+                renameBtn.addEventListener('click', () => this.renameManagedProject(project));
+                const deleteBtn = secondaryActions.createEl('button', {
+                    text: t('Delete'),
+                    cls: 'sl-series-delete',
+                    attr: { type: 'button' },
+                });
+                deleteBtn.addEventListener('click', () => this.confirmDeleteProject(project));
+                const convertBtn = secondaryActions.createEl('button', {
                     text: t('Convert to Series…'),
                     cls: 'sl-series-convert-btn',
                     attr: { type: 'button' },
@@ -8308,6 +8461,13 @@ class SeriesManagementModal extends Modal {
                 row.createSpan({ cls: 'sl-series-book-name', text: bookName });
 
                 const bookActions = row.createDiv({ cls: 'sl-series-book-actions' });
+                const project = this.findSeriesBookProject(folder, bookName);
+                if (project) {
+                    const openButton = bookActions.createEl('button', { text: t('Open Project') });
+                    openButton.addEventListener('click', () => { void this.plugin.openBoardForProject(project); this.close(); });
+                    const settingsButton = bookActions.createEl('button', { text: t('Project settings') });
+                    settingsButton.addEventListener('click', () => new ProjectModulesModal(this.app, this.plugin, project).open());
+                }
 
                 // Rename book
                 const renameBookBtn = bookActions.createEl('button', { cls: 'clickable-icon', attr: { 'aria-label': t('Rename project') } });
@@ -8333,8 +8493,8 @@ class SeriesManagementModal extends Modal {
                 setIcon(removeBtn, 'x');
                 removeBtn.addEventListener('click', () => this.removeBook(folder, meta, bookName));
 
-                // Delete book permanently
-                const deleteBookBtn = bookActions.createEl('button', { cls: 'clickable-icon sl-series-delete', attr: { 'aria-label': t('Delete project permanently') } });
+                // Delete the project using the vault's configured deletion method.
+                const deleteBookBtn = bookActions.createEl('button', { cls: 'clickable-icon sl-series-delete', attr: { 'aria-label': t('Delete Project') } });
                 setIcon(deleteBookBtn, 'trash');
                 deleteBookBtn.addEventListener('click', () => this.deleteBook(folder, meta, bookName));
             }
@@ -8607,12 +8767,7 @@ class SeriesManagementModal extends Modal {
         }
     }
 
-    /**
-     * Permanently delete a book from a series.
-     *
-     * Shows a type-to-confirm warning modal, then trashes the book's folder
-     * (scenes, codex, notes, etc.) and removes it from `series.json`.
-     */
+    /** Resolve the clicked series member; never delete the active project by default. */
     private async deleteBook(folder: string, meta: SeriesMetadata, bookName: string) {
         const bookProject = this.findSeriesBookProject(folder, bookName);
 
@@ -8621,25 +8776,37 @@ class SeriesManagementModal extends Modal {
             return;
         }
 
+        this.confirmDeleteProject(bookProject, meta.name);
+    }
+
+    private confirmDeleteProject(project: StoryLineProject, seriesName?: string): void {
         const modal = new Modal(this.app);
-        modal.titleEl.setText(t('Delete "{name}"', { name: bookName }));
+        modal.titleEl.setText(t('Delete "{name}"', { name: project.title }));
 
         const warningEl = modal.contentEl.createDiv({ cls: 'sl-delete-warning' });
         warningEl.createEl('p', {
-            text: t('⚠️ This will permanently delete "{name}" and everything inside it:', { name: bookName }),
+            text: t('Delete the project "{name}" and all files in its project folder?', { name: project.title }),
         });
-        const list = warningEl.createEl('ul');
-        list.createEl('li', { text: t('All scenes') });
-        list.createEl('li', { text: t('All characters, locations and codex entries') });
-        list.createEl('li', { text: t('All notes, research and archive items') });
-        list.createEl('li', { text: t('The project will be removed from the series "{name}".', { name: meta.name }) });
         warningEl.createEl('p', {
-            text: t('This action cannot be undone. The folder will be moved to your system trash (or Obsidian\u2019s .trash folder, depending on your settings).'),
+            text: deriveProjectFoldersFromFilePath(project.filePath).baseFolder,
+            cls: 'sl-delete-project-path',
+        });
+        warningEl.createEl('p', {
+            text: t('This includes documents, notes, canvases, tables, attachments and project settings stored in this folder.'),
+        });
+        if (seriesName) {
+            warningEl.createEl('p', {
+                text: t('The project will be removed from "{name}". The shared series Library and other projects will be kept.', { name: seriesName }),
+            });
+        }
+        warningEl.createEl('p', {
+            text: t('Deletion follows your vault’s Deleted files setting. Recovery depends on that setting; WritingLab has no undo for project deletion.'),
             cls: 'sl-delete-warning-strong',
         });
 
-        const expected = bookName;
+        const expected = project.title;
         let typed = '';
+        let deleting = false;
         let deleteBtn: ButtonComponent;
         new Setting(modal.contentEl)
             .setName(t('Confirm by typing the project title'))
@@ -8658,18 +8825,23 @@ class SeriesManagementModal extends Modal {
                 btn.setButtonText(t('Cancel')).onClick(() => modal.close());
             })
             .addButton((btn: ButtonComponent) => {
-                deleteBtn = btn.setButtonText(t('Delete permanently')).setClass('mod-warning').setDisabled(true);
+                deleteBtn = btn.setButtonText(t('Delete')).setClass('mod-warning').setDisabled(true);
                 btn.onClick(async () => {
-                    if (typed.trim() !== expected) return;
-                    modal.close();
+                    if (deleting || typed.trim() !== expected) return;
+                    deleting = true;
+                    btn.setDisabled(true);
                     try {
-                        const ok = await this.plugin.sceneManager.deleteProject(bookProject);
+                        const ok = await this.plugin.sceneManager.deleteProject(project);
                         if (ok) {
-                            this.plugin.refreshOpenViews();
-                            this.render();
+                            modal.close();
+                            await this.plugin.refreshOpenViews();
+                            await this.render();
                         }
                     } catch (e: unknown) {
                         new Notice(t('Failed to delete project: ') + (e instanceof Error ? e.message : String(e)), 10000);
+                    } finally {
+                        deleting = false;
+                        btn.setDisabled(typed.trim() !== expected);
                     }
                 });
             });
@@ -8684,35 +8856,47 @@ class SeriesManagementModal extends Modal {
             return;
         }
 
+        this.renameManagedProject(bookProject);
+    }
+
+    private renameManagedProject(project: StoryLineProject): void {
         const modal = new Modal(this.app);
         modal.titleEl.setText(t('Rename Project'));
-        let newTitle = bookProject.title;
+        let newTitle = project.title;
+        let renaming = false;
 
         new Setting(modal.contentEl)
             .setName(t('New title'))
-            .setDesc(t('The project folder and manifest file will be renamed. All links are updated automatically.'))
+            .setDesc(t('Rename the project title, folder, manifest and existing project-named Base files. Document titles are kept.'))
             .addText((text: TextComponent) => {
-                text.setValue(bookProject.title);
+                text.setValue(project.title);
                 text.onChange((v: string) => (newTitle = v));
                 window.setTimeout(() => { text.inputEl.focus(); text.inputEl.select(); }, 50);
             });
 
         new Setting(modal.contentEl)
+            .addButton((btn: ButtonComponent) => btn.setButtonText(t('Cancel')).onClick(() => modal.close()))
             .addButton((btn: ButtonComponent) => {
                 btn.setButtonText(t('Rename')).setCta().onClick(async () => {
-                    if (!newTitle.trim() || newTitle.trim() === bookProject.title) {
+                    if (renaming) return;
+                    if (!newTitle.trim() || newTitle.trim() === project.title) {
                         modal.close();
                         return;
                     }
+                    renaming = true;
+                    btn.setDisabled(true);
                     try {
                         this.plugin.seriesManager.checkLinkSettings();
-                        await this.plugin.sceneManager.renameProject(bookProject, newTitle.trim());
+                        await this.plugin.sceneManager.renameProject(project, newTitle.trim());
                         new Notice(t('Project renamed to "{title}"', { title: newTitle.trim() }));
                         modal.close();
-                        this.plugin.refreshOpenViews();
-                        this.render();
+                        await this.plugin.refreshOpenViews();
+                        await this.render();
                     } catch (e: unknown) {
                         new Notice((e instanceof Error ? e.message : String(e)), 10000);
+                    } finally {
+                        renaming = false;
+                        btn.setDisabled(false);
                     }
                 });
             });

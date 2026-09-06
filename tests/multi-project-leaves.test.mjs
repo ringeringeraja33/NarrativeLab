@@ -211,7 +211,7 @@ test('Library Archive/Browse and category chrome stay per project', () => {
     assert.match(codexView, /setLibraryContentMode\(this\.plugin, 'profile', this\.getBoundProjectFile\(\)\)/);
     assert.match(codexTabs, /getLeafNarrativeLabProjectFile\(leaf\)/);
     assert.match(codexTabs, /rememberLibraryCategory\(plugin, categoryId, projectFile\)/);
-    assert.match(viewSwitcher, /resolveLibraryViewType\(plugin, projectFile\)/);
+    assert.match(viewSwitcher, /resolveLibraryViewType\(plugin, boundProject\)/);
     assert.doesNotMatch(codexView, /getLibraryContentMode\(this\.plugin\) ===/);
 });
 

@@ -179,6 +179,8 @@ const dynamicSchemaFiles = [
     'models/Location.ts',
     'models/Scene.ts',
     'services/PlotlineNcanvasService.ts',
+    'models/ProjectPages.ts',
+    'components/ProjectModulePicker.ts',
 ];
 const dynamicAllowlist = new Set(['{{title}}']);
 const schemaStringPattern = /\b(?:label|title|placeholder)\s*:\s*(['"])((?:\\.|(?!\1).)*)\1/g;

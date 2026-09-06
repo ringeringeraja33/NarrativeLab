@@ -33,30 +33,33 @@ test('CSS disclosure indicators are valid and cannot render corrupted text', () 
     assert.match(styles, /data-narrative-lab-language='zh'[^}]+content:\s*'开'/s);
 });
 
-test('Order and plotline tools share one Structure tab with five subviews', async () => {
+test('Planning views are peer pages; chapter templates stay a separate project tool', async () => {
     const [switcher, modes, timeline, storyline] = await Promise.all([
         readFile(new URL('../components/ViewSwitcher.ts', import.meta.url), 'utf8'),
-        readFile(new URL('../components/StructureModeSwitcher.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../models/ProjectPages.ts', import.meta.url), 'utf8'),
         readFile(new URL('../views/TimelineView.ts', import.meta.url), 'utf8'),
         readFile(new URL('../views/StorylineView.ts', import.meta.url), 'utf8'),
     ]);
-    assert.match(switcher, /label: 'Structure'/);
+    assert.match(switcher, /PROJECT_PAGES/);
+    assert.doesNotMatch(switcher, /label: 'Structure'/);
     assert.doesNotMatch(switcher, /label: 'Order'/);
     assert.doesNotMatch(switcher, /label: 'Plotlines'/);
-    for (const label of ['Timeline', 'Track comparison', 'Plot list', 'Subway map', 'Chapter templates']) {
+    for (const label of ['Timeline', 'Track comparison', 'Plot list', 'Plot subway map']) {
         assert.match(modes, new RegExp(`label: '${label}'`));
     }
-    assert.match(timeline, /renderStructureModeSwitcher/);
-    assert.match(storyline, /renderStructureModeSwitcher/);
-    assert.match(modes, /if \(localAction\) \{[\s\S]*?localAction\(\);[\s\S]*?return;/);
+    assert.doesNotMatch(modes, /module: 'chapterTemplates'/);
+    const tools = await readFile(new URL('../components/ProjectStructureTools.ts', import.meta.url), 'utf8');
+    assert.match(tools, /new BeatSheetApplyModal/);
+    assert.match(timeline, /new ProjectStructureTools/);
+    assert.doesNotMatch(timeline, /renderStructureModeSwitcher/);
+    assert.doesNotMatch(storyline, /renderStructureModeSwitcher/);
     assert.match(timeline, /await this\.sceneManager\.ensureInitialized\(\)/);
     assert.match(storyline, /await this\.sceneManager\.ensureInitialized\(\)/);
-    assert.match(modes, /if \(switching\) return/);
-    assert.match(modes, /'aria-pressed'/);
+    assert.match(switcher, /'aria-current'/);
     assert.match(timeline, /private setZoomLevel/);
     assert.doesNotMatch(timeline, /private refreshTimeline/);
     assert.match(timeline, /window\.cancelAnimationFrame\(this\._pendingRefresh\)/);
-    assert.match(storyline, /if \(this\.plotlineViewMode === mode\) return/);
+    assert.match(storyline, /this\.plotlineViewMode = mode/);
     assert.match(storyline, /if \(this\.sortMode === mode\) return/);
     assert.match(storyline, /window\.cancelAnimationFrame\(this\._pendingRefresh\)/);
     assert.match(storyline, /scrollTop = scroll\.top/);
@@ -809,6 +812,10 @@ test('project picker paints the cached list before a vault rescan', () => {
     assert.match(picker, /fillSelect\(cached/);
     assert.match(picker, /Scanning…/);
     assert.match(picker, /void refreshSelect\(\)/);
+    assert.doesNotMatch(picker, /Open Canvas/);
+    assert.doesNotMatch(picker, /openNCanvasManager/);
+    assert.match(picker, /project-actions-primary/);
+    assert.doesNotMatch(picker, /project-actions-secondary/);
     const fillIdx = picker.indexOf('fillSelect(cached');
     const scanIdx = picker.indexOf('void refreshSelect()');
     assert.ok(fillIdx >= 0 && scanIdx > fillIdx);
@@ -850,7 +857,7 @@ test('project scan keeps the previous list until the new map is ready', () => {
 });
 
 test('startup overlaps independent project reads and defers Narrative Canvas', () => {
-    assert.match(sceneManager, /Promise\.all\(\[\s*this\.scanFolderAdapter\(sceneFolder\),\s*this\.scanFolderAdapter\(notesFolder\),/s);
+    assert.match(sceneManager, /Promise\.all\(\[\s*moduleEnabled\(capabilities, 'scenes'\) \? this\.scanFolderAdapter\(sceneFolder\).*\s*moduleEnabled\(capabilities, 'notes'\) \? this\.scanFolderAdapter\(notesFolder\)/s);
     assert.match(mainTs, /Promise\.all\(\[\s*has\('plotlines'\).*this\.plotlineManager\.ensureSeeded\(\).*\s*has\('library'\).*this\.fieldTemplates\.load\(\).*\s*has\('structure'\).*this\.templateCenter\.load\(\).*\s*has\('board'\).*this\.sceneManager\.loadCorkboardPositions\(\)/s);
     assert.match(mainTs, /locationManager\.loadAll\(locFolder\)/);
     assert.match(mainTs, /characterManager\.loadCharacters\(charFolder\)/);

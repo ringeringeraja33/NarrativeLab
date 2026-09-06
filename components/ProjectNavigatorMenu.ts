@@ -71,7 +71,7 @@ export function showProjectNavigatorMenu(
     }
 
     menu.addItem(item => {
-        item.setTitle(t('Manage Series…'));
+        item.setTitle(t('Manage projects'));
         item.setIcon('list');
         item.onClick(() => {
             void run(() => {
@@ -83,10 +83,10 @@ export function showProjectNavigatorMenu(
     menu.addSeparator();
 
     menu.addItem(item => {
-        item.setTitle(t('Project modules…'));
-        item.setIcon('blocks');
+        item.setTitle(t('Project settings'));
+        item.setIcon('settings');
         item.onClick(() => {
-            void run(() => { new ProjectModulesModal(plugin.app, plugin, project).open(); });
+            new ProjectModulesModal(plugin.app, plugin, project).open();
         });
     });
 

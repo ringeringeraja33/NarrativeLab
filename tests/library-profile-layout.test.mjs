@@ -767,3 +767,17 @@ test('character detail keeps an unchanged right rail mounted and rejects stale a
     assert.match(relations, /export function getLibraryRelationsPanelSignature/);
     assert.match(relations, /focusNotes\(focusBundleFor\(plugin, relation\)\)/);
 });
+
+test('library profile type uses a compact px scale the host editor cannot enlarge', async () => {
+    const css = await readFile('styles.css', 'utf8');
+    assert.match(css, /px so Obsidian \/ host UI font cannot enlarge the sheet/);
+    assert.match(css, /\.character-detail-hero-name\s*\{[\s\S]*?font-size:\s*16px/);
+    assert.match(css, /\.character-section-header\s*\{[\s\S]*?font-size:\s*12px/);
+    assert.match(css, /\.character-field-label\s*\{[\s\S]*?font-size:\s*12px/);
+    assert.match(css, /\.character-field-input\s*\{[\s\S]*?font-size:\s*13px/);
+    assert.match(css, /\.character-field-textarea\s*\{[\s\S]*?font-size:\s*13px/);
+    assert.match(css, /\.character-gallery-header h4\s*\{[\s\S]*?font-size:\s*12px/);
+    assert.match(css, /\.character-gallery-viewer:has\(\.character-gallery-empty\)/);
+    assert.match(css, /\.location-field-label\s*\{[\s\S]*?font-size:\s*12px/);
+    assert.match(css, /\.codex-section-title\s*\{[\s\S]*?font-size:\s*12px/);
+});

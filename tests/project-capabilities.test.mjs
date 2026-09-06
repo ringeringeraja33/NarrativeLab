@@ -20,17 +20,24 @@ test('legacy projects retain every module', () => {
 
 test('research paper excludes narrative services but keeps research tools', () => {
     const preset = capabilities.capabilitiesForPreset('research-paper');
-    for (const module of ['manuscript', 'outline', 'library', 'table', 'canvas', 'research', 'citations']) {
+    for (const module of ['manuscript', 'outline', 'library', 'table', 'flatCanvas', 'columnBoard', 'research', 'citations']) {
         assert.ok(preset.modules.includes(module), module);
     }
-    for (const module of ['scenes', 'board', 'plotlines', 'timeline', 'characters', 'locations']) {
+    for (const module of ['scenes', 'board', 'plotlines', 'timeline', 'characters', 'locations', 'canvas']) {
         assert.ok(!preset.modules.includes(module), module);
     }
     assert.equal(preset.wordCountProfile, 'academic');
+    assert.equal(preset.navigation?.defaultPage, 'library');
+    assert.deepEqual(preset.navigation?.order, ['library', 'manuscript', 'flatCanvas', 'columnBoard', 'table']);
+    assert.equal(capabilities.libraryCategoryPack(preset), 'academic');
+    assert.equal(capabilities.libraryCategoryPack(capabilities.capabilitiesForPreset('literature-review')), 'academic');
+    assert.equal(capabilities.libraryCategoryPack(capabilities.capabilitiesForPreset('novel')), 'narrative');
+    assert.equal(capabilities.libraryCategoryPack(capabilities.capabilitiesForPreset('essay')), 'academic');
 });
 
 test('dependencies are added without enabling unrelated modules', () => {
-    assert.deepEqual(capabilities.resolveModuleDependencies(['board']), ['scenes', 'board']);
+    assert.deepEqual(capabilities.resolveModuleDependencies(['flatCanvas']), ['notes', 'flatCanvas']);
+    assert.deepEqual(capabilities.resolveModuleDependencies(['columnBoard']), ['notes', 'columnBoard']);
     assert.deepEqual(capabilities.resolveModuleDependencies(['characters']), ['library', 'characters']);
     assert.deepEqual(capabilities.resolveModuleDependencies(['writingTracker']), ['writingTracker']);
 });
@@ -40,6 +47,26 @@ test('unknown module ids are discarded safely', () => {
         preset: 'custom', modules: ['manuscript', 'made-up-module'], wordCountProfile: 'academic',
     });
     assert.deepEqual(normalized.modules, ['manuscript']);
+});
+
+test('research presets drop presentation canvas while custom projects keep it', () => {
+    const migrated = capabilities.normalizeProjectCapabilities({
+        version: 2, preset: 'research-paper',
+        modules: ['manuscript', 'notes', 'library', 'table', 'canvas', 'citations'],
+    });
+    assert.ok(!migrated.modules.includes('canvas'));
+    assert.ok(migrated.modules.includes('flatCanvas'));
+    assert.ok(migrated.modules.includes('columnBoard'));
+    const withOrder = capabilities.normalizeProjectCapabilities({
+        version: 2, preset: 'literature-review',
+        modules: ['manuscript', 'notes', 'library', 'table'],
+        navigation: { order: ['library', 'manuscript', 'table'], hidden: [] },
+    });
+    assert.deepEqual(withOrder.navigation?.order, ['library', 'manuscript', 'flatCanvas', 'columnBoard', 'table']);
+    const custom = capabilities.normalizeProjectCapabilities({
+        version: 2, preset: 'custom', modules: ['manuscript', 'library', 'canvas'],
+    });
+    assert.ok(custom.modules.includes('canvas'));
 });
 
 test('document sources are replaceable and removable without scene dependencies', async () => {
@@ -79,6 +106,10 @@ test('project manifests persist capabilities while legacy manifests stay implici
     assert.match(sceneManager, /if \(project\.capabilities\) \{\s*const capabilities/s);
     assert.match(sceneManager, /capabilities\.modules\.includes\('library'\)/);
     assert.match(sceneManager, /capabilities\.modules\.includes\('canvas'\)/);
+    assert.match(sceneManager, /projectNavigation: capabilities\.navigation/);
+    assert.match(sceneManager, /!capabilities\.modules\.includes\('scenes'\)/);
+    assert.match(sceneManager, /草稿/);
+    assert.match(sceneManager, /\$\{draftName\}\.md/);
 });
 
 test('disabled views and services are gated by their project capability', async () => {
@@ -92,7 +123,8 @@ test('disabled views and services are gated by their project capability', async 
     assert.match(main, /has\('scenes'\)/);
     assert.match(main, /has\('library'\)/);
     assert.match(main, /has\('writingTracker'\)/);
-    assert.match(switcher, /filter\(entry => plugin\.isViewEnabled/);
+    assert.match(main, /libraryCategoryPack\(this\.capabilityService\.get\(this\.sceneManager\.activeProject\)\) === 'academic'/);
+    assert.match(switcher, /plugin\.isViewEnabled\(entry\.type/);
     assert.match(navigator, /capabilityService\.isEnabled\('notes'/);
     assert.match(navigator, /capabilityService\.isEnabled\('scenes'/);
     assert.match(navigator, /capabilityService\.isEnabled\('research'/);
@@ -106,6 +138,8 @@ test('lightweight projects create and load only enabled System data', async () =
     ]);
     assert.match(sceneManager, /const needsSystemFolder = capabilities\.modules\.some/);
     assert.match(sceneManager, /capabilities\.modules\.includes\('writingTracker'\) \? \['stats\.json'\]/);
+    assert.match(main, /wordcountPrepareOptions\(\)/);
+    assert.match(sceneManager, /setWordcountProfile\(this\._activeProject\?\.capabilities\?\.wordCountProfile\)/);
     assert.doesNotMatch(sceneManager, /includes\('writingTracker'\) \|\| capabilities\.modules\.includes\('writingStats'\)/);
     assert.match(main, /const plotlines = plotlineDataEnabled \? await this\.readSystemJson\('plotlines\.json'\) : \{\}/);
     assert.match(main, /const characters = charactersEnabled \? await this\.readSystemJson\('characters\.json'\) : \{\}/);
@@ -139,9 +173,14 @@ test('manuscript provides document creation and editing when Scenes is disabled'
     assert.match(manuscript, /await this\.mountEditor\(document\.el, document\.path\)/);
     assert.match(manuscript, /isEnabled\('scenes', this\.getBoundProject\(\)\)/);
     assert.match(manuscript, /ensureProjectDocumentBase\(this\.app, project\)/);
-    assert.match(manuscript, /window\.setTimeout\(\(\) => \{/);
-    assert.match(manuscript, /void leaf\.openFile\(base\)\.catch/);
+    assert.match(manuscript, /text: t\('Open as table'\)/);
+    assert.match(manuscript, /getLeaf\('tab'\)\.openFile\(base\)/);
+    assert.match(manuscript, /Open Library to add literature, claims, arguments, and facts\./);
+    assert.match(manuscript, /nl-manuscript-doc-actions/);
+    assert.match(manuscript, /chrome.hidden = documents.length === 0/);
+    assert.doesNotMatch(manuscript, /void leaf\.openFile\(base\)/);
     assert.doesNotMatch(manuscript, /await this\.leaf\.openFile\(base\)/);
+    assert.doesNotMatch(manuscript, /Opening project document list/);
 });
 
 test('project document Base includes writing files and excludes module storage', async () => {
@@ -164,13 +203,14 @@ test('generic writing hides narrative-only statistics and commands', async () =>
         readFile(new URL('../views/StatsView.ts', import.meta.url), 'utf8'),
         readFile(new URL('../components/ViewSwitcher.ts', import.meta.url), 'utf8'),
     ]);
-    for (const module of ['board', 'structure', 'table', 'plotlines', 'characters', 'locations', 'library', 'scenes']) {
+    for (const module of ['flatCanvas', 'timeline', 'table', 'plotList', 'characters', 'locations', 'library', 'scenes']) {
         assert.match(main, new RegExp(`moduleCommand\\('${module}'`), module);
     }
     assert.match(stats, /if \(!narrativeMode\) return/);
     assert.match(stats, /narrativeMode \? t\('Scenes'\) : t\('Documents'\)/);
     assert.match(stats, /isEnabled\('scenes', this\.getBoundProject\(\)\)/);
-    assert.match(switcher, /label: 'Canvas'/);
+    const pages = await readFile(new URL('../models/ProjectPages.ts', import.meta.url), 'utf8');
+    assert.match(pages, /label: 'Node-based presentation canvas'/);
     assert.doesNotMatch(switcher, /label: 'Play in Canvas'/);
 });
 

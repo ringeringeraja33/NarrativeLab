@@ -123,3 +123,25 @@ test('profile associations are mirrored, graph-backed, rename-safe, and never de
         assert.match(view, /renderLibraryRelationsPanel\(sidePanel/);
     }
 });
+
+test('academic library graphs hide character relations and seed cite/support/refute', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const [graph, modeBar, academic] = await Promise.all([
+        readFile(new URL('../components/StoryGraph.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../components/LibraryModeBar.ts', import.meta.url), 'utf8'),
+        readFile(new URL('../utils/storyGraphAcademicRelations.ts', import.meta.url), 'utf8'),
+    ]);
+    assert.match(academic, /id: 'cites'/);
+    assert.match(academic, /id: 'supports'/);
+    assert.match(academic, /id: 'refutes'/);
+    assert.match(academic, /mergeAcademicStoryGraphLinkCategories/);
+    assert.match(graph, /includeScenes\?: boolean/);
+    assert.match(graph, /host\?\.characterRelationTypes !== undefined/);
+    assert.match(graph, /if \(this\.includeScenes\)/);
+    assert.match(graph, /\[\[Source\]\]/);
+    assert.match(modeBar, /mergeAcademicStoryGraphLinkCategories/);
+    assert.match(modeBar, /characterRelationTypes = includeCharacters/);
+    assert.match(modeBar, /includeScenes,/);
+    assert.match(modeBar, /storyGraphShowsCharacters\(plugin\)/);
+    assert.doesNotMatch(modeBar, /void ensureSeededCharacterRelationTypes\(plugin, characters\);\s*const characterRelationTypes = mergeCharacterRelationTypes/);
+});

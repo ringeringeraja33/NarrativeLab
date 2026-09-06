@@ -459,11 +459,162 @@ export const BUILTIN_CODEX_CATEGORIES: CodexCategoryDef[] = [
     },
 ];
 
+// ── Academic Library (research-paper / literature-review) ──
+
+export const LITERATURE_CATEGORIES: CodexFieldCategory[] = [
+    {
+        title: 'Source',
+        icon: 'book-open',
+        fields: [
+            { key: 'name', label: 'Title', placeholder: 'Work title' },
+            { key: 'sourceType', label: 'Source type', placeholder: 'Book, article, chapter, archive…' },
+            { key: 'authors', label: 'Authors', placeholder: 'Author names' },
+            { key: 'year', label: 'Year', placeholder: 'Publication year' },
+            { key: 'citation', label: 'Citation', placeholder: 'Bibliographic citation', multiline: true },
+            { key: 'venue', label: 'Venue', placeholder: 'Journal, press, or collection' },
+        ],
+    },
+    {
+        title: 'Reading notes',
+        icon: 'notebook-text',
+        fields: [
+            { key: 'summary', label: 'Summary', placeholder: 'What this source argues, in brief', multiline: true },
+            { key: 'keyQuotes', label: 'Key quotes', placeholder: 'Passages to keep, with page numbers', multiline: true },
+            { key: 'method', label: 'Method', placeholder: 'Approach, corpus, or evidence type', multiline: true },
+            { key: 'relevance', label: 'Relevance', placeholder: 'Why this source matters to the project', multiline: true },
+        ],
+    },
+];
+export const LITERATURE_FIELD_KEYS: string[] = [
+    'name', 'image', 'gallery', 'sourceType', 'authors', 'year', 'citation', 'venue',
+    'summary', 'keyQuotes', 'method', 'relevance',
+];
+
+export const CLAIMS_CATEGORIES: CodexFieldCategory[] = [
+    {
+        title: 'Claim',
+        icon: 'message-square',
+        fields: [
+            { key: 'name', label: 'Claim', placeholder: 'The thesis or subclaim in one sentence' },
+            { key: 'claimType', label: 'Claim type', placeholder: 'Thesis, subclaim, hypothesis…' },
+            { key: 'status', label: 'Status', placeholder: 'Working, supported, challenged…' },
+            { key: 'statement', label: 'Statement', placeholder: 'Full wording of the claim', multiline: true },
+        ],
+    },
+    {
+        title: 'Support',
+        icon: 'git-branch',
+        fields: [
+            { key: 'warrant', label: 'Warrant', placeholder: 'Why the evidence is supposed to support this', multiline: true },
+            { key: 'sources', label: 'Sources', placeholder: 'Literature or facts this claim rests on', multiline: true },
+            { key: 'counterarguments', label: 'Counterarguments', placeholder: 'Objections and how they are handled', multiline: true },
+        ],
+    },
+];
+export const CLAIMS_FIELD_KEYS: string[] = [
+    'name', 'image', 'gallery', 'claimType', 'status', 'statement', 'warrant', 'sources', 'counterarguments',
+];
+
+export const ARGUMENTS_CATEGORIES: CodexFieldCategory[] = [
+    {
+        title: 'Evidence',
+        icon: 'list-checks',
+        fields: [
+            { key: 'name', label: 'Evidence', placeholder: 'Short name for this piece of evidence' },
+            { key: 'argumentType', label: 'Evidence type', placeholder: 'Example, statistic, testimony, close reading…' },
+            { key: 'supportsClaim', label: 'Supports claim', placeholder: 'Which claim this is meant to support' },
+            { key: 'excerpt', label: 'Excerpt', placeholder: 'Quoted or paraphrased evidence', multiline: true },
+        ],
+    },
+    {
+        title: 'Evaluation',
+        icon: 'scale',
+        fields: [
+            { key: 'source', label: 'Source', placeholder: 'Where this evidence comes from' },
+            { key: 'strength', label: 'Strength', placeholder: 'Why it is persuasive', multiline: true },
+            { key: 'limitations', label: 'Limitations', placeholder: 'Gaps, bias, or what it cannot prove', multiline: true },
+        ],
+    },
+];
+export const ARGUMENTS_FIELD_KEYS: string[] = [
+    'name', 'image', 'gallery', 'argumentType', 'supportsClaim', 'excerpt', 'source', 'strength', 'limitations',
+];
+
+export const FACTS_CATEGORIES: CodexFieldCategory[] = [
+    {
+        title: 'Fact',
+        icon: 'hash',
+        fields: [
+            { key: 'name', label: 'Fact', placeholder: 'The fact in one line' },
+            { key: 'factType', label: 'Fact type', placeholder: 'Date, figure, event, definition…' },
+            { key: 'statement', label: 'Statement', placeholder: 'Precise wording', multiline: true },
+            { key: 'source', label: 'Source', placeholder: 'Where this is attested' },
+            { key: 'date', label: 'Date', placeholder: 'When it holds, if dated' },
+        ],
+    },
+    {
+        title: 'Confidence',
+        icon: 'shield-check',
+        fields: [
+            { key: 'confidence', label: 'Confidence', placeholder: 'Established, contested, unverified…' },
+            { key: 'caveats', label: 'Caveats', placeholder: 'Scope, exceptions, or disputes', multiline: true },
+        ],
+    },
+];
+export const FACTS_FIELD_KEYS: string[] = [
+    'name', 'image', 'gallery', 'factType', 'statement', 'source', 'date', 'confidence', 'caveats',
+];
+
+export const ACADEMIC_CODEX_CATEGORIES: CodexCategoryDef[] = [
+    {
+        id: 'literature',
+        label: 'Literature',
+        icon: 'book-open',
+        folder: 'Literature',
+        categories: LITERATURE_CATEGORIES,
+        fieldKeys: LITERATURE_FIELD_KEYS,
+        builtIn: true,
+    },
+    {
+        id: 'claims',
+        label: 'Claims',
+        icon: 'message-square',
+        folder: 'Claims',
+        categories: CLAIMS_CATEGORIES,
+        fieldKeys: CLAIMS_FIELD_KEYS,
+        builtIn: true,
+    },
+    {
+        id: 'arguments',
+        label: 'Arguments',
+        icon: 'list-checks',
+        folder: 'Arguments',
+        categories: ARGUMENTS_CATEGORIES,
+        fieldKeys: ARGUMENTS_FIELD_KEYS,
+        builtIn: true,
+    },
+    {
+        id: 'facts',
+        label: 'Facts',
+        icon: 'hash',
+        folder: 'Facts',
+        categories: FACTS_CATEGORIES,
+        fieldKeys: FACTS_FIELD_KEYS,
+        builtIn: true,
+    },
+];
+
+/** Fiction + academic preset categories that ship field templates. */
+export const PRESET_CODEX_CATEGORIES: CodexCategoryDef[] = [
+    ...BUILTIN_CODEX_CATEGORIES,
+    ...ACADEMIC_CODEX_CATEGORIES,
+];
+
 /**
  * Look up a built-in category definition by its id.
  */
 export function getBuiltinCodexCategory(id: string): CodexCategoryDef | undefined {
-    return BUILTIN_CODEX_CATEGORIES.find(c => c.id === id);
+    return PRESET_CODEX_CATEGORIES.find(c => c.id === id);
 }
 
 /**

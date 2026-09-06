@@ -128,7 +128,8 @@ export class BoardView extends ItemView {
     /** Debounced Canvas autosave after live membership add/remove. */
     private corkboardMembershipSaveTimer: number | null = null;
 
-    constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager) {
+    constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin, sceneManager: SceneManager,
+        private readonly pageType: string = BOARD_VIEW_TYPE, mode: BoardMode = 'corkboard') {
         super(leaf);
         this.plugin = plugin;
         this.sceneManager = sceneManager;
@@ -136,12 +137,12 @@ export class BoardView extends ItemView {
         this.corkboardCanvasService = new CorkboardCanvasService(plugin.app, plugin);
         // Restore last used board mode and groupBy
         const s = plugin.settings;
-        this.boardMode = s.lastBoardMode || (s.defaultBoardMode === 'kanban' ? 'kanban' : 'corkboard');
+        this.boardMode = mode;
         this.groupBy = (s.lastBoardGroupBy as BoardGroupBy) || 'act';
     }
 
     getViewType(): string {
-        return BOARD_VIEW_TYPE;
+        return this.pageType;
     }
 
     getDisplayText(): string {
@@ -217,9 +218,21 @@ export class BoardView extends ItemView {
         applyMobileClass(container);
         this.rootContainer = container;
 
-        await this.sceneManager.initialize();
+        await this.sceneManager.ensureInitialized();
         if (this.rootContainer !== container || !container.isConnected) return;
         this.renderView(container);
+    }
+
+    private usesScenes(): boolean {
+        const project = this.sceneManager.getProjects().find(project => project.filePath === this.boundProjectFile)
+            ?? this.sceneManager.activeProject;
+        return this.plugin.capabilityService.isEnabled('scenes', project);
+    }
+
+    async prepareForModuleDisable(): Promise<void> {
+        if (this.isForeignActiveProject()) return;
+        await this.pullPositionsFromNativeCanvas();
+        await this.persistCorkboardLayout();
     }
 
     async onClose(): Promise<void> {
@@ -283,6 +296,7 @@ export class BoardView extends ItemView {
         const filterContainer = mainArea.createDiv('story-line-filters-container');
         filterContainer.toggleClass('is-corkboard-mode', this.boardMode === 'corkboard');
         filterContainer.toggleClass('is-kanban-mode', this.boardMode === 'kanban');
+        if (this.usesScenes()) {
         this.filtersComponent = new FiltersComponent(
             filterContainer,
             this.sceneManager,
@@ -301,9 +315,21 @@ export class BoardView extends ItemView {
             },
         );
         this.filtersComponent.render();
+        } else {
+            this.groupBy = 'status';
+            this.filtersComponent = null;
+            const search = filterContainer.createEl('input', { type: 'search', cls: 'nl-note-card-search',
+                attr: { placeholder: t('Search notes...'), 'aria-label': t('Search notes...') } });
+            search.value = this.currentFilter.searchText ?? '';
+            search.addEventListener('input', () => {
+                this.currentFilter = { searchText: search.value };
+                this.corkboardVisibilityKey = '';
+                this.refreshBoard();
+            });
+        }
 
         // In Kanban mode, add Group by dropdown to the filter bar
-        if (this.boardMode === 'kanban') {
+        if (this.boardMode === 'kanban' && this.usesScenes()) {
             const filterBar = filterContainer.querySelector('.story-line-filter-bar') as HTMLElement | null;
             if (filterBar) {
                 const searchWrapper = filterBar.querySelector('.story-line-search-wrapper');
@@ -385,38 +411,11 @@ export class BoardView extends ItemView {
         // project name shown in top-center only; no inline project selector here
 
         // View switcher tabs
-        renderViewSwitcher(toolbar, BOARD_VIEW_TYPE, this.plugin, this.leaf);
+        renderViewSwitcher(toolbar, this.getViewType(), this.plugin, this.leaf);
 
         const controls = toolbar.createDiv('story-line-toolbar-controls is-board-controls');
 
-        const modeToggle = controls.createDiv('story-line-board-mode-toggle');
-        const corkboardBtn = modeToggle.createEl('button', {
-            cls: `story-line-board-mode-btn ${this.boardMode === 'corkboard' ? 'active' : ''}`,
-            text: t('Corkboard')
-        });
-        const kanbanBtn = modeToggle.createEl('button', {
-            cls: `story-line-board-mode-btn ${this.boardMode === 'kanban' ? 'active' : ''}`,
-            text: t('Kanban')
-        });
-        corkboardBtn.addEventListener('click', () => {
-            if (this.boardMode !== 'corkboard') {
-                this.boardMode = 'corkboard';
-                this.corkboardNativeFailed = false; // retry native Canvas host
-                this.plugin.settings.lastBoardMode = 'corkboard';
-                this.plugin.saveSettings();
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            }
-        });
-        kanbanBtn.addEventListener('click', () => {
-            if (this.boardMode !== 'kanban') {
-                this.boardMode = 'kanban';
-                this.plugin.settings.lastBoardMode = 'kanban';
-                this.plugin.saveSettings();
-                if (this.rootContainer) this.renderView(this.rootContainer);
-            }
-        });
-
-        if (this.boardMode === 'corkboard') {
+        if (this.boardMode === 'corkboard' && this.usesScenes()) {
             const toggleWrap = controls.createEl('label', { cls: 'sl-toggle-wrap' });
             toggleWrap.createSpan({ cls: 'sl-toggle-label', text: t('Scenes') });
             const cb = toggleWrap.createEl('input', { type: 'checkbox' });
@@ -429,7 +428,7 @@ export class BoardView extends ItemView {
             });
         }
 
-        if (this.boardMode === 'kanban') {
+        if (this.boardMode === 'kanban' && this.usesScenes()) {
             const notesToggleWrap = controls.createEl('label', { cls: 'sl-toggle-wrap' });
             notesToggleWrap.createSpan({ cls: 'sl-toggle-label', text: t('Notes') });
             const notesCb = notesToggleWrap.createEl('input', { type: 'checkbox' });
@@ -445,12 +444,13 @@ export class BoardView extends ItemView {
         // Add scene button — capture mode at creation time so the handler
         // always routes correctly even if boardMode changes between renders.
         const isCorkboardMode = this.boardMode === 'corkboard';
+        const createsNote = isCorkboardMode || !this.usesScenes();
         const addBtn = controls.createEl('button', {
             cls: 'mod-cta story-line-add-btn',
-            text: isCorkboardMode ? t('+ New Note') : t('+ New Scene')
+            text: createsNote ? t('+ New Note') : t('+ New Scene')
         });
         addBtn.addEventListener('click', () => {
-            if (isCorkboardMode) {
+            if (createsNote) {
                 void this.openQuickAddIdea();
             } else {
                 this.openQuickAdd();
@@ -459,7 +459,7 @@ export class BoardView extends ItemView {
 
         // Issue #220 — "New Chapter" button, shown in Kanban mode when
         // grouping by chapter, so inserting a chapter is one click away.
-        if (!isCorkboardMode && this.groupBy === 'chapter') {
+        if (!isCorkboardMode && this.usesScenes() && this.groupBy === 'chapter') {
             const addChBtn = controls.createEl('button', {
                 cls: 'mod-cta story-line-add-btn',
                 text: t('+ New Chapter')
@@ -491,7 +491,7 @@ export class BoardView extends ItemView {
         // Act/chapter structure lives on the Order (次序) view, next to swimlanes.
 
         // Resequence button (kanban only)
-        if (this.boardMode !== 'corkboard') {
+        if (this.boardMode !== 'corkboard' && this.usesScenes()) {
             const reseqBtn = iconGroup.createEl('button', {
                 cls: 'clickable-icon',
             });
@@ -636,14 +636,14 @@ export class BoardView extends ItemView {
 
         if (sortedKeys.length === 0) {
             const empty = this.boardEl.createDiv('story-line-empty');
-            empty.createEl('p', { text: t('No scenes found.') });
-            empty.createEl('p', { text: t('Click "+ New Scene" to create your first scene, or check your Scene folder setting.') });
+            empty.createEl('p', { text: this.usesScenes() ? t('No scenes found.') : t('No notes found.') });
+            empty.createEl('p', { text: this.usesScenes() ? t('Click "+ New Scene" to create your first scene, or check your Scene folder setting.') : t('Create a note to start organizing your ideas.') });
             return;
         }
 
         for (const key of sortedKeys) {
             let scenes = groups.get(key) || [];
-            if (!this.plugin.settings.showNotesInKanban) {
+            if (this.usesScenes() && !this.plugin.settings.showNotesInKanban) {
                 scenes = scenes.filter(scene => !this.isCorkboardNoteScene(scene));
                 const isNoActColumn = this.groupBy === 'act' && key.trim().toLowerCase() === 'no act';
                 if (isNoActColumn && scenes.length === 0) {
@@ -3247,8 +3247,8 @@ export class BoardView extends ItemView {
         }
         const key = JSON.stringify(payload);
         if (key === this.corkboardPositionsPersistKey) return;
-        this.corkboardPositionsPersistKey = key;
         await this.sceneManager.setCorkboardPositions(payload);
+        this.corkboardPositionsPersistKey = key;
     }
 
     private showCorkboardNoteMenu(scene: Scene, event: MouseEvent): void {

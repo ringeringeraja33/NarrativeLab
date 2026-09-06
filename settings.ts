@@ -1197,7 +1197,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
             !hasProject || this.plugin.capabilityService.isEnabled(module);
         const tabs: Array<{ id: NarrativeLabSettingsTabId; label: string }> = [
             { id: 'general', label: 'General' },
-            ...(enabled('canvas') ? [{ id: 'canvas' as const, label: 'Canvas' }] : []),
+            ...(enabled('canvas') ? [{ id: 'canvas' as const, label: 'Node-based presentation canvas' }] : []),
             ...(enabled('scenes') ? [
                 { id: 'scenes' as const, label: 'Scenes' },
                 { id: 'templates' as const, label: 'Template Center' },
@@ -1418,7 +1418,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
     }
 
     private renderNarrativeCanvasSettings(panel: HTMLElement): void {
-        new Setting(panel).setName(t('Canvas')).setHeading();
+        new Setting(panel).setName(t('Node-based presentation canvas')).setHeading();
         const bag = this.canvasSettingsBag();
 
         new Setting(panel)
@@ -1624,7 +1624,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         new Setting(panel)
             .setName(t('Exclude `%%comments%%` from wordcount'))
-            .setDesc(t('Exclude `%%comment%%` and `<!-- HTML -->` comment bodies. Markdown and HTML syntax are always ignored; only readable prose is counted.'))
+            .setDesc(t('Used by the Custom word-count profile and by folder writing trackers. Academic and Narrative always skip comments. Markdown and HTML syntax are always ignored; only readable prose is counted.'))
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.excludeCommentsFromWordcount !== false)
                 .onChange(async (value) => {
@@ -1634,7 +1634,7 @@ export class SceneCardsSettingTab extends PluginSettingTab {
 
         new Setting(panel)
             .setName(t('Also ignore checkbox lines (`- [ ]`, `- [x]`)'))
-            .setDesc(t('Also exclude Markdown task lines from the word count. Off by default because some authors keep checklists in the manuscript body.'))
+            .setDesc(t('Used by the Custom word-count profile and by folder writing trackers. Academic and Narrative always skip task lines. General keeps them.'))
             .addToggle(toggle => toggle
                 .setValue(this.plugin.settings.excludeChecklistFromWordcount === true)
                 .onChange(async (value) => {

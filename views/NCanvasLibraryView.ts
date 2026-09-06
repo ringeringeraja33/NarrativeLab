@@ -19,6 +19,7 @@ type NameAction = 'create' | 'rename';
 
 class CanvasNameModal extends Modal {
     private value: string;
+    private submitting = false;
 
     constructor(
         private plugin: SceneCardsPlugin,
@@ -26,6 +27,8 @@ class CanvasNameModal extends Modal {
         initialValue: string,
         private canvasPath: string | null,
         private onDone: () => void,
+        private projectFile?: string | null,
+        private targetLeaf?: WorkspaceLeaf,
     ) {
         super(plugin.app);
         this.value = initialValue;
@@ -58,22 +61,26 @@ class CanvasNameModal extends Modal {
     }
 
     private async submit(): Promise<void> {
+        if (this.submitting) return;
         const name = this.value.trim();
         if (!name) {
             new Notice(t('Enter a canvas name.'));
             return;
         }
+        this.submitting = true;
         try {
             if (this.action === 'create') {
-                await this.plugin.createBlankNcanvasInActiveProject(name);
+                await this.plugin.createBlankNcanvasInActiveProject(name, this.projectFile, this.targetLeaf);
             } else if (this.canvasPath) {
-                await this.plugin.renameNcanvasInActiveProject(this.canvasPath, name);
+                await this.plugin.renameNcanvasInActiveProject(this.canvasPath, name, this.projectFile);
                 this.onDone();
             }
             this.close();
         } catch (error) {
             console.error('NarrativeLab: canvas name action failed', error);
             new Notice(t('Canvas operation failed: {error}', { error: String(error) }));
+        } finally {
+            this.submitting = false;
         }
     }
 }
@@ -83,6 +90,7 @@ class DeleteCanvasModal extends Modal {
         private plugin: SceneCardsPlugin,
         private path: string,
         private onDone: () => void,
+        private projectFile?: string | null,
     ) {
         super(plugin.app);
         this.titleEl.setText(t('Delete canvas?'));
@@ -104,12 +112,14 @@ class DeleteCanvasModal extends Modal {
             attr: { type: 'button' },
         });
         remove.addEventListener('click', () => {
-            void this.plugin.deleteNcanvasInActiveProject(this.path).then(() => {
+            remove.disabled = true;
+            void this.plugin.deleteNcanvasInActiveProject(this.path, this.projectFile).then(() => {
                 this.close();
                 this.onDone();
             }).catch(error => {
                 console.error('NarrativeLab: canvas delete failed', error);
                 new Notice(t('Canvas operation failed: {error}', { error: String(error) }));
+                remove.disabled = false;
             });
         });
     }
@@ -132,7 +142,7 @@ export class NCanvasLibraryView extends ProjectBoundItemView {
 
     getDisplayText(): string {
         const project = this.resolveProject();
-        return project ? `${project.title} · ${t('Canvas')}` : t('Canvas');
+        return project ? `${project.title} · ${t('Node-based presentation canvas')}` : t('Node-based presentation canvas');
     }
 
     getIcon(): string {
@@ -183,7 +193,7 @@ export class NCanvasLibraryView extends ProjectBoundItemView {
         const { canvasFolder, candidates } = this.plugin.getNcanvasPathsForProject(project);
         const heading = content.createDiv('nl-ncanvas-library-heading');
         const headingCopy = heading.createDiv('nl-ncanvas-library-heading-copy');
-        headingCopy.createEl('h2', { text: t('Canvas box') });
+        headingCopy.createEl('h2', { text: t('Node-based presentation canvas') });
         headingCopy.createEl('p', {
             text: t('{count} canvases · stored in {folder}', {
                 count: candidates.length,
@@ -265,10 +275,10 @@ export class NCanvasLibraryView extends ProjectBoundItemView {
         attachTooltip(remove, t('Delete canvas'));
         remove.addEventListener('click', event => {
             event.stopPropagation();
-            new DeleteCanvasModal(this.plugin, path, () => { void this.render(); }).open();
+            new DeleteCanvasModal(this.plugin, path, () => { void this.render(); }, this.getBoundProjectFile()).open();
         });
 
-        const open = () => { void this.plugin.openNarrativeCanvas(path); };
+        const open = () => { void this.plugin.openProjectCanvasTab(this.getBoundProjectFile(), this.leaf, path); };
         card.addEventListener('click', event => {
             if ((event.target as HTMLElement).closest('button')) return;
             open();
@@ -281,7 +291,7 @@ export class NCanvasLibraryView extends ProjectBoundItemView {
     }
 
     private openNameModal(action: NameAction, path: string | null = null, initial = ''): void {
-        new CanvasNameModal(this.plugin, action, initial, path, () => { void this.render(); }).open();
+        new CanvasNameModal(this.plugin, action, initial, path, () => { void this.render(); }, this.getBoundProjectFile(), this.leaf).open();
     }
 
     private formatFileSize(bytes: number): string {
@@ -289,4 +299,8 @@ export class NCanvasLibraryView extends ProjectBoundItemView {
         if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
         return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     }
+}
+
+export function openNewProjectCanvasModal(plugin: SceneCardsPlugin, projectFile: string, leaf: WorkspaceLeaf): void {
+    new CanvasNameModal(plugin, 'create', '', null, () => {}, projectFile, leaf).open();
 }

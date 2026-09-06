@@ -1,5 +1,12 @@
 # NarrativeLab — Changelog
 
+## 1.7.0
+
+- Research paper and literature-review projects start in Library with literature, claims, arguments, and facts, and keep fiction character-relation types off the Story Graph.
+- Scene-less manuscripts stay inside WritingLab instead of replacing the tab with an empty Obsidian Base; a starter draft is created, and Organize includes tiled canvas and column board.
+- Word-count profiles now distinguish general, academic, narrative, and custom counting. Academic counting drops footnotes, citations, and trailing bibliographies.
+- Folder writing trackers, project tab groups, and academic graph link types (cites / supports / refutes) are available without enabling narrative scenes.
+
 ## 1.5.8
 
 - Concept Grid now mirrors active Univer cell edits into a project-scoped recovery journal on every input, so text typed immediately before Obsidian exits is restored on the next launch.

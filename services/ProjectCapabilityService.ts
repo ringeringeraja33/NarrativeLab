@@ -21,9 +21,31 @@ export class ProjectCapabilityService {
     }
 
     async apply(project: StoryLineProject, capabilities: ProjectCapabilities): Promise<void> {
-        project.capabilities = normalizeProjectCapabilities(capabilities);
-        await this.sceneManager.ensureProjectModuleStorage(project, project.capabilities);
-        await this.sceneManager.saveProjectFrontmatter(project);
+        const previous = project.capabilities;
+        const next = normalizeProjectCapabilities(capabilities);
+        await this.sceneManager.ensureProjectModuleStorage(project, next);
+        project.capabilities = next;
+        try {
+            await this.sceneManager.saveProjectFrontmatter(project);
+        } catch (error) {
+            project.capabilities = previous;
+            throw error;
+        }
+    }
+
+    async applyNavigation(
+        project: StoryLineProject,
+        navigation: NonNullable<ProjectCapabilities['navigation']>,
+    ): Promise<void> {
+        const previous = project.capabilities;
+        const next = normalizeProjectCapabilities({ ...this.get(project), navigation });
+        project.capabilities = next;
+        try {
+            await this.sceneManager.saveProjectFrontmatter(project);
+        } catch (error) {
+            project.capabilities = previous;
+            throw error;
+        }
     }
 
     async applyPreset(project: StoryLineProject, preset: ProjectPresetId): Promise<void> {

@@ -20,7 +20,7 @@ WritingLab stores project content as ordinary files in your vault. Every project
 
 - **Modular project workspace:** lightweight manuscript and word tracking, with optional notes, research, Library, tables, Canvas, scenes, structure, and narrative tools.
 - **Project presets:** plain writing, essay, research paper, literature review, novel, full narrative, and custom module selections.
-- **Native document list:** projects without Scenes open their Markdown documents through a project-specific Obsidian Base.
+- **Native document list:** projects without Scenes edit Markdown in the Manuscript page and can optionally open a project-specific Obsidian Base named `writing-<project>.base`.
 - **Scene planning:** acts, chapters, ordering, statuses, point of view, locations, characters, plotlines, setup/payoff links, custom fields, and templates.
 - **Structure tools:** timeline, track comparison, plot list, subway map, chapter templates, beat sheets, and placeholder-scene generation.
 - **Recursive Library:** Characters and Locations by default, plus any categories represented by direct subfolders under `Library/`. Folder creation, rename, and deletion stay synchronized with tabs and the native Obsidian Base.

@@ -26,14 +26,27 @@ test('new projects bootstrap fixed folders before preset migration', () => {
     assert.deepEqual([...DEFAULT_PROJECT_LIBRARY_HIDDEN_CATEGORIES], ['uncategorized']);
 });
 
-test('first project load restores all original Storyline presets once', async () => {
+test('first project load restores pack-specific Library presets once', async () => {
     const source = await readFile('services/LibraryCategorySync.ts', 'utf8');
     const main = await readFile('main.ts', 'utf8');
-    assert.match(source, /STORYLINE_PRESET_SEED_VERSION = 1/);
-    assert.match(source, /for \(const preset of BUILTIN_CODEX_CATEGORIES\)/);
-    assert.match(source, /if \(deleted\.has\(preset\.id\)\) continue/);
-    assert.match(source, /enabled\.add\(preset\.id\)/);
+    const sceneManager = await readFile('services/SceneManager.ts', 'utf8');
+    const codex = await readFile('models/Codex.ts', 'utf8');
+    assert.match(source, /STORYLINE_PRESET_SEED_VERSION = 2/);
+    assert.match(source, /libraryPresetCategoriesForPack/);
+    assert.match(source, /initialLibraryCategorySettings/);
+    assert.match(source, /ensureLibraryPackCategories/);
+    assert.match(source, /pack === 'academic' \? ACADEMIC_CODEX_CATEGORIES/);
+    assert.match(source, /if \(deleted\.has\(preset\.id\)\) return/);
+    assert.match(source, /if \(options\.enable\) enabled\.add\(preset\.id\)/);
     assert.match(source, /hasProfilePage: true/);
+    assert.match(source, /hiddenFixedCategories: pack === 'academic'/);
+    assert.match(source, /filter\(id => !hiddenFixed.has\(id\)\)/);
+    assert.match(codex, /id: 'literature'/);
+    assert.match(codex, /id: 'claims'/);
+    assert.match(codex, /id: 'arguments'/);
+    assert.match(codex, /id: 'facts'/);
+    assert.match(sceneManager, /JSON.stringify\(initialLibraryCategorySettings\(capabilities\)/);
+    assert.match(sceneManager, /defaultLibraryFoldersForCapabilities\(capabilities\)/);
     assert.match(main, /seedStorylinePresetCategories\(this\)/);
     assert.match(main, /\(presetsSeeded \|\| migratingLibraryCategories\) \? \{ createMissingRegistered: true \} : \{\}/);
     assert.match(main, /\(presetsSeeded \|\| !stored\) \? \{ createMissingRegistered: true \} : \{\}/);
@@ -47,6 +60,8 @@ test('hiding a Library category does not let folder adopt resurrect the tab', as
     assert.match(source, /Deleted presets stay deleted even if their Library folder is still on disk/);
     assert.doesNotMatch(source, /deleted\.delete\(id\)/);
     assert.match(tabs, /enabledCodex\.has\(category\.id\)/);
+    assert.match(tabs, /isViewEnabled\(CHARACTER_VIEW_TYPE, projectFile\)/);
+    assert.match(tabs, /isViewEnabled\(LOCATION_VIEW_TYPE, projectFile\)/);
     assert.match(manager, /Hidden presets stay registered so Library\/ folders cannot resurrect their tabs/);
 });
 

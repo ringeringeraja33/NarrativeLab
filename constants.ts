@@ -6,6 +6,11 @@
  * view files and the ViewSwitcher component.
  */
 export const BOARD_VIEW_TYPE = 'narrative-lab-board';
+export const COLUMN_BOARD_VIEW_TYPE = 'narrative-lab-column-board';
+export const TRACK_COMPARISON_VIEW_TYPE = 'narrative-lab-track-comparison';
+export const SUBWAY_VIEW_TYPE = 'narrative-lab-subway';
+export const CHAPTER_TEMPLATES_VIEW_TYPE = 'narrative-lab-chapter-templates';
+export const PROJECT_OVERVIEW_VIEW_TYPE = 'narrative-lab-project-overview';
 export const TIMELINE_VIEW_TYPE = 'narrative-lab-timeline';
 export const STORYLINE_VIEW_TYPE = 'narrative-lab-storyline';
 export const CHARACTER_VIEW_TYPE = 'narrative-lab-character';

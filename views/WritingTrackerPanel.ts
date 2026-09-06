@@ -1,8 +1,9 @@
-import { ItemView, Notice, WorkspaceLeaf } from 'obsidian';
+import { ItemView, Notice, WorkspaceLeaf, type ViewStateResult } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { WRITING_TRACKER_PANEL_TYPE } from '../constants';
 import { t } from '../utils/i18n';
 import type { WritingTracker } from '../services/WritingTracker';
+import { renderFolderTrackerControls } from '../components/FolderTrackerControls';
 import {
     formatTrackerClock,
     renderGoalRings,
@@ -58,6 +59,17 @@ export class WritingTrackerPanel extends ItemView {
         if (this.root?.isConnected) this.render();
     }
 
+    getState(): Record<string, unknown> { return { ...super.getState(), writingTrackerScope:this.trackerScope }; }
+    async setState(state: Record<string, unknown>, result: ViewStateResult): Promise<void> {
+        await super.setState(state, result);
+        if (state.writingTrackerScope === 'global' || state.writingTrackerScope === 'project' || state.writingTrackerScope === 'folder') {
+            this.trackerScope = state.writingTrackerScope; this.render();
+        }
+    }
+    setScope(scope: WritingTrackerScope): void {
+        this.trackerScope = scope; this.render(); this.app.workspace.requestSaveLayout();
+    }
+
     private clearSprintTimer(): void {
         if (this.sprintTimerId !== null) {
             window.clearInterval(this.sprintTimerId);
@@ -66,6 +78,7 @@ export class WritingTrackerPanel extends ItemView {
     }
 
     private currentTotalWords(): number {
+        if (this.trackerScope === 'folder') return this.plugin.folderWritingTracker.current?.totalWords ?? 0;
         try {
             return this.plugin.getTrackedWordTotal();
         } catch {
@@ -74,9 +87,19 @@ export class WritingTrackerPanel extends ItemView {
     }
 
     private source(): WritingTracker {
+        if (this.trackerScope === 'folder') return this.plugin.folderWritingTracker.current?.tracker ?? this.plugin.writingTracker;
         return this.trackerScope === 'global'
             ? this.plugin.globalWritingTracker.tracker
             : this.plugin.writingTracker;
+    }
+
+    private sessionTracker(): WritingTracker {
+        return this.trackerScope === 'folder' ? this.source() : this.plugin.writingTracker;
+    }
+
+    private saveTracker(): void {
+        if (this.trackerScope === 'folder') this.plugin.folderWritingTracker.scheduleSave();
+        else this.plugin.scheduleWritingTrackerSave();
     }
 
     private render(): void {
@@ -88,14 +111,25 @@ export class WritingTrackerPanel extends ItemView {
         const tabs = container.createDiv('nl-tracker-tabs');
         this.addScopeTab(tabs, 'global', t('Vault'));
         this.addScopeTab(tabs, 'project', t('Project'));
+        this.addScopeTab(tabs, 'folder', t('Folder'));
 
         const body = container.createDiv('nl-tracker-panel-body');
+        if (this.trackerScope === 'folder') {
+            renderFolderTrackerControls(body, this.plugin);
+            if (!this.plugin.folderWritingTracker.ready || !this.plugin.folderWritingTracker.current) return;
+        }
         const totalWords = this.currentTotalWords();
+        if (this.trackerScope === 'project' && this.plugin.sceneManager.activeProject
+            && !this.plugin.capabilityService.isEnabled('writingTracker', this.plugin.sceneManager.activeProject)) {
+            body.createEl('p', {cls:'nl-tracker-empty',text:t('This module is disabled for the project. Enable it from Project modules.')});
+            return;
+        }
         if (this.trackerScope === 'project' && !this.plugin.sceneManager.activeProject) {
             body.createEl('p', {
                 cls: 'nl-tracker-empty',
                 text: t('Open a NarrativeLab project to see project stats.'),
             });
+            return;
         } else {
             if (this.trackerScope === 'project') {
                 const project = this.plugin.sceneManager.activeProject!;
@@ -145,13 +179,12 @@ export class WritingTrackerPanel extends ItemView {
         btn.setAttr('type', 'button');
         btn.addEventListener('click', () => {
             if (this.trackerScope === scope) return;
-            this.trackerScope = scope;
-            this.render();
+            this.setScope(scope);
         });
     }
 
     private renderSprint(parent: HTMLElement, currentTotalWords: number): void {
-        const tracker = this.plugin.writingTracker;
+        const tracker = this.sessionTracker();
         const section = parent.createDiv('nl-tracker-section');
         section.createEl('h4', { text: t('Writing Sprint') });
 
@@ -224,14 +257,14 @@ export class WritingTrackerPanel extends ItemView {
             this.clearSprintTimer();
             this.sprintTimerId = window.setInterval(updateTimerDisplay, 1000);
             updateTimerDisplay(totalNow);
-            this.plugin.scheduleWritingTrackerSave();
+            this.saveTracker();
         });
         stopBtn.addEventListener('click', () => {
             const totalNow = this.currentTotalWords();
             const entry = tracker.stopSprint(totalNow);
             this.clearSprintTimer();
             updateTimerDisplay(totalNow);
-            this.plugin.scheduleWritingTrackerSave();
+            this.saveTracker();
             if (entry) {
                 new Notice(t('Sprint complete: {words} words in {mins} min ({wpm} wpm)', {
                     words: entry.words,
@@ -244,7 +277,7 @@ export class WritingTrackerPanel extends ItemView {
             tracker.resetSprint();
             this.clearSprintTimer();
             updateTimerDisplay();
-            this.plugin.scheduleWritingTrackerSave();
+            this.saveTracker();
         });
 
         if (tracker.isSprintRunning() && tracker.isProjectFilesOpen()) {
@@ -254,16 +287,16 @@ export class WritingTrackerPanel extends ItemView {
     }
 
     private renderSession(parent: HTMLElement, currentTotalWords: number): void {
-        const tracker = this.plugin.writingTracker;
+        const tracker = this.sessionTracker();
         const source = this.source();
         parent.createEl('h5', {
             cls: 'nl-tracker-subtitle',
             text: this.trackerScope === 'global'
                 ? t('Vault totals')
-                : t('Session (since project opened)'),
+                : this.trackerScope === 'folder' ? t('Session (while folder files are open)') : t('Session (since project opened)'),
         });
         const row = parent.createDiv('nl-tracker-cards');
-        if (this.trackerScope === 'project') {
+        if (this.trackerScope !== 'global') {
             renderTrackerStatCard(row, 'pencil', t('Session'), t('{words} words', {
                 words: tracker.getSessionWords(currentTotalWords).toLocaleString(),
             }));

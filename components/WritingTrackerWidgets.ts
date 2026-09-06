@@ -7,7 +7,7 @@ import {
     type HeatmapCell,
 } from '../utils/writingTrackerHeatmap';
 
-export type WritingTrackerScope = 'global' | 'project';
+export type WritingTrackerScope = 'global' | 'project' | 'folder';
 
 export function formatTrackerClock(ms: number): string {
     const total = Math.max(0, Math.round(ms / 1000));

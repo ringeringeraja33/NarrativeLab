@@ -2,6 +2,7 @@ import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type SceneCardsPlugin from '../main';
 import { WRITING_TRACKER_VIEW_TYPE } from '../constants';
 import { t } from '../utils/i18n';
+import { renderFolderTrackerControls } from '../components/FolderTrackerControls';
 import {
     renderGoalRings,
     renderTrackerSparkline,
@@ -17,6 +18,7 @@ export class WritingTrackerView extends ItemView {
     private root: HTMLElement | null = null;
     private year = new Date().getFullYear();
     private chartDays = 30;
+    private folderScope = false;
 
     constructor(leaf: WorkspaceLeaf, plugin: SceneCardsPlugin) {
         super(leaf);
@@ -83,24 +85,38 @@ export class WritingTrackerView extends ItemView {
 
         const header = container.createDiv('nl-tracker-page-header');
         header.createEl('h3', { text: t('Writing tracker') });
-        header.createEl('p', {
-            cls: 'nl-tracker-page-lead',
-            text: t('Vault-wide net words. Project sprint and scene totals stay on the Statistics tab.'),
-        });
+        if (!this.folderScope) {
+            header.createEl('p', {
+                cls: 'nl-tracker-page-lead',
+                text: t('Vault-wide net words. Project sprint and scene totals stay on the Statistics tab.'),
+            });
+        }
 
-        const source = this.plugin.globalWritingTracker.tracker;
-        const session = this.plugin.writingTracker;
+        const scopes = header.createDiv('nl-tracker-tabs');
+        for (const [folder, label] of [[false,t('Vault')],[true,t('Folder')]] as const) {
+            const button = scopes.createEl('button', {text:label,cls:'nl-tracker-tab'+(this.folderScope === folder ? ' is-active' : '')});
+            button.addEventListener('click', () => {this.folderScope = folder; this.render();});
+        }
+        if (this.folderScope) {
+            renderFolderTrackerControls(header, this.plugin);
+            if (!this.plugin.folderWritingTracker.ready || !this.plugin.folderWritingTracker.current) return;
+        }
+
+        const folder = this.folderScope ? this.plugin.folderWritingTracker.current : null;
+        const source = folder?.tracker ?? this.plugin.globalWritingTracker.tracker;
+        const session = folder?.tracker ?? this.plugin.writingTracker;
         let sessionWords = 0;
         let wpm = 0;
         let minutes = 0;
         try {
-            const total = this.plugin.getTrackedWordTotal();
+            const total = folder?.totalWords ?? this.plugin.getTrackedWordTotal();
             sessionWords = session.getSessionWords(total);
             wpm = session.getWordsPerMinute(total);
             minutes = Math.floor(session.getSessionDuration() / 60_000);
         } catch { /* no project */ }
 
         const cards = container.createDiv('nl-tracker-page-cards');
+        if (folder) renderTrackerStatCard(cards, 'files', t('Total words'), folder.totalWords.toLocaleString());
         renderTrackerStatCard(cards, 'flame', t('Streak'), source.getStreak() > 1
             ? t('{count}-day streak', { count: source.getStreak() })
             : t('{count}-day streak', { count: source.getStreak() }));

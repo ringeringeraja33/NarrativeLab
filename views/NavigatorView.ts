@@ -48,7 +48,7 @@ const SORT_ICONS: Record<NavSortMode, string> = {
 /**
  * NavigatorView — Longform-style collapsible project binder.
  *
- * Tree: Projects → (active) Notes / Scenes / Research.
+ * Tree: Projects → (active) Notes / Canvas / Scenes / Research.
  * Draft + plotline filters live inside Scenes. Other projects are siblings.
  */
 export class NavigatorView extends ItemView {
@@ -362,11 +362,15 @@ export class NavigatorView extends ItemView {
         }
         scenes = scenes.filter(matchesSceneSearch);
 
+        const canvases = this.plugin.getNcanvasPathsForProject(activeProject).candidates.filter(path =>
+            matchesSimpleSearch(path.split('/').pop()?.replace(/\.n(?:arrative)?canvas$/i, '') || path, [])
+        );
         const research = (this.plugin.researchManager?.getAllPosts() || []).filter(post =>
             matchesSimpleSearch(post.title, post.tags)
         );
 
         if (notes.length > 0) this.autoExpandedNodes.add('notes');
+        if (canvases.length > 0) this.autoExpandedNodes.add('canvas');
         if (research.length > 0) this.autoExpandedNodes.add('research');
         if (scenes.length > 0) {
             this.autoExpandedNodes.add('scenes');
@@ -392,7 +396,7 @@ export class NavigatorView extends ItemView {
             }
         }
 
-        if (notes.length > 0 || scenes.length > 0 || research.length > 0) {
+        if (notes.length > 0 || canvases.length > 0 || scenes.length > 0 || research.length > 0) {
             this.autoExpandedNodes.add(`project:${activeProject.filePath}`);
         }
     }
@@ -884,11 +888,69 @@ export class NavigatorView extends ItemView {
     }
 
     private renderActiveProjectContents(parent: HTMLElement, folderDepth: number): void {
-        // Primary binder: Notes → Scenes → Research
+        // Primary binder: Notes → Canvas → Scenes → Research
         const active = this.sceneManager.activeProject;
         if (this.plugin.capabilityService.isEnabled('notes', active)) this.renderNotesFolder(parent, folderDepth);
+        if (this.plugin.capabilityService.isEnabled('canvas', active)) this.renderCanvasFolder(parent, folderDepth);
         if (this.plugin.capabilityService.isEnabled('scenes', active)) this.renderScenesFolder(parent, folderDepth);
         if (this.plugin.capabilityService.isEnabled('research', active)) this.renderResearchFolder(parent, folderDepth);
+    }
+
+    private renderCanvasFolder(parent: HTMLElement, folderDepth = 1): void {
+        const active = this.sceneManager.activeProject;
+        if (!active) return;
+        let canvases = this.plugin.getNcanvasPathsForProject(active).candidates;
+        if (this.filterText) {
+            canvases = canvases.filter(path => this.binderTextMatches(
+                path.split('/').pop()?.replace(/\.n(?:arrative)?canvas$/i, '') || path,
+            ));
+        }
+        if (this.filterText && canvases.length === 0) return;
+
+        const canvasNode = this.renderFolderHeader(parent, {
+            key: 'canvas',
+            label: t('Node-based presentation canvas'),
+            icon: 'layout-dashboard',
+            count: canvases.length,
+            depth: folderDepth,
+            cls: 'sl-nav-primary-folder sl-nav-canvas-folder',
+            trailing: (el) => {
+                const add = el.createSpan('sl-nav-folder-action is-always');
+                setIcon(add, 'plus');
+                attachTooltip(add, t('New canvas'));
+                add.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void this.plugin.createBlankNcanvasInActiveProject().then(path => {
+                        if (!path) return;
+                        this.collapsedNodes.delete('canvas');
+                        this.renderList();
+                    });
+                });
+            },
+        });
+        if (!canvasNode.expanded || !canvasNode.body) return;
+
+        if (canvases.length === 0) {
+            canvasNode.body.createDiv({ cls: 'sl-nav-empty', text: t('No canvases yet') });
+            return;
+        }
+
+        for (const path of canvases) {
+            const row = canvasNode.body.createDiv('sl-nav-row sl-nav-canvas-row');
+            this.setNavDepth(row, folderDepth + 1);
+            this.appendNavToggle(row, ' ');
+            const icon = this.appendNavIconSlot(row);
+            icon.addClass('has-icon');
+            setIcon(icon, 'layout-dashboard');
+            row.createSpan({
+                text: path.split('/').pop()?.replace(/\.n(?:arrative)?canvas$/i, '') || t('Node-based presentation canvas'),
+                cls: 'sl-nav-title',
+            });
+            row.addEventListener('click', () => {
+                void this.plugin.openNarrativeCanvas(path);
+            });
+        }
     }
 
     private renderScenesFolder(parent: HTMLElement, folderDepth = 1): void {

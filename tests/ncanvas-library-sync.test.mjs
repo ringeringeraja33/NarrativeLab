@@ -91,6 +91,16 @@ test("canvas and NarrativeLab share one kind/type mapping", () => {
   assert.equal(kindToLibraryFrontmatterType("items"), "items");
   assert.equal(kindToLibraryFrontmatterType("Location"), "location");
   assert.equal(kindToLibraryFrontmatterType("custom-msriojlo"), "custom-msriojlo");
+  assert.equal(kindToLibraryCategoryId("literature"), "literature");
+  assert.equal(kindToLibraryCategoryId("claim"), "claims");
+  assert.equal(kindToLibraryCategoryId("arguments"), "arguments");
+  assert.equal(kindToLibraryCategoryId("fact"), "facts");
+  assert.equal(kindToLibraryFrontmatterType("literature"), "literature");
+  assert.equal(resolveLibraryProfileSurface("literature"), "codex");
+  assert.equal(
+    resolveCodexCategoryFolderName("literature", ["文献", "论点"], ""),
+    "文献",
+  );
   assert.equal(isCharacterLibraryKind("Character"), true);
   assert.equal(isCharacterLibraryKind("characters"), true);
   assert.equal(isCharacterLibraryKind("character"), true);

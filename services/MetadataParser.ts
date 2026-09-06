@@ -4,7 +4,7 @@ import { App, TFile, parseYaml, stringifyYaml } from 'obsidian';
 import { coerceSceneLocations, Scene, SceneStatus, TIMELINE_MODES, TimelineMode } from '../models/Scene';
 import { coerceString } from '../utils/narrow';
 import { tokenizeWords, DEFAULT_STORYLINE_LOCALE, resolveLocale, type StoryLineLocale } from '../utils/locale';
-import { prepareTextForWordcount } from '../utils/wordcountText';
+import { prepareTextForWordcount, wordcountOptionsForProfile } from '../utils/wordcountText';
 
 /**
  * Issue #73 — frontmatter scene fields that point at other entities (scenes,
@@ -85,9 +85,23 @@ export function setSceneTitleToStemMap(map: Map<string, string>): void {
  */
 let _excludeCommentsFromWordcount = true;
 let _excludeChecklistFromWordcount = false;
+let _wordcountProfile: import('../models/ProjectCapabilities').WordCountProfileId = 'general';
 export function setWordcountExclusions(opts: { comments?: boolean; checklists?: boolean }): void {
     if (typeof opts.comments === 'boolean') _excludeCommentsFromWordcount = opts.comments;
     if (typeof opts.checklists === 'boolean') _excludeChecklistFromWordcount = opts.checklists;
+}
+export function setWordcountProfile(
+    profile: import('../models/ProjectCapabilities').WordCountProfileId | undefined,
+): void {
+    _wordcountProfile = profile === 'academic' || profile === 'narrative' || profile === 'custom'
+        ? profile
+        : 'general';
+}
+function currentWordcountPrepareOptions() {
+    return wordcountOptionsForProfile(_wordcountProfile, {
+        excludeComments: _excludeCommentsFromWordcount,
+        excludeChecklists: _excludeChecklistFromWordcount,
+    });
 }
 
 /**
@@ -640,10 +654,7 @@ export class MetadataParser {
      * stripped first so the total follows readable prose.
      */
     private static countWords(text: string): number {
-        const cleaned = prepareTextForWordcount(text, {
-            excludeComments: _excludeCommentsFromWordcount,
-            excludeChecklists: _excludeChecklistFromWordcount,
-        });
+        const cleaned = prepareTextForWordcount(text, currentWordcountPrepareOptions());
         if (!cleaned) return 0;
         return tokenizeWords(cleaned, resolveLocale(_wordcountLocale, cleaned, DEFAULT_STORYLINE_LOCALE)).length;
     }
@@ -653,10 +664,7 @@ export class MetadataParser {
      * `countWords` so the two counts stay aligned.
      */
     private static countChars(text: string): number {
-        return prepareTextForWordcount(text, {
-            excludeComments: _excludeCommentsFromWordcount,
-            excludeChecklists: _excludeChecklistFromWordcount,
-        }).length;
+        return prepareTextForWordcount(text, currentWordcountPrepareOptions()).length;
     }
 
     /**

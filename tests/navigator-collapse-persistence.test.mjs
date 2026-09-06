@@ -9,15 +9,25 @@ const [navigatorView, settings, mainTs, styles] = await Promise.all([
     readFile(new URL('../styles.css', import.meta.url), 'utf8'),
 ]);
 
-test('Navigator primary sections render in Notes, Scenes, Research order', () => {
+test('Navigator primary sections render in Notes, Canvas, Scenes, Research order', () => {
     const renderPrimary = navigatorView.slice(
         navigatorView.indexOf('private renderActiveProjectContents'),
         navigatorView.indexOf('private renderScenesFolder'),
     );
     const scenesAt = renderPrimary.indexOf('this.renderScenesFolder');
     const notesAt = renderPrimary.indexOf('this.renderNotesFolder');
+    const canvasAt = renderPrimary.indexOf('this.renderCanvasFolder');
     const researchAt = renderPrimary.indexOf('this.renderResearchFolder');
-    assert.ok(notesAt >= 0 && notesAt < scenesAt && scenesAt < researchAt);
+    assert.ok(notesAt >= 0 && notesAt < canvasAt && canvasAt < scenesAt && scenesAt < researchAt);
+});
+
+test('Navigator exposes project Narrative Canvas files as a collapsible capability-gated section', () => {
+    assert.match(navigatorView, /isEnabled\('canvas', active\).*this\.renderCanvasFolder\(parent, folderDepth\)/);
+    assert.match(navigatorView, /private renderCanvasFolder\(parent: HTMLElement, folderDepth = 1\)/);
+    assert.match(navigatorView, /getNcanvasPathsForProject\(active\)\.candidates/);
+    assert.match(navigatorView, /key: 'canvas'/);
+    assert.match(navigatorView, /void this\.plugin\.openNarrativeCanvas\(path\)/);
+    assert.match(navigatorView, /createBlankNcanvasInActiveProject\(\)/);
 });
 
 test('Navigator leaf titles use compact indentation without empty sequence gutters', () => {

@@ -140,9 +140,9 @@ test("canvas paints the host theme before the first frame", () => {
   assert.match(pluginBundle, /querySelector\("\.app-shell"\)\?\.setAttribute\("data-theme", resolvedTheme\)/);
 });
 
-test("ncanvas library sync keeps unwritten embeds and drops deleted files", () => {
-  assert.match(app, /Keep embeds that were never written/);
-  assert.match(app, /was deleted — those keep a codexFile path/);
+test("ncanvas reference loading preserves legacy material and unresolved sources", () => {
+  assert.match(app, /Unmigrated material stays local/);
+  assert.match(app, /referenceMissing: true/);
   assert.doesNotMatch(app, /if \(!Array\.isArray\(loaded\) \|\| !loaded\.length\) return false;/);
   assert.match(pluginBundle, /resolveCodexCategoryFolder/);
   assert.match(pluginBundle, /Never recreate from \.ncanvas snapshot/);
@@ -151,7 +151,7 @@ test("ncanvas library sync keeps unwritten embeds and drops deleted files", () =
   assert.match(pluginBundle, /resolveLoadedLibraryNotes/);
 });
 
-test("project canvas entry opens a card box before an individual canvas", async () => {
+test("project canvas tab opens the remembered canvas with a separate card manager", async () => {
   const [main, constants, switcher, libraryView, styles] = await Promise.all([
     readFile(new URL("../main.ts", import.meta.url), "utf8"),
     readFile(new URL("../constants.ts", import.meta.url), "utf8"),
@@ -162,7 +162,9 @@ test("project canvas entry opens a card box before an individual canvas", async 
   assert.match(constants, /NCANVAS_LIBRARY_VIEW_TYPE\s*=\s*'narrative-lab-canvas-library'/);
   assert.match(main, /registerView\(NCANVAS_LIBRARY_VIEW_TYPE/);
   assert.match(main, /openNCanvasLibraryForCanvasPath/);
-  assert.match(switcher, /openNCanvasLibrary\(getLeafNarrativeLabProjectFile\(leaf\), leaf\)/);
+  assert.match(switcher, /const projectFile = getLeafNarrativeLabProjectFile\(leaf\)/);
+  assert.match(switcher, /openProjectCanvasTab\(projectFile, leaf\)/);
+  assert.match(switcher, /openNCanvasLibrary\(project\.filePath, leaf\)/);
   assert.match(libraryView, /nl-ncanvas-card-grid/);
   assert.match(libraryView, /createBlankNcanvasInActiveProject/);
   assert.match(libraryView, /renameNcanvasInActiveProject/);
@@ -172,7 +174,7 @@ test("project canvas entry opens a card box before an individual canvas", async 
 
 test("canvas card actions stay project-scoped and deletion uses Obsidian trash", async () => {
   const main = await readFile(new URL("../main.ts", import.meta.url), "utf8");
-  assert.match(main, /requireActiveProjectNcanvas\(path: string\)/);
+  assert.match(main, /requireActiveProjectNcanvas\(path: string, projectFile\?: string \| null\)/);
   assert.match(main, /getNcanvasPathsForProject\(project\)\.candidates/);
   assert.match(main, /await this\.app\.fileManager\.renameFile\(file, destination\)/);
   assert.match(main, /await this\.app\.fileManager\.trashFile\(file\)/);
